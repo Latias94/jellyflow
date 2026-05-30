@@ -80,6 +80,10 @@ The standalone-readiness lane also adds an external temp-project smoke gate that
 on `jellyflow-core` and `jellyflow-runtime`, runs `cargo check`, and rejects any transitive `fret`
 or `fret-*` package in `cargo tree`.
 
+Repository policy follow-on: create a new standalone Jellyflow repository with history-preserving
+extraction as the next execution lane, but delay crates.io publishing until standalone metadata,
+READMEs, CI, release configuration, and `cargo publish --dry-run` gates are in place.
+
 Evidence:
 
 - `ecosystem/jellyflow-core/Cargo.toml`
@@ -94,4 +98,5 @@ Evidence:
 - `docs/workstreams/jellyflow-package-split-v1/`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
 - `tools/check_jellyflow_external_smoke.py`

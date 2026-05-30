@@ -9,11 +9,12 @@ This lane is open as a follow-on to `jellyflow-package-split-v1`. The package sp
 in-workspace `jellyflow-core` and `jellyflow-runtime` boundaries, then closed without moving code to
 a separate repository, publishing crates, removing compatibility re-exports, or extracting geometry.
 
-JSR-010, JSR-015, and JSR-020 are complete. The inventory found that the Jellyflow crates were
-already free of UI/render/platform dependencies, JSR-015 removed the remaining `fret-core`
+JSR-010, JSR-015, JSR-020, and JSR-030 are complete. The inventory found that the Jellyflow crates
+were already free of UI/render/platform dependencies, JSR-015 removed the remaining `fret-core`
 dependency by moving small input/geometry contracts into Jellyflow-owned or direct external types,
-and JSR-020 added an external temp-project smoke gate that path-depends only on `jellyflow-core` and
-`jellyflow-runtime`.
+JSR-020 added an external temp-project smoke gate that path-depends only on `jellyflow-core` and
+`jellyflow-runtime`, and JSR-030 chose a new standalone repository with history-preserving
+extraction as the recommended policy.
 
 ## Assumptions
 
@@ -24,14 +25,13 @@ and JSR-020 added an external temp-project smoke gate that path-depends only on 
 - Confident: the preferred future local repo path is `~/codes/rust/jellyflow`.
 - Confident: JSR-030 should assume a new repository with history-preserving Git extraction as the
   default policy.
-- Likely: the next useful step is the repository and publishing policy decision, not creating the
-  new repo yet.
+- Likely: the next useful step is readiness closeout, not creating the new repo yet.
 
 ## Next Task
 
-Start with JSR-030 in `TODO.md`: decide the repository and publishing policy.
+Start with JSR-040 in `TODO.md`: close the readiness lane with a go/no-go packet.
 
-Use the JSR-010 inventory, JSR-015 detachment evidence, and JSR-020 external smoke as inputs. The
-policy note should assume the user's preferred target is a new repository at
-`~/codes/rust/jellyflow` with history-preserving extraction, then compare it against generated
-mirror and delayed-extraction alternatives before recommending the next execution lane.
+Use JSR-030 as the policy input. The closeout should recommend a follow-on
+`jellyflow-repo-extraction-v1` lane that creates `~/codes/rust/jellyflow` from a fresh Fret clone
+with filtered history, then bootstraps standalone metadata, docs, CI, package dry-runs, and Fret
+adapter dependency policy.

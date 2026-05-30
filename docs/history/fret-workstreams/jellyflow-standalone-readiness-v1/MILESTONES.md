@@ -21,7 +21,7 @@ Last updated: 2026-05-30
   - JSR-020 proves a non-Fret consumer can use `jellyflow-core` and `jellyflow-runtime` through
     path dependencies.
 
-- [ ] M3 - Repository and publish policy decided.
+- [x] M3 - Repository and publish policy decided.
   - JSR-030 records whether the next execution lane should create a standalone repository, mirror
     the in-tree crates, publish from the monorepo, or delay extraction.
 

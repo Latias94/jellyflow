@@ -112,7 +112,7 @@ Status: Active
     - `git diff --check`: passed.
     - `cargo fmt --check`: passed.
 
-- [ ] JSR-030 Decide the repository and publishing policy.
+- [x] JSR-030 Decide the repository and publishing policy.
   - Scope:
     - compare independent repository, generated mirror, and delayed extraction options
     - record package names, versioning expectations, release ownership, CI gates, and docs scope
@@ -122,6 +122,18 @@ Status: Active
     - readiness note reviewed against `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
     - `cargo publish --dry-run` only if package metadata is intentionally prepared in this lane
   - Exit note: gives a concrete next execution lane instead of mixing policy with extraction.
+  - Fresh evidence:
+    - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
+  - Fresh gates:
+    - `cargo metadata --format-version 1 --no-deps | jq ...`: passed.
+    - `cargo search jellyflow --limit 10`: passed; no results returned on 2026-05-30.
+    - `cargo search jellyflow-core --limit 10`: passed; no results returned on 2026-05-30.
+    - `cargo search jellyflow-runtime --limit 10`: passed; no results returned on 2026-05-30.
+    - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+    - `python3 tools/check_workstream_catalog.py`: passed.
+    - `git diff --check`: passed.
+    - `cargo publish --dry-run`: not run because this policy slice intentionally does not prepare
+      standalone package metadata.
 
 - [ ] JSR-040 Close the readiness lane with a go/no-go packet.
   - Scope:

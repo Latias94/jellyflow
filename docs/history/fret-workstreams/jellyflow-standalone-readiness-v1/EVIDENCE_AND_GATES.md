@@ -16,6 +16,7 @@ Last updated: 2026-05-30
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
 - `tools/check_jellyflow_external_smoke.py`
 
 ## Baseline Gates
@@ -88,3 +89,15 @@ Last updated: 2026-05-30
     47 standalone markdown files.
   - `git diff --check`: passed.
   - `cargo fmt --check`: passed.
+- 2026-05-30: JSR-030 repository and publishing policy complete.
+  - `cargo metadata --format-version 1 --no-deps | jq ...`: passed; confirms Jellyflow package
+    metadata still points to Fret and publish dry-runs should wait.
+  - `cargo search jellyflow --limit 10`: passed; no results returned on 2026-05-30.
+  - `cargo search jellyflow-core --limit 10`: passed; no results returned on 2026-05-30.
+  - `cargo search jellyflow-runtime --limit 10`: passed; no results returned on 2026-05-30.
+  - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+  - `python3 tools/check_workstream_catalog.py`: passed, validating 511 dedicated directories and
+    47 standalone markdown files.
+  - `git diff --check`: passed.
+  - `cargo publish --dry-run`: not run because this policy slice intentionally does not prepare
+    standalone package metadata.
