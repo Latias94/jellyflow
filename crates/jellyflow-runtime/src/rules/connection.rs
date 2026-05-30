@@ -7,7 +7,7 @@ use jellyflow_core::core::{
     Edge, EdgeId, EdgeKind, Graph, Port, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
+use jellyflow_core::ops::{EdgeEndpoints, GraphMutationError, GraphMutationPlanner, GraphOp};
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
 
 use super::{
@@ -27,6 +27,26 @@ fn edge_kind_for_port_kind(port_kind: PortKind) -> Option<EdgeKind> {
         PortKind::Data => Some(EdgeKind::Data),
         PortKind::Exec => Some(EdgeKind::Exec),
     }
+}
+
+fn reject_mutation_error(error: GraphMutationError) -> ConnectPlan {
+    ConnectPlan::reject(error.to_string())
+}
+
+fn remove_edge_op(graph: &Graph, edge_id: EdgeId) -> GraphOp {
+    GraphMutationPlanner::new(graph)
+        .remove_edge_op(edge_id)
+        .expect("edge id came from the current graph")
+}
+
+fn add_existing_ports_edge_op(
+    graph: &Graph,
+    edge_id: EdgeId,
+    edge: Edge,
+) -> Result<GraphOp, ConnectPlan> {
+    GraphMutationPlanner::new(graph)
+        .add_edge_op(edge_id, edge)
+        .map_err(reject_mutation_error)
 }
 
 struct ConnectionEndpoints<'a> {
@@ -114,10 +134,7 @@ fn disconnect_for_capacity(
                 continue;
             }
             if edge.kind == edge_kind && edge.from == from_id {
-                ops.push(GraphOp::RemoveEdge {
-                    id: *edge_id,
-                    edge: edge.clone(),
-                });
+                ops.push(remove_edge_op(graph, *edge_id));
             }
         }
     }
@@ -128,10 +145,7 @@ fn disconnect_for_capacity(
                 continue;
             }
             if edge.kind == edge_kind && edge.to == to_id {
-                ops.push(GraphOp::RemoveEdge {
-                    id: *edge_id,
-                    edge: edge.clone(),
-                });
+                ops.push(remove_edge_op(graph, *edge_id));
             }
         }
     }
@@ -222,9 +236,10 @@ pub fn plan_connect_with_mode_and_policy(
         None,
     );
 
-    ops.push(GraphOp::AddEdge {
-        id: EdgeId::new(),
-        edge: Edge {
+    let add_edge = match add_existing_ports_edge_op(
+        graph,
+        EdgeId::new(),
+        Edge {
             kind: endpoints.edge_kind,
             from: endpoints.from_id,
             to: endpoints.to_id,
@@ -232,7 +247,11 @@ pub fn plan_connect_with_mode_and_policy(
             deletable: None,
             reconnectable: None,
         },
-    });
+    ) {
+        Ok(op) => op,
+        Err(plan) => return plan,
+    };
+    ops.push(add_edge);
 
     ConnectPlan {
         decision: ConnectDecision::Accept,
@@ -438,29 +457,25 @@ pub fn plan_connect_by_inserting_node_with_policy(
         None,
     );
 
-    let mut node = inserted.node.clone();
-    node.ports = Vec::new();
-    ops.push(GraphOp::AddNode {
-        id: inserted.node_id,
-        node,
-    });
-
-    let port_order: Vec<PortId> = inserted.ports.iter().map(|(id, _)| *id).collect();
-    for (port_id, port) in inserted.ports {
-        ops.push(GraphOp::AddPort { id: port_id, port });
+    let input = inserted.input;
+    let output = inserted.output;
+    match GraphMutationPlanner::new(graph).add_node_with_ports_ops(
+        inserted.node_id,
+        inserted.node,
+        inserted.ports,
+    ) {
+        Ok(add_node_ops) => ops.extend(add_node_ops),
+        Err(error) => return reject_mutation_error(error),
     }
-    ops.push(GraphOp::SetNodePorts {
-        id: inserted.node_id,
-        from: Vec::new(),
-        to: port_order,
-    });
 
+    // These edges reference ports added earlier in this same transaction; the current graph-only
+    // mutation planner cannot validate transaction-local port ids yet.
     ops.push(GraphOp::AddEdge {
         id: first_edge_id,
         edge: Edge {
             kind: endpoints.edge_kind,
             from: endpoints.from_id,
-            to: inserted.input,
+            to: input,
             selectable: None,
             deletable: None,
             reconnectable: None,
@@ -470,7 +485,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
         id: second_edge_id,
         edge: Edge {
             kind: endpoints.edge_kind,
-            from: inserted.output,
+            from: output,
             to: endpoints.to_id,
             selectable: None,
             deletable: None,
@@ -592,36 +607,31 @@ pub fn plan_split_edge_by_inserting_node(
 
     let mut ops: Vec<GraphOp> = Vec::new();
 
-    let mut node = inserted.node.clone();
-    node.ports = Vec::new();
-    ops.push(GraphOp::AddNode {
-        id: inserted.node_id,
-        node,
-    });
-
-    let port_order: Vec<PortId> = inserted.ports.iter().map(|(id, _)| *id).collect();
-    for (port_id, port) in inserted.ports {
-        ops.push(GraphOp::AddPort { id: port_id, port });
+    let input = inserted.input;
+    let output = inserted.output;
+    match GraphMutationPlanner::new(graph).add_node_with_ports_ops(
+        inserted.node_id,
+        inserted.node,
+        inserted.ports,
+    ) {
+        Ok(add_node_ops) => ops.extend(add_node_ops),
+        Err(error) => return reject_mutation_error(error),
     }
-    ops.push(GraphOp::SetNodePorts {
-        id: inserted.node_id,
-        from: Vec::new(),
-        to: port_order,
-    });
 
     ops.push(GraphOp::SetEdgeEndpoints {
         id: edge_id,
         from: old,
         to: EdgeEndpoints {
             from: edge.from,
-            to: inserted.input,
+            to: input,
         },
     });
+    // This edge targets a port added earlier in this same transaction.
     ops.push(GraphOp::AddEdge {
         id: new_edge_id,
         edge: Edge {
             kind: edge.kind,
-            from: inserted.output,
+            from: output,
             to: edge.to,
             selectable: edge.selectable,
             deletable: edge.deletable,
