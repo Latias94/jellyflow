@@ -85,8 +85,26 @@
     - `cargo fmt --check`: passed.
     - `python3 tools/check_layering.py`: passed.
 
-- [ ] JF-030 Decide the geometry/spatial split after the runtime crate.
-  - Scope: audit canvas-space geometry, route math, spatial indexes, fit-view helpers, and
-    UI-owned measurement state before creating `jellyflow-geometry`.
-  - Validation: focused compile gates for the chosen geometry package plus `fret-node` UI
-    compatibility gates.
+- [x] JF-030 Decide the geometry/spatial split after the runtime crate.
+  - Scope:
+    - audit canvas-space geometry, route math, spatial indexes, fit-view helpers, and
+      UI-owned measurement state before creating `jellyflow-geometry`
+    - decide whether a new package is justified or whether the seam should stay in `fret-node`
+  - Decision:
+    - keep `CanvasGeometry`, `CanvasSpatialDerived`, route math, and hit-test helpers in
+      `fret-node`
+    - do not create `jellyflow-geometry` yet; the only reusable headless seam found here is
+      `jellyflow-runtime/src/runtime/fit_view.rs`
+  - Validation:
+    - `python3 tools/audit_crate.py --crate fret-node`
+    - `cargo check -p fret-node --all-features --tests`
+    - `cargo fmt --check`
+    - `python3 tools/check_layering.py`
+  - Exit note: the geometry/spatial surface is still adapter-bound to UI style, presenter, and
+    paint-only cache state, so a new package would be premature.
+  - Fresh evidence:
+    - `python3 tools/audit_crate.py --crate fret-node`: produced the geometry/spatial audit
+      snapshot used for the decision.
+    - `cargo check -p fret-node --all-features --tests`: passed.
+    - `cargo fmt --check`: passed.
+    - `python3 tools/check_layering.py`: passed.

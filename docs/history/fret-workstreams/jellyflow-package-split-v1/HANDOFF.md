@@ -10,13 +10,13 @@ transaction/history helpers. `jellyflow-runtime` now owns the headless `io`, `pr
 `schema`, and `runtime` modules. `fret-node` depends on both Jellyflow crates, preserves old module
 paths with compatibility re-exports, and keeps Fret UI/kit/profile recipes in the adapter crate.
 
+JF-030 is also complete. The audit concluded that canvas-space geometry, route math, spatial
+indexes, and hit-test helpers should stay in `fret-node` for now. `jellyflow-geometry` remains a
+future slot only, not a live package boundary.
+
 ## Active Task
 
-- Task ID: JF-030
-- Owner: current Codex session
-- Status: next
-- Claim: decide whether canvas-space geometry, route math, spatial indexes, and hit-test helpers
-  belong in `jellyflow-geometry` or should stay in the Fret adapter.
+- None. The current Jellyflow package-split lane is between slices.
 
 ## JF-001 Evidence
 
@@ -50,8 +50,8 @@ paths with compatibility re-exports, and keeps Fret UI/kit/profile recipes in th
 
 ## Next Steps
 
-1. Audit `ecosystem/fret-node/src/ui/canvas`, declarative paint-only route math, and spatial
-   indexes before moving geometry.
-2. Decide whether `runtime::fit_view` and `runtime::utils` stay in runtime or become the first
-   `jellyflow-geometry` inputs.
-3. Add focused compatibility gates before moving geometry or UI measurement state.
+1. Keep geometry and spatial helpers in `fret-node` until a real second consumer appears.
+2. If the seam reopens later, start by extracting only the smallest pure math subset, not the whole
+   adapter canvas stack.
+3. Add focused compatibility gates before any future move that crosses `NodeGraphStyle`,
+   `NodeGraphPresenter`, or `CanvasSpatialDerived`.

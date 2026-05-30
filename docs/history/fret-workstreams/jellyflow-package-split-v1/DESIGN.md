@@ -49,3 +49,8 @@ XyFlow-style change projection helpers in `fret-node` as adapter code.
 JF-020 creates `jellyflow-runtime`, moves `io`, `profile`, `rules`, `schema`, and `runtime` into
 it, and leaves `fret-node` wrapper modules so existing `fret_node::{io,profile,rules,schema,runtime}`
 paths keep compiling.
+
+JF-030 audited the geometry/spatial seam and decided not to extract `jellyflow-geometry` yet. The
+current canvas-space geometry, spatial indexes, route math, and hit-test helpers remain adapter
+code in `fret-node`; the reusable headless seam found in the audit is the fit-view math already
+living in `jellyflow-runtime`.

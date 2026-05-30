@@ -35,3 +35,7 @@ Status: complete for JF-020. Fresh evidence is recorded in `EVIDENCE_AND_GATES.m
 - Decide whether canvas-space geometry, route math, spatial indexes, and hit-test helpers belong in
   `jellyflow-geometry`.
 - Move geometry only after the runtime package gates stay green.
+
+Status: complete for JF-030. The audit concluded that canvas-space geometry, route math, spatial
+indexes, and hit-test helpers should remain in `fret-node` for now; `jellyflow-geometry` stays a
+future-only slot until a cleaner second consumer appears.

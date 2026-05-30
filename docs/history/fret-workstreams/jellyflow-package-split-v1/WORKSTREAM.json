@@ -29,7 +29,7 @@
     }
   ],
   "current_task": null,
-  "next_task": "JF-030",
+  "next_task": null,
   "gates": [
     "cargo check -p jellyflow-core",
     "cargo nextest run -p jellyflow-core",
@@ -89,6 +89,6 @@
   ],
   "continue_policy": {
     "default_action": "continue",
-    "notes": "Continue with narrow package-boundary slices. `jellyflow-core` owns model/ops, `jellyflow-runtime` owns headless io/profile/rules/schema/runtime, and `fret-node` remains the Fret adapter. Audit geometry/spatial seams next."
+    "notes": "Continue with narrow package-boundary slices. `jellyflow-core` owns model/ops, `jellyflow-runtime` owns headless io/profile/rules/schema/runtime, and `fret-node` remains the Fret adapter. Geometry/spatial currently stay in `fret-node`; revisit only if a second consumer or cleaner pure-geometry seam appears."
   }
 }

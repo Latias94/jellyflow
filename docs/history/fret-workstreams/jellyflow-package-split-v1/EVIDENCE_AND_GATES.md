@@ -50,6 +50,10 @@ python3 tools/check_layering.py
 - `git diff --check`: passed after the runtime split.
 - `jq empty docs/workstreams/jellyflow-package-split-v1/WORKSTREAM.json`: passed after the runtime
   split.
+- `python3 tools/audit_crate.py --crate fret-node`: produced the geometry/spatial audit snapshot
+  used for the JF-030 decision.
+- `docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md`:
+  recorded the decision to keep geometry/spatial in `fret-node` for now.
 
 ## Evidence Anchors
 
@@ -67,3 +71,4 @@ python3 tools/check_layering.py
 - `ecosystem/fret-node/src/interaction/mod.rs`
 - `ecosystem/fret-node/src/ops/mod.rs`
 - `ecosystem/fret-node/src/{io,profile,rules,schema,runtime}/mod.rs`
+- `docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md`
