@@ -7,7 +7,9 @@ use jellyflow_core::core::{
     Edge, EdgeId, EdgeKind, Graph, Port, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::{EdgeEndpoints, GraphMutationError, GraphMutationPlanner, GraphOp};
+use jellyflow_core::ops::{
+    EdgeEndpoints, GraphMutationBatchPlanner, GraphMutationError, GraphMutationPlanner, GraphOp,
+};
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
 
 use super::{
@@ -459,20 +461,14 @@ pub fn plan_connect_by_inserting_node_with_policy(
 
     let input = inserted.input;
     let output = inserted.output;
-    match GraphMutationPlanner::new(graph).add_node_with_ports_ops(
-        inserted.node_id,
-        inserted.node,
-        inserted.ports,
-    ) {
-        Ok(add_node_ops) => ops.extend(add_node_ops),
-        Err(error) => return reject_mutation_error(error),
-    }
 
-    // These edges reference ports added earlier in this same transaction; the current graph-only
-    // mutation planner cannot validate transaction-local port ids yet.
-    ops.push(GraphOp::AddEdge {
-        id: first_edge_id,
-        edge: Edge {
+    let mut batch = GraphMutationBatchPlanner::new(graph);
+    if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
+        return reject_mutation_error(error);
+    }
+    if let Err(error) = batch.add_edge(
+        first_edge_id,
+        Edge {
             kind: endpoints.edge_kind,
             from: endpoints.from_id,
             to: input,
@@ -480,10 +476,12 @@ pub fn plan_connect_by_inserting_node_with_policy(
             deletable: None,
             reconnectable: None,
         },
-    });
-    ops.push(GraphOp::AddEdge {
-        id: second_edge_id,
-        edge: Edge {
+    ) {
+        return reject_mutation_error(error);
+    }
+    if let Err(error) = batch.add_edge(
+        second_edge_id,
+        Edge {
             kind: endpoints.edge_kind,
             from: output,
             to: endpoints.to_id,
@@ -491,7 +489,10 @@ pub fn plan_connect_by_inserting_node_with_policy(
             deletable: None,
             reconnectable: None,
         },
-    });
+    ) {
+        return reject_mutation_error(error);
+    }
+    ops.extend(batch.into_ops());
 
     ConnectPlan {
         decision: ConnectDecision::Accept,
@@ -600,36 +601,27 @@ pub fn plan_split_edge_by_inserting_node(
         return ConnectPlan::reject("inserted ports must be in -> out");
     }
 
-    let old = EdgeEndpoints {
-        from: edge.from,
-        to: edge.to,
-    };
-
     let mut ops: Vec<GraphOp> = Vec::new();
 
     let input = inserted.input;
     let output = inserted.output;
-    match GraphMutationPlanner::new(graph).add_node_with_ports_ops(
-        inserted.node_id,
-        inserted.node,
-        inserted.ports,
-    ) {
-        Ok(add_node_ops) => ops.extend(add_node_ops),
-        Err(error) => return reject_mutation_error(error),
-    }
 
-    ops.push(GraphOp::SetEdgeEndpoints {
-        id: edge_id,
-        from: old,
-        to: EdgeEndpoints {
+    let mut batch = GraphMutationBatchPlanner::new(graph);
+    if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
+        return reject_mutation_error(error);
+    }
+    if let Err(error) = batch.set_edge_endpoints(
+        edge_id,
+        EdgeEndpoints {
             from: edge.from,
             to: input,
         },
-    });
-    // This edge targets a port added earlier in this same transaction.
-    ops.push(GraphOp::AddEdge {
-        id: new_edge_id,
-        edge: Edge {
+    ) {
+        return reject_mutation_error(error);
+    }
+    if let Err(error) = batch.add_edge(
+        new_edge_id,
+        Edge {
             kind: edge.kind,
             from: output,
             to: edge.to,
@@ -637,7 +629,10 @@ pub fn plan_split_edge_by_inserting_node(
             deletable: edge.deletable,
             reconnectable: edge.reconnectable,
         },
-    });
+    ) {
+        return reject_mutation_error(error);
+    }
+    ops.extend(batch.into_ops());
 
     ConnectPlan {
         decision: ConnectDecision::Accept,

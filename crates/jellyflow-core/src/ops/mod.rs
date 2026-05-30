@@ -23,7 +23,9 @@ pub use apply::ApplyError;
 pub use build::GraphOpBuilderExt;
 pub use fragment::{GraphFragment, IdRemapSeed, IdRemapper, PasteTuning};
 pub use history::{DEFAULT_HISTORY_LIMIT, GraphHistory};
-pub use mutation::{GraphMutationError, GraphMutationPlanner, PortInsert};
+pub use mutation::{
+    GraphMutationBatchPlanner, GraphMutationError, GraphMutationPlanner, PortInsert,
+};
 pub use normalize::normalize_transaction;
 pub use tx_sanity::{find_invalid_size_in_tx, find_non_finite_in_tx};
 
