@@ -60,6 +60,8 @@ cargo check --workspace
 cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
+python3 tools/check_no_fret_dependencies.py
+python3 tools/check_external_consumer_smoke.py
 ```
 
 ## License
