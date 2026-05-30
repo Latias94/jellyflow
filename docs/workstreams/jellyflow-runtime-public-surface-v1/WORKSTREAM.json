@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-runtime-public-surface-v1",
+  "title": "Jellyflow Runtime Public Surface v1",
+  "status": "closed",
+  "updated": "2026-05-30",
+  "scope_kind": "execution",
+  "problem": "Jellyflow runtime still exposes extraction-era compatibility layers and mixes canonical graph patches with XyFlow-shaped compatibility surfaces.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/TODO.md"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/HANDOFF.md"
+    },
+    {
+      "role": "closeout",
+      "path": "docs/workstreams/jellyflow-runtime-public-surface-v1/CLOSEOUT_AUDIT_2026-05-30.md"
+    }
+  ],
+  "gates": [
+    "cargo check -p jellyflow-runtime",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo nextest run --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "python3 tools/check_no_fret_dependencies.py",
+    "python3 tools/check_external_consumer_smoke.py"
+  ],
+  "evidence": [
+    {
+      "date": "2026-05-30",
+      "task": "JRP-010",
+      "summary": "Opened workstream and froze task ledger; no code gates run yet."
+    },
+    {
+      "date": "2026-05-30",
+      "task": "JRP-020",
+      "summary": "Removed runtime pass-through modules and updated imports to jellyflow_core. cargo check, runtime nextest, and external smoke passed."
+    },
+    {
+      "date": "2026-05-30",
+      "task": "JRP-030",
+      "summary": "Moved XyFlow-compatible changes, apply helpers, and callbacks under runtime::xyflow. cargo check and runtime-filtered nextest passed."
+    },
+    {
+      "date": "2026-05-30",
+      "task": "JRP-040",
+      "summary": "Split io/mod.rs into focused modules and removed Fret-era default path policy. cargo check, io-filtered nextest, external smoke, and Fret-path grep passed."
+    },
+    {
+      "date": "2026-05-30",
+      "task": "JRP-050",
+      "summary": "Split NodeGraphStore internals into private dispatch, events, subscriptions, and view modules while preserving the public facade. cargo check and runtime-filtered nextest passed."
+    },
+    {
+      "date": "2026-05-30",
+      "task": "JRP-060",
+      "summary": "Updated public docs, ran review/verification closeout, and passed fmt, workspace nextest, workspace clippy, dependency-boundary, and external-consumer smoke gates."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
+  ],
+  "continue_policy": {
+    "default_action": "start_follow_on",
+    "follow_on_candidates": [
+      "model-layer-policy-cleanup",
+      "geometry-spatial-extraction"
+    ],
+    "notes": "This public-surface lane is closed. Start a new workstream for model-layer policy migration, geometry/spatial extraction, or downstream migration docs if needed."
+  }
+}

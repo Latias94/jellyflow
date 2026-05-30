@@ -13,13 +13,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::core::{CanvasPoint, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId};
-use crate::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
-use crate::runtime::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
 use crate::runtime::events::{
     NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken, ViewChange,
 };
 use crate::runtime::store::NodeGraphStore;
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
+use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId};
+use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 pub use crate::runtime::events::{ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart};
 

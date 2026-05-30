@@ -2,7 +2,7 @@
 //!
 //! This module is intentionally headless-safe and does not depend on `fret-ui`.
 
-use crate::core::{CanvasPoint, CanvasRect};
+use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
 #[derive(Debug, Clone, Copy)]
 pub struct FitViewComputeOptions {
@@ -279,7 +279,7 @@ mod tests {
         FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
         compute_fit_view_target_for_canvas_rect,
     };
-    use crate::core::{CanvasPoint, CanvasRect, CanvasSize};
+    use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
     #[test]
     fn compute_fit_view_target_returns_valid_viewport() {

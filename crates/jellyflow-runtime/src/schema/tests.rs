@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::core::{Graph, GraphId, Node, NodeId, NodeKindKey};
 use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeRegistry, NodeSchema};
+use jellyflow_core::core::{Graph, GraphId, Node, NodeId, NodeKindKey};
 
 struct DummyMigrator;
 
@@ -44,7 +44,7 @@ fn canonicalize_kinds_rewrites_aliases_to_canonical() {
         Node {
             kind: NodeKindKey::new("demo.add.v0"),
             kind_version: 0,
-            pos: crate::core::CanvasPoint { x: 0.0, y: 0.0 },
+            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
             selectable: None,
             draggable: None,
             connectable: None,
@@ -93,7 +93,7 @@ fn migrate_nodes_emits_set_node_data_and_version_and_reports_upgraded() {
         Node {
             kind: NodeKindKey::new("demo.add"),
             kind_version: 0,
-            pos: crate::core::CanvasPoint { x: 0.0, y: 0.0 },
+            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
             selectable: None,
             draggable: None,
             connectable: None,
@@ -142,7 +142,7 @@ fn migrate_nodes_reports_missing_migrator_and_emits_no_tx() {
         Node {
             kind: NodeKindKey::new("demo.add"),
             kind_version: 0,
-            pos: crate::core::CanvasPoint { x: 0.0, y: 0.0 },
+            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
             selectable: None,
             draggable: None,
             connectable: None,

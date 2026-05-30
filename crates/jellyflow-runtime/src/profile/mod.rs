@@ -10,10 +10,10 @@
 
 mod pipeline;
 
-use crate::core::{EdgeKind, Graph, PortId};
-use crate::interaction::NodeGraphConnectionMode;
 use crate::rules::{ConnectPlan, Diagnostic};
-use crate::types::TypeDesc;
+use jellyflow_core::core::{EdgeKind, Graph, PortId};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::types::TypeDesc;
 pub use pipeline::{
     ApplyPipelineError, apply_connect_plan_with_profile, apply_transaction_with_profile,
 };
@@ -55,7 +55,7 @@ pub trait GraphProfile {
     /// Runs concretization for dynamic ports and returns additional ops to apply.
     ///
     /// The returned ops must be deterministic and undoable.
-    fn concretize(&mut self, _graph: &Graph) -> Vec<crate::ops::GraphOp> {
+    fn concretize(&mut self, _graph: &Graph) -> Vec<jellyflow_core::ops::GraphOp> {
         Vec::new()
     }
 }

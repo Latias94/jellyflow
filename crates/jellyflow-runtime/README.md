@@ -3,10 +3,11 @@
 `jellyflow-runtime` builds on `jellyflow-core` with the headless runtime layer:
 
 - editor and view-state payloads;
+- persistence file payloads without owning a project directory policy;
 - validation rules and diagnostics;
 - schema/profile pipeline hooks;
 - undo/redo store dispatch;
-- XyFlow-style node/edge change projections;
+- XyFlow-style node/edge change projections under `runtime::xyflow`;
 - fit-view math that uses Jellyflow canvas geometry.
 
 The crate stays UI-agnostic. Fret-specific conversions, widgets, rendering, and event binding remain

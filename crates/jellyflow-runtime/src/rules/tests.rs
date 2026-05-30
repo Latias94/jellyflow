@@ -1,14 +1,14 @@
-use crate::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
-};
-use crate::interaction::NodeGraphConnectionMode;
-use crate::ops::GraphTransaction;
 use crate::rules::{
     EdgeEndpoint, InsertNodeSpec, plan_connect, plan_connect_by_inserting_node, plan_connect_typed,
     plan_connect_with_mode, plan_reconnect_edge, plan_split_edge_by_inserting_node,
 };
-use crate::types::{DefaultTypeCompatibility, TypeDesc};
+use jellyflow_core::core::{
+    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity,
+    PortDirection, PortId, PortKey, PortKind,
+};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::GraphTransaction;
+use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 
 fn make_node(kind: &str) -> Node {
     Node {
@@ -176,7 +176,7 @@ fn plan_connect_loose_allows_out_to_out_and_preserves_order() {
     assert!(plan
         .ops
         .iter()
-        .any(|op| matches!(op, crate::ops::GraphOp::AddEdge { edge, .. } if edge.from == out_a && edge.to == out_b)));
+        .any(|op| matches!(op, jellyflow_core::ops::GraphOp::AddEdge { edge, .. } if edge.from == out_a && edge.to == out_b)));
 }
 
 #[test]

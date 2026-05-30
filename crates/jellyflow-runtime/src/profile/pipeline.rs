@@ -4,9 +4,9 @@
 //! producing `GraphTransaction`s, then passing them through this pipeline to get deterministic
 //! derived edits (dynamic ports, autofixes) and diagnostics.
 
-use crate::core::Graph;
-use crate::ops::{ApplyError, GraphOp, GraphTransaction};
 use crate::rules::{ConnectDecision, ConnectPlan, Diagnostic, DiagnosticSeverity};
+use jellyflow_core::core::Graph;
+use jellyflow_core::ops::{ApplyError, GraphOp, GraphTransaction};
 
 use super::GraphProfile;
 

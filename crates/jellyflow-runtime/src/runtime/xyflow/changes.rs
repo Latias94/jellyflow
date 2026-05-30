@@ -8,12 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::GroupId;
-use crate::core::{
+use jellyflow_core::core::GroupId;
+use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, Node, NodeExtent,
     NodeId, NodeKindKey, PortId,
 };
-use crate::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
+use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 /// Changes targeting nodes (graph-owned).
 #[derive(Debug, Clone, Serialize, Deserialize)]

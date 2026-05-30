@@ -5,13 +5,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::{
+use jellyflow_core::core::{
     Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection,
     PortId, PortKey, PortKind, SymbolId,
 };
-use crate::interaction::NodeGraphConnectionMode;
-use crate::ops::{EdgeEndpoints, GraphOp};
-use crate::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
+use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
 
 /// Diagnostic severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -158,7 +158,10 @@ pub struct InsertNodeTemplate {
 
 impl InsertNodeTemplate {
     /// Instantiates this template at a given position by allocating fresh IDs.
-    pub fn instantiate(&self, at: crate::core::CanvasPoint) -> Result<InsertNodeSpec, String> {
+    pub fn instantiate(
+        &self,
+        at: jellyflow_core::core::CanvasPoint,
+    ) -> Result<InsertNodeSpec, String> {
         let node_id = NodeId::new();
 
         let mut ports: Vec<(PortId, Port)> = Vec::new();

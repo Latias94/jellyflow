@@ -6,9 +6,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::core::{Graph, NodeId, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind};
-use crate::ops::{GraphOp, GraphTransaction};
-use crate::types::TypeDesc;
+use jellyflow_core::core::{
+    Graph, NodeId, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind,
+};
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::types::TypeDesc;
 
 /// Declares a port for a node kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]

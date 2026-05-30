@@ -1,19 +1,19 @@
-use crate::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
-    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
-};
 use crate::io::NodeGraphViewState;
-use crate::ops::{GraphOp, GraphTransaction};
-use crate::runtime::apply::{apply_edge_changes, apply_node_changes};
-use crate::runtime::callbacks::{
-    ConnectionChange, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
-    connection_changes_from_transaction, install_callbacks,
-};
-use crate::runtime::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
 use crate::runtime::events::NodeGraphStoreEvent;
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use crate::runtime::store::NodeGraphStore;
+use crate::runtime::xyflow::apply::{apply_edge_changes, apply_node_changes};
+use crate::runtime::xyflow::callbacks::{
+    ConnectionChange, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
+    connection_changes_from_transaction, install_callbacks,
+};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
+    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
+};
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 fn default_editor_config() -> crate::io::NodeGraphEditorConfig {
     crate::io::NodeGraphEditorConfig::default()
@@ -23,17 +23,17 @@ fn make_graph() -> (
     Graph,
     NodeId,
     NodeId,
-    crate::core::PortId,
-    crate::core::PortId,
+    jellyflow_core::core::PortId,
+    jellyflow_core::core::PortId,
     EdgeId,
 ) {
-    let mut g = Graph::new(crate::core::GraphId::from_u128(1));
+    let mut g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
 
     let a = NodeId::new();
     let b = NodeId::new();
 
-    let out_port = crate::core::PortId::new();
-    let in_port = crate::core::PortId::new();
+    let out_port = jellyflow_core::core::PortId::new();
+    let in_port = jellyflow_core::core::PortId::new();
 
     let node_a = Node {
         kind: NodeKindKey::new("demo.a"),
@@ -76,10 +76,10 @@ fn make_graph() -> (
         out_port,
         Port {
             node: a,
-            key: crate::core::PortKey::new("out"),
-            dir: crate::core::PortDirection::Out,
-            kind: crate::core::PortKind::Data,
-            capacity: crate::core::PortCapacity::Multi,
+            key: jellyflow_core::core::PortKey::new("out"),
+            dir: jellyflow_core::core::PortDirection::Out,
+            kind: jellyflow_core::core::PortKind::Data,
+            capacity: jellyflow_core::core::PortCapacity::Multi,
             connectable: None,
             connectable_start: None,
             connectable_end: None,
@@ -91,10 +91,10 @@ fn make_graph() -> (
         in_port,
         Port {
             node: b,
-            key: crate::core::PortKey::new("in"),
-            dir: crate::core::PortDirection::In,
-            kind: crate::core::PortKind::Data,
-            capacity: crate::core::PortCapacity::Single,
+            key: jellyflow_core::core::PortKey::new("in"),
+            dir: jellyflow_core::core::PortDirection::In,
+            kind: jellyflow_core::core::PortKind::Data,
+            capacity: jellyflow_core::core::PortCapacity::Single,
             connectable: None,
             connectable_start: None,
             connectable_end: None,
@@ -460,11 +460,11 @@ fn connection_changes_from_transaction_maps_edge_ops() {
             },
             GraphOp::SetEdgeEndpoints {
                 id: eid,
-                from: crate::ops::EdgeEndpoints {
+                from: jellyflow_core::ops::EdgeEndpoints {
                     from: out_port,
                     to: in_port,
                 },
-                to: crate::ops::EdgeEndpoints {
+                to: jellyflow_core::ops::EdgeEndpoints {
                     from: out_port,
                     to: in_port,
                 },
@@ -882,9 +882,9 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use crate::core::{GroupId, PortCapacity, PortDirection, PortKind};
-    use crate::ops::EdgeEndpoints;
-    use crate::runtime::callbacks::SelectionChange;
+    use crate::runtime::xyflow::callbacks::SelectionChange;
+    use jellyflow_core::core::{GroupId, PortCapacity, PortDirection, PortKind};
+    use jellyflow_core::ops::EdgeEndpoints;
 
     #[derive(Clone)]
     struct Recorder {
@@ -892,11 +892,11 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
     }
 
     impl NodeGraphCommitCallbacks for Recorder {
-        fn on_connect(&mut self, _conn: crate::runtime::callbacks::EdgeConnection) {
+        fn on_connect(&mut self, _conn: crate::runtime::xyflow::callbacks::EdgeConnection) {
             self.log.borrow_mut().push("connect");
         }
 
-        fn on_disconnect(&mut self, _conn: crate::runtime::callbacks::EdgeConnection) {
+        fn on_disconnect(&mut self, _conn: crate::runtime::xyflow::callbacks::EdgeConnection) {
             self.log.borrow_mut().push("disconnect");
         }
 
@@ -927,7 +927,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
 
     let (mut g0, a, _b, out_port, in_port, eid) = make_graph();
 
-    let in2 = crate::core::PortId::new();
+    let in2 = jellyflow_core::core::PortId::new();
     let c = NodeId::new();
     g0.nodes.insert(
         c,
@@ -953,7 +953,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
         in2,
         Port {
             node: c,
-            key: crate::core::PortKey::new("in2"),
+            key: jellyflow_core::core::PortKey::new("in2"),
             dir: PortDirection::In,
             kind: PortKind::Data,
             capacity: PortCapacity::Single,
@@ -1042,7 +1042,7 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use crate::ops::GraphOpBuilderExt;
+    use jellyflow_core::ops::GraphOpBuilderExt;
 
     #[derive(Clone)]
     struct Recorder {
@@ -1060,7 +1060,7 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
             self.edges_deleted.borrow_mut().extend_from_slice(edges);
         }
 
-        fn on_disconnect(&mut self, conn: crate::runtime::callbacks::EdgeConnection) {
+        fn on_disconnect(&mut self, conn: crate::runtime::xyflow::callbacks::EdgeConnection) {
             self.disconnected.borrow_mut().push(conn.edge);
         }
     }
@@ -1217,22 +1217,26 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
     use std::rc::Rc;
 
     use crate::rules::{ConnectPlan, Diagnostic};
-    use crate::types::TypeDesc;
+    use jellyflow_core::types::TypeDesc;
 
     #[derive(Default)]
     struct PassProfile;
 
     impl crate::profile::GraphProfile for PassProfile {
-        fn type_of_port(&mut self, _graph: &Graph, _port: crate::core::PortId) -> Option<TypeDesc> {
+        fn type_of_port(
+            &mut self,
+            _graph: &Graph,
+            _port: jellyflow_core::core::PortId,
+        ) -> Option<TypeDesc> {
             None
         }
 
         fn plan_connect(
             &mut self,
             _graph: &Graph,
-            _a: crate::core::PortId,
-            _b: crate::core::PortId,
-            _mode: crate::interaction::NodeGraphConnectionMode,
+            _a: jellyflow_core::core::PortId,
+            _b: jellyflow_core::core::PortId,
+            _mode: jellyflow_core::interaction::NodeGraphConnectionMode,
         ) -> ConnectPlan {
             ConnectPlan::reject("not used in this test")
         }
@@ -1338,21 +1342,25 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
 #[test]
 fn store_does_not_commit_rejected_profile_edits() {
     use crate::rules::{ConnectPlan, Diagnostic, DiagnosticSeverity, DiagnosticTarget};
-    use crate::types::TypeDesc;
+    use jellyflow_core::types::TypeDesc;
 
     struct RejectProfile;
 
     impl crate::profile::GraphProfile for RejectProfile {
-        fn type_of_port(&mut self, _graph: &Graph, _port: crate::core::PortId) -> Option<TypeDesc> {
+        fn type_of_port(
+            &mut self,
+            _graph: &Graph,
+            _port: jellyflow_core::core::PortId,
+        ) -> Option<TypeDesc> {
             None
         }
 
         fn plan_connect(
             &mut self,
             _graph: &Graph,
-            _a: crate::core::PortId,
-            _b: crate::core::PortId,
-            _mode: crate::interaction::NodeGraphConnectionMode,
+            _a: jellyflow_core::core::PortId,
+            _b: jellyflow_core::core::PortId,
+            _mode: jellyflow_core::interaction::NodeGraphConnectionMode,
         ) -> ConnectPlan {
             ConnectPlan::reject("not used in this test")
         }
@@ -1404,7 +1412,7 @@ fn store_does_not_commit_rejected_profile_edits() {
 
 #[test]
 fn store_rejects_non_finite_transactions() {
-    let g = Graph::new(crate::core::GraphId::from_u128(1));
+    let g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
     let node_id = NodeId::new();
 
     let tx = GraphTransaction {
@@ -1425,7 +1433,7 @@ fn store_rejects_non_finite_transactions() {
                 parent: None,
                 extent: None,
                 expand_parent: None,
-                size: Some(crate::core::CanvasSize {
+                size: Some(jellyflow_core::core::CanvasSize {
                     width: 10.0,
                     height: 10.0,
                 }),
@@ -1458,7 +1466,7 @@ fn store_rejects_non_finite_transactions() {
 
 #[test]
 fn store_rejects_invalid_size_transactions() {
-    let g = Graph::new(crate::core::GraphId::from_u128(1));
+    let g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
     let node_id = NodeId::new();
 
     let tx = GraphTransaction {
@@ -1476,7 +1484,7 @@ fn store_rejects_invalid_size_transactions() {
                 parent: None,
                 extent: None,
                 expand_parent: None,
-                size: Some(crate::core::CanvasSize {
+                size: Some(jellyflow_core::core::CanvasSize {
                     width: 0.0,
                     height: 10.0,
                 }),
@@ -1624,7 +1632,7 @@ fn store_subscription_receives_graph_and_view_events_and_can_unsubscribe() {
         }
     });
 
-    store.set_viewport(crate::core::CanvasPoint { x: 1.0, y: 2.0 }, 1.25);
+    store.set_viewport(jellyflow_core::core::CanvasPoint { x: 1.0, y: 2.0 }, 1.25);
     store.set_selection(vec![a], Vec::new(), Vec::new());
 
     let changes = NodeGraphChanges {
@@ -1644,7 +1652,7 @@ fn store_subscription_receives_graph_and_view_events_and_can_unsubscribe() {
     assert!(!store.unsubscribe(token));
 
     let before_len = events.borrow().len();
-    store.set_viewport(crate::core::CanvasPoint { x: 3.0, y: 4.0 }, 2.0);
+    store.set_viewport(jellyflow_core::core::CanvasPoint { x: 3.0, y: 4.0 }, 2.0);
     store.dispatch_changes(&changes).expect("dispatch");
     assert_eq!(events.borrow().len(), before_len);
 }
@@ -1747,7 +1755,7 @@ fn store_replace_view_state_emits_view_changed_event() {
     });
 
     let mut vs = NodeGraphViewState::default();
-    vs.pan = crate::core::CanvasPoint { x: 10.0, y: 20.0 };
+    vs.pan = jellyflow_core::core::CanvasPoint { x: 10.0, y: 20.0 };
     vs.zoom = 1.5;
     store.replace_view_state(vs);
 

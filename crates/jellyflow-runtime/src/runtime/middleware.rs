@@ -2,10 +2,10 @@
 //!
 //! This module is intentionally headless-safe (no `fret-ui` dependency).
 
-use crate::ops::GraphTransaction;
 use crate::profile::ApplyPipelineError;
-use crate::runtime::changes::{NodeGraphChanges, NodeGraphPatch};
 use crate::runtime::events::NodeGraphStoreSnapshot;
+use crate::runtime::xyflow::changes::{NodeGraphChanges, NodeGraphPatch};
+use jellyflow_core::ops::GraphTransaction;
 
 pub trait NodeGraphStoreMiddleware: 'static {
     fn before_dispatch(

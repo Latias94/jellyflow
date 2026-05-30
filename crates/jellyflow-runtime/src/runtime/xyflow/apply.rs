@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 
-use crate::core::{Graph, PortId};
-use crate::runtime::changes::{EdgeChange, NodeChange, NodeGraphChanges};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
+use jellyflow_core::core::{Graph, PortId};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyChangesReport {

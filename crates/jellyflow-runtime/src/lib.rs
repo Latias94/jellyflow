@@ -6,22 +6,6 @@
 
 #![deny(unsafe_code)]
 
-pub mod core {
-    pub use jellyflow_core::core::*;
-}
-
-pub mod interaction {
-    pub use jellyflow_core::interaction::*;
-}
-
-pub mod ops {
-    pub use jellyflow_core::ops::*;
-}
-
-pub mod types {
-    pub use jellyflow_core::types::*;
-}
-
 pub mod io;
 pub mod profile;
 pub mod rules;

@@ -8,8 +8,9 @@ The initial package split is intentionally small:
 
 - `jellyflow-core`: graph IDs, document model, type descriptors, interaction value types, and
   undoable graph transactions.
-- `jellyflow-runtime`: headless store, view-state payloads, rules, schema/profile pipeline, change
-  projections, and fit-view math.
+- `jellyflow-runtime`: headless `NodeGraphStore`, view-state/config payloads, rules,
+  schema/profile pipeline, explicit `runtime::xyflow` compatibility projections, persistence file
+  types without project-path policy, and fit-view math.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.

@@ -7,8 +7,8 @@
 //! these helpers are built on top of `runtime::lookups::NodeGraphLookups` which provides a stable,
 //! headless-safe adjacency surface.
 
-use crate::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId};
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeInclusion {
@@ -284,7 +284,7 @@ fn rect_contains(outer: (f32, f32, f32, f32), inner: (f32, f32, f32, f32)) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{
+    use jellyflow_core::core::{
         Edge, EdgeKind, Graph, GraphId, Node, NodeKindKey, Port, PortCapacity, PortDirection,
         PortId, PortKey, PortKind,
     };

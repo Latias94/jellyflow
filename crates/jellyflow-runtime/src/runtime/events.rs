@@ -2,13 +2,13 @@
 //!
 //! This is intentionally small and headless-safe.
 
-use crate::core::{CanvasPoint, EdgeId, PortId};
-use crate::interaction::NodeGraphConnectionMode;
 use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
 use crate::rules::EdgeEndpoint;
-use crate::runtime::changes::{NodeGraphChanges, NodeGraphPatch};
+use crate::runtime::xyflow::changes::{NodeGraphChanges, NodeGraphPatch};
+use jellyflow_core::core::{CanvasPoint, EdgeId, PortId};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 /// Subscription token returned by [`crate::runtime::store::NodeGraphStore::subscribe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,18 +23,18 @@ impl SubscriptionToken {
 /// Immutable snapshot of store state for selector subscriptions.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeGraphStoreSnapshot<'a> {
-    pub graph: &'a crate::core::Graph,
+    pub graph: &'a jellyflow_core::core::Graph,
     pub graph_revision: u64,
     pub view_state: &'a crate::io::NodeGraphViewState,
     pub interaction: &'a NodeGraphInteractionConfig,
     pub runtime_tuning: &'a NodeGraphRuntimeTuning,
-    pub history: &'a crate::ops::GraphHistory,
+    pub history: &'a jellyflow_core::ops::GraphHistory,
 }
 
 /// Atomic document replacement snapshot.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeGraphDocumentSnapshot<'a> {
-    pub graph: &'a crate::core::Graph,
+    pub graph: &'a jellyflow_core::core::Graph,
     pub graph_revision: u64,
     pub view_state: &'a NodeGraphViewState,
     pub editor_config: &'a NodeGraphEditorConfig,
@@ -55,9 +55,9 @@ pub enum ViewChange {
         zoom: f32,
     },
     Selection {
-        nodes: Vec<crate::core::NodeId>,
-        edges: Vec<crate::core::EdgeId>,
-        groups: Vec<crate::core::GroupId>,
+        nodes: Vec<jellyflow_core::core::NodeId>,
+        edges: Vec<jellyflow_core::core::EdgeId>,
+        groups: Vec<jellyflow_core::core::GroupId>,
     },
 }
 

@@ -13,11 +13,11 @@
 
 use std::collections::HashMap;
 
-use crate::core::{
+use jellyflow_core::core::{
     CanvasPoint, CanvasSize, EdgeId, EdgeKind, EdgeReconnectable, Graph, GroupId, NodeId,
     NodeKindKey, PortDirection, PortId,
 };
-use crate::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
+use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConnectionSide {
