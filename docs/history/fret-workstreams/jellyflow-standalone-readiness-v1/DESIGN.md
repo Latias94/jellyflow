@@ -20,6 +20,10 @@ This lane produces a decision-ready extraction packet for Jellyflow:
 4. Compatibility policy for the existing `fret-node` re-export facade.
 5. A repository strategy recommendation for a future standalone Jellyflow repository or mirror.
 
+Default repository preference recorded on 2026-05-30: use a new standalone repository, with the
+local target path `~/codes/rust/jellyflow`, and preserve Jellyflow-relevant history through a
+path-filtered Git rewrite rather than a snapshot copy.
+
 ## In Scope
 
 - Auditing direct and workspace dependencies of the Jellyflow crates.

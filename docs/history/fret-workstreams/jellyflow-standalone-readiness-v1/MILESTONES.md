@@ -10,8 +10,12 @@ Last updated: 2026-05-30
     `jellyflow-runtime` in-workspace.
   - Geometry extraction was explicitly deferred.
 
-- [ ] M1 - Extraction inventory complete.
+- [x] M1 - Extraction inventory complete.
   - JSR-010 records package metadata, dependency, documentation, release, and compatibility gaps.
+
+- [ ] M1.5 - Fret-core dependency resolved.
+  - JSR-015 removes or consciously replaces the remaining `fret-core` input/geometry types before
+    the external smoke is treated as standalone proof.
 
 - [ ] M2 - External headless smoke complete.
   - JSR-020 proves a non-Fret consumer can use `jellyflow-core` and `jellyflow-runtime` through

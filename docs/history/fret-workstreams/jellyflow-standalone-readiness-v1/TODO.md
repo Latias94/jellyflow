@@ -11,10 +11,12 @@ Status: Active
 - [ ] Keep Fret UI, overlays, portals, kit profiles, and renderer/platform behavior out of
       standalone Jellyflow readiness work.
 - [ ] Do not extract geometry until there is a cleaner reusable seam or a second consumer.
+- [ ] Treat `~/codes/rust/jellyflow` as the target local path for the future standalone repository,
+      but do not create it until the history extraction slice is explicit.
 
 ## Tasks
 
-- [ ] JSR-010 Build the standalone extraction inventory.
+- [x] JSR-010 Build the standalone extraction inventory.
   - Scope:
     - audit `jellyflow-core`, `jellyflow-runtime`, and `fret-node` package metadata
     - audit direct dependencies and workspace-only assumptions
@@ -27,12 +29,45 @@ Status: Active
     - `cargo check -p fret-node --all-features --tests`
     - `python3 tools/check_layering.py`
   - Exit note: produces the first extraction-readiness inventory without changing package layout.
+  - Fresh evidence:
+    - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md`
+  - Fresh gates:
+    - `python3 tools/audit_crate.py --crate jellyflow-core`: passed.
+    - `python3 tools/audit_crate.py --crate jellyflow-runtime`: passed.
+    - `python3 tools/audit_crate.py --crate fret-node`: passed.
+    - `cargo tree -p jellyflow-core --depth 2`: passed.
+    - `cargo tree -p jellyflow-runtime --depth 2`: passed.
+    - `cargo tree -p fret-node --no-default-features --features headless --depth 2`: passed.
+    - `cargo check -p jellyflow-core`: passed.
+    - `cargo check -p jellyflow-runtime`: passed.
+    - `cargo check -p fret-node --all-features --tests`: passed.
+    - `python3 tools/check_layering.py`: passed.
+    - `cargo fmt --check`: passed.
+    - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+    - `python3 tools/check_workstream_catalog.py`: passed.
+    - `git diff --check`: passed.
+
+- [ ] JSR-015 Remove or consciously replace the `fret-core` dependency before external smoke.
+  - Scope:
+    - replace `fret_core::Modifiers` in `jellyflow-core`
+    - replace public `fret_core::KeyCode` usage in `jellyflow-runtime`
+    - replace public `fret_core::Rect` usage in fit-view helpers
+    - keep Fret-specific conversions in `fret-node`
+    - update manifest source-policy tests so standalone Jellyflow does not depend on Fret crates
+  - Validation:
+    - `cargo check -p jellyflow-core`
+    - `cargo check -p jellyflow-runtime`
+    - `cargo check -p fret-node --no-default-features --features headless --tests`
+    - `cargo check -p fret-node --all-features --tests`
+    - `python3 tools/check_layering.py`
+  - Exit note: makes JSR-020 a true external-consumer smoke instead of a Fret-core path dependency
+    smoke.
 
 - [ ] JSR-020 Prove an external headless consumer smoke.
   - Scope:
     - create a temporary external path-dependency smoke outside the Fret workspace or record a
       repeatable local fixture
-    - use `jellyflow-core` and `jellyflow-runtime` without depending on `fret-node`
+    - use `jellyflow-core` and `jellyflow-runtime` without depending on `fret-node` or `fret-core`
     - cover the smallest useful flow: graph construction, transaction apply, runtime store/update,
       and fit-view or viewport payloads
   - Validation:
