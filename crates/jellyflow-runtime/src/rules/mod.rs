@@ -2,6 +2,11 @@
 //!
 //! This module is intentionally small in v1: the contracts are more important than the algorithms.
 
+use crate::io::NodeGraphInteractionState;
+use crate::runtime::policy::{
+    NodeGraphPortInteractionPolicy, resolve_edge_interaction_policy,
+    resolve_port_interaction_policy,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -282,15 +287,58 @@ fn disconnect_for_capacity(
     ops
 }
 
+fn port_policy_or_reject(
+    graph: &Graph,
+    port_id: PortId,
+    state: &NodeGraphInteractionState,
+) -> Result<NodeGraphPortInteractionPolicy, ConnectPlan> {
+    let Some(port) = graph.ports.get(&port_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {port_id:?}")));
+    };
+    let Some(node) = graph.nodes.get(&port.node) else {
+        return Err(ConnectPlan::reject(format!(
+            "missing port owner node: {:?}",
+            port.node
+        )));
+    };
+    Ok(resolve_port_interaction_policy(node, port, state))
+}
+
+fn reject_if_connection_policy_disallows(
+    graph: &Graph,
+    from_id: PortId,
+    to_id: PortId,
+    state: &NodeGraphInteractionState,
+) -> Option<ConnectPlan> {
+    let from_policy = match port_policy_or_reject(graph, from_id, state) {
+        Ok(policy) => policy,
+        Err(plan) => return Some(plan),
+    };
+    if !from_policy.connectable_start {
+        return Some(ConnectPlan::reject("source port is not connectable"));
+    }
+
+    let to_policy = match port_policy_or_reject(graph, to_id, state) {
+        Ok(policy) => policy,
+        Err(plan) => return Some(plan),
+    };
+    if !to_policy.connectable_end {
+        return Some(ConnectPlan::reject("target port is not connectable"));
+    }
+
+    None
+}
+
 /// Plans connecting two ports.
 ///
 /// This is a rules-driven decision point used by the UI interaction loop.
 /// The returned ops are intended to be applied as part of a single transaction.
-pub fn plan_connect_with_mode(
+pub fn plan_connect_with_mode_and_policy(
     graph: &Graph,
     a: PortId,
     b: PortId,
     mode: NodeGraphConnectionMode,
+    state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
     if a == b {
         return ConnectPlan::reject("cannot connect a port to itself");
@@ -323,6 +371,10 @@ pub fn plan_connect_with_mode(
     let Some(to) = graph.ports.get(&to_id) else {
         return ConnectPlan::reject(format!("missing port: {to_id:?}"));
     };
+
+    if let Some(reject) = reject_if_connection_policy_disallows(graph, from_id, to_id, state) {
+        return reject;
+    }
 
     if from.kind != to.kind {
         return ConnectPlan::reject(format!(
@@ -367,6 +419,16 @@ pub fn plan_connect_with_mode(
     }
 }
 
+/// Plans connecting two ports with default interaction policy.
+pub fn plan_connect_with_mode(
+    graph: &Graph,
+    a: PortId,
+    b: PortId,
+    mode: NodeGraphConnectionMode,
+) -> ConnectPlan {
+    plan_connect_with_mode_and_policy(graph, a, b, mode, &NodeGraphInteractionState::default())
+}
+
 /// Plans connecting two ports (strict mode).
 pub fn plan_connect(graph: &Graph, a: PortId, b: PortId) -> ConnectPlan {
     plan_connect_with_mode(graph, a, b, NodeGraphConnectionMode::Strict)
@@ -380,10 +442,30 @@ pub fn plan_connect_typed(
     graph: &Graph,
     a: PortId,
     b: PortId,
+    type_of: impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
+    compat: &mut dyn TypeCompatibility,
+) -> ConnectPlan {
+    plan_connect_typed_with_policy(
+        graph,
+        a,
+        b,
+        &NodeGraphInteractionState::default(),
+        type_of,
+        compat,
+    )
+}
+
+/// Plans connecting two ports with policy and optional type compatibility checks.
+pub fn plan_connect_typed_with_policy(
+    graph: &Graph,
+    a: PortId,
+    b: PortId,
+    state: &NodeGraphInteractionState,
     mut type_of: impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
     compat: &mut dyn TypeCompatibility,
 ) -> ConnectPlan {
-    let base = plan_connect(graph, a, b);
+    let base =
+        plan_connect_with_mode_and_policy(graph, a, b, NodeGraphConnectionMode::Strict, state);
     if base.decision != ConnectDecision::Accept {
         return base;
     }
@@ -437,13 +519,14 @@ pub fn plan_connect_typed(
 /// Plans connecting two ports by inserting a node between them.
 ///
 /// This is intended for "auto-fix" workflows like inserting a conversion node when types mismatch.
-pub fn plan_connect_by_inserting_node(
+pub fn plan_connect_by_inserting_node_with_policy(
     graph: &Graph,
     a: PortId,
     b: PortId,
     first_edge_id: EdgeId,
     second_edge_id: EdgeId,
     inserted: InsertNodeSpec,
+    state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
     let Some(port_a) = graph.ports.get(&a) else {
         return ConnectPlan::reject(format!("missing port: {a:?}"));
@@ -470,6 +553,10 @@ pub fn plan_connect_by_inserting_node(
     let Some(edge_kind) = edge_kind_for_port_kind(from.kind) else {
         return ConnectPlan::reject("port kinds are incompatible");
     };
+
+    if let Some(reject) = reject_if_connection_policy_disallows(graph, from_id, to_id, state) {
+        return reject;
+    }
 
     if graph.edges.contains_key(&first_edge_id) {
         return ConnectPlan::reject(format!("edge already exists: {first_edge_id:?}"));
@@ -577,6 +664,26 @@ pub fn plan_connect_by_inserting_node(
         diagnostics: Vec::new(),
         ops,
     }
+}
+
+/// Plans connecting two ports by inserting a node with default interaction policy.
+pub fn plan_connect_by_inserting_node(
+    graph: &Graph,
+    a: PortId,
+    b: PortId,
+    first_edge_id: EdgeId,
+    second_edge_id: EdgeId,
+    inserted: InsertNodeSpec,
+) -> ConnectPlan {
+    plan_connect_by_inserting_node_with_policy(
+        graph,
+        a,
+        b,
+        first_edge_id,
+        second_edge_id,
+        inserted,
+        &NodeGraphInteractionState::default(),
+    )
 }
 
 /// Plans splitting an existing edge by inserting a node (preserving the edge identity for the first segment).
@@ -713,16 +820,28 @@ pub fn plan_split_edge_by_inserting_node(
 /// Plans reconnecting one endpoint of an existing edge to a new port.
 ///
 /// This is used for "yank and reattach" workflows where edge identity should be preserved.
-pub fn plan_reconnect_edge_with_mode(
+pub fn plan_reconnect_edge_with_mode_and_policy(
     graph: &Graph,
     edge_id: EdgeId,
     endpoint: EdgeEndpoint,
     new_port: PortId,
     mode: NodeGraphConnectionMode,
+    state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
     let Some(edge) = graph.edges.get(&edge_id) else {
         return ConnectPlan::reject(format!("missing edge: {edge_id:?}"));
     };
+
+    let edge_policy = resolve_edge_interaction_policy(edge, state);
+    match endpoint {
+        EdgeEndpoint::From if !edge_policy.reconnect_source => {
+            return ConnectPlan::reject("edge source endpoint is not reconnectable");
+        }
+        EdgeEndpoint::To if !edge_policy.reconnect_target => {
+            return ConnectPlan::reject("edge target endpoint is not reconnectable");
+        }
+        _ => {}
+    }
 
     let old = EdgeEndpoints {
         from: edge.from,
@@ -753,6 +872,12 @@ pub fn plan_reconnect_edge_with_mode(
         && (from.dir != PortDirection::Out || to.dir != PortDirection::In)
     {
         return ConnectPlan::reject("ports must be out -> in for reconnection");
+    }
+
+    if let Some(reject) =
+        reject_if_connection_policy_disallows(graph, candidate_from, candidate_to, state)
+    {
+        return reject;
     }
 
     if from.kind != to.kind {
@@ -830,6 +955,24 @@ pub fn plan_reconnect_edge_with_mode(
         diagnostics: Vec::new(),
         ops,
     }
+}
+
+/// Plans reconnecting one endpoint of an existing edge with default interaction policy.
+pub fn plan_reconnect_edge_with_mode(
+    graph: &Graph,
+    edge_id: EdgeId,
+    endpoint: EdgeEndpoint,
+    new_port: PortId,
+    mode: NodeGraphConnectionMode,
+) -> ConnectPlan {
+    plan_reconnect_edge_with_mode_and_policy(
+        graph,
+        edge_id,
+        endpoint,
+        new_port,
+        mode,
+        &NodeGraphInteractionState::default(),
+    )
 }
 
 /// Plans reconnecting one endpoint of an existing edge (strict mode).

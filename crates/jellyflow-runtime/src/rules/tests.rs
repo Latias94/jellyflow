@@ -3,8 +3,8 @@ use crate::rules::{
     plan_connect_with_mode, plan_reconnect_edge, plan_split_edge_by_inserting_node,
 };
 use jellyflow_core::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, Edge, EdgeId, EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, Node,
+    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
@@ -242,6 +242,60 @@ fn plan_connect_single_input_disconnects_existing() {
 }
 
 #[test]
+fn plan_connect_respects_node_and_port_connectability() {
+    let mut graph = Graph::default();
+
+    let a = NodeId::new();
+    let b = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+
+    let out = PortId::new();
+    let inn = PortId::new();
+    insert_port(
+        &mut graph,
+        out,
+        make_port(
+            a,
+            "out",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    insert_port(
+        &mut graph,
+        inn,
+        make_port(
+            b,
+            "in",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Single,
+        ),
+    );
+
+    graph.nodes.get_mut(&a).unwrap().connectable = Some(false);
+    let plan = plan_connect(&graph, out, inn);
+    assert_eq!(plan.decision, crate::rules::ConnectDecision::Reject);
+    assert!(plan.ops.is_empty());
+
+    graph.nodes.get_mut(&a).unwrap().connectable = Some(true);
+    graph.ports.get_mut(&out).unwrap().connectable_start = Some(false);
+    let plan = plan_connect(&graph, out, inn);
+    assert_eq!(plan.decision, crate::rules::ConnectDecision::Reject);
+
+    graph.ports.get_mut(&out).unwrap().connectable_start = Some(true);
+    graph.ports.get_mut(&inn).unwrap().connectable_end = Some(false);
+    let plan = plan_connect(&graph, out, inn);
+    assert_eq!(plan.decision, crate::rules::ConnectDecision::Reject);
+
+    graph.ports.get_mut(&inn).unwrap().connectable_end = Some(true);
+    let plan = plan_connect(&graph, out, inn);
+    assert_eq!(plan.decision, crate::rules::ConnectDecision::Accept);
+}
+
+#[test]
 fn plan_connect_typed_rejects_incompatible_data_types() {
     let mut graph = Graph::default();
 
@@ -401,6 +455,100 @@ fn plan_reconnect_preserves_edge_id() {
     let edge = graph.edges.get(&edge_id).unwrap();
     assert_eq!(edge.from, out2);
     assert_eq!(edge.to, inn);
+}
+
+#[test]
+fn plan_reconnect_respects_edge_and_port_policy() {
+    let mut graph = Graph::default();
+
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+    graph.nodes.insert(c, make_node("core.c"));
+
+    let out1 = PortId::new();
+    let out2 = PortId::new();
+    let in1 = PortId::new();
+    let in2 = PortId::new();
+    insert_port(
+        &mut graph,
+        out1,
+        make_port(
+            a,
+            "out1",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    insert_port(
+        &mut graph,
+        out2,
+        make_port(
+            c,
+            "out2",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    insert_port(
+        &mut graph,
+        in1,
+        make_port(
+            b,
+            "in1",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    insert_port(
+        &mut graph,
+        in2,
+        make_port(
+            c,
+            "in2",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+
+    let edge_id = EdgeId::new();
+    graph.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out1,
+            to: in1,
+            selectable: None,
+            deletable: None,
+            reconnectable: Some(EdgeReconnectable::Endpoint(
+                EdgeReconnectableEndpoint::Target,
+            )),
+        },
+    );
+
+    let source_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out2);
+    assert_eq!(source_plan.decision, crate::rules::ConnectDecision::Reject);
+
+    graph.ports.get_mut(&in2).unwrap().connectable_end = Some(false);
+    let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
+    assert_eq!(target_plan.decision, crate::rules::ConnectDecision::Reject);
+
+    graph.ports.get_mut(&in2).unwrap().connectable_end = Some(true);
+    let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
+    assert_eq!(target_plan.decision, crate::rules::ConnectDecision::Accept);
+
+    graph.edges.get_mut(&edge_id).unwrap().reconnectable = Some(EdgeReconnectable::Bool(false));
+    let disabled_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
+    assert_eq!(
+        disabled_plan.decision,
+        crate::rules::ConnectDecision::Reject
+    );
 }
 
 #[test]

@@ -5,6 +5,10 @@
 //! is a reversible `GraphTransaction` (undo/redo friendly). This module bridges the two worlds:
 //! - Map `GraphTransaction` -> `(NodeChange, EdgeChange)` events (for callbacks / middleware).
 //! - Map `(NodeChange, EdgeChange)` -> reversible `GraphTransaction` (for store dispatch).
+//!
+//! These change names are compatibility vocabulary. Use [`crate::runtime::policy`] when an adapter
+//! needs effective interaction policy such as whether a node can be selected or an edge endpoint can
+//! be reconnected.
 
 use serde::{Deserialize, Serialize};
 

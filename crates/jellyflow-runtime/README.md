@@ -4,6 +4,7 @@
 
 - editor and view-state payloads;
 - persistence file payloads without owning a project directory policy;
+- effective interaction policy resolution under `runtime::policy`;
 - validation rules and diagnostics;
 - schema/profile pipeline hooks;
 - undo/redo store dispatch;

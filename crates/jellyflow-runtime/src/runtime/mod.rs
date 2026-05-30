@@ -8,6 +8,7 @@ pub mod events;
 pub mod fit_view;
 pub mod lookups;
 pub mod middleware;
+pub mod policy;
 pub mod store;
 pub mod utils;
 pub mod xyflow;
