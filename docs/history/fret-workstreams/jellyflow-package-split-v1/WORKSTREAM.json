@@ -97,7 +97,7 @@
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
   ],
   "continue_policy": {
-    "default_action": "split_follow_on",
-    "notes": "This lane is closed after proving the in-workspace `jellyflow-core` and `jellyflow-runtime` boundaries and deciding not to extract geometry yet. Start separate follow-ons for standalone repository extraction, compatibility re-export cleanup, publishing, or future geometry work."
+    "default_action": "start_follow_on",
+    "notes": "This lane is closed after proving the in-workspace `jellyflow-core` and `jellyflow-runtime` boundaries and deciding not to extract geometry yet. Standalone repository and publishing readiness continues in `docs/workstreams/jellyflow-standalone-readiness-v1/`; start separate follow-ons for compatibility re-export cleanup or future geometry work."
   }
 }

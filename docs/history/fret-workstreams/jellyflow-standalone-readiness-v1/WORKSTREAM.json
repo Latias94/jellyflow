@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-standalone-readiness-v1",
+  "title": "Jellyflow Standalone Readiness v1",
+  "status": "active",
+  "updated": "2026-05-30",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-package-split-v1",
+  "problem": "`jellyflow-core` and `jellyflow-runtime` exist inside the Fret monorepo, but standalone repository or publishing work needs explicit dependency, metadata, documentation, compatibility, and external-consumer evidence first.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/TODO.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/MILESTONES.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "next",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/HANDOFF.md"
+    }
+  ],
+  "repro": {
+    "summary": "Check the current headless Jellyflow crates before any standalone extraction work.",
+    "commands": [
+      "cargo check -p jellyflow-core",
+      "cargo check -p jellyflow-runtime"
+    ]
+  },
+  "gates": [
+    {
+      "name": "core-check",
+      "command": "cargo check -p jellyflow-core"
+    },
+    {
+      "name": "runtime-check",
+      "command": "cargo check -p jellyflow-runtime"
+    },
+    {
+      "name": "adapter-check",
+      "command": "cargo check -p fret-node --all-features --tests"
+    },
+    {
+      "name": "layering",
+      "command": "python3 tools/check_layering.py"
+    },
+    {
+      "name": "state-json",
+      "command": "jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json"
+    },
+    {
+      "name": "workstream-catalog",
+      "command": "python3 tools/check_workstream_catalog.py"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check"
+    }
+  ],
+  "evidence": [
+    "docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md",
+    "docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md",
+    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
+    "ecosystem/jellyflow-core/Cargo.toml",
+    "ecosystem/jellyflow-core/src/lib.rs",
+    "ecosystem/jellyflow-runtime/Cargo.toml",
+    "ecosystem/jellyflow-runtime/src/lib.rs",
+    "ecosystem/fret-node/Cargo.toml"
+  ],
+  "adr_refs": [
+    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
+  ],
+  "continue_policy": {
+    "default_action": "continue",
+    "notes": "Continue with readiness slices only. Actual standalone repository extraction, publishing, compatibility re-export cleanup, and future geometry extraction require separate execution decisions and gates."
+  }
+}

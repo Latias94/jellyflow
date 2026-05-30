@@ -45,11 +45,12 @@ workspace gate before a release or upstream PR.
 
 Start a new workstream for any of these:
 
-1. Standalone repository extraction for Jellyflow.
+1. Standalone repository and publishing readiness in
+   `docs/workstreams/jellyflow-standalone-readiness-v1/`.
 2. Public deprecation/removal of `fret-node` compatibility re-exports.
 3. A future `jellyflow-geometry` crate, only after a real second consumer or cleaner pure-geometry
    seam appears.
-4. Publishing or release automation for the Jellyflow crates.
+4. Publishing or release automation for the Jellyflow crates after the readiness packet is complete.
 
 ## Residual Risks
 
