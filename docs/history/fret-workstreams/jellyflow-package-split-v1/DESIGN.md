@@ -1,6 +1,6 @@
 # Jellyflow Package Split v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
 
 ## Problem

@@ -1,6 +1,6 @@
 # Jellyflow Package Split v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
 
 ## Current State
@@ -16,7 +16,7 @@ future slot only, not a live package boundary.
 
 ## Active Task
 
-- None. The current Jellyflow package-split lane is between slices.
+- None. The Jellyflow package-split lane is closed.
 
 ## JF-001 Evidence
 
@@ -50,8 +50,10 @@ future slot only, not a live package boundary.
 
 ## Next Steps
 
-1. Keep geometry and spatial helpers in `fret-node` until a real second consumer appears.
-2. If the seam reopens later, start by extracting only the smallest pure math subset, not the whole
+1. Start a new follow-on for standalone repository extraction, publishing, or compatibility
+   re-export deprecation/removal.
+2. Keep geometry and spatial helpers in `fret-node` until a real second consumer appears.
+3. If the seam reopens later, start by extracting only the smallest pure math subset, not the whole
    adapter canvas stack.
-3. Add focused compatibility gates before any future move that crosses `NodeGraphStyle`,
+4. Add focused compatibility gates before any future move that crosses `NodeGraphStyle`,
    `NodeGraphPresenter`, or `CanvasSpatialDerived`.

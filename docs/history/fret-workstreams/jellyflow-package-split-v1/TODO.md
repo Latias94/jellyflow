@@ -1,5 +1,7 @@
 # Jellyflow Package Split v1 - TODO
 
+Status: Closed
+
 ## Guardrails
 
 - [x] Do not split Jellyflow into a separate repository before crate boundaries are proven inside
@@ -8,8 +10,10 @@
 - [x] Keep `jellyflow-core` free of `fret-ui`, `fret-runtime`, `fret-canvas`, `wgpu`, and `winit`.
 - [x] Move runtime only after the previous package boundary has focused compile and compatibility
       gates.
-- [ ] Do not move geometry or UI modules until the runtime package boundary has focused
+- [x] Do not move geometry or UI modules until the runtime package boundary has focused
       compile and compatibility gates.
+- [x] Do not extract `jellyflow-geometry` from the current adapter-bound surface without a second
+      consumer or a cleaner pure-geometry seam.
 
 ## Tasks
 

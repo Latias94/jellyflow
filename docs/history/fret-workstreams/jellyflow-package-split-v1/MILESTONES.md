@@ -1,5 +1,7 @@
 # Jellyflow Package Split v1 - Milestones
 
+Status: Closed
+
 ## M0 - Boundary Decision
 
 - ADR 0331 records Jellyflow as the reusable engine brand and `fret-node` as the Fret adapter.
@@ -39,3 +41,8 @@ Status: complete for JF-020. Fresh evidence is recorded in `EVIDENCE_AND_GATES.m
 Status: complete for JF-030. The audit concluded that canvas-space geometry, route math, spatial
 indexes, and hit-test helpers should remain in `fret-node` for now; `jellyflow-geometry` stays a
 future-only slot until a cleaner second consumer appears.
+
+## Closeout
+
+Status: closed on 2026-05-30. Future standalone extraction, compatibility re-export removal,
+publishing, or geometry package work should start as separate follow-ons.

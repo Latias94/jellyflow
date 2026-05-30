@@ -1,6 +1,6 @@
 # Jellyflow Package Split v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
 
 ## Current Gates
@@ -16,6 +16,9 @@ cargo check -p fret-node --all-features --tests
 cargo nextest run -p fret-node --no-default-features
 cargo fmt --check
 python3 tools/check_layering.py
+jq empty docs/workstreams/jellyflow-package-split-v1/WORKSTREAM.json
+python3 tools/check_workstream_catalog.py
+git diff --check
 ```
 
 ## Fresh Evidence
@@ -54,6 +57,15 @@ python3 tools/check_layering.py
   used for the JF-030 decision.
 - `docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md`:
   recorded the decision to keep geometry/spatial in `fret-node` for now.
+- `docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md`: records the
+  closeout state and follow-on split policy.
+- `cargo check -p jellyflow-runtime`: passed during closeout.
+- `cargo check -p fret-node --all-features --tests`: passed during closeout.
+- `python3 tools/check_layering.py`: passed during closeout.
+- `jq empty docs/workstreams/jellyflow-package-split-v1/WORKSTREAM.json`: passed during closeout.
+- `python3 tools/check_workstream_catalog.py`: passed during closeout, validating 510 dedicated
+  directories and 47 standalone markdown files.
+- `git diff --check`: passed during closeout.
 
 ## Evidence Anchors
 
@@ -72,3 +84,4 @@ python3 tools/check_layering.py
 - `ecosystem/fret-node/src/ops/mod.rs`
 - `ecosystem/fret-node/src/{io,profile,rules,schema,runtime}/mod.rs`
 - `docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md`
+- `docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md`

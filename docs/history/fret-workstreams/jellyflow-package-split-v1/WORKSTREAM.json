@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-package-split-v1",
   "title": "Jellyflow Package Split v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-05-30",
   "scope_kind": "execution",
   "problem": "`fret-node` mixes reusable headless node/flow graph engine contracts with Fret UI adapter responsibilities; Jellyflow needs a stable in-workspace package boundary before any future standalone repository extraction.",
@@ -26,6 +26,10 @@
     {
       "role": "handoff",
       "path": "docs/workstreams/jellyflow-package-split-v1/HANDOFF.md"
+    },
+    {
+      "role": "closeout",
+      "path": "docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md"
     }
   ],
   "current_task": null,
@@ -40,7 +44,10 @@
     "cargo check -p fret-node --all-features --tests",
     "cargo nextest run -p fret-node --no-default-features",
     "cargo fmt --check",
-    "python3 tools/check_layering.py"
+    "python3 tools/check_layering.py",
+    "jq empty docs/workstreams/jellyflow-package-split-v1/WORKSTREAM.json",
+    "python3 tools/check_workstream_catalog.py",
+    "git diff --check"
   ],
   "evidence": [
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
@@ -82,13 +89,15 @@
     "ecosystem/fret-node/src/profile/mod.rs",
     "ecosystem/fret-node/src/rules/mod.rs",
     "ecosystem/fret-node/src/schema/mod.rs",
-    "ecosystem/fret-node/src/runtime/mod.rs"
+    "ecosystem/fret-node/src/runtime/mod.rs",
+    "docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md",
+    "docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md"
   ],
   "adr_refs": [
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
   ],
   "continue_policy": {
-    "default_action": "continue",
-    "notes": "Continue with narrow package-boundary slices. `jellyflow-core` owns model/ops, `jellyflow-runtime` owns headless io/profile/rules/schema/runtime, and `fret-node` remains the Fret adapter. Geometry/spatial currently stay in `fret-node`; revisit only if a second consumer or cleaner pure-geometry seam appears."
+    "default_action": "split_follow_on",
+    "notes": "This lane is closed after proving the in-workspace `jellyflow-core` and `jellyflow-runtime` boundaries and deciding not to extract geometry yet. Start separate follow-ons for standalone repository extraction, compatibility re-export cleanup, publishing, or future geometry work."
   }
 }
