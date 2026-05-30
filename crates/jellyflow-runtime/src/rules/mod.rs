@@ -252,6 +252,74 @@ fn edge_kind_for_port_kind(port_kind: PortKind) -> Option<EdgeKind> {
     }
 }
 
+struct ConnectionEndpoints<'a> {
+    from_id: PortId,
+    to_id: PortId,
+    from: &'a Port,
+    to: &'a Port,
+    edge_kind: EdgeKind,
+}
+
+fn resolve_connection_endpoints(
+    graph: &Graph,
+    a: PortId,
+    b: PortId,
+    mode: NodeGraphConnectionMode,
+) -> Result<ConnectionEndpoints<'_>, ConnectPlan> {
+    if a == b {
+        return Err(ConnectPlan::reject("cannot connect a port to itself"));
+    }
+
+    let Some(port_a) = graph.ports.get(&a) else {
+        return Err(ConnectPlan::reject(format!("missing port: {a:?}")));
+    };
+    let Some(port_b) = graph.ports.get(&b) else {
+        return Err(ConnectPlan::reject(format!("missing port: {b:?}")));
+    };
+
+    let (from_id, to_id) = match mode {
+        NodeGraphConnectionMode::Strict => match (port_a.dir, port_b.dir) {
+            (PortDirection::Out, PortDirection::In) => (a, b),
+            (PortDirection::In, PortDirection::Out) => (b, a),
+            _ => {
+                return Err(ConnectPlan::reject(
+                    "ports must have opposite directions (in/out)",
+                ));
+            }
+        },
+        NodeGraphConnectionMode::Loose => match port_a.dir {
+            PortDirection::Out => (a, b),
+            PortDirection::In => (b, a),
+        },
+    };
+
+    let Some(from) = graph.ports.get(&from_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {from_id:?}")));
+    };
+    let Some(to) = graph.ports.get(&to_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {to_id:?}")));
+    };
+
+    if from.kind != to.kind {
+        return Err(ConnectPlan::reject(format!(
+            "port kinds are incompatible: from={:?} to={:?}",
+            from.kind, to.kind
+        )));
+    }
+
+    let Some(edge_kind) = edge_kind_for_port_kind(from.kind) else {
+        return Err(ConnectPlan::reject("port kinds are incompatible"));
+    };
+
+    Ok(ConnectionEndpoints {
+        from_id,
+        to_id,
+        from,
+        to,
+        edge_kind,
+    })
+}
+
 fn disconnect_for_capacity(
     graph: &Graph,
     edge_kind: EdgeKind,
@@ -259,11 +327,15 @@ fn disconnect_for_capacity(
     from_capacity: PortCapacity,
     to_id: PortId,
     to_capacity: PortCapacity,
+    skip_edge: Option<EdgeId>,
 ) -> Vec<GraphOp> {
     let mut ops: Vec<GraphOp> = Vec::new();
 
     if from_capacity == PortCapacity::Single {
         for (edge_id, edge) in graph.edges.iter() {
+            if Some(*edge_id) == skip_edge {
+                continue;
+            }
             if edge.kind == edge_kind && edge.from == from_id {
                 ops.push(GraphOp::RemoveEdge {
                     id: *edge_id,
@@ -275,6 +347,9 @@ fn disconnect_for_capacity(
 
     if to_capacity == PortCapacity::Single {
         for (edge_id, edge) in graph.edges.iter() {
+            if Some(*edge_id) == skip_edge {
+                continue;
+            }
             if edge.kind == edge_kind && edge.to == to_id {
                 ops.push(GraphOp::RemoveEdge {
                     id: *edge_id,
@@ -340,72 +415,42 @@ pub fn plan_connect_with_mode_and_policy(
     mode: NodeGraphConnectionMode,
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
-    if a == b {
-        return ConnectPlan::reject("cannot connect a port to itself");
-    }
-
-    let Some(port_a) = graph.ports.get(&a) else {
-        return ConnectPlan::reject(format!("missing port: {a:?}"));
-    };
-    let Some(port_b) = graph.ports.get(&b) else {
-        return ConnectPlan::reject(format!("missing port: {b:?}"));
+    let endpoints = match resolve_connection_endpoints(graph, a, b, mode) {
+        Ok(endpoints) => endpoints,
+        Err(plan) => return plan,
     };
 
-    let (from_id, to_id) = match mode {
-        NodeGraphConnectionMode::Strict => match (port_a.dir, port_b.dir) {
-            (PortDirection::Out, PortDirection::In) => (a, b),
-            (PortDirection::In, PortDirection::Out) => (b, a),
-            _ => {
-                return ConnectPlan::reject("ports must have opposite directions (in/out)");
-            }
-        },
-        NodeGraphConnectionMode::Loose => match port_a.dir {
-            PortDirection::Out => (a, b),
-            PortDirection::In => (b, a),
-        },
-    };
-
-    let Some(from) = graph.ports.get(&from_id) else {
-        return ConnectPlan::reject(format!("missing port: {from_id:?}"));
-    };
-    let Some(to) = graph.ports.get(&to_id) else {
-        return ConnectPlan::reject(format!("missing port: {to_id:?}"));
-    };
-
-    if let Some(reject) = reject_if_connection_policy_disallows(graph, from_id, to_id, state) {
+    if let Some(reject) =
+        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
+    {
         return reject;
     }
 
-    if from.kind != to.kind {
-        return ConnectPlan::reject(format!(
-            "port kinds are incompatible: from={:?} to={:?}",
-            from.kind, to.kind
-        ));
-    }
-
-    let edge_kind = match (from.kind, to.kind) {
-        (PortKind::Data, PortKind::Data) => EdgeKind::Data,
-        (PortKind::Exec, PortKind::Exec) => EdgeKind::Exec,
-        _ => {
-            return ConnectPlan::reject("port kinds are incompatible");
-        }
-    };
-
     for edge in graph.edges.values() {
-        if edge.kind == edge_kind && edge.from == from_id && edge.to == to_id {
+        if edge.kind == endpoints.edge_kind
+            && edge.from == endpoints.from_id
+            && edge.to == endpoints.to_id
+        {
             return ConnectPlan::accept();
         }
     }
 
-    let mut ops: Vec<GraphOp> =
-        disconnect_for_capacity(graph, edge_kind, from_id, from.capacity, to_id, to.capacity);
+    let mut ops: Vec<GraphOp> = disconnect_for_capacity(
+        graph,
+        endpoints.edge_kind,
+        endpoints.from_id,
+        endpoints.from.capacity,
+        endpoints.to_id,
+        endpoints.to.capacity,
+        None,
+    );
 
     ops.push(GraphOp::AddEdge {
         id: EdgeId::new(),
         edge: Edge {
-            kind: edge_kind,
-            from: from_id,
-            to: to_id,
+            kind: endpoints.edge_kind,
+            from: endpoints.from_id,
+            to: endpoints.to_id,
             selectable: None,
             deletable: None,
             reconnectable: None,
@@ -461,42 +506,48 @@ pub fn plan_connect_typed_with_policy(
     a: PortId,
     b: PortId,
     state: &NodeGraphInteractionState,
+    type_of: impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
+    compat: &mut dyn TypeCompatibility,
+) -> ConnectPlan {
+    plan_connect_typed_with_mode_and_policy(
+        graph,
+        a,
+        b,
+        NodeGraphConnectionMode::Strict,
+        state,
+        type_of,
+        compat,
+    )
+}
+
+/// Plans connecting two ports with mode, policy, and optional type compatibility checks.
+pub fn plan_connect_typed_with_mode_and_policy(
+    graph: &Graph,
+    a: PortId,
+    b: PortId,
+    mode: NodeGraphConnectionMode,
+    state: &NodeGraphInteractionState,
     mut type_of: impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
     compat: &mut dyn TypeCompatibility,
 ) -> ConnectPlan {
-    let base =
-        plan_connect_with_mode_and_policy(graph, a, b, NodeGraphConnectionMode::Strict, state);
+    let base = plan_connect_with_mode_and_policy(graph, a, b, mode, state);
     if base.decision != ConnectDecision::Accept {
         return base;
     }
 
-    let Some(port_a) = graph.ports.get(&a) else {
-        return ConnectPlan::reject(format!("missing port: {a:?}"));
-    };
-    let Some(port_b) = graph.ports.get(&b) else {
-        return ConnectPlan::reject(format!("missing port: {b:?}"));
+    let endpoints = match resolve_connection_endpoints(graph, a, b, mode) {
+        Ok(endpoints) => endpoints,
+        Err(plan) => return plan,
     };
 
-    let (from_id, to_id, from, to) = match (port_a.dir, port_b.dir) {
-        (PortDirection::Out, PortDirection::In) => (a, b, port_a, port_b),
-        (PortDirection::In, PortDirection::Out) => (b, a, port_b, port_a),
-        _ => return ConnectPlan::reject("ports must have opposite directions (in/out)"),
-    };
-
-    let edge_kind = match (from.kind, to.kind) {
-        (PortKind::Data, PortKind::Data) => EdgeKind::Data,
-        (PortKind::Exec, PortKind::Exec) => EdgeKind::Exec,
-        _ => return ConnectPlan::reject("port kinds are incompatible"),
-    };
-
-    if edge_kind != EdgeKind::Data {
+    if endpoints.edge_kind != EdgeKind::Data {
         return base;
     }
 
-    let Some(from_ty) = type_of(graph, from_id) else {
+    let Some(from_ty) = type_of(graph, endpoints.from_id) else {
         return base;
     };
-    let Some(to_ty) = type_of(graph, to_id) else {
+    let Some(to_ty) = type_of(graph, endpoints.to_id) else {
         return base;
     };
 
@@ -507,7 +558,9 @@ pub fn plan_connect_typed_with_policy(
             diagnostics: vec![Diagnostic {
                 key: "connect.type_mismatch".to_string(),
                 severity: DiagnosticSeverity::Error,
-                target: DiagnosticTarget::Port { id: to_id },
+                target: DiagnosticTarget::Port {
+                    id: endpoints.to_id,
+                },
                 message: format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
                 fixes: Vec::new(),
             }],
@@ -528,35 +581,17 @@ pub fn plan_connect_by_inserting_node_with_policy(
     inserted: InsertNodeSpec,
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
-    let Some(port_a) = graph.ports.get(&a) else {
-        return ConnectPlan::reject(format!("missing port: {a:?}"));
-    };
-    let Some(port_b) = graph.ports.get(&b) else {
-        return ConnectPlan::reject(format!("missing port: {b:?}"));
-    };
-
-    let (from_id, to_id, from, to) = match (port_a.dir, port_b.dir) {
-        (PortDirection::Out, PortDirection::In) => (a, b, port_a, port_b),
-        (PortDirection::In, PortDirection::Out) => (b, a, port_b, port_a),
-        _ => {
-            return ConnectPlan::reject("ports must have opposite directions (in/out)");
-        }
+    let endpoints = match resolve_connection_endpoints(graph, a, b, NodeGraphConnectionMode::Strict)
+    {
+        Ok(endpoints) => endpoints,
+        Err(plan) => return plan,
     };
 
-    if from.kind != to.kind {
-        return ConnectPlan::reject(format!(
-            "port kinds are incompatible: from={:?} to={:?}",
-            from.kind, to.kind
-        ));
-    }
-
-    let Some(edge_kind) = edge_kind_for_port_kind(from.kind) else {
-        return ConnectPlan::reject("port kinds are incompatible");
-    };
-
-    if let Some(reject) = reject_if_connection_policy_disallows(graph, from_id, to_id, state) {
+    if let Some(reject) =
+        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
+    {
         return reject;
-    }
+    };
 
     if graph.edges.contains_key(&first_edge_id) {
         return ConnectPlan::reject(format!("edge already exists: {first_edge_id:?}"));
@@ -565,7 +600,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return ConnectPlan::reject(format!("edge already exists: {second_edge_id:?}"));
     }
 
-    if inserted.node_id == from.node || inserted.node_id == to.node {
+    if inserted.node_id == endpoints.from.node || inserted.node_id == endpoints.to.node {
         return ConnectPlan::reject("inserted node id must be distinct from endpoints");
     }
     if graph.nodes.contains_key(&inserted.node_id) {
@@ -581,7 +616,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return ConnectPlan::reject("inserted input/output ports must be distinct");
     }
 
-    let expected_port_kind = port_kind_for_edge_kind(edge_kind);
+    let expected_port_kind = port_kind_for_edge_kind(endpoints.edge_kind);
     let mut inserted_in: Option<&Port> = None;
     let mut inserted_out: Option<&Port> = None;
     for (port_id, port) in &inserted.ports {
@@ -616,8 +651,15 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return ConnectPlan::reject("inserted ports must be in -> out");
     }
 
-    let mut ops: Vec<GraphOp> =
-        disconnect_for_capacity(graph, edge_kind, from_id, from.capacity, to_id, to.capacity);
+    let mut ops: Vec<GraphOp> = disconnect_for_capacity(
+        graph,
+        endpoints.edge_kind,
+        endpoints.from_id,
+        endpoints.from.capacity,
+        endpoints.to_id,
+        endpoints.to.capacity,
+        None,
+    );
 
     let mut node = inserted.node.clone();
     node.ports = Vec::new();
@@ -639,8 +681,8 @@ pub fn plan_connect_by_inserting_node_with_policy(
     ops.push(GraphOp::AddEdge {
         id: first_edge_id,
         edge: Edge {
-            kind: edge_kind,
-            from: from_id,
+            kind: endpoints.edge_kind,
+            from: endpoints.from_id,
             to: inserted.input,
             selectable: None,
             deletable: None,
@@ -650,9 +692,9 @@ pub fn plan_connect_by_inserting_node_with_policy(
     ops.push(GraphOp::AddEdge {
         id: second_edge_id,
         edge: Edge {
-            kind: edge_kind,
+            kind: endpoints.edge_kind,
             from: inserted.output,
-            to: to_id,
+            to: endpoints.to_id,
             selectable: None,
             deletable: None,
             reconnectable: None,
@@ -887,12 +929,8 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         ));
     }
 
-    let expected_edge_kind = match (from.kind, to.kind) {
-        (PortKind::Data, PortKind::Data) => EdgeKind::Data,
-        (PortKind::Exec, PortKind::Exec) => EdgeKind::Exec,
-        _ => {
-            return ConnectPlan::reject("port kinds are incompatible");
-        }
+    let Some(expected_edge_kind) = edge_kind_for_port_kind(from.kind) else {
+        return ConnectPlan::reject("port kinds are incompatible");
     };
 
     if edge.kind != expected_edge_kind {
@@ -911,35 +949,15 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         }
     }
 
-    let mut ops: Vec<GraphOp> = Vec::new();
-
-    if from.capacity == PortCapacity::Single {
-        for (other_id, other) in &graph.edges {
-            if *other_id == edge_id {
-                continue;
-            }
-            if other.kind == edge.kind && other.from == candidate_from {
-                ops.push(GraphOp::RemoveEdge {
-                    id: *other_id,
-                    edge: other.clone(),
-                });
-            }
-        }
-    }
-
-    if to.capacity == PortCapacity::Single {
-        for (other_id, other) in &graph.edges {
-            if *other_id == edge_id {
-                continue;
-            }
-            if other.kind == edge.kind && other.to == candidate_to {
-                ops.push(GraphOp::RemoveEdge {
-                    id: *other_id,
-                    edge: other.clone(),
-                });
-            }
-        }
-    }
+    let mut ops: Vec<GraphOp> = disconnect_for_capacity(
+        graph,
+        edge.kind,
+        candidate_from,
+        from.capacity,
+        candidate_to,
+        to.capacity,
+        Some(edge_id),
+    );
 
     ops.push(GraphOp::SetEdgeEndpoints {
         id: edge_id,

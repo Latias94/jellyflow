@@ -10,10 +10,11 @@
 
 mod pipeline;
 
+use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, Diagnostic};
 use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::types::TypeDesc;
+use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 pub use pipeline::{
     ApplyPipelineError, apply_connect_plan_with_profile, apply_transaction_with_profile,
 };
@@ -35,7 +36,18 @@ pub trait GraphProfile {
         a: PortId,
         b: PortId,
         mode: NodeGraphConnectionMode,
-    ) -> ConnectPlan;
+    ) -> ConnectPlan {
+        let mut compat = DefaultTypeCompatibility::default();
+        crate::rules::plan_connect_typed_with_mode_and_policy(
+            graph,
+            a,
+            b,
+            mode,
+            &NodeGraphInteractionState::default(),
+            |graph, port| self.type_of_port(graph, port),
+            &mut compat,
+        )
+    }
 
     /// Validates a graph and returns diagnostics.
     fn validate_graph(&mut self, graph: &Graph) -> Vec<Diagnostic>;
