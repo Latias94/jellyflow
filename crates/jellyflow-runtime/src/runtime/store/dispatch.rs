@@ -2,8 +2,8 @@
 
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::{NodeGraphStoreEvent, NodeGraphStoreSnapshot};
-use crate::runtime::xyflow::changes::{NodeGraphChanges, NodeGraphPatch};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::GraphTransaction;
 
@@ -64,12 +64,12 @@ impl NodeGraphStore {
     }
 
     fn commit_dispatch(&mut self, graph: Graph, committed: GraphTransaction) -> DispatchOutcome {
-        let node_edge_changes = self.install_committed_graph_state(graph, &committed);
+        self.install_committed_graph_state(graph, &committed);
         self.history.record(committed.clone());
         let patch = NodeGraphPatch::new(committed);
-        self.run_after_dispatch_middleware(&patch, &node_edge_changes);
-        self.publish_graph_commit(&patch, &node_edge_changes);
-        DispatchOutcome::new(patch, node_edge_changes)
+        self.run_after_dispatch_middleware(&patch);
+        self.publish_graph_commit(&patch);
+        DispatchOutcome::new(patch)
     }
 
     fn run_before_dispatch_middleware(
@@ -90,11 +90,7 @@ impl NodeGraphStore {
         Ok(())
     }
 
-    fn run_after_dispatch_middleware(
-        &mut self,
-        patch: &NodeGraphPatch,
-        node_edge_changes: &NodeGraphChanges,
-    ) {
+    fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
         if let Some(middleware) = self.middleware.as_deref_mut() {
             let snapshot = NodeGraphStoreSnapshot {
                 graph: &self.graph,
@@ -104,7 +100,7 @@ impl NodeGraphStore {
                 runtime_tuning: &self.runtime_tuning,
                 history: &self.history,
             };
-            middleware.after_dispatch(snapshot, patch, node_edge_changes);
+            middleware.after_dispatch(snapshot, patch);
         }
     }
 
@@ -116,15 +112,6 @@ impl NodeGraphStore {
             return Err(Self::reject_tx(key, message));
         }
         Ok(())
-    }
-
-    /// Applies XyFlow-style changes by converting them to a reversible transaction.
-    pub fn dispatch_changes(
-        &mut self,
-        changes: &NodeGraphChanges,
-    ) -> Result<DispatchOutcome, DispatchError> {
-        let tx = changes.to_transaction(&self.graph)?;
-        self.dispatch_transaction(&tx)
     }
 
     /// Undoes the last committed transaction.
@@ -146,10 +133,10 @@ impl NodeGraphStore {
         }
 
         let committed = committed.unwrap_or_default();
-        let node_edge_changes = self.install_committed_graph_state(scratch, &committed);
+        self.install_committed_graph_state(scratch, &committed);
         let patch = NodeGraphPatch::new(committed);
-        self.publish_graph_commit(&patch, &node_edge_changes);
-        Ok(Some(DispatchOutcome::new(patch, node_edge_changes)))
+        self.publish_graph_commit(&patch);
+        Ok(Some(DispatchOutcome::new(patch)))
     }
 
     /// Undoes the last committed transaction using an externally-owned profile pipeline.
@@ -173,10 +160,10 @@ impl NodeGraphStore {
         }
 
         let committed = committed.unwrap_or_default();
-        let node_edge_changes = self.install_committed_graph_state(scratch, &committed);
+        self.install_committed_graph_state(scratch, &committed);
         let patch = NodeGraphPatch::new(committed);
-        self.publish_graph_commit(&patch, &node_edge_changes);
-        Ok(Some(DispatchOutcome::new(patch, node_edge_changes)))
+        self.publish_graph_commit(&patch);
+        Ok(Some(DispatchOutcome::new(patch)))
     }
 
     /// Redoes the last undone transaction.
@@ -198,10 +185,10 @@ impl NodeGraphStore {
         }
 
         let committed = committed.unwrap_or_default();
-        let node_edge_changes = self.install_committed_graph_state(scratch, &committed);
+        self.install_committed_graph_state(scratch, &committed);
         let patch = NodeGraphPatch::new(committed);
-        self.publish_graph_commit(&patch, &node_edge_changes);
-        Ok(Some(DispatchOutcome::new(patch, node_edge_changes)))
+        self.publish_graph_commit(&patch);
+        Ok(Some(DispatchOutcome::new(patch)))
     }
 
     /// Redoes the last undone transaction using an externally-owned profile pipeline.
@@ -225,10 +212,10 @@ impl NodeGraphStore {
         }
 
         let committed = committed.unwrap_or_default();
-        let node_edge_changes = self.install_committed_graph_state(scratch, &committed);
+        self.install_committed_graph_state(scratch, &committed);
         let patch = NodeGraphPatch::new(committed);
-        self.publish_graph_commit(&patch, &node_edge_changes);
-        Ok(Some(DispatchOutcome::new(patch, node_edge_changes)))
+        self.publish_graph_commit(&patch);
+        Ok(Some(DispatchOutcome::new(patch)))
     }
 
     fn apply_to_graph(
@@ -247,26 +234,14 @@ impl NodeGraphStore {
         }
     }
 
-    fn install_committed_graph_state(
-        &mut self,
-        graph: Graph,
-        committed: &GraphTransaction,
-    ) -> NodeGraphChanges {
+    fn install_committed_graph_state(&mut self, graph: Graph, committed: &GraphTransaction) {
         self.graph = graph;
         self.bump_graph_revision();
         self.lookups.apply_transaction(&self.graph, committed);
-        NodeGraphChanges::from_transaction(committed)
     }
 
-    fn publish_graph_commit(
-        &mut self,
-        patch: &NodeGraphPatch,
-        node_edge_changes: &NodeGraphChanges,
-    ) {
-        self.emit(NodeGraphStoreEvent::GraphCommitted {
-            patch,
-            node_edge_changes,
-        });
+    fn publish_graph_commit(&mut self, patch: &NodeGraphPatch) {
+        self.emit(NodeGraphStoreEvent::GraphCommitted { patch });
         self.notify_selectors();
     }
 

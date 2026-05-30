@@ -3,8 +3,8 @@
 //! This module is intentionally headless-safe (no `fret-ui` dependency).
 
 use crate::profile::ApplyPipelineError;
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::NodeGraphStoreSnapshot;
-use crate::runtime::xyflow::changes::{NodeGraphChanges, NodeGraphPatch};
 use jellyflow_core::ops::GraphTransaction;
 
 pub trait NodeGraphStoreMiddleware: 'static {
@@ -16,13 +16,7 @@ pub trait NodeGraphStoreMiddleware: 'static {
         Ok(())
     }
 
-    fn after_dispatch(
-        &mut self,
-        _snapshot: NodeGraphStoreSnapshot<'_>,
-        _patch: &NodeGraphPatch,
-        _node_edge_changes: &NodeGraphChanges,
-    ) {
-    }
+    fn after_dispatch(&mut self, _snapshot: NodeGraphStoreSnapshot<'_>, _patch: &NodeGraphPatch) {}
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -57,15 +51,8 @@ where
         Ok(())
     }
 
-    fn after_dispatch(
-        &mut self,
-        snapshot: NodeGraphStoreSnapshot<'_>,
-        patch: &NodeGraphPatch,
-        node_edge_changes: &NodeGraphChanges,
-    ) {
-        self.first
-            .after_dispatch(snapshot, patch, node_edge_changes);
-        self.second
-            .after_dispatch(snapshot, patch, node_edge_changes);
+    fn after_dispatch(&mut self, snapshot: NodeGraphStoreSnapshot<'_>, patch: &NodeGraphPatch) {
+        self.first.after_dispatch(snapshot, patch);
+        self.second.after_dispatch(snapshot, patch);
     }
 }

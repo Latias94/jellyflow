@@ -1,4 +1,5 @@
 use crate::io::NodeGraphViewState;
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::NodeGraphStoreEvent;
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
@@ -8,7 +9,7 @@ use crate::runtime::xyflow::callbacks::{
     ConnectionChange, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
     connection_changes_from_transaction, install_callbacks,
 };
-use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
     Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
@@ -805,8 +806,9 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
         outcome.patch.ops().first(),
         Some(GraphOp::SetPortData { id, .. }) if *id == out_port
     ));
-    assert!(outcome.node_edge_changes.nodes.is_empty());
-    assert!(outcome.node_edge_changes.edges.is_empty());
+    let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
+    assert!(node_edge_changes.nodes.is_empty());
+    assert!(node_edge_changes.edges.is_empty());
     assert!(*saw_port_patch.borrow());
     assert_eq!(&*node_edge_counts.borrow(), &[(0, 0)]);
 }
@@ -1141,10 +1143,8 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
         Rc::new(RefCell::new(None));
     let observed2 = observed.clone();
     store.subscribe(move |ev| {
-        if let NodeGraphStoreEvent::GraphCommitted {
-            node_edge_changes, ..
-        } = ev
-        {
+        if let NodeGraphStoreEvent::GraphCommitted { patch } = ev {
+            let node_edge_changes = NodeGraphChanges::from_patch(patch);
             let hidden = node_edge_changes
                 .nodes
                 .iter()
@@ -1185,26 +1185,20 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
         Some(EdgeReconnectable::Bool(false))
     );
     assert!(store.can_undo());
+    let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
     assert!(
-        outcome
-            .node_edge_changes
+        node_edge_changes
             .nodes
             .iter()
             .any(|change| matches!(change, NodeChange::Hidden { id, hidden: true } if *id == a))
     );
-    assert!(
-        outcome
-            .node_edge_changes
-            .edges
-            .iter()
-            .any(|change| matches!(
-                change,
-                EdgeChange::Reconnectable {
-                    id,
-                    reconnectable: Some(EdgeReconnectable::Bool(false))
-                } if *id == eid
-            ))
-    );
+    assert!(node_edge_changes.edges.iter().any(|change| matches!(
+        change,
+        EdgeChange::Reconnectable {
+            id,
+            reconnectable: Some(EdgeReconnectable::Bool(false))
+        } if *id == eid
+    )));
     assert_eq!(
         *observed.borrow(),
         Some((true, Some(EdgeReconnectable::Bool(false))))
@@ -1274,11 +1268,11 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
             &mut self,
             snapshot: crate::runtime::events::NodeGraphStoreSnapshot<'_>,
             patch: &NodeGraphPatch,
-            node_edge_changes: &NodeGraphChanges,
         ) {
             self.trace.borrow_mut().push("after");
             assert!(snapshot.history.can_undo());
             assert_eq!(patch.ops().len(), 2);
+            let node_edge_changes = NodeGraphChanges::from_patch(patch);
             assert_eq!(node_edge_changes.nodes.len(), 2);
         }
     }
@@ -1301,10 +1295,8 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
     let observed: Rc<RefCell<Option<(usize, bool)>>> = Rc::new(RefCell::new(None));
     let observed2 = observed.clone();
     store.subscribe(move |ev| {
-        if let NodeGraphStoreEvent::GraphCommitted {
-            node_edge_changes, ..
-        } = ev
-        {
+        if let NodeGraphStoreEvent::GraphCommitted { patch } = ev {
+            let node_edge_changes = NodeGraphChanges::from_patch(patch);
             *observed2.borrow_mut() = Some((
                 node_edge_changes.nodes.len(),
                 node_edge_changes

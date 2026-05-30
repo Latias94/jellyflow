@@ -6,7 +6,7 @@ use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
 use crate::rules::EdgeEndpoint;
-use crate::runtime::xyflow::changes::{NodeGraphChanges, NodeGraphPatch};
+use crate::runtime::commit::NodeGraphPatch;
 use jellyflow_core::core::{CanvasPoint, EdgeId, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
@@ -124,7 +124,6 @@ pub enum NodeGraphStoreEvent<'a> {
     },
     GraphCommitted {
         patch: &'a NodeGraphPatch,
-        node_edge_changes: &'a NodeGraphChanges,
     },
     ViewChanged {
         before: &'a NodeGraphViewState,

@@ -1,8 +1,8 @@
 //! XyFlow-compatible projections and callback adapters.
 //!
-//! Jellyflow's canonical runtime payload is a reversible graph transaction wrapped in a
-//! full-fidelity graph patch. This module contains the compatibility surface for integrations that
-//! want XyFlow/ReactFlow-style node/edge changes and callback naming.
+//! Jellyflow's canonical runtime payload lives in [`crate::runtime::commit`]. This module contains
+//! the compatibility surface for integrations that want XyFlow/ReactFlow-style node/edge changes
+//! and callback naming.
 //!
 //! Effective interaction policy resolution lives in [`crate::runtime::policy`]. Policy-shaped
 //! fields exposed here keep XyFlow naming only for compatibility with node/edge change consumers.
@@ -10,6 +10,7 @@
 pub mod apply;
 pub mod callbacks;
 pub mod changes;
+pub mod store;
 
 pub use apply::{ApplyChangesReport, apply_edge_changes, apply_graph_changes, apply_node_changes};
 pub use callbacks::{
@@ -22,3 +23,4 @@ pub use callbacks::{
 pub use changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch,
 };
+pub use store::DispatchChangesError;

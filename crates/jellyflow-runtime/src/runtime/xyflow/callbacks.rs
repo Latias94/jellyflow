@@ -13,11 +13,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::{
     NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken, ViewChange,
 };
 use crate::runtime::store::NodeGraphStore;
-use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId};
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
@@ -260,13 +261,11 @@ pub fn install_callbacks(
     let event_callbacks = callbacks.clone();
     let token = store.subscribe(move |ev| match ev {
         NodeGraphStoreEvent::DocumentReplaced { .. } => {}
-        NodeGraphStoreEvent::GraphCommitted {
-            patch,
-            node_edge_changes,
-        } => {
+        NodeGraphStoreEvent::GraphCommitted { patch } => {
+            let node_edge_changes = NodeGraphChanges::from_patch(patch);
             let mut callbacks = event_callbacks.borrow_mut();
             callbacks.on_graph_commit(patch);
-            callbacks.on_node_edge_changes(node_edge_changes);
+            callbacks.on_node_edge_changes(&node_edge_changes);
             if !node_edge_changes.nodes.is_empty() {
                 callbacks.on_nodes_change(&node_edge_changes.nodes);
             }

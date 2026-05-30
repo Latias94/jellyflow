@@ -3,12 +3,14 @@
 //! In XyFlow/ReactFlow, internal interactions produce "changes" that user code can apply to its
 //! node/edge arrays via helpers like `applyNodeChanges`. In Jellyflow, the authoritative model
 //! is a reversible `GraphTransaction` (undo/redo friendly). This module bridges the two worlds:
-//! - Map `GraphTransaction` -> `(NodeChange, EdgeChange)` events (for callbacks / middleware).
+//! - Map `GraphTransaction` -> `(NodeChange, EdgeChange)` events (for callbacks).
 //! - Map `(NodeChange, EdgeChange)` -> reversible `GraphTransaction` (for store dispatch).
 //!
 //! These change names are compatibility vocabulary. Use [`crate::runtime::policy`] when an adapter
 //! needs effective interaction policy such as whether a node can be selected or an edge endpoint can
 //! be reconnected.
+
+pub use crate::runtime::commit::NodeGraphPatch;
 
 use serde::{Deserialize, Serialize};
 
@@ -128,54 +130,11 @@ pub enum EdgeChange {
     },
 }
 
-/// Full-fidelity committed graph patch.
-///
-/// This is the primary commit payload for controlled integrations. It preserves every
-/// `GraphOp`, including ports, groups, sticky notes, imports, symbols, and other resources that do
-/// not fit into XyFlow's node/edge change arrays.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NodeGraphPatch {
-    /// Reversible transaction committed by the store.
-    pub transaction: GraphTransaction,
-}
-
-impl NodeGraphPatch {
-    pub fn new(transaction: GraphTransaction) -> Self {
-        Self { transaction }
-    }
-
-    pub fn transaction(&self) -> &GraphTransaction {
-        &self.transaction
-    }
-
-    pub fn into_transaction(self) -> GraphTransaction {
-        self.transaction
-    }
-
-    pub fn ops(&self) -> &[GraphOp] {
-        &self.transaction.ops
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.transaction.is_empty()
-    }
-
-    pub fn node_edge_changes(&self) -> NodeGraphChanges {
-        NodeGraphChanges::from_transaction(&self.transaction)
-    }
-}
-
-impl From<GraphTransaction> for NodeGraphPatch {
-    fn from(transaction: GraphTransaction) -> Self {
-        Self::new(transaction)
-    }
-}
-
 /// XyFlow-style node/edge projection of a graph patch.
 ///
 /// This adapter is intentionally lossy: it only contains node and edge changes. Use
-/// [`NodeGraphPatch`] when a consumer must observe full graph resources such as ports, groups,
-/// sticky notes, imports, or symbols.
+/// [`crate::runtime::commit::NodeGraphPatch`] when a consumer must observe full graph resources
+/// such as ports, groups, sticky notes, imports, or symbols.
 #[derive(Debug, Default, Clone)]
 pub struct NodeGraphChanges {
     pub nodes: Vec<NodeChange>,
@@ -191,10 +150,14 @@ pub enum ChangesToTransactionError {
 }
 
 impl NodeGraphChanges {
+    pub fn from_patch(patch: &NodeGraphPatch) -> Self {
+        Self::from_transaction(patch.transaction())
+    }
+
     /// Derives change events from a reversible graph transaction.
     ///
-    /// This is intended for store callbacks (e.g. "on_nodes_change") and middleware.
-    pub(crate) fn from_transaction(tx: &GraphTransaction) -> Self {
+    /// This is intended for XyFlow-style callbacks such as "on_nodes_change".
+    pub fn from_transaction(tx: &GraphTransaction) -> Self {
         let mut out = Self::default();
         for op in &tx.ops {
             match op {

@@ -16,6 +16,7 @@ pub use profile::{
     ApplyPipelineError, GraphProfile, apply_connect_plan_with_profile,
     apply_transaction_with_profile,
 };
+pub use runtime::commit::NodeGraphPatch;
 pub use runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 
 #[cfg(test)]

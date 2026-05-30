@@ -4,7 +4,7 @@
 //! - authoritative `Graph` (serializable document),
 //! - per-user/per-project `NodeGraphViewState` (pan/zoom/selection),
 //! - undo/redo history (`GraphHistory`),
-//! - dispatch methods that return full-fidelity `NodeGraphPatch` plus XyFlow-style projections.
+//! - dispatch methods that return a full-fidelity `NodeGraphPatch`.
 
 mod dispatch;
 mod events;
@@ -15,12 +15,10 @@ use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
 use crate::profile::{ApplyPipelineError, GraphProfile};
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::{NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken};
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
-use crate::runtime::xyflow::changes::{
-    ChangesToTransactionError, NodeGraphChanges, NodeGraphPatch,
-};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphHistory, GraphTransaction};
 
@@ -29,30 +27,19 @@ use jellyflow_core::ops::{GraphHistory, GraphTransaction};
 pub struct DispatchOutcome {
     /// Full-fidelity patch that was committed.
     pub patch: NodeGraphPatch,
-    /// XyFlow-style node/edge projection derived from `patch`.
-    pub node_edge_changes: NodeGraphChanges,
 }
 
 impl DispatchOutcome {
-    pub fn new(patch: NodeGraphPatch, node_edge_changes: NodeGraphChanges) -> Self {
-        Self {
-            patch,
-            node_edge_changes,
-        }
+    pub fn new(patch: NodeGraphPatch) -> Self {
+        Self { patch }
     }
 
     pub fn from_committed(committed: GraphTransaction) -> Self {
-        let patch = NodeGraphPatch::new(committed);
-        let node_edge_changes = patch.node_edge_changes();
-        Self::new(patch, node_edge_changes)
+        Self::new(NodeGraphPatch::new(committed))
     }
 
     pub fn committed(&self) -> &GraphTransaction {
         self.patch.transaction()
-    }
-
-    pub fn changes(&self) -> &NodeGraphChanges {
-        &self.node_edge_changes
     }
 }
 
@@ -60,8 +47,6 @@ impl DispatchOutcome {
 pub enum DispatchError {
     #[error(transparent)]
     Apply(#[from] ApplyPipelineError),
-    #[error(transparent)]
-    Changes(#[from] ChangesToTransactionError),
 }
 
 /// Minimal B-layer store.
