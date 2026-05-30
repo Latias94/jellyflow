@@ -1,0 +1,15 @@
+ecosystem/jellyflow-core/
+ecosystem/jellyflow-runtime/
+ecosystem/fret-node/src/core/
+ecosystem/fret-node/src/types/
+ecosystem/fret-node/src/interaction/
+ecosystem/fret-node/src/ops/
+ecosystem/fret-node/src/io/
+ecosystem/fret-node/src/profile/
+ecosystem/fret-node/src/rules/
+ecosystem/fret-node/src/schema/
+ecosystem/fret-node/src/runtime/
+docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md
+docs/workstreams/jellyflow-package-split-v1/
+docs/workstreams/jellyflow-standalone-readiness-v1/
+tools/check_jellyflow_external_smoke.py
