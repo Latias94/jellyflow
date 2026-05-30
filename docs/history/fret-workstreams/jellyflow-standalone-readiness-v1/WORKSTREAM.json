@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-standalone-readiness-v1",
   "title": "Jellyflow Standalone Readiness v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-05-30",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-package-split-v1",
@@ -27,6 +27,10 @@
     {
       "role": "next",
       "path": "docs/workstreams/jellyflow-standalone-readiness-v1/HANDOFF.md"
+    },
+    {
+      "role": "closeout",
+      "path": "docs/workstreams/jellyflow-standalone-readiness-v1/CLOSEOUT_AUDIT_2026-05-30.md"
     }
   ],
   "repro": {
@@ -78,6 +82,7 @@
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md",
+    "docs/workstreams/jellyflow-standalone-readiness-v1/CLOSEOUT_AUDIT_2026-05-30.md",
     "tools/check_jellyflow_external_smoke.py",
     "ecosystem/jellyflow-core/Cargo.toml",
     "ecosystem/jellyflow-core/src/lib.rs",
@@ -89,7 +94,8 @@
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
   ],
   "continue_policy": {
-    "default_action": "continue",
-    "notes": "Continue with readiness slices only. Actual standalone repository extraction, publishing, compatibility re-export cleanup, and future geometry extraction require separate execution decisions and gates."
+    "default_action": "start_follow_on",
+    "follow_on_slug": "jellyflow-repo-extraction-v1",
+    "notes": "This readiness lane is closed. Start a follow-on repository extraction lane before creating ~/codes/rust/jellyflow. Publishing, compatibility re-export cleanup, and future geometry extraction remain separate decisions and gates."
   }
 }

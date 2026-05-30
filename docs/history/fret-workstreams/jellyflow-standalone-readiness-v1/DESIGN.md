@@ -1,7 +1,11 @@
 # Jellyflow Standalone Readiness v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
+
+Closeout note (2026-05-30): this lane produced the decision-ready extraction packet and is closed by
+`CLOSEOUT_AUDIT_2026-05-30.md`. Start `jellyflow-repo-extraction-v1` for the actual standalone
+repository creation; do not continue physical extraction or publishing work in this readiness lane.
 
 ## Problem
 

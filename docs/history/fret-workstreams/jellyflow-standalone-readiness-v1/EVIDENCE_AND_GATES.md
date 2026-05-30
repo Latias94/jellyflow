@@ -1,6 +1,6 @@
 # Jellyflow Standalone Readiness v1 - Evidence and Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
 
 ## Current Evidence Anchors
@@ -17,6 +17,7 @@ Last updated: 2026-05-30
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - `tools/check_jellyflow_external_smoke.py`
 
 ## Baseline Gates
@@ -101,3 +102,10 @@ Last updated: 2026-05-30
   - `git diff --check`: passed.
   - `cargo publish --dry-run`: not run because this policy slice intentionally does not prepare
     standalone package metadata.
+- 2026-05-30: JSR-040 readiness closeout complete.
+  - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+  - `python3 tools/check_workstream_catalog.py`: passed, validating 511 dedicated directories and
+    47 standalone markdown files.
+  - `git diff --check`: passed.
+  - Broader Rust checks were not rerun because JSR-040 is a docs/state closeout and prior slices
+    already recorded the current headless crate and external-consumer evidence.

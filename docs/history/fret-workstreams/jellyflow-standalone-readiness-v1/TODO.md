@@ -1,17 +1,17 @@
 # Jellyflow Standalone Readiness v1 - TODO
 
-Status: Active
+Status: Closed
 
 ## Guardrails
 
 - [x] Do not reopen `jellyflow-package-split-v1`; this is a narrow follow-on lane.
-- [ ] Do not move code into a separate repository from this lane.
-- [ ] Do not publish crates from this lane.
-- [ ] Keep `fret-node` as the Fret adapter and compatibility facade.
-- [ ] Keep Fret UI, overlays, portals, kit profiles, and renderer/platform behavior out of
+- [x] Do not move code into a separate repository from this lane.
+- [x] Do not publish crates from this lane.
+- [x] Keep `fret-node` as the Fret adapter and compatibility facade.
+- [x] Keep Fret UI, overlays, portals, kit profiles, and renderer/platform behavior out of
       standalone Jellyflow readiness work.
-- [ ] Do not extract geometry until there is a cleaner reusable seam or a second consumer.
-- [ ] Treat `~/codes/rust/jellyflow` as the target local path for the future standalone repository,
+- [x] Do not extract geometry until there is a cleaner reusable seam or a second consumer.
+- [x] Treat `~/codes/rust/jellyflow` as the target local path for the future standalone repository,
       but do not create it until the history extraction slice is explicit.
 
 ## Tasks
@@ -135,7 +135,7 @@ Status: Active
     - `cargo publish --dry-run`: not run because this policy slice intentionally does not prepare
       standalone package metadata.
 
-- [ ] JSR-040 Close the readiness lane with a go/no-go packet.
+- [x] JSR-040 Close the readiness lane with a go/no-go packet.
   - Scope:
     - summarize passed gates, remaining gaps, and the recommended next lane
     - update `WORKSTREAM.json` to closed with `start_follow_on`
@@ -145,3 +145,9 @@ Status: Active
     - `python3 tools/check_workstream_catalog.py`
     - `git diff --check`
   - Exit note: closes the readiness work before any standalone repository move begins.
+  - Fresh evidence:
+    - `docs/workstreams/jellyflow-standalone-readiness-v1/CLOSEOUT_AUDIT_2026-05-30.md`
+  - Fresh gates:
+    - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+    - `python3 tools/check_workstream_catalog.py`: passed.
+    - `git diff --check`: passed.

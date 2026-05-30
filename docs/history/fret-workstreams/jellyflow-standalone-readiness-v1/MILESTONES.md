@@ -1,6 +1,6 @@
 # Jellyflow Standalone Readiness v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-05-30
 
 ## Milestones
@@ -25,5 +25,5 @@ Last updated: 2026-05-30
   - JSR-030 records whether the next execution lane should create a standalone repository, mirror
     the in-tree crates, publish from the monorepo, or delay extraction.
 
-- [ ] M4 - Readiness closeout complete.
+- [x] M4 - Readiness closeout complete.
   - JSR-040 closes this lane with a go/no-go packet and explicit follow-on recommendation.
