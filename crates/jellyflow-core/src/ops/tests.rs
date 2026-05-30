@@ -1048,6 +1048,20 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
     assert_eq!(dst.ports.len(), 2);
     assert_eq!(dst.edges.len(), 1);
     assert_eq!(dst.groups.len(), 1);
+
+    let pasted_group = remapper.remap_group(group_id);
+    let pasted_a = remapper.remap_node(a);
+    let pasted_b = remapper.remap_node(b);
+    let pasted_out = remapper.remap_port(out);
+    let pasted_in = remapper.remap_port(inn);
+    let pasted_edge = remapper.remap_edge(edge_id);
+
+    assert_eq!(dst.nodes[&pasted_a].parent, Some(pasted_group));
+    assert_eq!(dst.nodes[&pasted_b].parent, Some(pasted_group));
+    assert_eq!(dst.nodes[&pasted_a].ports, vec![pasted_out]);
+    assert_eq!(dst.nodes[&pasted_b].ports, vec![pasted_in]);
+    assert_eq!(dst.edges[&pasted_edge].from, pasted_out);
+    assert_eq!(dst.edges[&pasted_edge].to, pasted_in);
 }
 
 #[test]

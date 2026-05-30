@@ -14,7 +14,7 @@ use crate::core::{
     StickyNote, StickyNoteId, Symbol, SymbolId, subgraph_target_graph_id, symbol_ref_node_data,
     symbol_ref_target_symbol_id,
 };
-use crate::ops::{GraphOp, GraphTransaction};
+use crate::ops::{GraphMutationBatchPlanner, GraphOp, GraphTransaction};
 
 /// Wrapper version for `GraphFragment`.
 pub const GRAPH_FRAGMENT_VERSION: u32 = 1;
@@ -446,6 +446,15 @@ impl GraphFragment {
             });
         }
 
+        let mut planning_graph = Graph::default();
+        for (old_id, group) in &self.groups {
+            planning_graph
+                .groups
+                .insert(group_map[old_id], group.clone());
+        }
+
+        let mut batch = GraphMutationBatchPlanner::new(&planning_graph);
+
         for (old_id, old_node) in &self.nodes {
             let new_id = node_map[old_id];
             let mut node = old_node.clone();
@@ -463,37 +472,19 @@ impl GraphFragment {
             node.parent = node
                 .parent
                 .and_then(|old_parent| group_map.get(&old_parent).copied());
-            // Port ordering is remapped after ports are added.
-            node.ports = Vec::new();
-            tx.push(GraphOp::AddNode { id: new_id, node });
-        }
 
-        for (old_port_id, old_port) in &self.ports {
-            let new_port_id = port_map[old_port_id];
-            let mut port = old_port.clone();
-            port.node = node_map[&port.node];
-            tx.push(GraphOp::AddPort {
-                id: new_port_id,
-                port,
-            });
-        }
-
-        // Restore node port ordering deterministically.
-        for (old_node_id, old_node) in &self.nodes {
-            let new_node_id = node_map[old_node_id];
-            let mut ports: Vec<PortId> = Vec::new();
+            let mut ports: Vec<(PortId, Port)> = Vec::new();
             for old_port_id in &old_node.ports {
-                if let Some(new_port) = port_map.get(old_port_id) {
-                    ports.push(*new_port);
+                if let Some(old_port) = self.ports.get(old_port_id) {
+                    let mut port = old_port.clone();
+                    port.node = new_id;
+                    ports.push((port_map[old_port_id], port));
                 }
             }
-            if !ports.is_empty() {
-                tx.push(GraphOp::SetNodePorts {
-                    id: new_node_id,
-                    from: Vec::new(),
-                    to: ports,
-                });
-            }
+
+            batch
+                .add_node_with_ports(new_id, node, ports)
+                .expect("fragment paste should stage valid node and ports");
         }
 
         for (old_edge_id, old_edge) in &self.edges {
@@ -506,11 +497,11 @@ impl GraphFragment {
                 deletable: old_edge.deletable,
                 reconnectable: old_edge.reconnectable,
             };
-            tx.push(GraphOp::AddEdge {
-                id: new_edge_id,
-                edge,
-            });
+            batch
+                .add_edge(new_edge_id, edge)
+                .expect("fragment paste should stage valid edges");
         }
+        tx.ops.extend(batch.into_ops());
 
         for (old_id, note) in &self.sticky_notes {
             tx.push(GraphOp::AddStickyNote {
