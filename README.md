@@ -1,0 +1,68 @@
+# Jellyflow
+
+Jellyflow is a headless Rust node/flow graph engine extracted from Fret. It owns the portable graph
+document model, transactions, rules, schema/profile pipeline, view state, and store primitives that
+can be used without Fret UI, renderer, platform, or windowing crates.
+
+The initial package split is intentionally small:
+
+- `jellyflow-core`: graph IDs, document model, type descriptors, interaction value types, and
+  undoable graph transactions.
+- `jellyflow-runtime`: headless store, view-state payloads, rules, schema/profile pipeline, change
+  projections, and fit-view math.
+
+`fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
+the reusable engine boundary for non-Fret consumers.
+
+## Quick Start
+
+```toml
+[dependencies]
+jellyflow-core = { path = "crates/jellyflow-core" }
+jellyflow-runtime = { path = "crates/jellyflow-runtime" }
+```
+
+```rust
+use jellyflow_core::{Graph, GraphId};
+use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use jellyflow_runtime::NodeGraphStore;
+
+let graph = Graph::new(GraphId::new());
+let store = NodeGraphStore::new(
+    graph,
+    NodeGraphViewState::default(),
+    NodeGraphEditorConfig::default(),
+);
+
+assert_eq!(store.graph().nodes.len(), 0);
+```
+
+Runnable examples live under the crate example directories:
+
+```text
+cargo run -p jellyflow-core --example build_graph
+cargo run -p jellyflow-runtime --example store_dispatch
+```
+
+## Repository Status
+
+This repository was created by a history-preserving path-filtered extraction from Fret. The source
+Fret commit is recorded in `JELLYFLOW_SOURCE_COMMIT.txt`, and the filter command is recorded in
+`docs/extraction/EXTRACTION_RECORD_2026-05-30.md`.
+
+Crates.io publishing is intentionally blocked until package metadata, CI, package lists, and
+publish dry-runs are verified.
+
+## Validation
+
+```text
+cargo check --workspace
+cargo nextest run --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+```
+
+## License
+
+Jellyflow is distributed under either the MIT license or the Apache License, Version 2.0, at your
+option.

@@ -7,11 +7,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/jellyflow-runtime"
+readme = "README.md"
 description = "Headless store, rules, schema, profile, and change pipeline for Jellyflow."
+keywords = ["graph", "node-graph", "flow", "headless"]
+categories = ["data-structures", "gui"]
 
 [dependencies]
-jellyflow-core = { version = "0.1.0", path = "../jellyflow-core" }
+jellyflow-core.workspace = true
 keyboard-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -7,8 +7,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/jellyflow-core"
+readme = "README.md"
 description = "Headless graph model, IDs, type descriptors, and interaction policy primitives for Jellyflow."
+keywords = ["graph", "node-graph", "flow", "headless"]
+categories = ["data-structures", "gui"]
 
 [dependencies]
 serde.workspace = true

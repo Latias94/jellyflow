@@ -1,0 +1,27 @@
+# jellyflow-runtime
+
+`jellyflow-runtime` builds on `jellyflow-core` with the headless runtime layer:
+
+- editor and view-state payloads;
+- validation rules and diagnostics;
+- schema/profile pipeline hooks;
+- undo/redo store dispatch;
+- XyFlow-style node/edge change projections;
+- fit-view math that uses Jellyflow canvas geometry.
+
+The crate stays UI-agnostic. Fret-specific conversions, widgets, rendering, and event binding remain
+adapter responsibilities.
+
+```rust
+use jellyflow_core::{Graph, GraphId};
+use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use jellyflow_runtime::NodeGraphStore;
+
+let store = NodeGraphStore::new(
+    Graph::new(GraphId::new()),
+    NodeGraphViewState::default(),
+    NodeGraphEditorConfig::default(),
+);
+
+assert_eq!(store.graph().nodes.len(), 0);
+```

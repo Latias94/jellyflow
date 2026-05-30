@@ -51,8 +51,8 @@ def main() -> int:
                 publish = false
 
                 [dependencies]
-                jellyflow-core = {{ path = "{(repo_root / "ecosystem/jellyflow-core").as_posix()}" }}
-                jellyflow-runtime = {{ path = "{(repo_root / "ecosystem/jellyflow-runtime").as_posix()}" }}
+                jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}
+                jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}
                 """
             ).strip()
             + "\n",
