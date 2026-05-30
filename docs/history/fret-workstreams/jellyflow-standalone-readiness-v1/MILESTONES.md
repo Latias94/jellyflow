@@ -13,7 +13,7 @@ Last updated: 2026-05-30
 - [x] M1 - Extraction inventory complete.
   - JSR-010 records package metadata, dependency, documentation, release, and compatibility gaps.
 
-- [ ] M1.5 - Fret-core dependency resolved.
+- [x] M1.5 - Fret-core dependency resolved.
   - JSR-015 removes or consciously replaces the remaining `fret-core` input/geometry types before
     the external smoke is treated as standalone proof.
 

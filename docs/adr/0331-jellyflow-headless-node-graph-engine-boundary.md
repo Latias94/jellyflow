@@ -36,8 +36,9 @@ The intended package direction is:
 - `jellyflow-fret` or `fret-node`: Fret UI adapter, controller/binding, declarative surface,
   overlays, portals, diagnostics, and compatibility re-exports.
 
-`jellyflow-core` must stay free of `fret-ui`, `fret-runtime`, `fret-canvas`, `wgpu`, and `winit`.
-Fret renderer integration belongs in the Fret adapter layer, not in the Jellyflow core.
+`jellyflow-core` and `jellyflow-runtime` must stay free of `fret-core`, `fret-ui`,
+`fret-runtime`, `fret-canvas`, `wgpu`, and `winit`. Fret renderer integration and Fret-specific
+input/geometry conversions belong in the Fret adapter layer, not in the Jellyflow core.
 
 ## Consequences
 
@@ -68,6 +69,13 @@ Runtime follow-on slice:
 `fret_node::{io,profile,rules,schema,runtime}`. `DataflowProfile` remains in the `fret-node` kit
 layer instead of becoming part of the runtime crate.
 
+Standalone-readiness follow-on:
+
+`jellyflow-core` and `jellyflow-runtime` no longer depend on `fret-core`. `NodeGraphModifiers` is
+owned by `jellyflow-core`, key-code persistence depends directly on `keyboard-types`, and fit-view
+rect helpers use Jellyflow `CanvasRect`. `fret-node` keeps the Fret `Modifiers`/`Rect` conversions
+at the adapter boundary.
+
 Evidence:
 
 - `ecosystem/jellyflow-core/Cargo.toml`
@@ -80,3 +88,4 @@ Evidence:
 - `ecosystem/fret-node/src/ops/mod.rs`
 - `ecosystem/fret-node/src/{io,profile,rules,schema,runtime}/mod.rs`
 - `docs/workstreams/jellyflow-package-split-v1/`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`

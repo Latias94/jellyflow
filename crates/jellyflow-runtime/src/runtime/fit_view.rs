@@ -2,8 +2,7 @@
 //!
 //! This module is intentionally headless-safe and does not depend on `fret-ui`.
 
-use crate::core::CanvasPoint;
-use fret_core::Rect;
+use crate::core::{CanvasPoint, CanvasRect};
 
 #[derive(Debug, Clone, Copy)]
 pub struct FitViewComputeOptions {
@@ -229,16 +228,16 @@ pub fn compute_fit_view_target(
 
 /// Computes the viewport pan/zoom that frames the given canvas-space rect in view.
 pub fn compute_fit_view_target_for_canvas_rect(
-    target_canvas: Rect,
+    target_canvas: CanvasRect,
     options: FitViewComputeOptions,
 ) -> Option<(CanvasPoint, f32)> {
     let options = options.normalized()?;
-    if !target_canvas.size.width.0.is_finite()
-        || !target_canvas.size.height.0.is_finite()
-        || target_canvas.size.width.0 <= 0.0
-        || target_canvas.size.height.0 <= 0.0
-        || !target_canvas.origin.x.0.is_finite()
-        || !target_canvas.origin.y.0.is_finite()
+    if !target_canvas.size.width.is_finite()
+        || !target_canvas.size.height.is_finite()
+        || target_canvas.size.width <= 0.0
+        || target_canvas.size.height <= 0.0
+        || !target_canvas.origin.x.is_finite()
+        || !target_canvas.origin.y.is_finite()
     {
         return None;
     }
@@ -250,8 +249,8 @@ pub fn compute_fit_view_target_for_canvas_rect(
         (options.margin_px_fallback, options.margin_px_fallback)
     };
 
-    let zoom_x = (viewport_w - 2.0 * margin_x) / target_canvas.size.width.0;
-    let zoom_y = (viewport_h - 2.0 * margin_y) / target_canvas.size.height.0;
+    let zoom_x = (viewport_w - 2.0 * margin_x) / target_canvas.size.width;
+    let zoom_y = (viewport_h - 2.0 * margin_y) / target_canvas.size.height;
     if !zoom_x.is_finite() || !zoom_y.is_finite() {
         return None;
     }
@@ -261,8 +260,8 @@ pub fn compute_fit_view_target_for_canvas_rect(
         return None;
     }
 
-    let center_x = target_canvas.origin.x.0 + 0.5 * target_canvas.size.width.0;
-    let center_y = target_canvas.origin.y.0 + 0.5 * target_canvas.size.height.0;
+    let center_x = target_canvas.origin.x + 0.5 * target_canvas.size.width;
+    let center_y = target_canvas.origin.y + 0.5 * target_canvas.size.height;
     let pan = CanvasPoint {
         x: 0.5 * viewport_w / zoom - center_x,
         y: 0.5 * viewport_h / zoom - center_y,
@@ -280,8 +279,7 @@ mod tests {
         FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
         compute_fit_view_target_for_canvas_rect,
     };
-    use crate::core::CanvasPoint;
-    use fret_core::{Point, Px, Rect, Size};
+    use crate::core::{CanvasPoint, CanvasRect, CanvasSize};
 
     #[test]
     fn compute_fit_view_target_returns_valid_viewport() {
@@ -317,10 +315,13 @@ mod tests {
     #[test]
     fn compute_fit_view_target_for_canvas_rect_returns_valid_viewport() {
         let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
-            Rect::new(
-                Point::new(Px(100.0), Px(50.0)),
-                Size::new(Px(400.0), Px(200.0)),
-            ),
+            CanvasRect {
+                origin: CanvasPoint { x: 100.0, y: 50.0 },
+                size: CanvasSize {
+                    width: 400.0,
+                    height: 200.0,
+                },
+            },
             FitViewComputeOptions {
                 viewport_width_px: 800.0,
                 viewport_height_px: 600.0,

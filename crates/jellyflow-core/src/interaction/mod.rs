@@ -5,7 +5,6 @@
 //! - the UI substrate (`crate::ui`),
 //! - headless rules/policies (`crate::rules`, `crate::profile`).
 
-use fret_core::Modifiers;
 use serde::{Deserialize, Serialize};
 
 /// Connection mode for selecting/validating target ports during connection gestures.
@@ -52,8 +51,18 @@ pub enum NodeGraphModifierKey {
 /// Backward-compat alias for older API surface.
 pub type NodeGraphZoomActivationKey = NodeGraphModifierKey;
 
+/// Keyboard modifier state used by headless interaction policies.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NodeGraphModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub alt_gr: bool,
+    pub meta: bool,
+}
+
 impl NodeGraphModifierKey {
-    pub fn is_pressed(self, modifiers: Modifiers) -> bool {
+    pub fn is_pressed(self, modifiers: NodeGraphModifiers) -> bool {
         match self {
             Self::None => true,
             Self::CtrlOrMeta => modifiers.ctrl || modifiers.meta,

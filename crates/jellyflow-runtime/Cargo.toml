@@ -12,7 +12,7 @@ description = "Headless store, rules, schema, profile, and change pipeline for J
 
 [dependencies]
 jellyflow-core = { version = "0.1.0", path = "../jellyflow-core" }
-fret-core = { version = "0.1.0", path = "../../crates/fret-core" }
+keyboard-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

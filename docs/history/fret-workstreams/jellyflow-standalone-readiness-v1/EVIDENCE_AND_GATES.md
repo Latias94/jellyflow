@@ -14,6 +14,7 @@ Last updated: 2026-05-30
 - `ecosystem/jellyflow-runtime/src/lib.rs`
 - `ecosystem/fret-node/Cargo.toml`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
 
 ## Baseline Gates
 
@@ -50,3 +51,24 @@ Last updated: 2026-05-30
   - `git diff --check`: passed.
   - Broader `cargo nextest`/`cargo clippy` gates were not rerun because JSR-010 is an audit/doc
     inventory and does not change Rust code or public API behavior.
+- 2026-05-30: JSR-015 Fret-core detachment complete.
+  - `cargo check -p jellyflow-core`: passed.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo check -p fret-node --no-default-features --features headless --tests`: passed.
+  - `cargo check -p fret-node --all-features --tests`: passed.
+  - `cargo nextest run -p jellyflow-core`: passed with 48 tests.
+  - `cargo nextest run -p jellyflow-runtime`: passed with 67 tests.
+  - `cargo nextest run -p fret-node --no-default-features`: passed with 24 tests.
+  - `cargo nextest run -p fret-node --all-features`: passed with 371 tests.
+  - `cargo clippy -p jellyflow-core --all-targets -- -D warnings`: passed.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `cargo tree -p jellyflow-core --depth 2`: passed; no Fret crates.
+  - `cargo tree -p jellyflow-runtime --depth 2`: passed; no Fret crates.
+  - `python3 tools/check_layering.py`: passed.
+  - `cargo fmt --check`: passed.
+  - `cargo metadata --format-version 1 --no-deps | jq ...`: passed; direct deps are
+    `jellyflow-core`/`keyboard-types` plus external serialization/error/id crates.
+  - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+  - `python3 tools/check_workstream_catalog.py`: passed, validating 511 dedicated directories and
+    47 standalone markdown files.
+  - `git diff --check`: passed.

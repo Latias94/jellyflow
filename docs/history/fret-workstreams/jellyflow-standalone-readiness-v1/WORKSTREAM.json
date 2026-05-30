@@ -71,6 +71,7 @@
     "docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md",
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md",
+    "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md",
     "ecosystem/jellyflow-core/Cargo.toml",
     "ecosystem/jellyflow-core/src/lib.rs",
     "ecosystem/jellyflow-runtime/Cargo.toml",

@@ -47,7 +47,7 @@ Status: Active
     - `python3 tools/check_workstream_catalog.py`: passed.
     - `git diff --check`: passed.
 
-- [ ] JSR-015 Remove or consciously replace the `fret-core` dependency before external smoke.
+- [x] JSR-015 Remove or consciously replace the `fret-core` dependency before external smoke.
   - Scope:
     - replace `fret_core::Modifiers` in `jellyflow-core`
     - replace public `fret_core::KeyCode` usage in `jellyflow-runtime`
@@ -62,6 +62,27 @@ Status: Active
     - `python3 tools/check_layering.py`
   - Exit note: makes JSR-020 a true external-consumer smoke instead of a Fret-core path dependency
     smoke.
+  - Fresh evidence:
+    - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
+  - Fresh gates:
+    - `cargo check -p jellyflow-core`: passed.
+    - `cargo check -p jellyflow-runtime`: passed.
+    - `cargo check -p fret-node --no-default-features --features headless --tests`: passed.
+    - `cargo check -p fret-node --all-features --tests`: passed.
+    - `cargo nextest run -p jellyflow-core`: passed with 48 tests.
+    - `cargo nextest run -p jellyflow-runtime`: passed with 67 tests.
+    - `cargo nextest run -p fret-node --no-default-features`: passed with 24 tests.
+    - `cargo nextest run -p fret-node --all-features`: passed with 371 tests.
+    - `cargo clippy -p jellyflow-core --all-targets -- -D warnings`: passed.
+    - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+    - `cargo tree -p jellyflow-core --depth 2`: passed; no Fret crates.
+    - `cargo tree -p jellyflow-runtime --depth 2`: passed; no Fret crates.
+    - `python3 tools/check_layering.py`: passed.
+    - `cargo fmt --check`: passed.
+    - `cargo metadata --format-version 1 --no-deps | jq ...`: passed.
+    - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+    - `python3 tools/check_workstream_catalog.py`: passed.
+    - `git diff --check`: passed.
 
 - [ ] JSR-020 Prove an external headless consumer smoke.
   - Scope:

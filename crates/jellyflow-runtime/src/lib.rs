@@ -37,9 +37,16 @@ pub use runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 #[cfg(test)]
 mod tests {
     #[test]
-    fn manifest_stays_free_of_ui_renderer_and_platform_dependencies() {
+    fn manifest_stays_free_of_fret_ui_renderer_and_platform_dependencies() {
         let manifest = include_str!("../Cargo.toml");
-        for forbidden in ["fret-ui", "fret-runtime", "fret-canvas", "wgpu", "winit"] {
+        for forbidden in [
+            "fret-core",
+            "fret-ui",
+            "fret-runtime",
+            "fret-canvas",
+            "wgpu",
+            "winit",
+        ] {
             assert!(
                 !manifest.contains(forbidden),
                 "jellyflow-runtime must stay headless; forbidden dependency `{forbidden}` found",

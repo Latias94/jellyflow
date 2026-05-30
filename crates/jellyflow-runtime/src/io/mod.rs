@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use keyboard_types::Code as KeyCode;
 use serde::{Deserialize, Serialize};
 use serde::{Deserializer, Serializer};
 
 use crate::core::{CanvasRect, CanvasSize, EdgeId, Graph, GraphId, GroupId, NodeId};
 pub use crate::interaction::{
-    NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey,
+    NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,
     NodeGraphZoomActivationKey,
 };
 
@@ -393,7 +394,7 @@ impl<'de> Deserialize<'de> for NodeGraphBoxSelectEdges {
 /// This is intentionally aligned with the `KeyboardEvent.code` naming used by XyFlow for
 /// `panActivationKeyCode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeGraphKeyCode(pub fret_core::KeyCode);
+pub struct NodeGraphKeyCode(pub KeyCode);
 
 impl Serialize for NodeGraphKeyCode {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -404,7 +405,7 @@ impl Serialize for NodeGraphKeyCode {
 impl<'de> Deserialize<'de> for NodeGraphKeyCode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        let code = fret_core::KeyCode::from_str(&s)
+        let code = KeyCode::from_str(&s)
             .map_err(|_| serde::de::Error::custom(format!("unrecognized key code: {s}")))?;
         Ok(Self(code))
     }
@@ -426,9 +427,7 @@ pub enum NodeGraphDeleteKey {
 }
 
 impl NodeGraphDeleteKey {
-    pub fn matches(self, key: fret_core::KeyCode) -> bool {
-        use fret_core::KeyCode;
-
+    pub fn matches(self, key: KeyCode) -> bool {
         match self {
             Self::None => false,
             Self::Backspace => key == KeyCode::Backspace,
@@ -1211,7 +1210,7 @@ fn default_multi_selection_key() -> NodeGraphModifierKey {
 }
 
 fn default_pan_activation_key_code() -> Option<NodeGraphKeyCode> {
-    Some(NodeGraphKeyCode(fret_core::KeyCode::Space))
+    Some(NodeGraphKeyCode(KeyCode::Space))
 }
 
 fn default_pane_click_distance() -> f32 {
