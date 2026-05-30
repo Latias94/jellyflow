@@ -84,7 +84,7 @@ Status: Active
     - `python3 tools/check_workstream_catalog.py`: passed.
     - `git diff --check`: passed.
 
-- [ ] JSR-020 Prove an external headless consumer smoke.
+- [x] JSR-020 Prove an external headless consumer smoke.
   - Scope:
     - create a temporary external path-dependency smoke outside the Fret workspace or record a
       repeatable local fixture
@@ -96,6 +96,21 @@ Status: Active
     - focused `cargo check -p jellyflow-core`
     - focused `cargo check -p jellyflow-runtime`
   - Exit note: proves standalone consumers do not need Fret UI or adapter crates.
+  - Fresh evidence:
+    - `tools/check_jellyflow_external_smoke.py`
+    - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+  - Fresh gates:
+    - `python3 tools/check_jellyflow_external_smoke.py`: passed; external temp consumer checked and
+      `cargo tree` contained no `fret` or `fret-*` packages.
+    - `python3 -m py_compile tools/check_jellyflow_external_smoke.py`: passed.
+    - `cargo check -p jellyflow-core`: passed.
+    - `cargo check -p jellyflow-runtime`: passed.
+    - `cargo check -p fret-node --all-features --tests`: passed.
+    - `python3 tools/check_layering.py`: passed.
+    - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+    - `python3 tools/check_workstream_catalog.py`: passed.
+    - `git diff --check`: passed.
+    - `cargo fmt --check`: passed.
 
 - [ ] JSR-030 Decide the repository and publishing policy.
   - Scope:

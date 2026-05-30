@@ -17,7 +17,7 @@ Last updated: 2026-05-30
   - JSR-015 removes or consciously replaces the remaining `fret-core` input/geometry types before
     the external smoke is treated as standalone proof.
 
-- [ ] M2 - External headless smoke complete.
+- [x] M2 - External headless smoke complete.
   - JSR-020 proves a non-Fret consumer can use `jellyflow-core` and `jellyflow-runtime` through
     path dependencies.
 

@@ -76,6 +76,10 @@ owned by `jellyflow-core`, key-code persistence depends directly on `keyboard-ty
 rect helpers use Jellyflow `CanvasRect`. `fret-node` keeps the Fret `Modifiers`/`Rect` conversions
 at the adapter boundary.
 
+The standalone-readiness lane also adds an external temp-project smoke gate that path-depends only
+on `jellyflow-core` and `jellyflow-runtime`, runs `cargo check`, and rejects any transitive `fret`
+or `fret-*` package in `cargo tree`.
+
 Evidence:
 
 - `ecosystem/jellyflow-core/Cargo.toml`
@@ -89,3 +93,5 @@ Evidence:
 - `ecosystem/fret-node/src/{io,profile,rules,schema,runtime}/mod.rs`
 - `docs/workstreams/jellyflow-package-split-v1/`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+- `tools/check_jellyflow_external_smoke.py`

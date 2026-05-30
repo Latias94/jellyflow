@@ -15,11 +15,14 @@ Last updated: 2026-05-30
 - `ecosystem/fret-node/Cargo.toml`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
+- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+- `tools/check_jellyflow_external_smoke.py`
 
 ## Baseline Gates
 
 - `cargo check -p jellyflow-core`
 - `cargo check -p jellyflow-runtime`
+- `python3 tools/check_jellyflow_external_smoke.py`
 - `cargo check -p fret-node --all-features --tests`
 - `python3 tools/check_layering.py`
 - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`
@@ -72,3 +75,16 @@ Last updated: 2026-05-30
   - `python3 tools/check_workstream_catalog.py`: passed, validating 511 dedicated directories and
     47 standalone markdown files.
   - `git diff --check`: passed.
+- 2026-05-30: JSR-020 external headless consumer smoke complete.
+  - `python3 tools/check_jellyflow_external_smoke.py`: passed; external temp consumer checked and
+    `cargo tree` contained no `fret` or `fret-*` packages.
+  - `python3 -m py_compile tools/check_jellyflow_external_smoke.py`: passed.
+  - `cargo check -p jellyflow-core`: passed.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo check -p fret-node --all-features --tests`: passed.
+  - `python3 tools/check_layering.py`: passed.
+  - `jq empty docs/workstreams/jellyflow-standalone-readiness-v1/WORKSTREAM.json`: passed.
+  - `python3 tools/check_workstream_catalog.py`: passed, validating 511 dedicated directories and
+    47 standalone markdown files.
+  - `git diff --check`: passed.
+  - `cargo fmt --check`: passed.

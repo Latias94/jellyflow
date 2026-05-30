@@ -46,6 +46,10 @@
       "command": "cargo check -p jellyflow-runtime"
     },
     {
+      "name": "external-smoke",
+      "command": "python3 tools/check_jellyflow_external_smoke.py"
+    },
+    {
       "name": "adapter-check",
       "command": "cargo check -p fret-node --all-features --tests"
     },
@@ -72,6 +76,8 @@
     "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md",
+    "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md",
+    "tools/check_jellyflow_external_smoke.py",
     "ecosystem/jellyflow-core/Cargo.toml",
     "ecosystem/jellyflow-core/src/lib.rs",
     "ecosystem/jellyflow-runtime/Cargo.toml",
