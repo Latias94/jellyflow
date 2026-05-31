@@ -19,12 +19,12 @@ impl DeleteChangeAccumulator {
     fn push_op(&mut self, op: &GraphOp) {
         match op {
             GraphOp::RemoveNode { id, edges, .. } => {
-                self.change.nodes.push(*id);
+                self.change.push_node(*id);
                 self.push_deleted_edge_ids(edges);
             }
-            GraphOp::RemoveEdge { id, .. } => self.change.edges.push(*id),
-            GraphOp::RemoveGroup { id, .. } => self.change.groups.push(*id),
-            GraphOp::RemoveStickyNote { id, .. } => self.change.sticky_notes.push(*id),
+            GraphOp::RemoveEdge { id, .. } => self.change.push_edge(*id),
+            GraphOp::RemoveGroup { id, .. } => self.change.push_group(*id),
+            GraphOp::RemoveStickyNote { id, .. } => self.change.push_sticky_note(*id),
             GraphOp::RemovePort { edges, .. } => {
                 self.push_deleted_edge_ids(edges);
             }
@@ -34,21 +34,11 @@ impl DeleteChangeAccumulator {
 
     fn push_deleted_edge_ids(&mut self, edges: &[(EdgeId, Edge)]) {
         self.change
-            .edges
-            .extend(edges.iter().map(|(id, _edge)| *id));
+            .extend_edges(edges.iter().map(|(id, _edge)| *id));
     }
 
     fn finish(mut self) -> DeleteChange {
-        sort_dedup(&mut self.change.nodes);
-        sort_dedup(&mut self.change.edges);
-        sort_dedup(&mut self.change.groups);
-        sort_dedup(&mut self.change.sticky_notes);
-
+        self.change.sort_dedup();
         self.change
     }
-}
-
-fn sort_dedup<T: Ord>(items: &mut Vec<T>) {
-    items.sort_unstable();
-    items.dedup();
 }
