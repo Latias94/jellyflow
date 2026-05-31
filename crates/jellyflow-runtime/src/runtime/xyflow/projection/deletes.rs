@@ -3,34 +3,49 @@ use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 pub(super) fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
-    let mut out = DeleteChange::default();
-
+    let mut accumulator = DeleteChangeAccumulator::default();
     for op in &tx.ops {
+        accumulator.push_op(op);
+    }
+    accumulator.finish()
+}
+
+#[derive(Default)]
+struct DeleteChangeAccumulator {
+    change: DeleteChange,
+}
+
+impl DeleteChangeAccumulator {
+    fn push_op(&mut self, op: &GraphOp) {
         match op {
             GraphOp::RemoveNode { id, edges, .. } => {
-                out.nodes.push(*id);
-                push_deleted_edge_ids(edges, &mut out.edges);
+                self.change.nodes.push(*id);
+                self.push_deleted_edge_ids(edges);
             }
-            GraphOp::RemoveEdge { id, .. } => out.edges.push(*id),
-            GraphOp::RemoveGroup { id, .. } => out.groups.push(*id),
-            GraphOp::RemoveStickyNote { id, .. } => out.sticky_notes.push(*id),
+            GraphOp::RemoveEdge { id, .. } => self.change.edges.push(*id),
+            GraphOp::RemoveGroup { id, .. } => self.change.groups.push(*id),
+            GraphOp::RemoveStickyNote { id, .. } => self.change.sticky_notes.push(*id),
             GraphOp::RemovePort { edges, .. } => {
-                push_deleted_edge_ids(edges, &mut out.edges);
+                self.push_deleted_edge_ids(edges);
             }
             _ => {}
         }
     }
 
-    sort_dedup(&mut out.nodes);
-    sort_dedup(&mut out.edges);
-    sort_dedup(&mut out.groups);
-    sort_dedup(&mut out.sticky_notes);
+    fn push_deleted_edge_ids(&mut self, edges: &[(EdgeId, Edge)]) {
+        self.change
+            .edges
+            .extend(edges.iter().map(|(id, _edge)| *id));
+    }
 
-    out
-}
+    fn finish(mut self) -> DeleteChange {
+        sort_dedup(&mut self.change.nodes);
+        sort_dedup(&mut self.change.edges);
+        sort_dedup(&mut self.change.groups);
+        sort_dedup(&mut self.change.sticky_notes);
 
-fn push_deleted_edge_ids(edges: &[(EdgeId, Edge)], out: &mut Vec<EdgeId>) {
-    out.extend(edges.iter().map(|(id, _edge)| *id));
+        self.change
+    }
 }
 
 fn sort_dedup<T: Ord>(items: &mut Vec<T>) {
