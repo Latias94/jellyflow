@@ -1,5 +1,7 @@
 use crate::node_origin::normalize_node_origin;
 
+const MAX_FIT_VIEW_PADDING: f32 = 0.45;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FitViewComputeOptions {
     /// Viewport width in logical px.
@@ -42,7 +44,7 @@ impl FitViewComputeOptions {
         if !self.padding.is_finite() {
             self.padding = 0.0;
         }
-        self.padding = self.padding.clamp(0.0, 0.45);
+        self.padding = self.padding.clamp(0.0, MAX_FIT_VIEW_PADDING);
 
         if !self.min_zoom.is_finite() || self.min_zoom <= 0.0 {
             self.min_zoom = 1.0;
