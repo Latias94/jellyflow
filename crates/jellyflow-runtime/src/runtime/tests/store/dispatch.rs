@@ -67,21 +67,18 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
         }
     });
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodeHidden {
-                id: a,
-                from: false,
-                to: true,
-            },
-            GraphOp::SetEdgeReconnectable {
-                id: eid,
-                from: None,
-                to: Some(EdgeReconnectable::Bool(false)),
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodeHidden {
+            id: a,
+            from: false,
+            to: true,
+        },
+        GraphOp::SetEdgeReconnectable {
+            id: eid,
+            from: None,
+            to: Some(EdgeReconnectable::Bool(false)),
+        },
+    ]);
 
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
 
@@ -215,14 +212,12 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
         }
     });
 
-    let tx = GraphTransaction {
-        label: Some("external profile commit".to_string()),
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 42.0, y: 24.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 42.0, y: 24.0 },
+    }])
+    .with_label("external profile commit");
 
     let outcome = store
         .dispatch_transaction_with_profile(&tx, &mut profile)
@@ -284,14 +279,11 @@ fn store_does_not_commit_rejected_profile_edits() {
         Box::new(RejectProfile),
     );
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 999.0, y: 999.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 999.0, y: 999.0 },
+    }]);
 
     let err = store.dispatch_transaction(&tx).expect_err("reject");
     let crate::runtime::store::DispatchError::Apply(crate::profile::ApplyPipelineError::Rejected {
@@ -315,35 +307,32 @@ fn store_rejects_non_finite_transactions() {
     let g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
     let node_id = NodeId::new();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddNode {
-            id: node_id,
-            node: Node {
-                kind: NodeKindKey::new("demo.node"),
-                kind_version: 1,
-                pos: CanvasPoint {
-                    x: f32::NAN,
-                    y: 0.0,
-                },
-                selectable: None,
-                draggable: None,
-                connectable: None,
-                deletable: None,
-                parent: None,
-                extent: None,
-                expand_parent: None,
-                size: Some(jellyflow_core::core::CanvasSize {
-                    width: 10.0,
-                    height: 10.0,
-                }),
-                hidden: false,
-                collapsed: false,
-                ports: Vec::new(),
-                data: serde_json::Value::Null,
+    let tx = GraphTransaction::from_ops([GraphOp::AddNode {
+        id: node_id,
+        node: Node {
+            kind: NodeKindKey::new("demo.node"),
+            kind_version: 1,
+            pos: CanvasPoint {
+                x: f32::NAN,
+                y: 0.0,
             },
-        }],
-    };
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(jellyflow_core::core::CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::Value::Null,
+        },
+    }]);
 
     let mut store = NodeGraphStore::new(
         g.clone(),
@@ -369,32 +358,29 @@ fn store_rejects_invalid_size_transactions() {
     let g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
     let node_id = NodeId::new();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddNode {
-            id: node_id,
-            node: Node {
-                kind: NodeKindKey::new("demo.node"),
-                kind_version: 1,
-                pos: CanvasPoint { x: 0.0, y: 0.0 },
-                selectable: None,
-                draggable: None,
-                connectable: None,
-                deletable: None,
-                parent: None,
-                extent: None,
-                expand_parent: None,
-                size: Some(jellyflow_core::core::CanvasSize {
-                    width: 0.0,
-                    height: 10.0,
-                }),
-                hidden: false,
-                collapsed: false,
-                ports: Vec::new(),
-                data: serde_json::Value::Null,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddNode {
+        id: node_id,
+        node: Node {
+            kind: NodeKindKey::new("demo.node"),
+            kind_version: 1,
+            pos: CanvasPoint { x: 0.0, y: 0.0 },
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(jellyflow_core::core::CanvasSize {
+                width: 0.0,
+                height: 10.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::Value::Null,
+        },
+    }]);
 
     let mut store = NodeGraphStore::new(
         g.clone(),
