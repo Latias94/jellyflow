@@ -31,10 +31,10 @@ impl<'a> ChangesTransactionPlanner<'a> {
         mut self,
         changes: &NodeGraphChanges,
     ) -> Result<GraphTransaction, ChangesToTransactionError> {
-        for change in &changes.nodes {
+        for change in changes.nodes() {
             self.push_node_change(change)?;
         }
-        for change in &changes.edges {
+        for change in changes.edges() {
             self.push_edge_change(change)?;
         }
 

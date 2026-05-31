@@ -63,8 +63,8 @@ impl<'a> ApplyChangesPlanner<'a> {
     }
 
     fn apply_graph_changes(mut self, changes: &NodeGraphChanges) -> ApplyChangesReport {
-        self.apply_nodes(&changes.nodes);
-        self.apply_edges(&changes.edges);
+        self.apply_nodes(changes.nodes());
+        self.apply_edges(changes.edges());
         self.finish()
     }
 

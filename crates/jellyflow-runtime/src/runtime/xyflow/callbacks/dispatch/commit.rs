@@ -13,11 +13,11 @@ pub(super) fn dispatch_graph_commit_callbacks(
     let node_edge_changes = NodeGraphChanges::from_patch(patch);
     callbacks.on_graph_commit(patch);
     callbacks.on_node_edge_changes(&node_edge_changes);
-    if !node_edge_changes.nodes.is_empty() {
-        callbacks.on_nodes_change(&node_edge_changes.nodes);
+    if !node_edge_changes.nodes().is_empty() {
+        callbacks.on_nodes_change(node_edge_changes.nodes());
     }
-    if !node_edge_changes.edges.is_empty() {
-        callbacks.on_edges_change(&node_edge_changes.edges);
+    if !node_edge_changes.edges().is_empty() {
+        callbacks.on_edges_change(node_edge_changes.edges());
     }
 
     dispatch_connection_callbacks(callbacks, patch.transaction());

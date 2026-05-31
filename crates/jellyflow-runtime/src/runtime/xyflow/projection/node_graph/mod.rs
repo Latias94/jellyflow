@@ -18,7 +18,7 @@ pub(super) fn node_graph_changes_from_transaction(tx: &GraphTransaction) -> Node
 fn push_node_graph_change(op: &GraphOp, out: &mut NodeGraphChanges) {
     match NodeGraphProjectionTarget::for_op(op) {
         NodeGraphProjectionTarget::Node => nodes::push_node_change(op, out),
-        NodeGraphProjectionTarget::Edge => edges::push_edge_change(op, &mut out.edges),
+        NodeGraphProjectionTarget::Edge => edges::push_edge_change(op, out),
         NodeGraphProjectionTarget::Ignore => {}
     }
 }

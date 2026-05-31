@@ -23,6 +23,26 @@ pub enum ChangesToTransactionError {
 }
 
 impl NodeGraphChanges {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
+
+    pub fn nodes(&self) -> &[NodeChange] {
+        &self.nodes
+    }
+
+    pub fn edges(&self) -> &[EdgeChange] {
+        &self.edges
+    }
+
+    pub(in crate::runtime::xyflow) fn push_node(&mut self, change: NodeChange) {
+        self.nodes.push(change);
+    }
+
+    pub(in crate::runtime::xyflow) fn push_edge(&mut self, change: EdgeChange) {
+        self.edges.push(change);
+    }
+
     pub fn from_patch(patch: &NodeGraphPatch) -> Self {
         Self::from_transaction(patch.transaction())
     }
