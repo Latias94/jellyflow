@@ -93,6 +93,10 @@ fn graph_transaction_facade_consumes_ops_and_parts() {
         }] if *id == node_id
     ));
 
+    let rebuilt = GraphTransaction::from_parts(label, ops.clone());
+    assert_eq!(rebuilt.label(), Some("Hide node"));
+    assert_eq!(rebuilt.ops().len(), 1);
+
     let ops = tx.into_ops();
     assert_eq!(ops.len(), 1);
 }

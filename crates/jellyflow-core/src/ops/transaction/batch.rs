@@ -26,6 +26,14 @@ impl GraphTransaction {
         Self::new().with_ops(ops)
     }
 
+    /// Creates a transaction from metadata and ops.
+    pub fn from_parts(label: Option<String>, ops: impl IntoIterator<Item = GraphOp>) -> Self {
+        Self {
+            label,
+            ops: ops.into_iter().collect(),
+        }
+    }
+
     /// Builds a deterministic transaction that transforms `from` into `to`.
     pub fn diff(from: &Graph, to: &Graph) -> Self {
         crate::ops::diff::graph_diff(from, to)
