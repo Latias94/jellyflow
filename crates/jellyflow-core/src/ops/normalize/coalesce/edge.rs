@@ -1,5 +1,7 @@
 use crate::ops::GraphOp;
 
+use super::coalesce_value;
+
 pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bool {
     match (last, next) {
         (
@@ -7,46 +9,31 @@ pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bo
                 id: a, to: last_to, ..
             },
             GraphOp::SetEdgeKind { id: b, from, to },
-        ) if a == b && last_to == from => {
-            *last_to = *to;
-            true
-        }
+        ) => coalesce_value(a, last_to, b, from, to),
         (
             GraphOp::SetEdgeSelectable {
                 id: a, to: last_to, ..
             },
             GraphOp::SetEdgeSelectable { id: b, from, to },
-        ) if a == b && last_to == from => {
-            *last_to = *to;
-            true
-        }
+        ) => coalesce_value(a, last_to, b, from, to),
         (
             GraphOp::SetEdgeDeletable {
                 id: a, to: last_to, ..
             },
             GraphOp::SetEdgeDeletable { id: b, from, to },
-        ) if a == b && last_to == from => {
-            *last_to = *to;
-            true
-        }
+        ) => coalesce_value(a, last_to, b, from, to),
         (
             GraphOp::SetEdgeReconnectable {
                 id: a, to: last_to, ..
             },
             GraphOp::SetEdgeReconnectable { id: b, from, to },
-        ) if a == b && last_to == from => {
-            *last_to = *to;
-            true
-        }
+        ) => coalesce_value(a, last_to, b, from, to),
         (
             GraphOp::SetEdgeEndpoints {
                 id: a, to: last_to, ..
             },
             GraphOp::SetEdgeEndpoints { id: b, from, to },
-        ) if a == b && last_to == from => {
-            *last_to = *to;
-            true
-        }
+        ) => coalesce_value(a, last_to, b, from, to),
         _ => false,
     }
 }

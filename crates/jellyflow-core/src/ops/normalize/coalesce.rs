@@ -24,3 +24,16 @@ fn try_coalesce_setter(last: &mut GraphOp, next: &GraphOp) -> bool {
         || edge::try_coalesce_edge_setter(last, next)
         || document::try_coalesce_document_setter(last, next)
 }
+
+fn coalesce_value<Id, T>(a: &Id, last_to: &mut T, b: &Id, from: &T, to: &T) -> bool
+where
+    Id: PartialEq,
+    T: Clone + PartialEq,
+{
+    if a == b && last_to == from {
+        *last_to = to.clone();
+        true
+    } else {
+        false
+    }
+}
