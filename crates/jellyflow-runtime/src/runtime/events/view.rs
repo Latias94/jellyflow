@@ -20,3 +20,17 @@ pub enum ViewChange {
         groups: Vec<GroupId>,
     },
 }
+
+impl ViewChange {
+    pub fn viewport(pan: CanvasPoint, zoom: f32) -> Self {
+        Self::Viewport { pan, zoom }
+    }
+
+    pub fn selection(nodes: Vec<NodeId>, edges: Vec<EdgeId>, groups: Vec<GroupId>) -> Self {
+        Self::Selection {
+            nodes,
+            edges,
+            groups,
+        }
+    }
+}

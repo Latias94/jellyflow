@@ -170,3 +170,13 @@ pub struct SelectionChange {
     pub edges: Vec<EdgeId>,
     pub groups: Vec<GroupId>,
 }
+
+impl SelectionChange {
+    pub fn new(nodes: Vec<NodeId>, edges: Vec<EdgeId>, groups: Vec<GroupId>) -> Self {
+        Self {
+            nodes,
+            edges,
+            groups,
+        }
+    }
+}

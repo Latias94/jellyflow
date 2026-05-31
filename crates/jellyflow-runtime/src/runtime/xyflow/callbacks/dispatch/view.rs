@@ -17,11 +17,11 @@ pub(super) fn dispatch_view_callbacks(
                 nodes,
                 edges,
                 groups,
-            } => callbacks.on_selection_change(SelectionChange {
-                nodes: nodes.clone(),
-                edges: edges.clone(),
-                groups: groups.clone(),
-            }),
+            } => callbacks.on_selection_change(SelectionChange::new(
+                nodes.clone(),
+                edges.clone(),
+                groups.clone(),
+            )),
         }
     }
 }

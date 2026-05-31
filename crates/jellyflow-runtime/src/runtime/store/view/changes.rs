@@ -36,15 +36,8 @@ impl ViewStateMutationKind {
     ) -> Vec<ViewChange> {
         match self {
             Self::FullState => collect_view_projection_changes(before, after),
-            Self::Viewport => vec![ViewChange::Viewport {
-                pan: after.pan,
-                zoom: after.zoom,
-            }],
-            Self::Selection => vec![ViewChange::Selection {
-                nodes: after.selected_nodes.clone(),
-                edges: after.selected_edges.clone(),
-                groups: after.selected_groups.clone(),
-            }],
+            Self::Viewport => vec![ViewChange::viewport(after.pan, after.zoom)],
+            Self::Selection => vec![selection_change(after)],
         }
     }
 }
@@ -65,20 +58,21 @@ fn collect_view_projection_changes(
 ) -> Vec<ViewChange> {
     let mut changes: Vec<ViewChange> = Vec::new();
     if before.pan != after.pan || (before.zoom - after.zoom).abs() > 1.0e-6 {
-        changes.push(ViewChange::Viewport {
-            pan: after.pan,
-            zoom: after.zoom,
-        });
+        changes.push(ViewChange::viewport(after.pan, after.zoom));
     }
     if before.selected_nodes != after.selected_nodes
         || before.selected_edges != after.selected_edges
         || before.selected_groups != after.selected_groups
     {
-        changes.push(ViewChange::Selection {
-            nodes: after.selected_nodes.clone(),
-            edges: after.selected_edges.clone(),
-            groups: after.selected_groups.clone(),
-        });
+        changes.push(selection_change(after));
     }
     changes
+}
+
+fn selection_change(view_state: &NodeGraphViewState) -> ViewChange {
+    ViewChange::selection(
+        view_state.selected_nodes.clone(),
+        view_state.selected_edges.clone(),
+        view_state.selected_groups.clone(),
+    )
 }
