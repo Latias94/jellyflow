@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, CanvasRect};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
 use super::{FitViewComputeOptions, FitViewNodeInfo};
 
@@ -50,7 +50,7 @@ pub(super) fn compute_target_for_canvas_rect(
         x: 0.5 * viewport_w / zoom - center_x,
         y: 0.5 * viewport_h / zoom - center_y,
     };
-    if !pan.x.is_finite() || !pan.y.is_finite() {
+    if !pan.is_finite() {
         return None;
     }
 
@@ -69,16 +69,11 @@ fn viewport_margins(options: FitViewComputeOptions) -> (f32, f32) {
 }
 
 fn canvas_rect_is_valid(rect: CanvasRect) -> bool {
-    rect.size.width.is_finite()
-        && rect.size.height.is_finite()
-        && rect.size.width > 0.0
-        && rect.size.height > 0.0
-        && rect.origin.x.is_finite()
-        && rect.origin.y.is_finite()
+    rect.origin.is_finite() && rect.size.is_positive_finite()
 }
 
 fn size_is_valid(width: f32, height: f32) -> bool {
-    width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
+    CanvasSize { width, height }.is_positive_finite()
 }
 
 struct NodePositionSpread {

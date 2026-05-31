@@ -29,10 +29,10 @@ impl CanvasBounds {
         let size = size.or(fallback_size)?;
         let width = size.width;
         let height = size.height;
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        if !size.is_positive_finite() {
             return None;
         }
-        if !pos.x.is_finite() || !pos.y.is_finite() {
+        if !pos.is_finite() {
             return None;
         }
 

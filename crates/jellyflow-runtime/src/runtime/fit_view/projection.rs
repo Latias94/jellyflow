@@ -1,4 +1,4 @@
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, CanvasSize};
 
 use super::FitViewNodeInfo;
 
@@ -29,7 +29,11 @@ pub(super) fn project_nodes_to_top_left(
 
 fn node_canvas_size(node: &FitViewNodeInfo, zoom: f32) -> Option<(f32, f32)> {
     let (width_px, height_px) = node.size_px;
-    if !width_px.is_finite() || !height_px.is_finite() || width_px <= 0.0 || height_px <= 0.0 {
+    let size_px = CanvasSize {
+        width: width_px,
+        height: height_px,
+    };
+    if !size_px.is_positive_finite() {
         return None;
     }
 
