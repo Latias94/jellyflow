@@ -5,8 +5,14 @@ use crate::core::{
     validate_graph,
 };
 use crate::core::{CanvasSize, GraphValidationError, GroupId, validate_graph_structural};
-use crate::core::{SUBGRAPH_NODE_KIND, validate_subgraph_targets_are_imported};
-use crate::core::{SYMBOL_REF_NODE_KIND, validate_symbol_ref_targets_are_declared};
+use crate::core::{
+    SUBGRAPH_NODE_KIND, is_subgraph_node, subgraph_target_graph_id,
+    validate_subgraph_targets_are_imported,
+};
+use crate::core::{
+    SYMBOL_REF_NODE_KIND, is_symbol_ref_node, symbol_ref_target_symbol_id,
+    validate_symbol_ref_targets_are_declared,
+};
 
 fn make_node(kind: &str) -> Node {
     Node {
@@ -291,6 +297,12 @@ fn import_closure_rejects_cycles_with_stable_path() {
 }
 
 #[test]
+fn built_in_node_kind_constants_use_jellyflow_namespace() {
+    assert_eq!(SUBGRAPH_NODE_KIND, "jellyflow.subgraph");
+    assert_eq!(SYMBOL_REF_NODE_KIND, "jellyflow.symbol_ref");
+}
+
+#[test]
 fn subgraph_nodes_must_reference_declared_imports() {
     let mut graph = Graph::default();
 
@@ -309,6 +321,20 @@ fn subgraph_nodes_must_reference_declared_imports() {
     assert!(
         validate_subgraph_targets_are_imported(&graph).is_ok(),
         "expected declared import to satisfy binding"
+    );
+}
+
+#[test]
+fn subgraph_parser_accepts_legacy_fret_kind() {
+    let node_id = NodeId::new();
+    let imported = GraphId::from_u128(2);
+    let mut node = make_node("fret.subgraph");
+    node.data = serde_json::json!({ "graph_id": imported });
+
+    assert!(is_subgraph_node(&node));
+    assert_eq!(
+        subgraph_target_graph_id(node_id, &node).expect("parse legacy subgraph target"),
+        Some(imported)
     );
 }
 
@@ -382,6 +408,20 @@ fn validate_graph_reports_subgraph_import_binding_errors() {
         e,
         GraphValidationError::SubgraphNodeMissingGraphId { node } if *node == bad_id
     )));
+}
+
+#[test]
+fn symbol_ref_parser_accepts_legacy_fret_kind() {
+    let node_id = NodeId::new();
+    let symbol_id = SymbolId::from_u128(10);
+    let mut node = make_node("fret.symbol_ref");
+    node.data = serde_json::json!({ "symbol_id": symbol_id });
+
+    assert!(is_symbol_ref_node(&node));
+    assert_eq!(
+        symbol_ref_target_symbol_id(node_id, &node).expect("parse legacy symbol target"),
+        Some(symbol_id)
+    );
 }
 
 #[test]
