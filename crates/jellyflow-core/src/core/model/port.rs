@@ -4,6 +4,8 @@ use serde_json::Value;
 use crate::core::ids::{NodeId, PortKey};
 use crate::types::TypeDesc;
 
+use super::edge::EdgeKind;
+
 /// Port direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +24,15 @@ pub enum PortKind {
     Data,
     /// Exec port (control flow).
     Exec,
+}
+
+impl PortKind {
+    pub fn edge_kind(self) -> EdgeKind {
+        match self {
+            Self::Data => EdgeKind::Data,
+            Self::Exec => EdgeKind::Exec,
+        }
+    }
 }
 
 /// Connection capacity for a port.

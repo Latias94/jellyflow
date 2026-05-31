@@ -4,8 +4,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::kinds::edge_kind_for_port_kind;
 use super::rejections::{
-    reject_incompatible_port_kind, reject_incompatible_port_kinds, reject_missing_port,
-    reject_opposite_directions_required, reject_self_connection,
+    reject_incompatible_port_kinds, reject_missing_port, reject_opposite_directions_required,
+    reject_self_connection,
 };
 
 pub(in crate::rules::connection) struct ConnectionEndpoints<'a> {
@@ -53,9 +53,7 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         return Err(reject_incompatible_port_kinds(from.kind, to.kind));
     }
 
-    let Some(edge_kind) = edge_kind_for_port_kind(from.kind) else {
-        return Err(reject_incompatible_port_kind());
-    };
+    let edge_kind = edge_kind_for_port_kind(from.kind);
 
     Ok(ConnectionEndpoints {
         from_id,

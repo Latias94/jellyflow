@@ -116,10 +116,7 @@ impl<'a> StructuralValidator<'a> {
             return;
         }
 
-        let expected = match from_kind {
-            PortKind::Data => EdgeKind::Data,
-            PortKind::Exec => EdgeKind::Exec,
-        };
+        let expected = from_kind.edge_kind();
         if edge_kind != expected {
             self.report
                 .push(GraphValidationError::EdgeKindPortKindMismatch {

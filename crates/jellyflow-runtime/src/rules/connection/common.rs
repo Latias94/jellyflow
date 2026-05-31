@@ -15,7 +15,6 @@ pub(super) use kinds::{edge_kind_for_port_kind, port_kind_for_edge_kind};
 pub(super) use policy::reject_if_connection_policy_disallows;
 pub(super) use rejections::{
     reject_duplicate_connection, reject_edge_kind_incompatible,
-    reject_edge_kind_incompatible_with_ports, reject_incompatible_port_kind,
-    reject_incompatible_port_kinds, reject_missing_edge, reject_reconnect_directions_required,
-    reject_self_connection,
+    reject_edge_kind_incompatible_with_ports, reject_incompatible_port_kinds, reject_missing_edge,
+    reject_reconnect_directions_required, reject_self_connection,
 };

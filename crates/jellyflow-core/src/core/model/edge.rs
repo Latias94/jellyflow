@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::ids::PortId;
 
+use super::port::PortKind;
+
 /// Edge kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -10,6 +12,15 @@ pub enum EdgeKind {
     Data,
     /// Exec/control flow.
     Exec,
+}
+
+impl EdgeKind {
+    pub fn port_kind(self) -> PortKind {
+        match self {
+            Self::Data => PortKind::Data,
+            Self::Exec => PortKind::Exec,
+        }
+    }
 }
 
 /// Edge between two ports.

@@ -18,10 +18,6 @@ pub(in crate::rules::connection) fn reject_edge_kind_incompatible() -> ConnectPl
     ConnectPlan::reject("edge kind is incompatible with ports")
 }
 
-pub(in crate::rules::connection) fn reject_incompatible_port_kind() -> ConnectPlan {
-    ConnectPlan::reject("port kinds are incompatible")
-}
-
 pub(in crate::rules::connection) fn reject_incompatible_port_kinds(
     from: PortKind,
     to: PortKind,
