@@ -1,5 +1,5 @@
 use crate::runtime::xyflow::changes::{ChangesToTransactionError, EdgeChange};
-use jellyflow_core::core::Edge;
+use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{EdgeEndpoints, GraphMutationPlanner, GraphOp};
 
 use super::ChangesTransactionPlanner;
@@ -10,60 +10,75 @@ impl<'a> ChangesTransactionPlanner<'a> {
         change: &EdgeChange,
     ) -> Result<(), ChangesToTransactionError> {
         match change {
-            EdgeChange::Add { id, edge } => self.tx.push(GraphOp::AddEdge {
-                id: *id,
-                edge: edge.clone(),
-            }),
+            EdgeChange::Add { id, edge } => {
+                self.tx.push(GraphOp::AddEdge {
+                    id: *id,
+                    edge: edge.clone(),
+                });
+            }
             EdgeChange::Remove { id } => {
-                let op = GraphMutationPlanner::new(self.graph)
-                    .remove_edge_op(*id)
-                    .map_err(|_| ChangesToTransactionError::MissingEdge(*id))?;
-                self.tx.push(op);
+                self.push_remove_edge_change(*id)?;
             }
             EdgeChange::Kind { id, kind } => {
-                let from = self.existing_edge(*id)?.kind;
-                self.tx.push(GraphOp::SetEdgeKind {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeKind {
                     id: *id,
-                    from,
+                    from: edge.kind,
                     to: *kind,
-                });
+                })?;
             }
             EdgeChange::Selectable { id, selectable } => {
-                let from = self.existing_edge(*id)?.selectable;
-                self.tx.push(GraphOp::SetEdgeSelectable {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeSelectable {
                     id: *id,
-                    from,
+                    from: edge.selectable,
                     to: *selectable,
-                });
+                })?;
             }
             EdgeChange::Deletable { id, deletable } => {
-                let from = self.existing_edge(*id)?.deletable;
-                self.tx.push(GraphOp::SetEdgeDeletable {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeDeletable {
                     id: *id,
-                    from,
+                    from: edge.deletable,
                     to: *deletable,
-                });
+                })?;
             }
             EdgeChange::Reconnectable { id, reconnectable } => {
-                let from = self.existing_edge(*id)?.reconnectable;
-                self.tx.push(GraphOp::SetEdgeReconnectable {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeReconnectable {
                     id: *id,
-                    from,
+                    from: edge.reconnectable,
                     to: *reconnectable,
-                });
+                })?;
             }
             EdgeChange::Endpoints { id, from, to } => {
-                let edge = self.existing_edge(*id)?;
-                self.tx.push(GraphOp::SetEdgeEndpoints {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeEndpoints {
                     id: *id,
                     from: edge_endpoints(edge),
                     to: EdgeEndpoints {
                         from: *from,
                         to: *to,
                     },
-                });
+                })?;
             }
         }
+        Ok(())
+    }
+
+    fn push_remove_edge_change(&mut self, id: EdgeId) -> Result<(), ChangesToTransactionError> {
+        let op = GraphMutationPlanner::new(self.graph)
+            .remove_edge_op(id)
+            .map_err(|_| ChangesToTransactionError::MissingEdge(id))?;
+        self.tx.push(op);
+        Ok(())
+    }
+
+    fn push_edge_update(
+        &mut self,
+        id: EdgeId,
+        build: impl FnOnce(&Edge) -> GraphOp,
+    ) -> Result<(), ChangesToTransactionError> {
+        let op = {
+            let edge = self.existing_edge(id)?;
+            build(edge)
+        };
+        self.tx.push(op);
         Ok(())
     }
 }
