@@ -10,10 +10,7 @@ fn apply_transaction_rejects_node_with_missing_ports_atomically() {
     let mut node = make_node("core.a");
     node.ports.push(missing_port);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddNode { id: node_id, node }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddNode { id: node_id, node }]);
 
     let err = apply_transaction(&mut graph, &tx).expect_err("invalid transaction must fail");
     assert!(matches!(err, ApplyError::InvalidTransactionResult { .. }));
@@ -31,13 +28,10 @@ fn apply_transaction_rejects_unordered_added_port_atomically() {
     let before = graph.clone();
 
     let port_id = PortId::new();
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddPort {
-            id: port_id,
-            port: make_port(node_id, "out", PortDirection::Out),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddPort {
+        id: port_id,
+        port: make_port(node_id, "out", PortDirection::Out),
+    }]);
 
     let err = apply_transaction(&mut graph, &tx).expect_err("invalid transaction must fail");
     assert!(matches!(err, ApplyError::InvalidTransactionResult { .. }));
