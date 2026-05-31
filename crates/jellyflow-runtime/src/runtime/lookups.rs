@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, EdgeId, EdgeKind, EdgeReconnectable, Graph, GroupId, NodeId,
+    CanvasPoint, CanvasSize, EdgeId, EdgeKind, EdgeReconnectable, Graph, GroupId, Node, NodeId,
     NodeKindKey, PortDirection, PortId,
 };
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
@@ -58,6 +58,44 @@ pub struct HandleConnection {
     pub kind: EdgeKind,
 }
 
+impl HandleConnection {
+    fn from_edge_lookup(edge: EdgeId, entry: EdgeLookupEntry) -> Self {
+        Self {
+            edge,
+            source_node: entry.from_node,
+            source_port: entry.from,
+            target_node: entry.to_node,
+            target_port: entry.to,
+            kind: entry.kind,
+        }
+    }
+
+    fn lookup_keys(self) -> [ConnectionLookupKey; 6] {
+        [
+            ConnectionLookupKey::Node(self.source_node),
+            ConnectionLookupKey::NodeSide {
+                node: self.source_node,
+                side: ConnectionSide::Source,
+            },
+            ConnectionLookupKey::NodeSidePort {
+                node: self.source_node,
+                side: ConnectionSide::Source,
+                port: self.source_port,
+            },
+            ConnectionLookupKey::Node(self.target_node),
+            ConnectionLookupKey::NodeSide {
+                node: self.target_node,
+                side: ConnectionSide::Target,
+            },
+            ConnectionLookupKey::NodeSidePort {
+                node: self.target_node,
+                side: ConnectionSide::Target,
+                port: self.target_port,
+            },
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLookupEntry {
     pub kind: NodeKindKey,
@@ -70,6 +108,21 @@ pub struct NodeLookupEntry {
     pub ports: Vec<PortId>,
 }
 
+impl NodeLookupEntry {
+    fn from_node(node: &Node) -> Self {
+        Self {
+            kind: node.kind.clone(),
+            kind_version: node.kind_version,
+            pos: node.pos,
+            parent: node.parent,
+            size: node.size,
+            hidden: node.hidden,
+            collapsed: node.collapsed,
+            ports: node.ports.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeLookupEntry {
     pub kind: EdgeKind,
@@ -78,6 +131,25 @@ pub struct EdgeLookupEntry {
     pub from_node: NodeId,
     pub to_node: NodeId,
     pub reconnectable: Option<EdgeReconnectable>,
+}
+
+impl EdgeLookupEntry {
+    fn with_parts(
+        kind: EdgeKind,
+        endpoints: EdgeEndpoints,
+        from_node: NodeId,
+        to_node: NodeId,
+        reconnectable: Option<EdgeReconnectable>,
+    ) -> Self {
+        Self {
+            kind,
+            from: endpoints.from,
+            to: endpoints.to,
+            from_node,
+            to_node,
+            reconnectable,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -94,86 +166,27 @@ impl NodeGraphLookups {
         self.connection_lookup.clear();
 
         for (id, node) in &graph.nodes {
-            self.node_lookup.insert(
-                *id,
-                NodeLookupEntry {
-                    kind: node.kind.clone(),
-                    kind_version: node.kind_version,
-                    pos: node.pos,
-                    parent: node.parent,
-                    size: node.size,
-                    hidden: node.hidden,
-                    collapsed: node.collapsed,
-                    ports: node.ports.clone(),
-                },
-            );
+            self.node_lookup
+                .insert(*id, NodeLookupEntry::from_node(node));
         }
 
         for (id, edge) in &graph.edges {
-            let Some(from_port) = graph.ports.get(&edge.from) else {
-                continue;
+            let endpoints = EdgeEndpoints {
+                from: edge.from,
+                to: edge.to,
             };
-            let Some(to_port) = graph.ports.get(&edge.to) else {
-                continue;
-            };
-
-            let source_node = from_port.node;
-            let target_node = to_port.node;
-
-            self.edge_lookup.insert(
+            let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+                graph,
                 *id,
-                EdgeLookupEntry {
-                    kind: edge.kind,
-                    from: edge.from,
-                    to: edge.to,
-                    from_node: source_node,
-                    to_node: target_node,
-                    reconnectable: edge.reconnectable,
-                },
-            );
-
-            let conn = HandleConnection {
-                edge: *id,
-                source_node,
-                source_port: edge.from,
-                target_node,
-                target_port: edge.to,
-                kind: edge.kind,
+                edge.kind,
+                endpoints,
+                edge.reconnectable,
+            ) else {
+                continue;
             };
 
-            self.add_connection(ConnectionLookupKey::Node(source_node), conn);
-            self.add_connection(
-                ConnectionLookupKey::NodeSide {
-                    node: source_node,
-                    side: ConnectionSide::Source,
-                },
-                conn,
-            );
-            self.add_connection(
-                ConnectionLookupKey::NodeSidePort {
-                    node: source_node,
-                    side: ConnectionSide::Source,
-                    port: edge.from,
-                },
-                conn,
-            );
-
-            self.add_connection(ConnectionLookupKey::Node(target_node), conn);
-            self.add_connection(
-                ConnectionLookupKey::NodeSide {
-                    node: target_node,
-                    side: ConnectionSide::Target,
-                },
-                conn,
-            );
-            self.add_connection(
-                ConnectionLookupKey::NodeSidePort {
-                    node: target_node,
-                    side: ConnectionSide::Target,
-                    port: edge.to,
-                },
-                conn,
-            );
+            self.edge_lookup.insert(*id, entry);
+            self.add_edge_connection(conn);
         }
     }
 
@@ -232,75 +245,15 @@ impl NodeGraphLookups {
     }
 
     fn add_edge_connection(&mut self, entry: HandleConnection) {
-        self.add_connection(ConnectionLookupKey::Node(entry.source_node), entry);
-        self.add_connection(
-            ConnectionLookupKey::NodeSide {
-                node: entry.source_node,
-                side: ConnectionSide::Source,
-            },
-            entry,
-        );
-        self.add_connection(
-            ConnectionLookupKey::NodeSidePort {
-                node: entry.source_node,
-                side: ConnectionSide::Source,
-                port: entry.source_port,
-            },
-            entry,
-        );
-
-        self.add_connection(ConnectionLookupKey::Node(entry.target_node), entry);
-        self.add_connection(
-            ConnectionLookupKey::NodeSide {
-                node: entry.target_node,
-                side: ConnectionSide::Target,
-            },
-            entry,
-        );
-        self.add_connection(
-            ConnectionLookupKey::NodeSidePort {
-                node: entry.target_node,
-                side: ConnectionSide::Target,
-                port: entry.target_port,
-            },
-            entry,
-        );
+        for key in entry.lookup_keys() {
+            self.add_connection(key, entry);
+        }
     }
 
     fn remove_edge_connection(&mut self, entry: HandleConnection) {
-        self.remove_connection(ConnectionLookupKey::Node(entry.source_node), entry.edge);
-        self.remove_connection(
-            ConnectionLookupKey::NodeSide {
-                node: entry.source_node,
-                side: ConnectionSide::Source,
-            },
-            entry.edge,
-        );
-        self.remove_connection(
-            ConnectionLookupKey::NodeSidePort {
-                node: entry.source_node,
-                side: ConnectionSide::Source,
-                port: entry.source_port,
-            },
-            entry.edge,
-        );
-
-        self.remove_connection(ConnectionLookupKey::Node(entry.target_node), entry.edge);
-        self.remove_connection(
-            ConnectionLookupKey::NodeSide {
-                node: entry.target_node,
-                side: ConnectionSide::Target,
-            },
-            entry.edge,
-        );
-        self.remove_connection(
-            ConnectionLookupKey::NodeSidePort {
-                node: entry.target_node,
-                side: ConnectionSide::Target,
-                port: entry.target_port,
-            },
-            entry.edge,
-        );
+        for key in entry.lookup_keys() {
+            self.remove_connection(key, entry.edge);
+        }
     }
 
     fn slow_remove_edge_from_connection_lookup(&mut self, edge: EdgeId) {
@@ -317,15 +270,8 @@ impl NodeGraphLookups {
     }
 
     fn connection_from_edge_lookup(&self, edge: EdgeId) -> Option<HandleConnection> {
-        let e = self.edge_lookup.get(&edge)?;
-        Some(HandleConnection {
-            edge,
-            source_node: e.from_node,
-            source_port: e.from,
-            target_node: e.to_node,
-            target_port: e.to,
-            kind: e.kind,
-        })
+        let entry = *self.edge_lookup.get(&edge)?;
+        Some(HandleConnection::from_edge_lookup(edge, entry))
     }
 
     fn edge_lookup_entry_from_graph(
@@ -337,43 +283,31 @@ impl NodeGraphLookups {
     ) -> Option<(EdgeLookupEntry, HandleConnection)> {
         let from_port = graph.ports.get(&endpoints.from)?;
         let to_port = graph.ports.get(&endpoints.to)?;
-        let source_node = from_port.node;
-        let target_node = to_port.node;
-        let entry = EdgeLookupEntry {
+        let entry = EdgeLookupEntry::with_parts(
             kind,
-            from: endpoints.from,
-            to: endpoints.to,
-            from_node: source_node,
-            to_node: target_node,
+            endpoints,
+            from_port.node,
+            to_port.node,
             reconnectable,
-        };
-        let conn = HandleConnection {
-            edge: id,
-            source_node,
-            source_port: endpoints.from,
-            target_node,
-            target_port: endpoints.to,
-            kind,
-        };
+        );
+        let conn = HandleConnection::from_edge_lookup(id, entry);
         Some((entry, conn))
+    }
+
+    fn insert_node_lookup_from_graph(&mut self, graph: &Graph, id: NodeId) -> bool {
+        let Some(node) = graph.nodes.get(&id) else {
+            return false;
+        };
+        self.node_lookup
+            .insert(id, NodeLookupEntry::from_node(node));
+        true
     }
 
     fn apply_op(&mut self, graph: &Graph, op: &GraphOp) -> bool {
         match op {
             GraphOp::AddNode { id, node } => {
-                self.node_lookup.insert(
-                    *id,
-                    NodeLookupEntry {
-                        kind: node.kind.clone(),
-                        kind_version: node.kind_version,
-                        pos: node.pos,
-                        parent: node.parent,
-                        size: node.size,
-                        hidden: node.hidden,
-                        collapsed: node.collapsed,
-                        ports: node.ports.clone(),
-                    },
-                );
+                self.node_lookup
+                    .insert(*id, NodeLookupEntry::from_node(node));
                 true
             }
             GraphOp::RemoveNode { id, edges, .. } => {
@@ -393,69 +327,21 @@ impl NodeGraphLookups {
                     n.pos = *to;
                     return true;
                 }
-                if let Some(node) = graph.nodes.get(id) {
-                    self.node_lookup.insert(
-                        *id,
-                        NodeLookupEntry {
-                            kind: node.kind.clone(),
-                            kind_version: node.kind_version,
-                            pos: node.pos,
-                            parent: node.parent,
-                            size: node.size,
-                            hidden: node.hidden,
-                            collapsed: node.collapsed,
-                            ports: node.ports.clone(),
-                        },
-                    );
-                    return true;
-                }
-                false
+                self.insert_node_lookup_from_graph(graph, *id)
             }
             GraphOp::SetNodeKind { id, to, .. } => {
                 if let Some(n) = self.node_lookup.get_mut(id) {
                     n.kind = to.clone();
                     return true;
                 }
-                if let Some(node) = graph.nodes.get(id) {
-                    self.node_lookup.insert(
-                        *id,
-                        NodeLookupEntry {
-                            kind: node.kind.clone(),
-                            kind_version: node.kind_version,
-                            pos: node.pos,
-                            parent: node.parent,
-                            size: node.size,
-                            hidden: node.hidden,
-                            collapsed: node.collapsed,
-                            ports: node.ports.clone(),
-                        },
-                    );
-                    return true;
-                }
-                false
+                self.insert_node_lookup_from_graph(graph, *id)
             }
             GraphOp::SetNodeKindVersion { id, to, .. } => {
                 if let Some(n) = self.node_lookup.get_mut(id) {
                     n.kind_version = *to;
                     return true;
                 }
-                if let Some(node) = graph.nodes.get(id) {
-                    self.node_lookup.insert(
-                        *id,
-                        NodeLookupEntry {
-                            kind: node.kind.clone(),
-                            kind_version: node.kind_version,
-                            pos: node.pos,
-                            parent: node.parent,
-                            size: node.size,
-                            hidden: node.hidden,
-                            collapsed: node.collapsed,
-                            ports: node.ports.clone(),
-                        },
-                    );
-                    return true;
-                }
-                false
+                self.insert_node_lookup_from_graph(graph, *id)
             }
             GraphOp::SetNodeParent { id, to, .. } => {
                 if let Some(n) = self.node_lookup.get_mut(id) {
@@ -566,14 +452,7 @@ impl NodeGraphLookups {
             }
             GraphOp::SetEdgeEndpoints { id, from, to } => {
                 if let Some(prev) = self.edge_lookup.get(id).copied() {
-                    self.remove_edge_connection(HandleConnection {
-                        edge: *id,
-                        source_node: prev.from_node,
-                        source_port: prev.from,
-                        target_node: prev.to_node,
-                        target_port: prev.to,
-                        kind: prev.kind,
-                    });
+                    self.remove_edge_connection(HandleConnection::from_edge_lookup(*id, prev));
                 } else {
                     // try best-effort removal based on old edge id
                     self.slow_remove_edge_from_connection_lookup(*id);
@@ -648,28 +527,7 @@ impl NodeGraphLookups {
     }
 
     fn update_edge_kind_in_connection_lookup(&mut self, conn: HandleConnection, kind: EdgeKind) {
-        for key in [
-            ConnectionLookupKey::Node(conn.source_node),
-            ConnectionLookupKey::NodeSide {
-                node: conn.source_node,
-                side: ConnectionSide::Source,
-            },
-            ConnectionLookupKey::NodeSidePort {
-                node: conn.source_node,
-                side: ConnectionSide::Source,
-                port: conn.source_port,
-            },
-            ConnectionLookupKey::Node(conn.target_node),
-            ConnectionLookupKey::NodeSide {
-                node: conn.target_node,
-                side: ConnectionSide::Target,
-            },
-            ConnectionLookupKey::NodeSidePort {
-                node: conn.target_node,
-                side: ConnectionSide::Target,
-                port: conn.target_port,
-            },
-        ] {
+        for key in conn.lookup_keys() {
             if let Some(map) = self.connection_lookup.get_mut(&key)
                 && let Some(entry) = map.get_mut(&conn.edge)
             {

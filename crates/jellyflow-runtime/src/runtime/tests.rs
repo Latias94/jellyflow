@@ -12,7 +12,7 @@ use crate::runtime::xyflow::callbacks::{
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
-    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
+    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortKind,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -620,6 +620,50 @@ fn store_lookups_update_edge_reconnectable_after_dispatch_transaction() {
     assert_eq!(
         store.lookups().edge_lookup.get(&eid).unwrap().reconnectable,
         Some(EdgeReconnectable::Bool(false))
+    );
+}
+
+#[test]
+fn store_lookups_update_edge_kind_in_connection_lookup_after_dispatch_transaction() {
+    let (mut g, a, b, out_port, in_port, eid) = make_graph();
+    g.ports.get_mut(&out_port).unwrap().kind = PortKind::Exec;
+    g.ports.get_mut(&in_port).unwrap().kind = PortKind::Exec;
+    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+
+    let tx = GraphTransaction {
+        label: None,
+        ops: vec![GraphOp::SetEdgeKind {
+            id: eid,
+            from: EdgeKind::Data,
+            to: EdgeKind::Exec,
+        }],
+    };
+
+    store.dispatch_transaction(&tx).expect("dispatch");
+
+    assert_eq!(
+        store.lookups().edge_lookup.get(&eid).unwrap().kind,
+        EdgeKind::Exec
+    );
+    assert_eq!(
+        store
+            .lookups()
+            .connections_for_port(a, ConnectionSide::Source, out_port)
+            .expect("source connections")
+            .get(&eid)
+            .unwrap()
+            .kind,
+        EdgeKind::Exec
+    );
+    assert_eq!(
+        store
+            .lookups()
+            .connections_for_port(b, ConnectionSide::Target, in_port)
+            .expect("target connections")
+            .get(&eid)
+            .unwrap()
+            .kind,
+        EdgeKind::Exec
     );
 }
 
