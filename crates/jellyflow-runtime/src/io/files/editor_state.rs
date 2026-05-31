@@ -93,22 +93,8 @@ impl NodeGraphEditorStateFile {
                     source,
                 }
             })?;
-        if persisted.graph_id != graph_id {
-            return Err(NodeGraphEditorStateFileError::InconsistentGraphId);
-        }
-        if persisted.editor_state_version != EDITOR_STATE_FILE_VERSION {
-            return Err(NodeGraphEditorStateFileError::UnsupportedVersion {
-                version: persisted.editor_state_version,
-                expected: EDITOR_STATE_FILE_VERSION,
-            });
-        }
-
-        Ok(Self {
-            graph_id: persisted.graph_id,
-            editor_state_version: persisted.editor_state_version,
-            view_state: NodeGraphViewState::from(persisted.view_state),
-            editor_config: persisted.editor_config,
-        })
+        persisted.validate_for_graph(graph_id)?;
+        Ok(persisted.into_editor_state_file())
     }
 
     /// Loads the JSON file if it exists.
@@ -134,12 +120,7 @@ impl NodeGraphEditorStateFile {
                 }
             })?;
         }
-        let persisted = PersistedNodeGraphEditorStateFile {
-            graph_id: self.graph_id,
-            editor_state_version: EDITOR_STATE_FILE_VERSION,
-            view_state: NodeGraphPureViewState::from(&self.view_state),
-            editor_config: self.editor_config.clone(),
-        };
+        let persisted = PersistedNodeGraphEditorStateFile::from_editor_state_file(self);
         let bytes = serde_json::to_vec_pretty(&persisted).map_err(|source| {
             NodeGraphEditorStateFileError::Serialize {
                 path: path.display().to_string(),
@@ -160,4 +141,37 @@ struct PersistedNodeGraphEditorStateFile {
     view_state: NodeGraphPureViewState,
     #[serde(default, skip_serializing_if = "NodeGraphEditorConfig::is_default")]
     editor_config: NodeGraphEditorConfig,
+}
+
+impl PersistedNodeGraphEditorStateFile {
+    fn from_editor_state_file(file: &NodeGraphEditorStateFile) -> Self {
+        Self {
+            graph_id: file.graph_id,
+            editor_state_version: EDITOR_STATE_FILE_VERSION,
+            view_state: NodeGraphPureViewState::from(&file.view_state),
+            editor_config: file.editor_config.clone(),
+        }
+    }
+
+    fn validate_for_graph(&self, graph_id: GraphId) -> Result<(), NodeGraphEditorStateFileError> {
+        if self.graph_id != graph_id {
+            return Err(NodeGraphEditorStateFileError::InconsistentGraphId);
+        }
+        if self.editor_state_version != EDITOR_STATE_FILE_VERSION {
+            return Err(NodeGraphEditorStateFileError::UnsupportedVersion {
+                version: self.editor_state_version,
+                expected: EDITOR_STATE_FILE_VERSION,
+            });
+        }
+        Ok(())
+    }
+
+    fn into_editor_state_file(self) -> NodeGraphEditorStateFile {
+        NodeGraphEditorStateFile {
+            graph_id: self.graph_id,
+            editor_state_version: self.editor_state_version,
+            view_state: NodeGraphViewState::from(self.view_state),
+            editor_config: self.editor_config,
+        }
+    }
 }
