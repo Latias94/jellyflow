@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
-    EdgeKind, Graph, PortCapacity, PortId, PortKind, SubgraphNodeError, SymbolRefNodeError,
-    subgraph_target_graph_id, symbol_ref_target_symbol_id,
+    EdgeId, EdgeKind, Graph, Node, NodeId, PortCapacity, PortId, PortKind, SubgraphNodeError,
+    SymbolRefNodeError, subgraph_target_graph_id, symbol_ref_target_symbol_id,
 };
 
 use super::{GraphValidationError, GraphValidationReport, validate_graph_storage};
@@ -12,136 +12,193 @@ use super::{GraphValidationError, GraphValidationReport, validate_graph_storage}
 /// This intentionally does **not** enforce editor policies such as connection direction.
 /// Direction, cycle policy, and domain-specific semantics belong in profiles/rules.
 pub fn validate_graph_structural(graph: &Graph) -> GraphValidationReport {
-    let mut report = validate_graph_storage(graph);
-    if report
-        .errors
-        .iter()
-        .any(|error| matches!(error, GraphValidationError::UnsupportedGraphVersion { .. }))
-    {
-        return report;
+    StructuralValidator::new(graph).finish()
+}
+
+struct StructuralValidator<'a> {
+    graph: &'a Graph,
+    report: GraphValidationReport,
+}
+
+impl<'a> StructuralValidator<'a> {
+    fn new(graph: &'a Graph) -> Self {
+        Self {
+            graph,
+            report: validate_graph_storage(graph),
+        }
     }
 
-    for (node_id, node) in &graph.nodes {
-        match subgraph_target_graph_id(*node_id, node) {
+    fn finish(mut self) -> GraphValidationReport {
+        if self
+            .report
+            .errors
+            .iter()
+            .any(|error| matches!(error, GraphValidationError::UnsupportedGraphVersion { .. }))
+        {
+            return self.report;
+        }
+
+        self.validate_node_bindings();
+        let incident_counts = self.validate_edges();
+        self.validate_port_capacities(incident_counts);
+        self.report
+    }
+
+    fn validate_node_bindings(&mut self) {
+        for (node_id, node) in &self.graph.nodes {
+            self.validate_subgraph_binding(*node_id, node);
+            self.validate_symbol_ref_binding(*node_id, node);
+        }
+    }
+
+    fn validate_subgraph_binding(&mut self, node_id: NodeId, node: &Node) {
+        match subgraph_target_graph_id(node_id, node) {
             Ok(Some(target)) => {
-                if !graph.imports.contains_key(&target) {
-                    report
+                if !self.graph.imports.contains_key(&target) {
+                    self.report
                         .errors
                         .push(GraphValidationError::SubgraphTargetNotImported {
-                            node: *node_id,
+                            node: node_id,
                             graph_id: target,
                         });
                 }
             }
             Ok(None) => {}
-            Err(err) => match err {
-                SubgraphNodeError::MissingGraphId { node } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SubgraphNodeMissingGraphId { node });
-                }
-                SubgraphNodeError::GraphIdNotString { node } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SubgraphNodeGraphIdNotString { node });
-                }
-                SubgraphNodeError::InvalidGraphId { node, value } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SubgraphNodeInvalidGraphId { node, value });
-                }
-            },
+            Err(err) => self.push_subgraph_error(err),
         }
+    }
 
-        match symbol_ref_target_symbol_id(*node_id, node) {
+    fn validate_symbol_ref_binding(&mut self, node_id: NodeId, node: &Node) {
+        match symbol_ref_target_symbol_id(node_id, node) {
             Ok(Some(target)) => {
-                if !graph.symbols.contains_key(&target) {
-                    report
+                if !self.graph.symbols.contains_key(&target) {
+                    self.report
                         .errors
                         .push(GraphValidationError::SymbolRefTargetNotDeclared {
-                            node: *node_id,
+                            node: node_id,
                             symbol_id: target,
                         });
                 }
             }
             Ok(None) => {}
-            Err(err) => match err {
-                SymbolRefNodeError::MissingSymbolId { node } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SymbolRefNodeMissingSymbolId { node });
-                }
-                SymbolRefNodeError::SymbolIdNotString { node } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SymbolRefNodeSymbolIdNotString { node });
-                }
-                SymbolRefNodeError::InvalidSymbolId { node, value } => {
-                    report
-                        .errors
-                        .push(GraphValidationError::SymbolRefNodeInvalidSymbolId { node, value });
-                }
-            },
+            Err(err) => self.push_symbol_ref_error(err),
         }
     }
 
-    let mut edge_pairs: BTreeSet<(PortKind, PortId, PortId)> = BTreeSet::new();
-    let mut incident_counts: BTreeMap<PortId, usize> = BTreeMap::new();
-
-    for (edge_id, edge) in &graph.edges {
-        let Some(from) = graph.ports.get(&edge.from) else {
-            continue;
-        };
-        let Some(to) = graph.ports.get(&edge.to) else {
-            continue;
-        };
-
-        if from.kind != to.kind {
-            report.errors.push(GraphValidationError::EdgeKindMismatch {
-                edge: *edge_id,
-                from_kind: from.kind,
-                to_kind: to.kind,
-            });
-        } else {
-            let expected = match from.kind {
-                PortKind::Data => EdgeKind::Data,
-                PortKind::Exec => EdgeKind::Exec,
-            };
-            if edge.kind != expected {
-                report
+    fn push_subgraph_error(&mut self, err: SubgraphNodeError) {
+        match err {
+            SubgraphNodeError::MissingGraphId { node } => {
+                self.report
                     .errors
-                    .push(GraphValidationError::EdgeKindPortKindMismatch {
-                        edge: *edge_id,
-                        edge_kind: edge.kind,
-                        port_kind: from.kind,
-                    });
+                    .push(GraphValidationError::SubgraphNodeMissingGraphId { node });
+            }
+            SubgraphNodeError::GraphIdNotString { node } => {
+                self.report
+                    .errors
+                    .push(GraphValidationError::SubgraphNodeGraphIdNotString { node });
+            }
+            SubgraphNodeError::InvalidGraphId { node, value } => {
+                self.report
+                    .errors
+                    .push(GraphValidationError::SubgraphNodeInvalidGraphId { node, value });
             }
         }
-
-        if !edge_pairs.insert((from.kind, edge.from, edge.to)) {
-            report
-                .errors
-                .push(GraphValidationError::DuplicateEdge { edge: *edge_id });
-        }
-
-        *incident_counts.entry(edge.from).or_insert(0) += 1;
-        *incident_counts.entry(edge.to).or_insert(0) += 1;
     }
 
-    for (port_id, count) in incident_counts {
-        let Some(port) = graph.ports.get(&port_id) else {
-            continue;
-        };
-        if port.capacity == PortCapacity::Single && count > 1 {
-            report
+    fn push_symbol_ref_error(&mut self, err: SymbolRefNodeError) {
+        match err {
+            SymbolRefNodeError::MissingSymbolId { node } => {
+                self.report
+                    .errors
+                    .push(GraphValidationError::SymbolRefNodeMissingSymbolId { node });
+            }
+            SymbolRefNodeError::SymbolIdNotString { node } => {
+                self.report
+                    .errors
+                    .push(GraphValidationError::SymbolRefNodeSymbolIdNotString { node });
+            }
+            SymbolRefNodeError::InvalidSymbolId { node, value } => {
+                self.report
+                    .errors
+                    .push(GraphValidationError::SymbolRefNodeInvalidSymbolId { node, value });
+            }
+        }
+    }
+
+    fn validate_edges(&mut self) -> BTreeMap<PortId, usize> {
+        let mut edge_pairs: BTreeSet<(PortKind, PortId, PortId)> = BTreeSet::new();
+        let mut incident_counts: BTreeMap<PortId, usize> = BTreeMap::new();
+
+        for (edge_id, edge) in &self.graph.edges {
+            let Some(from) = self.graph.ports.get(&edge.from) else {
+                continue;
+            };
+            let Some(to) = self.graph.ports.get(&edge.to) else {
+                continue;
+            };
+
+            self.validate_edge_kind(*edge_id, from.kind, to.kind, edge.kind);
+
+            if !edge_pairs.insert((from.kind, edge.from, edge.to)) {
+                self.report
+                    .errors
+                    .push(GraphValidationError::DuplicateEdge { edge: *edge_id });
+            }
+
+            *incident_counts.entry(edge.from).or_insert(0) += 1;
+            *incident_counts.entry(edge.to).or_insert(0) += 1;
+        }
+
+        incident_counts
+    }
+
+    fn validate_edge_kind(
+        &mut self,
+        edge_id: EdgeId,
+        from_kind: PortKind,
+        to_kind: PortKind,
+        edge_kind: EdgeKind,
+    ) {
+        if from_kind != to_kind {
+            self.report
                 .errors
-                .push(GraphValidationError::PortCapacityExceeded {
-                    port: port_id,
-                    capacity: port.capacity,
-                    count,
+                .push(GraphValidationError::EdgeKindMismatch {
+                    edge: edge_id,
+                    from_kind,
+                    to_kind,
+                });
+            return;
+        }
+
+        let expected = match from_kind {
+            PortKind::Data => EdgeKind::Data,
+            PortKind::Exec => EdgeKind::Exec,
+        };
+        if edge_kind != expected {
+            self.report
+                .errors
+                .push(GraphValidationError::EdgeKindPortKindMismatch {
+                    edge: edge_id,
+                    edge_kind,
+                    port_kind: from_kind,
                 });
         }
     }
 
-    report
+    fn validate_port_capacities(&mut self, incident_counts: BTreeMap<PortId, usize>) {
+        for (port_id, count) in incident_counts {
+            let Some(port) = self.graph.ports.get(&port_id) else {
+                continue;
+            };
+            if port.capacity == PortCapacity::Single && count > 1 {
+                self.report
+                    .errors
+                    .push(GraphValidationError::PortCapacityExceeded {
+                        port: port_id,
+                        capacity: port.capacity,
+                        count,
+                    });
+            }
+        }
+    }
 }
