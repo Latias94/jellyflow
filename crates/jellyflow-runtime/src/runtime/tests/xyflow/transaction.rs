@@ -110,3 +110,21 @@ fn changes_to_transaction_accepts_empty_changes() {
     assert!(tx.is_empty());
     assert!(tx.label().is_none());
 }
+
+#[test]
+fn node_graph_changes_facade_consumes_parts() {
+    let node = NodeId::new();
+    let edge = EdgeId::new();
+    let changes = NodeGraphChanges::from_parts(
+        vec![NodeChange::Hidden {
+            id: node,
+            hidden: true,
+        }],
+        vec![EdgeChange::Remove { id: edge }],
+    );
+
+    let (nodes, edges) = changes.into_parts();
+
+    assert!(matches!(nodes.as_slice(), [NodeChange::Hidden { id, hidden: true }] if *id == node));
+    assert!(matches!(edges.as_slice(), [EdgeChange::Remove { id }] if *id == edge));
+}

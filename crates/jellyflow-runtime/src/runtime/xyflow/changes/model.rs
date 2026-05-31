@@ -27,6 +27,10 @@ impl NodeGraphChanges {
         Self { nodes, edges }
     }
 
+    pub fn into_parts(self) -> (Vec<NodeChange>, Vec<EdgeChange>) {
+        (self.nodes, self.edges)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.edges.is_empty()
     }
