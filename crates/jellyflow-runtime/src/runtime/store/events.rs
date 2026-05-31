@@ -1,8 +1,9 @@
 //! Store event publication internals.
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::{
-    NodeGraphDocumentSnapshot, NodeGraphGestureEvent, NodeGraphStoreEvent,
+    NodeGraphDocumentSnapshot, NodeGraphGestureEvent, NodeGraphStoreEvent, ViewChange,
 };
 use jellyflow_core::core::Graph;
 
@@ -13,7 +14,7 @@ impl NodeGraphStore {
         self.graph_revision = self.graph_revision.saturating_add(1);
     }
 
-    pub(super) fn emit_document_replaced(
+    pub(super) fn publish_document_replaced(
         &mut self,
         before_graph: Graph,
         before_view_state: NodeGraphViewState,
@@ -39,6 +40,28 @@ impl NodeGraphStore {
                 editor_config: &after_editor_config,
             },
         });
+        self.notify_selectors();
+    }
+
+    pub(super) fn publish_graph_commit(&mut self, patch: &NodeGraphPatch) {
+        self.emit(NodeGraphStoreEvent::GraphCommitted { patch });
+        self.notify_selectors();
+    }
+
+    pub(super) fn publish_view_changed(
+        &mut self,
+        before: &NodeGraphViewState,
+        after: &NodeGraphViewState,
+        changes: &[ViewChange],
+    ) {
+        if !changes.is_empty() {
+            self.emit(NodeGraphStoreEvent::ViewChanged {
+                before,
+                after,
+                changes,
+            });
+        }
+        self.notify_selectors();
     }
 
     pub(super) fn emit(&mut self, event: NodeGraphStoreEvent<'_>) {

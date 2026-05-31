@@ -4,7 +4,7 @@ use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphInteractionState,
     NodeGraphRuntimeTuning, NodeGraphViewState,
 };
-use crate::runtime::events::{NodeGraphStoreEvent, ViewChange};
+use crate::runtime::events::ViewChange;
 use crate::runtime::lookups::NodeGraphLookups;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::GraphHistory;
@@ -41,13 +41,12 @@ impl NodeGraphStore {
         self.bump_graph_revision();
         self.view_state.sanitize_for_graph(&self.graph);
         self.lookups.rebuild_from(&self.graph);
-        self.emit_document_replaced(
+        self.publish_document_replaced(
             before_graph,
             before_view_state,
             before_editor_config,
             before_revision,
         );
-        self.notify_selectors();
     }
 
     /// Replaces the entire document snapshot in one atomic store update.
@@ -73,13 +72,12 @@ impl NodeGraphStore {
         self.runtime_tuning = editor_config.runtime_tuning;
         self.history = GraphHistory::default();
         self.lookups.rebuild_from(&self.graph);
-        self.emit_document_replaced(
+        self.publish_document_replaced(
             before_graph,
             before_view_state,
             before_editor_config,
             before_revision,
         );
-        self.notify_selectors();
     }
 
     pub fn view_state(&self) -> &NodeGraphViewState {
@@ -120,14 +118,7 @@ impl NodeGraphStore {
 
         let changes = collect_view_projection_changes(&before, &after);
 
-        if !changes.is_empty() {
-            self.emit(NodeGraphStoreEvent::ViewChanged {
-                before: &before,
-                after: &after,
-                changes: &changes,
-            });
-        }
-        self.notify_selectors();
+        self.publish_view_changed(&before, &after, &changes);
     }
 
     /// Mutates view-state in place and emits derived `ViewChange` events.
@@ -143,14 +134,7 @@ impl NodeGraphStore {
 
         let changes = collect_view_projection_changes(&before, &after);
 
-        if !changes.is_empty() {
-            self.emit(NodeGraphStoreEvent::ViewChanged {
-                before: &before,
-                after: &after,
-                changes: &changes,
-            });
-        }
-        self.notify_selectors();
+        self.publish_view_changed(&before, &after, &changes);
     }
 
     pub fn replace_editor_config(&mut self, editor_config: NodeGraphEditorConfig) {
@@ -195,12 +179,7 @@ impl NodeGraphStore {
         let after = self.view_state.clone();
 
         let changes = [ViewChange::Viewport { pan, zoom: z }];
-        self.emit(NodeGraphStoreEvent::ViewChanged {
-            before: &before,
-            after: &after,
-            changes: &changes,
-        });
-        self.notify_selectors();
+        self.publish_view_changed(&before, &after, &changes);
     }
 
     /// Sets selection state and notifies subscribers.
@@ -230,12 +209,7 @@ impl NodeGraphStore {
             edges: after.selected_edges.clone(),
             groups: after.selected_groups.clone(),
         }];
-        self.emit(NodeGraphStoreEvent::ViewChanged {
-            before: &before,
-            after: &after,
-            changes: &changes,
-        });
-        self.notify_selectors();
+        self.publish_view_changed(&before, &after, &changes);
     }
 
     pub fn history(&self) -> &GraphHistory {

@@ -3,7 +3,7 @@
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::events::{NodeGraphStoreEvent, NodeGraphStoreSnapshot};
+use crate::runtime::events::NodeGraphStoreSnapshot;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
@@ -282,10 +282,5 @@ impl NodeGraphStore {
         self.graph = graph;
         self.bump_graph_revision();
         self.lookups.apply_transaction(&self.graph, committed);
-    }
-
-    fn publish_graph_commit(&mut self, patch: &NodeGraphPatch) {
-        self.emit(NodeGraphStoreEvent::GraphCommitted { patch });
-        self.notify_selectors();
     }
 }
