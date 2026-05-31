@@ -3,7 +3,7 @@
 use crate::runtime::xyflow::changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges,
 };
-use jellyflow_core::core::{Graph, Node, NodeId};
+use jellyflow_core::core::{Edge, EdgeId, Graph, Node, NodeId};
 use jellyflow_core::ops::{EdgeEndpoints, GraphMutationPlanner, GraphOp, GraphTransaction};
 
 pub(super) fn changes_to_transaction(
@@ -189,12 +189,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
                 self.tx.push(op);
             }
             EdgeChange::Kind { id, kind } => {
-                let from = self
-                    .graph
-                    .edges
-                    .get(id)
-                    .map(|edge| edge.kind)
-                    .ok_or(ChangesToTransactionError::MissingEdge(*id))?;
+                let from = self.existing_edge(*id)?.kind;
                 self.tx.push(GraphOp::SetEdgeKind {
                     id: *id,
                     from,
@@ -202,12 +197,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
                 });
             }
             EdgeChange::Selectable { id, selectable } => {
-                let from = self
-                    .graph
-                    .edges
-                    .get(id)
-                    .map(|edge| edge.selectable)
-                    .ok_or(ChangesToTransactionError::MissingEdge(*id))?;
+                let from = self.existing_edge(*id)?.selectable;
                 self.tx.push(GraphOp::SetEdgeSelectable {
                     id: *id,
                     from,
@@ -215,12 +205,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
                 });
             }
             EdgeChange::Deletable { id, deletable } => {
-                let from = self
-                    .graph
-                    .edges
-                    .get(id)
-                    .map(|edge| edge.deletable)
-                    .ok_or(ChangesToTransactionError::MissingEdge(*id))?;
+                let from = self.existing_edge(*id)?.deletable;
                 self.tx.push(GraphOp::SetEdgeDeletable {
                     id: *id,
                     from,
@@ -228,12 +213,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
                 });
             }
             EdgeChange::Reconnectable { id, reconnectable } => {
-                let from = self
-                    .graph
-                    .edges
-                    .get(id)
-                    .map(|edge| edge.reconnectable)
-                    .ok_or(ChangesToTransactionError::MissingEdge(*id))?;
+                let from = self.existing_edge(*id)?.reconnectable;
                 self.tx.push(GraphOp::SetEdgeReconnectable {
                     id: *id,
                     from,
@@ -241,17 +221,10 @@ impl<'a> ChangesTransactionPlanner<'a> {
                 });
             }
             EdgeChange::Endpoints { id, from, to } => {
-                let edge = self
-                    .graph
-                    .edges
-                    .get(id)
-                    .ok_or(ChangesToTransactionError::MissingEdge(*id))?;
+                let edge = self.existing_edge(*id)?;
                 self.tx.push(GraphOp::SetEdgeEndpoints {
                     id: *id,
-                    from: EdgeEndpoints {
-                        from: edge.from,
-                        to: edge.to,
-                    },
+                    from: edge_endpoints(edge),
                     to: EdgeEndpoints {
                         from: *from,
                         to: *to,
@@ -267,5 +240,19 @@ impl<'a> ChangesTransactionPlanner<'a> {
             .nodes
             .get(&id)
             .ok_or(ChangesToTransactionError::MissingNode(id))
+    }
+
+    fn existing_edge(&self, id: EdgeId) -> Result<&'a Edge, ChangesToTransactionError> {
+        self.graph
+            .edges
+            .get(&id)
+            .ok_or(ChangesToTransactionError::MissingEdge(id))
+    }
+}
+
+fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
+    EdgeEndpoints {
+        from: edge.from,
+        to: edge.to,
     }
 }
