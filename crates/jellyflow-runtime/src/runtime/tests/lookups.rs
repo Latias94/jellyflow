@@ -210,3 +210,21 @@ fn lookups_apply_edge_endpoints_rebuilds_when_edge_is_missing() {
             .all(|connections| !connections.contains_key(&eid))
     );
 }
+
+#[test]
+fn lookups_apply_add_edge_rebuilds_when_edge_is_missing() {
+    let (mut g, _a, _b, _out_port, _in_port, eid) = make_graph();
+    let edge = g.edges.remove(&eid).unwrap();
+    let tx = GraphTransaction::from_ops([GraphOp::AddEdge { id: eid, edge }]);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.apply_transaction(&g, &tx);
+
+    assert!(!lookups.edge_lookup.contains_key(&eid));
+    assert!(
+        lookups
+            .connection_lookup
+            .values()
+            .all(|connections| !connections.contains_key(&eid))
+    );
+}

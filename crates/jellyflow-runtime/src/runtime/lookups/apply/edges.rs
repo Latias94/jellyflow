@@ -4,7 +4,10 @@ use jellyflow_core::core::{Edge, EdgeId, EdgeKind, EdgeReconnectable};
 use jellyflow_core::ops::EdgeEndpoints;
 
 impl NodeGraphLookups {
-    pub(super) fn apply_add_edge(&mut self, graph: &Graph, id: EdgeId, edge: &Edge) -> bool {
+    pub(super) fn apply_add_edge(&mut self, graph: &Graph, id: EdgeId) -> bool {
+        let Some(edge) = graph.edges.get(&id) else {
+            return false;
+        };
         self.insert_edge_lookup_from_parts(
             graph,
             id,

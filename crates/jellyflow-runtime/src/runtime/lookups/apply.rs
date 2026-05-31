@@ -32,7 +32,7 @@ impl NodeGraphLookups {
             GraphOp::SetNodeCollapsed { id, to, .. } => self.apply_set_node_collapsed(*id, *to),
             GraphOp::SetNodePorts { id, to, .. } => self.apply_set_node_ports(*id, to),
             GraphOp::RemovePort { id, port, edges } => self.apply_remove_port(*id, port, edges),
-            GraphOp::AddEdge { id, edge } => self.apply_add_edge(graph, *id, edge),
+            GraphOp::AddEdge { id, .. } => self.apply_add_edge(graph, *id),
             GraphOp::RemoveEdge { id, .. } => self.apply_remove_edge(*id),
             GraphOp::SetEdgeKind { id, to, .. } => self.apply_set_edge_kind(graph, *id, *to),
             GraphOp::SetEdgeReconnectable { id, to, .. } => {
