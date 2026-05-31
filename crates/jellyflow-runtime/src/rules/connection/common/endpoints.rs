@@ -45,12 +45,7 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         },
     };
 
-    let Some(from) = graph.ports.get(&from_id) else {
-        return Err(ConnectPlan::reject(format!("missing port: {from_id:?}")));
-    };
-    let Some(to) = graph.ports.get(&to_id) else {
-        return Err(ConnectPlan::reject(format!("missing port: {to_id:?}")));
-    };
+    let (from, to) = connection_ports(graph, from_id, to_id)?;
 
     if from.kind != to.kind {
         return Err(ConnectPlan::reject(format!(
@@ -70,4 +65,18 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         to,
         edge_kind,
     })
+}
+
+pub(in crate::rules::connection) fn connection_ports(
+    graph: &Graph,
+    from_id: PortId,
+    to_id: PortId,
+) -> Result<(&Port, &Port), ConnectPlan> {
+    let Some(from) = graph.ports.get(&from_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {from_id:?}")));
+    };
+    let Some(to) = graph.ports.get(&to_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {to_id:?}")));
+    };
+    Ok((from, to))
 }

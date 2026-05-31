@@ -6,7 +6,7 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
 
 use super::super::common::{
-    connection_exists, disconnect_for_capacity, edge_kind_for_port_kind,
+    connection_exists, connection_ports, disconnect_for_capacity, edge_kind_for_port_kind,
     reject_if_connection_policy_disallows,
 };
 
@@ -40,7 +40,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return ConnectPlan::accept();
     }
 
-    let (from, to) = match candidate_ports(graph, candidate) {
+    let (from, to) = match connection_ports(graph, candidate.from, candidate.to) {
         Ok(ports) => ports,
         Err(reject) => return reject,
     };
@@ -134,22 +134,6 @@ fn reconnect_candidate(edge: &Edge, endpoint: EdgeEndpoint, new_port: PortId) ->
             to: new_port,
         },
     }
-}
-
-fn candidate_ports(graph: &Graph, candidate: EdgeEndpoints) -> Result<(&Port, &Port), ConnectPlan> {
-    let Some(from) = graph.ports.get(&candidate.from) else {
-        return Err(ConnectPlan::reject(format!(
-            "missing port: {:?}",
-            candidate.from
-        )));
-    };
-    let Some(to) = graph.ports.get(&candidate.to) else {
-        return Err(ConnectPlan::reject(format!(
-            "missing port: {:?}",
-            candidate.to
-        )));
-    };
-    Ok((from, to))
 }
 
 fn strict_mode_rejection(
