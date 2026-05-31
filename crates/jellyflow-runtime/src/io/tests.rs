@@ -91,6 +91,24 @@ fn interaction_state_split_roundtrips_runtime_tuning() {
 }
 
 #[test]
+fn editor_config_parts_roundtrip() {
+    let mut interaction = NodeGraphInteractionConfig::default();
+    interaction.selection_on_drag = true;
+    let runtime_tuning = NodeGraphRuntimeTuning {
+        only_render_visible_elements: false,
+        ..NodeGraphRuntimeTuning::default()
+    };
+
+    let editor_config = NodeGraphEditorConfig::from_parts(interaction.clone(), runtime_tuning);
+    assert_eq!(editor_config.interaction, interaction);
+    assert_eq!(editor_config.runtime_tuning, runtime_tuning);
+    assert_eq!(
+        editor_config.clone().into_parts(),
+        (interaction, runtime_tuning)
+    );
+}
+
+#[test]
 fn editor_state_file_rejects_unsupported_version() {
     let graph_id = GraphId::new();
     let path = temp_path("editor_state_unsupported_version", graph_id);

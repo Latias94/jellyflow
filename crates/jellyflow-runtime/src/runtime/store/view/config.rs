@@ -15,10 +15,7 @@ impl NodeGraphStore {
     }
 
     pub fn editor_config(&self) -> NodeGraphEditorConfig {
-        NodeGraphEditorConfig {
-            interaction: self.interaction.clone(),
-            runtime_tuning: self.runtime_tuning,
-        }
+        NodeGraphEditorConfig::from_parts(self.interaction.clone(), self.runtime_tuning)
     }
 
     pub fn resolved_interaction_state(&self) -> NodeGraphInteractionState {

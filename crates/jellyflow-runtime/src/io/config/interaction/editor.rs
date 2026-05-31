@@ -18,6 +18,20 @@ pub struct NodeGraphEditorConfig {
 }
 
 impl NodeGraphEditorConfig {
+    pub fn from_parts(
+        interaction: NodeGraphInteractionConfig,
+        runtime_tuning: NodeGraphRuntimeTuning,
+    ) -> Self {
+        Self {
+            interaction,
+            runtime_tuning,
+        }
+    }
+
+    pub fn into_parts(self) -> (NodeGraphInteractionConfig, NodeGraphRuntimeTuning) {
+        (self.interaction, self.runtime_tuning)
+    }
+
     pub fn is_default(this: &Self) -> bool {
         this == &Self::default()
     }

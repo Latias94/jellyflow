@@ -124,12 +124,13 @@ impl NodeGraphStore {
         view_state.sanitize_for_graph(&graph);
         let mut lookups = NodeGraphLookups::default();
         lookups.rebuild_from(&graph);
+        let (interaction, runtime_tuning) = editor_config.into_parts();
         Self {
             graph,
             graph_revision: 0,
             view_state,
-            interaction: editor_config.interaction,
-            runtime_tuning: editor_config.runtime_tuning,
+            interaction,
+            runtime_tuning,
             history: GraphHistory::default(),
             profile,
             middleware: None,
