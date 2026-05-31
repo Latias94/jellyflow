@@ -101,10 +101,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
                 .edges
                 .get(&id)
                 .ok_or(GraphMutationError::MissingEdge(id))?;
-            EdgeEndpoints {
-                from: edge.from,
-                to: edge.to,
-            }
+            EdgeEndpoints::from_edge(edge)
         };
 
         self.staged.set_edge_endpoints(id, to);
@@ -152,13 +149,8 @@ impl StagedMutationIds {
 
     fn insert_edge(&mut self, id: EdgeId, edge: &Edge) {
         self.staged_edges.insert(id);
-        self.staged_edge_endpoints.insert(
-            id,
-            EdgeEndpoints {
-                from: edge.from,
-                to: edge.to,
-            },
-        );
+        self.staged_edge_endpoints
+            .insert(id, EdgeEndpoints::from_edge(edge));
     }
 
     fn edge_endpoints(&self, id: EdgeId) -> Option<EdgeEndpoints> {

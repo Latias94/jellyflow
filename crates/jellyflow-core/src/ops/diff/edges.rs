@@ -38,8 +38,8 @@ impl<'a> GraphDiffPlanner<'a> {
     }
 
     fn diff_edge_endpoints(&mut self, id: EdgeId, edge_from: &Edge, edge_to: &Edge) {
-        let from = edge_endpoints(edge_from);
-        let to = edge_endpoints(edge_to);
+        let from = EdgeEndpoints::from_edge(edge_from);
+        let to = EdgeEndpoints::from_edge(edge_to);
         if from != to {
             self.push_op(GraphOp::SetEdgeEndpoints { id, from, to });
         }
@@ -83,12 +83,5 @@ impl<'a> GraphDiffPlanner<'a> {
                 edge: edge_from.clone(),
             });
         }
-    }
-}
-
-fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
-    EdgeEndpoints {
-        from: edge.from,
-        to: edge.to,
     }
 }

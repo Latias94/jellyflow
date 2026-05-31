@@ -9,7 +9,7 @@ impl NodeGraphLookups {
             graph,
             id,
             edge.kind,
-            edge_endpoints(edge),
+            EdgeEndpoints::from_edge(edge),
             edge.reconnectable,
         ) else {
             return false;
@@ -58,7 +58,7 @@ impl NodeGraphLookups {
             graph,
             id,
             edge.kind,
-            edge_endpoints(edge),
+            EdgeEndpoints::from_edge(edge),
             reconnectable,
         ) else {
             return false;
@@ -117,12 +117,5 @@ impl NodeGraphLookups {
                     .get(&id)
                     .and_then(|entry| entry.reconnectable)
             })
-    }
-}
-
-fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
-    EdgeEndpoints {
-        from: edge.from,
-        to: edge.to,
     }
 }

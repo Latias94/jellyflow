@@ -30,7 +30,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return reject;
     }
 
-    let old = edge_endpoints(edge);
+    let old = EdgeEndpoints::from_edge(edge);
     let candidate = reconnect_candidate(edge, endpoint, new_port);
 
     if candidate.from == candidate.to {
@@ -110,23 +110,10 @@ fn reconnect_endpoint_policy_rejection(
     }
 }
 
-fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
-    EdgeEndpoints {
-        from: edge.from,
-        to: edge.to,
-    }
-}
-
 fn reconnect_candidate(edge: &Edge, endpoint: EdgeEndpoint, new_port: PortId) -> EdgeEndpoints {
     match endpoint {
-        EdgeEndpoint::From => EdgeEndpoints {
-            from: new_port,
-            to: edge.to,
-        },
-        EdgeEndpoint::To => EdgeEndpoints {
-            from: edge.from,
-            to: new_port,
-        },
+        EdgeEndpoint::From => EdgeEndpoints::new(new_port, edge.to),
+        EdgeEndpoint::To => EdgeEndpoints::new(edge.from, new_port),
     }
 }
 

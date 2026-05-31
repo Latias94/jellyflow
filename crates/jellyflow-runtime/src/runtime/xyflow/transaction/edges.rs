@@ -50,11 +50,8 @@ impl<'a> ChangesTransactionPlanner<'a> {
             EdgeChange::Endpoints { id, from, to } => {
                 self.push_edge_update(*id, |edge| GraphOp::SetEdgeEndpoints {
                     id: *id,
-                    from: edge_endpoints(edge),
-                    to: EdgeEndpoints {
-                        from: *from,
-                        to: *to,
-                    },
+                    from: EdgeEndpoints::from_edge(edge),
+                    to: EdgeEndpoints::new(*from, *to),
                 })?;
             }
         }
@@ -80,12 +77,5 @@ impl<'a> ChangesTransactionPlanner<'a> {
         };
         self.push_op(op);
         Ok(())
-    }
-}
-
-fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
-    EdgeEndpoints {
-        from: edge.from,
-        to: edge.to,
     }
 }

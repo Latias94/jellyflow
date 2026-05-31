@@ -14,10 +14,7 @@ impl NodeGraphLookups {
         }
 
         for (id, edge) in &graph.edges {
-            let endpoints = EdgeEndpoints {
-                from: edge.from,
-                to: edge.to,
-            };
+            let endpoints = EdgeEndpoints::from_edge(edge);
             let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
                 graph,
                 *id,

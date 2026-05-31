@@ -52,13 +52,9 @@ pub fn plan_split_edge_by_inserting_node(
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
         return reject_mutation_error(error);
     }
-    if let Err(error) = batch.set_edge_endpoints(
-        edge_id,
-        EdgeEndpoints {
-            from: edge.from,
-            to: inserted_ports.input,
-        },
-    ) {
+    if let Err(error) =
+        batch.set_edge_endpoints(edge_id, EdgeEndpoints::new(edge.from, inserted_ports.input))
+    {
         return reject_mutation_error(error);
     }
     if let Err(error) = batch.add_edge(new_edge_id, edge_like(edge, inserted_ports.output, edge.to))
