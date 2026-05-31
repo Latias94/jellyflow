@@ -134,12 +134,11 @@ impl NodeGraphStore {
     }
 
     fn commit_dispatch(&mut self, graph: Graph, committed: GraphTransaction) -> DispatchOutcome {
-        self.install_committed_graph_state(graph, &committed);
-        self.history.record(committed.clone());
-        let patch = NodeGraphPatch::new(committed);
+        let committed_for_history = committed.clone();
+        let patch = self.prepare_committed_graph_patch(graph, committed);
+        self.history.record(committed_for_history);
         self.run_after_dispatch_middleware(&patch);
-        self.publish_graph_commit(&patch);
-        DispatchOutcome::new(patch)
+        self.publish_dispatch_outcome(patch)
     }
 
     fn run_before_dispatch_middleware(
@@ -242,10 +241,8 @@ impl NodeGraphStore {
         }
 
         let committed = committed.unwrap_or_default();
-        self.install_committed_graph_state(scratch, &committed);
-        let patch = NodeGraphPatch::new(committed);
-        self.publish_graph_commit(&patch);
-        Ok(Some(DispatchOutcome::new(patch)))
+        let patch = self.prepare_committed_graph_patch(scratch, committed);
+        Ok(Some(self.publish_dispatch_outcome(patch)))
     }
 
     fn apply_history_transaction(
@@ -282,5 +279,19 @@ impl NodeGraphStore {
         self.graph = graph;
         self.bump_graph_revision();
         self.lookups.apply_transaction(&self.graph, committed);
+    }
+
+    fn prepare_committed_graph_patch(
+        &mut self,
+        graph: Graph,
+        committed: GraphTransaction,
+    ) -> NodeGraphPatch {
+        self.install_committed_graph_state(graph, &committed);
+        NodeGraphPatch::new(committed)
+    }
+
+    fn publish_dispatch_outcome(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
+        self.publish_graph_commit(&patch);
+        DispatchOutcome::new(patch)
     }
 }
