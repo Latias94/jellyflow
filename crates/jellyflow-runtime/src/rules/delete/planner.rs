@@ -98,34 +98,67 @@ impl<'a> DeletePlanner<'a> {
     }
 
     fn build_ops(&self, selection: &DeleteSelection) -> Result<Vec<GraphOp>, Diagnostic> {
-        let mut scratch = self.graph.clone();
-        let mut ops = Vec::new();
+        let mut builder = DeleteOpBuilder::new(self.graph);
 
         for node_id in selection.nodes() {
-            let op = GraphMutationPlanner::new(&scratch)
-                .remove_node_op(*node_id)
-                .map_err(|error| {
-                    planning_diagnostic(format!("failed to plan node deletion: {error}"))
-                })?;
-            apply_planned_op(&mut scratch, &op)?;
-            ops.push(op);
+            builder.remove_node(*node_id)?;
         }
 
         for edge_id in selection.edges() {
-            if selection.edge_is_cascaded(edge_id) || !scratch.edges.contains_key(edge_id) {
+            if selection.edge_is_cascaded(edge_id) || !builder.has_edge(edge_id) {
                 continue;
             }
 
-            let op = GraphMutationPlanner::new(&scratch)
-                .remove_edge_op(*edge_id)
-                .map_err(|error| {
-                    planning_diagnostic(format!("failed to plan edge deletion: {error}"))
-                })?;
-            apply_planned_op(&mut scratch, &op)?;
-            ops.push(op);
+            builder.remove_edge(*edge_id)?;
         }
 
-        Ok(ops)
+        Ok(builder.into_ops())
+    }
+}
+
+struct DeleteOpBuilder {
+    scratch: Graph,
+    ops: Vec<GraphOp>,
+}
+
+impl DeleteOpBuilder {
+    fn new(graph: &Graph) -> Self {
+        Self {
+            scratch: graph.clone(),
+            ops: Vec::new(),
+        }
+    }
+
+    fn has_edge(&self, edge_id: &EdgeId) -> bool {
+        self.scratch.edges.contains_key(edge_id)
+    }
+
+    fn remove_node(&mut self, node_id: NodeId) -> Result<(), Diagnostic> {
+        let op = GraphMutationPlanner::new(&self.scratch)
+            .remove_node_op(node_id)
+            .map_err(|error| {
+                planning_diagnostic(format!("failed to plan node deletion: {error}"))
+            })?;
+        self.push_applied(op)
+    }
+
+    fn remove_edge(&mut self, edge_id: EdgeId) -> Result<(), Diagnostic> {
+        let op = GraphMutationPlanner::new(&self.scratch)
+            .remove_edge_op(edge_id)
+            .map_err(|error| {
+                planning_diagnostic(format!("failed to plan edge deletion: {error}"))
+            })?;
+        self.push_applied(op)
+    }
+
+    fn push_applied(&mut self, op: GraphOp) -> Result<(), Diagnostic> {
+        apply_planned_op(&mut self.scratch, &op)?;
+        self.ops.push(op);
+        Ok(())
+    }
+
+    fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
     }
 }
 
