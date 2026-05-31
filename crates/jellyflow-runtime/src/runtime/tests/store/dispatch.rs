@@ -14,13 +14,13 @@ fn store_dispatch_changes_records_history_and_supports_undo() {
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
     let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
 
-    let changes = NodeGraphChanges {
-        nodes: vec![NodeChange::Position {
+    let changes = NodeGraphChanges::from_parts(
+        vec![NodeChange::Position {
             id: a,
             position: CanvasPoint { x: 12.0, y: 34.0 },
         }],
-        edges: Vec::new(),
-    };
+        Vec::new(),
+    );
 
     let outcome = store.dispatch_changes(&changes).expect("dispatch");
     assert!(!outcome.patch.ops().is_empty());

@@ -30,13 +30,13 @@ fn store_subscription_receives_graph_and_view_events_and_can_unsubscribe() {
     store.set_viewport(jellyflow_core::core::CanvasPoint { x: 1.0, y: 2.0 }, 1.25);
     store.set_selection(vec![a], Vec::new(), Vec::new());
 
-    let changes = NodeGraphChanges {
-        nodes: vec![NodeChange::Position {
+    let changes = NodeGraphChanges::from_parts(
+        vec![NodeChange::Position {
             id: a,
             position: CanvasPoint { x: 5.0, y: 6.0 },
         }],
-        edges: Vec::new(),
-    };
+        Vec::new(),
+    );
     store.dispatch_changes(&changes).expect("dispatch");
 
     let got = events.borrow().clone();
