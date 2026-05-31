@@ -31,22 +31,19 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
     }
 
     fn run(mut self, tx: &GraphTransaction) -> Result<DispatchPipelineResult, ApplyPipelineError> {
-        let mut tx = normalize_transaction(tx.clone());
+        let mut tx = Self::normalize_and_validate(tx.clone())?;
         if tx.is_empty() {
             return Ok(DispatchPipelineResult::Empty(tx));
         }
-        Self::validate_transaction(&tx)?;
 
         self.store.run_before_dispatch_middleware(&mut tx)?;
-        tx = normalize_transaction(tx);
+        tx = Self::normalize_and_validate(tx)?;
         if tx.is_empty() {
             return Ok(DispatchPipelineResult::Empty(tx));
         }
-        Self::validate_transaction(&tx)?;
 
         let (graph, committed) = self.apply_to_scratch(&tx)?;
-        let committed = normalize_transaction(committed);
-        Self::validate_transaction(&committed)?;
+        let committed = Self::normalize_and_validate(committed)?;
         Ok(DispatchPipelineResult::Commit { graph, committed })
     }
 
@@ -62,6 +59,14 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
             }
         };
         Ok((scratch, committed))
+    }
+
+    fn normalize_and_validate(
+        tx: GraphTransaction,
+    ) -> Result<GraphTransaction, ApplyPipelineError> {
+        let tx = normalize_transaction(tx);
+        Self::validate_transaction(&tx)?;
+        Ok(tx)
     }
 
     fn validate_transaction(tx: &GraphTransaction) -> Result<(), ApplyPipelineError> {
