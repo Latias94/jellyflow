@@ -54,6 +54,13 @@ pub struct CanonicalizeKindsPlan {
 }
 
 impl CanonicalizeKindsPlan {
+    pub(in crate::schema) fn from_parts(
+        tx: GraphTransaction,
+        rewrites: Vec<NodeKindRewrite>,
+    ) -> Self {
+        Self { tx, rewrites }
+    }
+
     pub fn transaction(&self) -> &GraphTransaction {
         &self.tx
     }
@@ -215,6 +222,10 @@ pub struct MigrateNodesPlan {
 }
 
 impl MigrateNodesPlan {
+    pub(in crate::schema) fn from_parts(tx: GraphTransaction, report: MigrateNodesReport) -> Self {
+        Self { tx, report }
+    }
+
     pub fn transaction(&self) -> &GraphTransaction {
         &self.tx
     }

@@ -104,10 +104,7 @@ impl CanonicalizeKindsPlanner {
     }
 
     fn finish(self) -> CanonicalizeKindsPlan {
-        CanonicalizeKindsPlan {
-            tx: self.tx.into_tx(),
-            rewrites: self.rewrites,
-        }
+        CanonicalizeKindsPlan::from_parts(self.tx.into_tx(), self.rewrites)
     }
 }
 
@@ -133,10 +130,7 @@ impl<'a> MigrateNodesPlanner<'a> {
             self.plan_node(*id, node);
         }
 
-        MigrateNodesPlan {
-            tx: self.tx.into_tx(),
-            report: self.report,
-        }
+        MigrateNodesPlan::from_parts(self.tx.into_tx(), self.report)
     }
 
     fn plan_node(&mut self, id: NodeId, node: &Node) {
