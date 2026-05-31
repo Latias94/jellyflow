@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(sym_from) = from.symbols.get(id) {
                 self.diff_existing_symbol(*id, sym_from, sym_to);
             } else {
-                self.tx.push(GraphOp::AddSymbol {
+                self.push_op(GraphOp::AddSymbol {
                     id: *id,
                     symbol: sym_to.clone(),
                 });
@@ -20,7 +20,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, sym_from) in &from.symbols {
             if !to.symbols.contains_key(id) {
-                self.tx.push(GraphOp::RemoveSymbol {
+                self.push_op(GraphOp::RemoveSymbol {
                     id: *id,
                     symbol: sym_from.clone(),
                 });
@@ -30,28 +30,28 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_existing_symbol(&mut self, id: SymbolId, sym_from: &Symbol, sym_to: &Symbol) {
         if sym_from.name != sym_to.name {
-            self.tx.push(GraphOp::SetSymbolName {
+            self.push_op(GraphOp::SetSymbolName {
                 id,
                 from: sym_from.name.clone(),
                 to: sym_to.name.clone(),
             });
         }
         if sym_from.ty != sym_to.ty {
-            self.tx.push(GraphOp::SetSymbolType {
+            self.push_op(GraphOp::SetSymbolType {
                 id,
                 from: sym_from.ty.clone(),
                 to: sym_to.ty.clone(),
             });
         }
         if sym_from.default_value != sym_to.default_value {
-            self.tx.push(GraphOp::SetSymbolDefaultValue {
+            self.push_op(GraphOp::SetSymbolDefaultValue {
                 id,
                 from: sym_from.default_value.clone(),
                 to: sym_to.default_value.clone(),
             });
         }
         if sym_from.meta != sym_to.meta {
-            self.tx.push(GraphOp::SetSymbolMeta {
+            self.push_op(GraphOp::SetSymbolMeta {
                 id,
                 from: sym_from.meta.clone(),
                 to: sym_to.meta.clone(),

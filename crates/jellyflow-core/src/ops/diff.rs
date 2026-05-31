@@ -6,7 +6,7 @@ mod ports;
 use std::collections::BTreeSet;
 
 use crate::core::{EdgeId, Graph, PortId};
-use crate::ops::{GraphTransaction, normalize_transaction};
+use crate::ops::{GraphOp, GraphTransaction, normalize_transaction};
 
 /// Computes a deterministic patch transaction that transforms `from` into `to`.
 ///
@@ -48,5 +48,9 @@ impl<'a> GraphDiffPlanner<'a> {
         self.diff_sticky_notes();
 
         normalize_transaction(self.tx)
+    }
+
+    fn push_op(&mut self, op: GraphOp) {
+        self.tx.push(op);
     }
 }

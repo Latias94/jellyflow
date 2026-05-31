@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(port_from) = from.ports.get(id) {
                 self.diff_existing_port(*id, port_from, port_to);
             } else {
-                self.tx.push(GraphOp::AddPort {
+                self.push_op(GraphOp::AddPort {
                     id: *id,
                     port: port_to.clone(),
                 });
@@ -33,7 +33,7 @@ impl<'a> GraphDiffPlanner<'a> {
     fn replace_structural_port(&mut self, id: PortId, port_to: &Port) {
         let removed_edge_ids = self.push_remove_port_for_replacement(id);
 
-        self.tx.push(GraphOp::AddPort {
+        self.push_op(GraphOp::AddPort {
             id,
             port: port_to.clone(),
         });
@@ -50,7 +50,7 @@ impl<'a> GraphDiffPlanner<'a> {
                 self.removed_edges_by_cascade
                     .extend(edges.iter().map(|(id, _)| *id));
             }
-            self.tx.push(op);
+            self.push_op(op);
         }
         removed_edge_ids
     }
@@ -62,7 +62,7 @@ impl<'a> GraphDiffPlanner<'a> {
             let mut from_ports = node_to.ports.clone();
             from_ports.retain(|p| *p != id);
             if from_ports != node_to.ports {
-                self.tx.push(GraphOp::SetNodePorts {
+                self.push_op(GraphOp::SetNodePorts {
                     id: port_to.node,
                     from: from_ports,
                     to: node_to.ports.clone(),
@@ -77,7 +77,7 @@ impl<'a> GraphDiffPlanner<'a> {
         // the intermediate state created by the removal.
         for edge_id in removed_edge_ids {
             if let Some(edge_to) = self.to.edges.get(&edge_id) {
-                self.tx.push(GraphOp::AddEdge {
+                self.push_op(GraphOp::AddEdge {
                     id: edge_id,
                     edge: edge_to.clone(),
                 });
@@ -87,35 +87,35 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_port_metadata(&mut self, id: PortId, port_from: &Port, port_to: &Port) {
         if port_from.connectable != port_to.connectable {
-            self.tx.push(GraphOp::SetPortConnectable {
+            self.push_op(GraphOp::SetPortConnectable {
                 id,
                 from: port_from.connectable,
                 to: port_to.connectable,
             });
         }
         if port_from.connectable_start != port_to.connectable_start {
-            self.tx.push(GraphOp::SetPortConnectableStart {
+            self.push_op(GraphOp::SetPortConnectableStart {
                 id,
                 from: port_from.connectable_start,
                 to: port_to.connectable_start,
             });
         }
         if port_from.connectable_end != port_to.connectable_end {
-            self.tx.push(GraphOp::SetPortConnectableEnd {
+            self.push_op(GraphOp::SetPortConnectableEnd {
                 id,
                 from: port_from.connectable_end,
                 to: port_to.connectable_end,
             });
         }
         if port_from.ty != port_to.ty {
-            self.tx.push(GraphOp::SetPortType {
+            self.push_op(GraphOp::SetPortType {
                 id,
                 from: port_from.ty.clone(),
                 to: port_to.ty.clone(),
             });
         }
         if port_from.data != port_to.data {
-            self.tx.push(GraphOp::SetPortData {
+            self.push_op(GraphOp::SetPortData {
                 id,
                 from: port_from.data.clone(),
                 to: port_to.data.clone(),
@@ -137,7 +137,7 @@ impl<'a> GraphDiffPlanner<'a> {
                     self.removed_edges_by_cascade
                         .extend(edges.iter().map(|(id, _)| *id));
                 }
-                self.tx.push(op);
+                self.push_op(op);
             }
         }
     }

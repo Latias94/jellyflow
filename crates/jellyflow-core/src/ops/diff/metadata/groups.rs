@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(group_from) = from.groups.get(id) {
                 self.diff_existing_group(*id, group_from, group_to);
             } else {
-                self.tx.push(GraphOp::AddGroup {
+                self.push_op(GraphOp::AddGroup {
                     id: *id,
                     group: group_to.clone(),
                 });
@@ -27,7 +27,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_existing_group(&mut self, id: GroupId, group_from: &Group, group_to: &Group) {
         if group_from.color != group_to.color {
-            self.tx.push(GraphOp::SetGroupColor {
+            self.push_op(GraphOp::SetGroupColor {
                 id,
                 from: group_from.color.clone(),
                 to: group_to.color.clone(),
@@ -35,14 +35,14 @@ impl<'a> GraphDiffPlanner<'a> {
         }
 
         if group_from.rect != group_to.rect {
-            self.tx.push(GraphOp::SetGroupRect {
+            self.push_op(GraphOp::SetGroupRect {
                 id,
                 from: group_from.rect,
                 to: group_to.rect,
             });
         }
         if group_from.title != group_to.title {
-            self.tx.push(GraphOp::SetGroupTitle {
+            self.push_op(GraphOp::SetGroupTitle {
                 id,
                 from: group_from.title.clone(),
                 to: group_to.title.clone(),
@@ -54,7 +54,7 @@ impl<'a> GraphDiffPlanner<'a> {
         let op = GraphMutationPlanner::new(self.from)
             .remove_group_op(id)
             .unwrap_or_else(|_| self.fallback_remove_group_op(id, group_from));
-        self.tx.push(op);
+        self.push_op(op);
     }
 
     fn fallback_remove_group_op(&self, id: GroupId, group_from: &Group) -> GraphOp {
