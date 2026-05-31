@@ -71,9 +71,17 @@ impl<'a> FragmentPastePlanner<'a> {
         self.tx
     }
 
+    fn push_op(&mut self, op: GraphOp) {
+        self.tx.push(op);
+    }
+
+    fn extend_ops(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
+        self.tx.extend(ops);
+    }
+
     fn push_imports(&mut self) {
         for (id, import) in &self.fragment.imports {
-            self.tx.push(GraphOp::AddImport {
+            self.push_op(GraphOp::AddImport {
                 id: *id,
                 import: import.clone(),
             });
@@ -83,7 +91,7 @@ impl<'a> FragmentPastePlanner<'a> {
     fn push_symbols(&mut self) {
         for (old_id, old_symbol) in &self.fragment.symbols {
             let new_id = self.symbol_map[old_id];
-            self.tx.push(GraphOp::AddSymbol {
+            self.push_op(GraphOp::AddSymbol {
                 id: new_id,
                 symbol: old_symbol.clone(),
             });
@@ -92,7 +100,7 @@ impl<'a> FragmentPastePlanner<'a> {
 
     fn push_groups(&mut self) {
         for (old_id, group) in &self.fragment.groups {
-            self.tx.push(GraphOp::AddGroup {
+            self.push_op(GraphOp::AddGroup {
                 id: self.group_map[old_id],
                 group: group.clone(),
             });
@@ -104,7 +112,7 @@ impl<'a> FragmentPastePlanner<'a> {
         let mut batch = GraphMutationBatchPlanner::new(&planning_graph);
         self.stage_nodes(&mut batch);
         self.stage_edges(&mut batch);
-        self.tx.extend(batch.into_ops());
+        self.extend_ops(batch.into_ops());
     }
 
     fn planning_graph(&self) -> Graph {
@@ -143,7 +151,7 @@ impl<'a> FragmentPastePlanner<'a> {
 
     fn push_sticky_notes(&mut self) {
         for (old_id, note) in &self.fragment.sticky_notes {
-            self.tx.push(GraphOp::AddStickyNote {
+            self.push_op(GraphOp::AddStickyNote {
                 id: self.remapper.remap_note(*old_id),
                 note: note.clone(),
             });
