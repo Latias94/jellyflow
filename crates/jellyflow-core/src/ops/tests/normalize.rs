@@ -5,30 +5,28 @@ fn normalize_transaction_drops_noop_set_ops() {
     let node_id = NodeId::new();
     let p0 = CanvasPoint { x: 10.0, y: 20.0 };
 
-    let tx = GraphTransaction {
-        label: Some("Normalize".to_string()),
-        ops: vec![
-            GraphOp::SetNodePos {
-                id: node_id,
-                from: p0,
-                to: p0,
-            },
-            GraphOp::SetNodeCollapsed {
-                id: node_id,
-                from: false,
-                to: false,
-            },
-            GraphOp::SetNodeData {
-                id: node_id,
-                from: serde_json::Value::Null,
-                to: serde_json::Value::Null,
-            },
-            GraphOp::AddNode {
-                id: node_id,
-                node: make_node("core.a"),
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: node_id,
+            from: p0,
+            to: p0,
+        },
+        GraphOp::SetNodeCollapsed {
+            id: node_id,
+            from: false,
+            to: false,
+        },
+        GraphOp::SetNodeData {
+            id: node_id,
+            from: serde_json::Value::Null,
+            to: serde_json::Value::Null,
+        },
+        GraphOp::AddNode {
+            id: node_id,
+            node: make_node("core.a"),
+        },
+    ])
+    .with_label("Normalize");
 
     let normalized = crate::ops::normalize_transaction(tx);
     assert_eq!(normalized.label(), Some("Normalize"));
@@ -40,14 +38,11 @@ fn normalize_transaction_drops_noop_set_ops() {
 fn normalize_transaction_keeps_non_noop_set_ops() {
     let node_id = NodeId::new();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: node_id,
-            from: CanvasPoint { x: 10.0, y: 20.0 },
-            to: CanvasPoint { x: 11.0, y: 21.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: node_id,
+        from: CanvasPoint { x: 10.0, y: 20.0 },
+        to: CanvasPoint { x: 11.0, y: 21.0 },
+    }]);
 
     let normalized = crate::ops::normalize_transaction(tx);
     assert_eq!(normalized.ops().len(), 1);
@@ -58,21 +53,18 @@ fn normalize_transaction_keeps_non_noop_set_ops() {
 fn normalize_transaction_coalesces_setter_chains_and_drops_resulting_noops() {
     let node_id = NodeId::new();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodePos {
-                id: node_id,
-                from: CanvasPoint { x: 0.0, y: 0.0 },
-                to: CanvasPoint { x: 10.0, y: 20.0 },
-            },
-            GraphOp::SetNodePos {
-                id: node_id,
-                from: CanvasPoint { x: 10.0, y: 20.0 },
-                to: CanvasPoint { x: 0.0, y: 0.0 },
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: node_id,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 10.0, y: 20.0 },
+        },
+        GraphOp::SetNodePos {
+            id: node_id,
+            from: CanvasPoint { x: 10.0, y: 20.0 },
+            to: CanvasPoint { x: 0.0, y: 0.0 },
+        },
+    ]);
 
     let normalized = crate::ops::normalize_transaction(tx);
     assert!(normalized.is_empty());
@@ -82,26 +74,23 @@ fn normalize_transaction_coalesces_setter_chains_and_drops_resulting_noops() {
 fn normalize_transaction_coalesces_setter_chains_when_chained() {
     let node_id = NodeId::new();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodeCollapsed {
-                id: node_id,
-                from: false,
-                to: true,
-            },
-            GraphOp::SetNodeCollapsed {
-                id: node_id,
-                from: true,
-                to: false,
-            },
-            GraphOp::SetNodeCollapsed {
-                id: node_id,
-                from: false,
-                to: true,
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodeCollapsed {
+            id: node_id,
+            from: false,
+            to: true,
+        },
+        GraphOp::SetNodeCollapsed {
+            id: node_id,
+            from: true,
+            to: false,
+        },
+        GraphOp::SetNodeCollapsed {
+            id: node_id,
+            from: false,
+            to: true,
+        },
+    ]);
 
     let normalized = crate::ops::normalize_transaction(tx);
     assert_eq!(normalized.ops().len(), 1);
