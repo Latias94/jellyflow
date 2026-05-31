@@ -912,6 +912,92 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
 }
 
 #[test]
+fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
+    let mut graph = Graph::default();
+
+    let a = NodeId::new();
+    let b = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+
+    let out = PortId::new();
+    let inn = PortId::new();
+    insert_port(
+        &mut graph,
+        out,
+        make_port(
+            a,
+            "out",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    insert_port(
+        &mut graph,
+        inn,
+        make_port(
+            b,
+            "in",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Single,
+        ),
+    );
+
+    let edge_id = EdgeId::new();
+    graph.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out,
+            to: inn,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let inserted_node_id = NodeId::new();
+    let inserted_port = PortId::new();
+    let spec = InsertNodeSpec {
+        node_id: inserted_node_id,
+        node: make_node("demo.invalid"),
+        ports: vec![(
+            inserted_port,
+            make_port(
+                inserted_node_id,
+                "io",
+                PortDirection::In,
+                PortKind::Data,
+                PortCapacity::Single,
+            ),
+        )],
+        input: inserted_port,
+        output: inserted_port,
+    };
+
+    let connect_plan = plan_connect_by_inserting_node(
+        &graph,
+        out,
+        inn,
+        EdgeId::new(),
+        EdgeId::new(),
+        spec.clone(),
+    );
+    let split_plan = plan_split_edge_by_inserting_node(&graph, edge_id, EdgeId::new(), spec);
+
+    for plan in [connect_plan, split_plan] {
+        assert_eq!(plan.decision, crate::rules::ConnectDecision::Reject);
+        assert_eq!(
+            plan.diagnostics[0].message,
+            "inserted input/output ports must be distinct"
+        );
+        assert!(plan.ops.is_empty());
+    }
+}
+
+#[test]
 fn plan_reconnect_rejects_duplicate_connection() {
     let mut graph = Graph::default();
 

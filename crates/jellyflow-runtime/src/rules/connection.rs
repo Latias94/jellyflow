@@ -4,7 +4,7 @@ use crate::runtime::policy::{
     resolve_port_interaction_policy,
 };
 use jellyflow_core::core::{
-    Edge, EdgeId, EdgeKind, Graph, Port, PortCapacity, PortDirection, PortId, PortKind,
+    Edge, EdgeId, EdgeKind, Graph, NodeId, Port, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{
@@ -51,12 +51,115 @@ fn add_existing_ports_edge_op(
         .map_err(reject_mutation_error)
 }
 
+fn edge_between(kind: EdgeKind, from: PortId, to: PortId) -> Edge {
+    Edge {
+        kind,
+        from,
+        to,
+        selectable: None,
+        deletable: None,
+        reconnectable: None,
+    }
+}
+
+fn edge_like(edge: &Edge, from: PortId, to: PortId) -> Edge {
+    Edge {
+        kind: edge.kind,
+        from,
+        to,
+        selectable: edge.selectable,
+        deletable: edge.deletable,
+        reconnectable: edge.reconnectable,
+    }
+}
+
 struct ConnectionEndpoints<'a> {
     from_id: PortId,
     to_id: PortId,
     from: &'a Port,
     to: &'a Port,
     edge_kind: EdgeKind,
+}
+
+struct ValidatedInsertNodeSpec {
+    input: PortId,
+    output: PortId,
+}
+
+fn validate_insert_node_spec(
+    graph: &Graph,
+    inserted: &InsertNodeSpec,
+    source_node: NodeId,
+    target_node: NodeId,
+    expected_port_kind: PortKind,
+) -> Result<ValidatedInsertNodeSpec, ConnectPlan> {
+    if inserted.node_id == source_node || inserted.node_id == target_node {
+        return Err(ConnectPlan::reject(
+            "inserted node id must be distinct from endpoints",
+        ));
+    }
+    if graph.nodes.contains_key(&inserted.node_id) {
+        return Err(ConnectPlan::reject(format!(
+            "node already exists: {:?}",
+            inserted.node_id
+        )));
+    }
+    for (port_id, _) in &inserted.ports {
+        if graph.ports.contains_key(port_id) {
+            return Err(ConnectPlan::reject(format!(
+                "port already exists: {port_id:?}"
+            )));
+        }
+    }
+
+    if inserted.input == inserted.output {
+        return Err(ConnectPlan::reject(
+            "inserted input/output ports must be distinct",
+        ));
+    }
+
+    let mut inserted_in: Option<&Port> = None;
+    let mut inserted_out: Option<&Port> = None;
+    for (port_id, port) in &inserted.ports {
+        if port.node != inserted.node_id {
+            return Err(ConnectPlan::reject(format!(
+                "inserted port has wrong node: port={port_id:?} expected={:?} got={:?}",
+                inserted.node_id, port.node
+            )));
+        }
+        if port.kind != expected_port_kind {
+            return Err(ConnectPlan::reject(format!(
+                "inserted port kind is incompatible: port={port_id:?} kind={:?} expected={:?}",
+                port.kind, expected_port_kind
+            )));
+        }
+        if *port_id == inserted.input {
+            inserted_in = Some(port);
+        }
+        if *port_id == inserted.output {
+            inserted_out = Some(port);
+        }
+    }
+
+    let Some(inserted_in) = inserted_in else {
+        return Err(ConnectPlan::reject(
+            "inserted input port is missing from spec",
+        ));
+    };
+    let Some(inserted_out) = inserted_out else {
+        return Err(ConnectPlan::reject(
+            "inserted output port is missing from spec",
+        ));
+    };
+
+    if inserted_in.dir != PortDirection::In || inserted_out.dir != PortDirection::Out {
+        return Err(ConnectPlan::reject("inserted ports must be in -> out"));
+    }
+
+    Ok(ValidatedInsertNodeSpec {
+        input: inserted.input,
+        output: inserted.output,
+    })
 }
 
 fn resolve_connection_endpoints(
@@ -241,14 +344,7 @@ pub fn plan_connect_with_mode_and_policy(
     let add_edge = match add_existing_ports_edge_op(
         graph,
         EdgeId::new(),
-        Edge {
-            kind: endpoints.edge_kind,
-            from: endpoints.from_id,
-            to: endpoints.to_id,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge_between(endpoints.edge_kind, endpoints.from_id, endpoints.to_id),
     ) {
         Ok(op) => op,
         Err(plan) => return plan,
@@ -398,56 +494,17 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return ConnectPlan::reject(format!("edge already exists: {second_edge_id:?}"));
     }
 
-    if inserted.node_id == endpoints.from.node || inserted.node_id == endpoints.to.node {
-        return ConnectPlan::reject("inserted node id must be distinct from endpoints");
-    }
-    if graph.nodes.contains_key(&inserted.node_id) {
-        return ConnectPlan::reject(format!("node already exists: {:?}", inserted.node_id));
-    }
-    for (port_id, _) in &inserted.ports {
-        if graph.ports.contains_key(port_id) {
-            return ConnectPlan::reject(format!("port already exists: {port_id:?}"));
-        }
-    }
-
-    if inserted.input == inserted.output {
-        return ConnectPlan::reject("inserted input/output ports must be distinct");
-    }
-
     let expected_port_kind = port_kind_for_edge_kind(endpoints.edge_kind);
-    let mut inserted_in: Option<&Port> = None;
-    let mut inserted_out: Option<&Port> = None;
-    for (port_id, port) in &inserted.ports {
-        if port.node != inserted.node_id {
-            return ConnectPlan::reject(format!(
-                "inserted port has wrong node: port={port_id:?} expected={:?} got={:?}",
-                inserted.node_id, port.node
-            ));
-        }
-        if port.kind != expected_port_kind {
-            return ConnectPlan::reject(format!(
-                "inserted port kind is incompatible: port={port_id:?} kind={:?} expected={:?}",
-                port.kind, expected_port_kind
-            ));
-        }
-        if *port_id == inserted.input {
-            inserted_in = Some(port);
-        }
-        if *port_id == inserted.output {
-            inserted_out = Some(port);
-        }
-    }
-
-    let Some(inserted_in) = inserted_in else {
-        return ConnectPlan::reject("inserted input port is missing from spec");
+    let inserted_ports = match validate_insert_node_spec(
+        graph,
+        &inserted,
+        endpoints.from.node,
+        endpoints.to.node,
+        expected_port_kind,
+    ) {
+        Ok(inserted_ports) => inserted_ports,
+        Err(plan) => return plan,
     };
-    let Some(inserted_out) = inserted_out else {
-        return ConnectPlan::reject("inserted output port is missing from spec");
-    };
-
-    if inserted_in.dir != PortDirection::In || inserted_out.dir != PortDirection::Out {
-        return ConnectPlan::reject("inserted ports must be in -> out");
-    }
 
     let mut ops: Vec<GraphOp> = disconnect_for_capacity(
         graph,
@@ -459,36 +516,19 @@ pub fn plan_connect_by_inserting_node_with_policy(
         None,
     );
 
-    let input = inserted.input;
-    let output = inserted.output;
-
     let mut batch = GraphMutationBatchPlanner::new(graph);
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
         return reject_mutation_error(error);
     }
     if let Err(error) = batch.add_edge(
         first_edge_id,
-        Edge {
-            kind: endpoints.edge_kind,
-            from: endpoints.from_id,
-            to: input,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge_between(endpoints.edge_kind, endpoints.from_id, inserted_ports.input),
     ) {
         return reject_mutation_error(error);
     }
     if let Err(error) = batch.add_edge(
         second_edge_id,
-        Edge {
-            kind: endpoints.edge_kind,
-            from: output,
-            to: endpoints.to_id,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge_between(endpoints.edge_kind, inserted_ports.output, endpoints.to_id),
     ) {
         return reject_mutation_error(error);
     }
@@ -551,60 +591,18 @@ pub fn plan_split_edge_by_inserting_node(
         return ConnectPlan::reject("edge kind is incompatible with ports");
     }
 
-    if inserted.node_id == from_port.node || inserted.node_id == to_port.node {
-        return ConnectPlan::reject("inserted node id must be distinct from endpoints");
-    }
-    if graph.nodes.contains_key(&inserted.node_id) {
-        return ConnectPlan::reject(format!("node already exists: {:?}", inserted.node_id));
-    }
-    for (port_id, _) in &inserted.ports {
-        if graph.ports.contains_key(port_id) {
-            return ConnectPlan::reject(format!("port already exists: {port_id:?}"));
-        }
-    }
-
-    if inserted.input == inserted.output {
-        return ConnectPlan::reject("inserted input/output ports must be distinct");
-    }
-
-    let mut inserted_in: Option<&Port> = None;
-    let mut inserted_out: Option<&Port> = None;
-    for (port_id, port) in &inserted.ports {
-        if port.node != inserted.node_id {
-            return ConnectPlan::reject(format!(
-                "inserted port has wrong node: port={port_id:?} expected={:?} got={:?}",
-                inserted.node_id, port.node
-            ));
-        }
-        if port.kind != expected_port_kind {
-            return ConnectPlan::reject(format!(
-                "inserted port kind is incompatible: port={port_id:?} kind={:?} expected={:?}",
-                port.kind, expected_port_kind
-            ));
-        }
-        if *port_id == inserted.input {
-            inserted_in = Some(port);
-        }
-        if *port_id == inserted.output {
-            inserted_out = Some(port);
-        }
-    }
-
-    let Some(inserted_in) = inserted_in else {
-        return ConnectPlan::reject("inserted input port is missing from spec");
+    let inserted_ports = match validate_insert_node_spec(
+        graph,
+        &inserted,
+        from_port.node,
+        to_port.node,
+        expected_port_kind,
+    ) {
+        Ok(inserted_ports) => inserted_ports,
+        Err(plan) => return plan,
     };
-    let Some(inserted_out) = inserted_out else {
-        return ConnectPlan::reject("inserted output port is missing from spec");
-    };
-
-    if inserted_in.dir != PortDirection::In || inserted_out.dir != PortDirection::Out {
-        return ConnectPlan::reject("inserted ports must be in -> out");
-    }
 
     let mut ops: Vec<GraphOp> = Vec::new();
-
-    let input = inserted.input;
-    let output = inserted.output;
 
     let mut batch = GraphMutationBatchPlanner::new(graph);
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
@@ -614,22 +612,13 @@ pub fn plan_split_edge_by_inserting_node(
         edge_id,
         EdgeEndpoints {
             from: edge.from,
-            to: input,
+            to: inserted_ports.input,
         },
     ) {
         return reject_mutation_error(error);
     }
-    if let Err(error) = batch.add_edge(
-        new_edge_id,
-        Edge {
-            kind: edge.kind,
-            from: output,
-            to: edge.to,
-            selectable: edge.selectable,
-            deletable: edge.deletable,
-            reconnectable: edge.reconnectable,
-        },
-    ) {
+    if let Err(error) = batch.add_edge(new_edge_id, edge_like(edge, inserted_ports.output, edge.to))
+    {
         return reject_mutation_error(error);
     }
     ops.extend(batch.into_ops());
