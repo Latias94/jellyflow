@@ -1,4 +1,4 @@
-use crate::runtime::lookups::NodeGraphLookups;
+use crate::runtime::lookups::{NodeGraphLookups, NodeLookupEntry};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
 use super::geometry::{CanvasBounds, normalize_node_origin};
@@ -13,10 +13,7 @@ pub fn get_node_position_with_origin(
     node_origin: (f32, f32),
     fallback_size: Option<CanvasSize>,
 ) -> Option<CanvasPoint> {
-    let entry = lookups.node_lookup.get(&node)?;
-    let (ox, oy) = normalize_node_origin(node_origin);
-    let bounds = CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), fallback_size)?;
-    Some(bounds.top_left())
+    node_bounds(lookups, node, node_origin, fallback_size).map(CanvasBounds::top_left)
 }
 
 /// Returns the node's canvas-space bounding rect.
@@ -26,10 +23,7 @@ pub fn get_node_rect(
     node_origin: (f32, f32),
     fallback_size: Option<CanvasSize>,
 ) -> Option<CanvasRect> {
-    let entry = lookups.node_lookup.get(&node)?;
-    let (ox, oy) = normalize_node_origin(node_origin);
-    let bounds = CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), fallback_size)?;
-    Some(bounds.to_rect())
+    node_bounds(lookups, node, node_origin, fallback_size).map(CanvasBounds::to_rect)
 }
 
 /// Computes the bounding rect enclosing the given nodes.
@@ -41,19 +35,14 @@ pub fn get_nodes_bounds(
     nodes: impl IntoIterator<Item = NodeId>,
     options: GetNodesBoundsOptions,
 ) -> Option<CanvasRect> {
-    let (ox, oy) = normalize_node_origin(options.node_origin);
+    let resolver = NodeBoundsResolver::from_bounds_options(options);
     let mut bounds: Option<CanvasBounds> = None;
 
     for node in nodes {
         let Some(entry) = lookups.node_lookup.get(&node) else {
             continue;
         };
-        if !options.include_hidden && entry.hidden {
-            continue;
-        }
-        let Some(node_bounds) =
-            CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), options.fallback_size)
-        else {
+        let Some(node_bounds) = resolver.bounds_for_entry(entry) else {
             continue;
         };
         bounds = Some(match bounds {
@@ -71,7 +60,7 @@ pub fn get_nodes_inside(
     rect: CanvasRect,
     options: GetNodesInsideOptions,
 ) -> Vec<NodeId> {
-    let (ox, oy) = normalize_node_origin(options.node_origin);
+    let resolver = NodeBoundsResolver::from_inside_options(options);
     let query = CanvasBounds::from_rect(rect);
     if !query.is_finite() {
         return Vec::new();
@@ -79,12 +68,7 @@ pub fn get_nodes_inside(
 
     let mut out: Vec<NodeId> = Vec::new();
     for (node, entry) in &lookups.node_lookup {
-        if !options.include_hidden && entry.hidden {
-            continue;
-        }
-        let Some(node_bounds) =
-            CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), options.fallback_size)
-        else {
+        let Some(node_bounds) = resolver.bounds_for_entry(entry) else {
             continue;
         };
 
@@ -99,4 +83,53 @@ pub fn get_nodes_inside(
 
     out.sort();
     out
+}
+
+fn node_bounds(
+    lookups: &NodeGraphLookups,
+    node: NodeId,
+    node_origin: (f32, f32),
+    fallback_size: Option<CanvasSize>,
+) -> Option<CanvasBounds> {
+    let entry = lookups.node_lookup.get(&node)?;
+    NodeBoundsResolver::include_hidden(node_origin, fallback_size).bounds_for_entry(entry)
+}
+
+struct NodeBoundsResolver {
+    node_origin: (f32, f32),
+    fallback_size: Option<CanvasSize>,
+    include_hidden: bool,
+}
+
+impl NodeBoundsResolver {
+    fn include_hidden(node_origin: (f32, f32), fallback_size: Option<CanvasSize>) -> Self {
+        Self {
+            node_origin: normalize_node_origin(node_origin),
+            fallback_size,
+            include_hidden: true,
+        }
+    }
+
+    fn from_bounds_options(options: GetNodesBoundsOptions) -> Self {
+        Self {
+            node_origin: normalize_node_origin(options.node_origin),
+            fallback_size: options.fallback_size,
+            include_hidden: options.include_hidden,
+        }
+    }
+
+    fn from_inside_options(options: GetNodesInsideOptions) -> Self {
+        Self {
+            node_origin: normalize_node_origin(options.node_origin),
+            fallback_size: options.fallback_size,
+            include_hidden: options.include_hidden,
+        }
+    }
+
+    fn bounds_for_entry(&self, entry: &NodeLookupEntry) -> Option<CanvasBounds> {
+        if !self.include_hidden && entry.hidden {
+            return None;
+        }
+        CanvasBounds::from_node(entry.pos, entry.size, self.node_origin, self.fallback_size)
+    }
 }
