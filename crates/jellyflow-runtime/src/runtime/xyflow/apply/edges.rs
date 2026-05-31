@@ -1,4 +1,5 @@
 use crate::runtime::xyflow::changes::EdgeChange;
+use jellyflow_core::core::EdgeId;
 
 use super::ApplyChangesPlanner;
 
@@ -16,11 +17,7 @@ impl<'a> ApplyChangesPlanner<'a> {
                 self.mark_applied();
             }
             EdgeChange::Remove { id } => {
-                if self.graph.edges.remove(id).is_some() {
-                    self.mark_applied();
-                } else {
-                    self.mark_ignored();
-                }
+                self.remove_edge_change(*id);
             }
             EdgeChange::Kind { id, kind } => {
                 self.mutate_existing_edge(*id, |edge| edge.kind = *kind);
@@ -40,6 +37,14 @@ impl<'a> ApplyChangesPlanner<'a> {
                     edge.to = *to;
                 });
             }
+        }
+    }
+
+    fn remove_edge_change(&mut self, id: EdgeId) {
+        if self.graph.edges.remove(&id).is_some() {
+            self.mark_applied();
+        } else {
+            self.mark_ignored();
         }
     }
 }

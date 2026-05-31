@@ -27,6 +27,14 @@ impl ApplyChangesReport {
     pub fn did_change(&self) -> bool {
         self.applied > 0
     }
+
+    pub(crate) fn mark_applied(&mut self) {
+        self.applied += 1;
+    }
+
+    pub(crate) fn mark_ignored(&mut self) {
+        self.ignored += 1;
+    }
 }
 
 pub fn apply_graph_changes(graph: &mut Graph, changes: &NodeGraphChanges) -> ApplyChangesReport {
@@ -93,10 +101,10 @@ impl<'a> ApplyChangesPlanner<'a> {
     }
 
     fn mark_applied(&mut self) {
-        self.report.applied += 1;
+        self.report.mark_applied();
     }
 
     fn mark_ignored(&mut self) {
-        self.report.ignored += 1;
+        self.report.mark_ignored();
     }
 }
