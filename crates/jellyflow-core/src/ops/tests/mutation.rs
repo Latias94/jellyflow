@@ -20,12 +20,12 @@ fn mutation_planner_add_node_with_ports_preserves_port_order_and_undo() {
         )
         .expect("tx");
 
-    assert_eq!(tx.ops.len(), 4);
-    assert!(matches!(tx.ops[0], GraphOp::AddNode { .. }));
-    assert!(matches!(tx.ops[1], GraphOp::AddPort { id, .. } if id == out));
-    assert!(matches!(tx.ops[2], GraphOp::AddPort { id, .. } if id == inn));
+    assert_eq!(tx.ops().len(), 4);
+    assert!(matches!(tx.ops()[0], GraphOp::AddNode { .. }));
+    assert!(matches!(tx.ops()[1], GraphOp::AddPort { id, .. } if id == out));
+    assert!(matches!(tx.ops()[2], GraphOp::AddPort { id, .. } if id == inn));
     assert!(matches!(
-        &tx.ops[3],
+        &tx.ops()[3],
         GraphOp::SetNodePorts { id, from, to } if *id == node_id && from.is_empty() && to == &vec![out, inn]
     ));
 
@@ -190,7 +190,7 @@ fn mutation_planner_remove_node_tx_captures_ports_and_edges() {
         .expect("tx");
 
     assert!(matches!(
-        &tx.ops[0],
+        &tx.ops()[0],
         GraphOp::RemoveNode { id, ports, edges, .. }
             if *id == a && ports.iter().any(|(id, _)| *id == out) && edges.iter().any(|(id, _)| *id == edge_id)
     ));
@@ -407,7 +407,7 @@ fn build_remove_node_tx_captures_ports_and_edges() {
     );
 
     let tx = graph.build_remove_node_tx(a, "Delete Node A").expect("tx");
-    assert_eq!(tx.ops.len(), 1);
+    assert_eq!(tx.ops().len(), 1);
 
     apply_transaction(&mut graph, &tx).expect("apply");
 
