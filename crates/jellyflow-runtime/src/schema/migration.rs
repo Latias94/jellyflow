@@ -33,10 +33,34 @@ pub struct NodeKindRewrite {
     pub to: NodeKindKey,
 }
 
+impl NodeKindRewrite {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn from(&self) -> &NodeKindKey {
+        &self.from
+    }
+
+    pub fn to(&self) -> &NodeKindKey {
+        &self.to
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CanonicalizeKindsPlan {
     pub tx: GraphTransaction,
     pub rewrites: Vec<NodeKindRewrite>,
+}
+
+impl CanonicalizeKindsPlan {
+    pub fn transaction(&self) -> &GraphTransaction {
+        &self.tx
+    }
+
+    pub fn rewrites(&self) -> &[NodeKindRewrite] {
+        &self.rewrites
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -49,6 +73,34 @@ pub struct MigrateNodesReport {
 }
 
 impl MigrateNodesReport {
+    pub fn is_empty(&self) -> bool {
+        self.upgraded.is_empty()
+            && self.missing_schema.is_empty()
+            && self.missing_migrator.is_empty()
+            && self.newer_than_schema.is_empty()
+            && self.errors.is_empty()
+    }
+
+    pub fn upgraded(&self) -> &[NodeMigrationUpgraded] {
+        &self.upgraded
+    }
+
+    pub fn missing_schema(&self) -> &[NodeMigrationMissingSchema] {
+        &self.missing_schema
+    }
+
+    pub fn missing_migrator(&self) -> &[NodeMigrationMissingMigrator] {
+        &self.missing_migrator
+    }
+
+    pub fn newer_than_schema(&self) -> &[NodeMigrationNewerThanSchema] {
+        &self.newer_than_schema
+    }
+
+    pub fn errors(&self) -> &[NodeMigrationErrorEntry] {
+        &self.errors
+    }
+
     pub(in crate::schema) fn push_upgraded(
         &mut self,
         node: NodeId,
@@ -160,4 +212,14 @@ pub struct NodeMigrationErrorEntry {
 pub struct MigrateNodesPlan {
     pub tx: GraphTransaction,
     pub report: MigrateNodesReport,
+}
+
+impl MigrateNodesPlan {
+    pub fn transaction(&self) -> &GraphTransaction {
+        &self.tx
+    }
+
+    pub fn report(&self) -> &MigrateNodesReport {
+        &self.report
+    }
 }

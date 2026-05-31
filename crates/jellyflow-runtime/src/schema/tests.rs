@@ -61,10 +61,10 @@ fn canonicalize_kinds_rewrites_aliases_to_canonical() {
     );
 
     let plan = registry.plan_canonicalize_kinds(&graph);
-    assert_eq!(plan.rewrites.len(), 1);
-    assert_eq!(plan.rewrites[0].node, id);
+    assert_eq!(plan.rewrites().len(), 1);
+    assert_eq!(plan.rewrites()[0].node(), id);
 
-    plan.tx.apply_to(&mut graph).unwrap();
+    plan.transaction().apply_to(&mut graph).unwrap();
     assert_eq!(
         graph.nodes.get(&id).unwrap().kind,
         NodeKindKey::new("demo.add")
@@ -110,12 +110,12 @@ fn migrate_nodes_emits_set_node_data_and_version_and_reports_upgraded() {
     );
 
     let plan = registry.plan_migrate_nodes(&graph);
-    assert_eq!(plan.report.upgraded.len(), 1);
-    assert!(plan.report.missing_schema.is_empty());
-    assert!(plan.report.missing_migrator.is_empty());
-    assert!(plan.report.errors.is_empty());
+    assert_eq!(plan.report().upgraded().len(), 1);
+    assert!(plan.report().missing_schema().is_empty());
+    assert!(plan.report().missing_migrator().is_empty());
+    assert!(plan.report().errors().is_empty());
 
-    plan.tx.apply_to(&mut graph).unwrap();
+    plan.transaction().apply_to(&mut graph).unwrap();
     let node = graph.nodes.get(&id).unwrap();
     assert_eq!(node.kind_version, 2);
     assert_eq!(node.data["migrated"], json!(true));
@@ -159,6 +159,6 @@ fn migrate_nodes_reports_missing_migrator_and_emits_no_tx() {
     );
 
     let plan = registry.plan_migrate_nodes(&graph);
-    assert_eq!(plan.report.missing_migrator.len(), 1);
-    assert!(plan.tx.is_empty());
+    assert_eq!(plan.report().missing_migrator().len(), 1);
+    assert!(plan.transaction().is_empty());
 }
