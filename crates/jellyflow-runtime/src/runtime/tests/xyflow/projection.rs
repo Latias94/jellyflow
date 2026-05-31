@@ -11,21 +11,18 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 fn changes_from_transaction_maps_ops() {
     let (_g, a, _b, _out_port, _in_port, eid) = make_graph();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodePos {
-                id: a,
-                from: CanvasPoint { x: 0.0, y: 0.0 },
-                to: CanvasPoint { x: 10.0, y: 20.0 },
-            },
-            GraphOp::SetEdgeKind {
-                id: eid,
-                from: EdgeKind::Data,
-                to: EdgeKind::Exec,
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: a,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 10.0, y: 20.0 },
+        },
+        GraphOp::SetEdgeKind {
+            id: eid,
+            from: EdgeKind::Data,
+            to: EdgeKind::Exec,
+        },
+    ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
     assert_eq!(changes.nodes().len(), 1);
@@ -58,21 +55,18 @@ fn changes_from_transaction_maps_ops() {
 fn changes_from_transaction_maps_node_edge_policy_ops() {
     let (_g, a, _b, _out_port, _in_port, eid) = make_graph();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodeHidden {
-                id: a,
-                from: false,
-                to: true,
-            },
-            GraphOp::SetEdgeReconnectable {
-                id: eid,
-                from: None,
-                to: Some(EdgeReconnectable::Bool(false)),
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodeHidden {
+            id: a,
+            from: false,
+            to: true,
+        },
+        GraphOp::SetEdgeReconnectable {
+            id: eid,
+            from: None,
+            to: Some(EdgeReconnectable::Bool(false)),
+        },
+    ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
     assert_eq!(changes.nodes().len(), 1);
@@ -109,61 +103,58 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
         },
     };
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodeSelectable {
-                id: a,
-                from: None,
-                to: Some(false),
-            },
-            GraphOp::SetNodeDraggable {
-                id: a,
-                from: None,
-                to: Some(true),
-            },
-            GraphOp::SetNodeConnectable {
-                id: a,
-                from: None,
-                to: Some(false),
-            },
-            GraphOp::SetNodeDeletable {
-                id: a,
-                from: None,
-                to: Some(true),
-            },
-            GraphOp::SetNodeParent {
-                id: a,
-                from: None,
-                to: Some(group),
-            },
-            GraphOp::SetNodeExtent {
-                id: a,
-                from: None,
-                to: Some(extent),
-            },
-            GraphOp::SetNodeExpandParent {
-                id: a,
-                from: None,
-                to: Some(true),
-            },
-            GraphOp::SetNodePorts {
-                id: a,
-                from: vec![out_port],
-                to: vec![out_port, in_port],
-            },
-            GraphOp::SetEdgeSelectable {
-                id: eid,
-                from: None,
-                to: Some(false),
-            },
-            GraphOp::SetEdgeDeletable {
-                id: eid,
-                from: None,
-                to: Some(true),
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodeSelectable {
+            id: a,
+            from: None,
+            to: Some(false),
+        },
+        GraphOp::SetNodeDraggable {
+            id: a,
+            from: None,
+            to: Some(true),
+        },
+        GraphOp::SetNodeConnectable {
+            id: a,
+            from: None,
+            to: Some(false),
+        },
+        GraphOp::SetNodeDeletable {
+            id: a,
+            from: None,
+            to: Some(true),
+        },
+        GraphOp::SetNodeParent {
+            id: a,
+            from: None,
+            to: Some(group),
+        },
+        GraphOp::SetNodeExtent {
+            id: a,
+            from: None,
+            to: Some(extent),
+        },
+        GraphOp::SetNodeExpandParent {
+            id: a,
+            from: None,
+            to: Some(true),
+        },
+        GraphOp::SetNodePorts {
+            id: a,
+            from: vec![out_port],
+            to: vec![out_port, in_port],
+        },
+        GraphOp::SetEdgeSelectable {
+            id: eid,
+            from: None,
+            to: Some(false),
+        },
+        GraphOp::SetEdgeDeletable {
+            id: eid,
+            from: None,
+            to: Some(true),
+        },
+    ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
     assert_eq!(changes.nodes().len(), 8);
@@ -229,15 +220,12 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
     let port = g.ports.get(&out_port).expect("port").clone();
     let edge = g.edges.get(&eid).expect("edge").clone();
 
-    let remove_node_tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::RemoveNode {
-            id: a,
-            node,
-            ports: vec![(out_port, port.clone())],
-            edges: vec![(eid, edge.clone())],
-        }],
-    };
+    let remove_node_tx = GraphTransaction::from_ops([GraphOp::RemoveNode {
+        id: a,
+        node,
+        ports: vec![(out_port, port.clone())],
+        edges: vec![(eid, edge.clone())],
+    }]);
     let remove_node_changes = NodeGraphChanges::from_transaction(&remove_node_tx);
     assert!(
         remove_node_changes
@@ -246,14 +234,11 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
             .any(|change| matches!(change, EdgeChange::Remove { id } if *id == eid))
     );
 
-    let remove_port_tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::RemovePort {
-            id: out_port,
-            port,
-            edges: vec![(eid, edge)],
-        }],
-    };
+    let remove_port_tx = GraphTransaction::from_ops([GraphOp::RemovePort {
+        id: out_port,
+        port,
+        edges: vec![(eid, edge)],
+    }]);
     let remove_port_changes = NodeGraphChanges::from_transaction(&remove_port_tx);
     assert!(
         remove_port_changes
@@ -267,44 +252,41 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
 fn connection_changes_from_transaction_maps_edge_ops() {
     let (_g0, _a, _b, out_port, in_port, eid) = make_graph();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::AddEdge {
-                id: eid,
-                edge: Edge {
-                    kind: EdgeKind::Data,
-                    from: out_port,
-                    to: in_port,
-                    selectable: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
+    let tx = GraphTransaction::from_ops([
+        GraphOp::AddEdge {
+            id: eid,
+            edge: Edge {
+                kind: EdgeKind::Data,
+                from: out_port,
+                to: in_port,
+                selectable: None,
+                deletable: None,
+                reconnectable: None,
             },
-            GraphOp::SetEdgeEndpoints {
-                id: eid,
-                from: jellyflow_core::ops::EdgeEndpoints {
-                    from: out_port,
-                    to: in_port,
-                },
-                to: jellyflow_core::ops::EdgeEndpoints {
-                    from: out_port,
-                    to: in_port,
-                },
+        },
+        GraphOp::SetEdgeEndpoints {
+            id: eid,
+            from: jellyflow_core::ops::EdgeEndpoints {
+                from: out_port,
+                to: in_port,
             },
-            GraphOp::RemoveEdge {
-                id: eid,
-                edge: Edge {
-                    kind: EdgeKind::Data,
-                    from: out_port,
-                    to: in_port,
-                    selectable: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
+            to: jellyflow_core::ops::EdgeEndpoints {
+                from: out_port,
+                to: in_port,
             },
-        ],
-    };
+        },
+        GraphOp::RemoveEdge {
+            id: eid,
+            edge: Edge {
+                kind: EdgeKind::Data,
+                from: out_port,
+                to: in_port,
+                selectable: None,
+                deletable: None,
+                reconnectable: None,
+            },
+        },
+    ]);
 
     let changes = connection_changes_from_transaction(&tx);
     assert_eq!(changes.len(), 3);
