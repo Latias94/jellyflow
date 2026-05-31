@@ -1,8 +1,7 @@
 use super::fixtures::{insert_edge, insert_port, make_node, make_port};
 
 use crate::rules::{
-    ConnectDecision, InsertNodeSpec, plan_connect, plan_connect_by_inserting_node,
-    plan_split_edge_by_inserting_node,
+    InsertNodeSpec, plan_connect, plan_connect_by_inserting_node, plan_split_edge_by_inserting_node,
 };
 use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
 use jellyflow_core::ops::GraphTransaction;
@@ -56,10 +55,7 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
     );
 
     let plan1 = plan_connect(&graph, out1, inn);
-    let tx1 = GraphTransaction {
-        label: None,
-        ops: plan1.ops,
-    };
+    let tx1 = GraphTransaction::from_ops(plan1.into_ops());
     tx1.apply_to(&mut graph).unwrap();
     assert_eq!(graph.edges.len(), 1);
 
@@ -99,12 +95,9 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
     let edge_a = EdgeId::new();
     let edge_b = EdgeId::new();
     let plan2 = plan_connect_by_inserting_node(&graph, out2, inn, edge_a, edge_b, spec);
-    assert_eq!(plan2.decision, ConnectDecision::Accept);
+    assert!(plan2.is_accept());
 
-    let tx2 = GraphTransaction {
-        label: None,
-        ops: plan2.ops,
-    };
+    let tx2 = GraphTransaction::from_ops(plan2.into_ops());
     tx2.apply_to(&mut graph).unwrap();
 
     assert_eq!(graph.nodes.len(), 4);
@@ -182,12 +175,9 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
 
     let new_edge_id = EdgeId::new();
     let plan = plan_split_edge_by_inserting_node(&graph, edge_id, new_edge_id, spec);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
+    assert!(plan.is_accept());
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: plan.ops,
-    };
+    let tx = GraphTransaction::from_ops(plan.into_ops());
     tx.apply_to(&mut graph).unwrap();
 
     assert_eq!(graph.edges.len(), 2);
@@ -264,11 +254,11 @@ fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
     let split_plan = plan_split_edge_by_inserting_node(&graph, edge_id, EdgeId::new(), spec);
 
     for plan in [connect_plan, split_plan] {
-        assert_eq!(plan.decision, ConnectDecision::Reject);
+        assert!(plan.is_reject());
         assert_eq!(
-            plan.diagnostics[0].message,
+            plan.diagnostics()[0].message,
             "inserted input/output ports must be distinct"
         );
-        assert!(plan.ops.is_empty());
+        assert!(plan.ops().is_empty());
     }
 }

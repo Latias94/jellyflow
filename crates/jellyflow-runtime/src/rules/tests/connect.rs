@@ -1,6 +1,6 @@
 use super::fixtures::{insert_port, make_node, make_port};
 
-use crate::rules::{ConnectDecision, plan_connect, plan_connect_with_mode};
+use crate::rules::{plan_connect, plan_connect_with_mode};
 use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
@@ -40,7 +40,7 @@ fn plan_connect_swaps_in_out() {
     );
 
     let plan = plan_connect(&graph, inn, out);
-    assert_eq!(plan.ops.len(), 1);
+    assert_eq!(plan.ops().len(), 1);
 }
 
 #[test]
@@ -76,8 +76,8 @@ fn plan_connect_strict_allows_same_node_out_to_in() {
     );
 
     let plan = plan_connect(&graph, out, inn);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
-    assert!(!plan.ops.is_empty());
+    assert!(plan.is_accept());
+    assert!(!plan.ops().is_empty());
 }
 
 #[test]
@@ -115,8 +115,8 @@ fn plan_connect_loose_allows_out_to_out_and_preserves_order() {
     );
 
     let plan = plan_connect_with_mode(&graph, out_a, out_b, NodeGraphConnectionMode::Loose);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
-    assert!(plan.ops.iter().any(
+    assert!(plan.is_accept());
+    assert!(plan.ops().iter().any(
         |op| matches!(op, GraphOp::AddEdge { edge, .. } if edge.from == out_a && edge.to == out_b)
     ));
 }
@@ -170,15 +170,12 @@ fn plan_connect_single_input_disconnects_existing() {
     );
 
     let plan1 = plan_connect(&graph, out1, inn);
-    let tx1 = GraphTransaction {
-        label: None,
-        ops: plan1.ops,
-    };
+    let tx1 = GraphTransaction::from_ops(plan1.into_ops());
     tx1.apply_to(&mut graph).unwrap();
     assert_eq!(graph.edges.len(), 1);
 
     let plan2 = plan_connect(&graph, out2, inn);
-    assert_eq!(plan2.ops.len(), 2);
+    assert_eq!(plan2.ops().len(), 2);
 }
 
 #[test]
@@ -217,20 +214,20 @@ fn plan_connect_respects_node_and_port_connectability() {
 
     graph.nodes.get_mut(&a).unwrap().connectable = Some(false);
     let plan = plan_connect(&graph, out, inn);
-    assert_eq!(plan.decision, ConnectDecision::Reject);
-    assert!(plan.ops.is_empty());
+    assert!(plan.is_reject());
+    assert!(plan.ops().is_empty());
 
     graph.nodes.get_mut(&a).unwrap().connectable = Some(true);
     graph.ports.get_mut(&out).unwrap().connectable_start = Some(false);
     let plan = plan_connect(&graph, out, inn);
-    assert_eq!(plan.decision, ConnectDecision::Reject);
+    assert!(plan.is_reject());
 
     graph.ports.get_mut(&out).unwrap().connectable_start = Some(true);
     graph.ports.get_mut(&inn).unwrap().connectable_end = Some(false);
     let plan = plan_connect(&graph, out, inn);
-    assert_eq!(plan.decision, ConnectDecision::Reject);
+    assert!(plan.is_reject());
 
     graph.ports.get_mut(&inn).unwrap().connectable_end = Some(true);
     let plan = plan_connect(&graph, out, inn);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
+    assert!(plan.is_accept());
 }

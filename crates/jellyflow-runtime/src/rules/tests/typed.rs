@@ -1,6 +1,6 @@
 use super::fixtures::{insert_port, make_node, make_port};
 
-use crate::rules::{ConnectDecision, plan_connect_typed};
+use crate::rules::plan_connect_typed;
 use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 
@@ -43,8 +43,8 @@ fn plan_connect_typed_rejects_incompatible_data_types() {
         |g, p| g.ports.get(&p).and_then(|p| p.ty.clone()),
         &mut compat,
     );
-    assert_eq!(plan.decision, ConnectDecision::Reject);
-    assert!(plan.ops.is_empty());
+    assert!(plan.is_reject());
+    assert!(plan.ops().is_empty());
 }
 
 #[test]
@@ -86,6 +86,6 @@ fn plan_connect_typed_accepts_int_to_float() {
         |g, p| g.ports.get(&p).and_then(|p| p.ty.clone()),
         &mut compat,
     );
-    assert_eq!(plan.decision, ConnectDecision::Accept);
-    assert!(!plan.ops.is_empty());
+    assert!(plan.is_accept());
+    assert!(!plan.ops().is_empty());
 }

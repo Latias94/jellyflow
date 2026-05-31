@@ -1,6 +1,6 @@
 use super::fixtures::{insert_edge, insert_port, make_node, make_port};
 
-use crate::rules::{ConnectDecision, EdgeEndpoint, plan_reconnect_edge};
+use crate::rules::{EdgeEndpoint, plan_reconnect_edge};
 use jellyflow_core::core::{
     EdgeId, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, NodeId, PortCapacity,
     PortDirection, PortId, PortKind,
@@ -59,13 +59,10 @@ fn plan_reconnect_preserves_edge_id() {
     insert_edge(&mut graph, edge_id, out1, inn);
 
     let plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out2);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
-    assert_eq!(plan.ops.len(), 1);
+    assert!(plan.is_accept());
+    assert_eq!(plan.ops().len(), 1);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: plan.ops,
-    };
+    let tx = GraphTransaction::from_ops(plan.into_ops());
     tx.apply_to(&mut graph).unwrap();
 
     let edge = graph.edges.get(&edge_id).unwrap();
@@ -140,19 +137,19 @@ fn plan_reconnect_respects_edge_and_port_policy() {
     ));
 
     let source_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out2);
-    assert_eq!(source_plan.decision, ConnectDecision::Reject);
+    assert!(source_plan.is_reject());
 
     graph.ports.get_mut(&in2).unwrap().connectable_end = Some(false);
     let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
-    assert_eq!(target_plan.decision, ConnectDecision::Reject);
+    assert!(target_plan.is_reject());
 
     graph.ports.get_mut(&in2).unwrap().connectable_end = Some(true);
     let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
-    assert_eq!(target_plan.decision, ConnectDecision::Accept);
+    assert!(target_plan.is_accept());
 
     graph.edges.get_mut(&edge_id).unwrap().reconnectable = Some(EdgeReconnectable::Bool(false));
     let disabled_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
-    assert_eq!(disabled_plan.decision, ConnectDecision::Reject);
+    assert!(disabled_plan.is_reject());
 }
 
 #[test]
@@ -223,13 +220,10 @@ fn plan_reconnect_single_target_disconnects_other_edges() {
     insert_edge(&mut graph, edge_drop, out2, inn);
 
     let plan = plan_reconnect_edge(&graph, edge_keep, EdgeEndpoint::From, out3);
-    assert_eq!(plan.decision, ConnectDecision::Accept);
-    assert_eq!(plan.ops.len(), 2, "expected remove + set_endpoints");
+    assert!(plan.is_accept());
+    assert_eq!(plan.ops().len(), 2, "expected remove + set_endpoints");
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: plan.ops,
-    };
+    let tx = GraphTransaction::from_ops(plan.into_ops());
     tx.apply_to(&mut graph).unwrap();
 
     assert!(
@@ -295,5 +289,5 @@ fn plan_reconnect_rejects_duplicate_connection() {
     insert_edge(&mut graph, edge_b, out2, inn);
 
     let plan = plan_reconnect_edge(&graph, edge_a, EdgeEndpoint::From, out2);
-    assert_eq!(plan.decision, ConnectDecision::Reject);
+    assert!(plan.is_reject());
 }

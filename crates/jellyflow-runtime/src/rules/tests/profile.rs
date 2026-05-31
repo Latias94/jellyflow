@@ -1,7 +1,7 @@
 use super::fixtures::{insert_port, make_node, make_port};
 
 use crate::profile::GraphProfile;
-use crate::rules::{ConnectDecision, Diagnostic};
+use crate::rules::Diagnostic;
 use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::TypeDesc;
@@ -52,6 +52,6 @@ fn graph_profile_default_plan_connect_uses_type_of_port() {
     let mut profile = TypedProfile;
     let plan = profile.plan_connect(&graph, out, inn, NodeGraphConnectionMode::Strict);
 
-    assert_eq!(plan.decision, ConnectDecision::Reject);
-    assert!(plan.ops.is_empty());
+    assert!(plan.is_reject());
+    assert!(plan.ops().is_empty());
 }
