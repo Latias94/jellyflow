@@ -24,11 +24,7 @@ impl NodeGraphLookups {
         id: NodeId,
         pos: CanvasPoint,
     ) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.pos = pos;
-            return true;
-        }
-        self.insert_node_lookup_from_graph(graph, id)
+        self.update_node_lookup_or_insert(graph, id, |node| node.pos = pos)
     }
 
     pub(super) fn apply_set_node_kind(
@@ -37,11 +33,7 @@ impl NodeGraphLookups {
         id: NodeId,
         kind: &NodeKindKey,
     ) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.kind = kind.clone();
-            return true;
-        }
-        self.insert_node_lookup_from_graph(graph, id)
+        self.update_node_lookup_or_insert(graph, id, |node| node.kind = kind.clone())
     }
 
     pub(super) fn apply_set_node_kind_version(
@@ -50,50 +42,51 @@ impl NodeGraphLookups {
         id: NodeId,
         version: u32,
     ) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.kind_version = version;
-            return true;
-        }
-        self.insert_node_lookup_from_graph(graph, id)
+        self.update_node_lookup_or_insert(graph, id, |node| node.kind_version = version)
     }
 
     pub(super) fn apply_set_node_parent(&mut self, id: NodeId, parent: Option<GroupId>) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.parent = parent;
-            return true;
-        }
-        false
+        self.update_existing_node_lookup(id, |node| node.parent = parent)
     }
 
     pub(super) fn apply_set_node_size(&mut self, id: NodeId, size: Option<CanvasSize>) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.size = size;
-            return true;
-        }
-        false
+        self.update_existing_node_lookup(id, |node| node.size = size)
     }
 
     pub(super) fn apply_set_node_hidden(&mut self, id: NodeId, hidden: bool) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.hidden = hidden;
-            return true;
-        }
-        false
+        self.update_existing_node_lookup(id, |node| node.hidden = hidden)
     }
 
     pub(super) fn apply_set_node_collapsed(&mut self, id: NodeId, collapsed: bool) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.collapsed = collapsed;
-            return true;
-        }
-        false
+        self.update_existing_node_lookup(id, |node| node.collapsed = collapsed)
     }
 
     pub(super) fn apply_set_node_ports(&mut self, id: NodeId, ports: &[PortId]) -> bool {
-        if let Some(n) = self.node_lookup.get_mut(&id) {
-            n.ports = ports.to_vec();
-            return true;
+        self.update_existing_node_lookup(id, |node| node.ports = ports.to_vec())
+    }
+
+    fn update_node_lookup_or_insert(
+        &mut self,
+        graph: &Graph,
+        id: NodeId,
+        update: impl FnOnce(&mut NodeLookupEntry),
+    ) -> bool {
+        if self.update_existing_node_lookup(id, update) {
+            true
+        } else {
+            self.insert_node_lookup_from_graph(graph, id)
         }
-        false
+    }
+
+    fn update_existing_node_lookup(
+        &mut self,
+        id: NodeId,
+        update: impl FnOnce(&mut NodeLookupEntry),
+    ) -> bool {
+        let Some(node) = self.node_lookup.get_mut(&id) else {
+            return false;
+        };
+        update(node);
+        true
     }
 }
