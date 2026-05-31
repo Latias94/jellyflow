@@ -10,8 +10,20 @@ pub struct NodeGraphEdgeInteractionPolicy {
 }
 
 impl NodeGraphEdgeInteractionPolicy {
+    pub fn can_delete(self) -> bool {
+        self.deletable
+    }
+
     pub fn reconnectable(self) -> bool {
         self.reconnect_source || self.reconnect_target
+    }
+
+    pub fn can_reconnect_source(self) -> bool {
+        self.reconnect_source
+    }
+
+    pub fn can_reconnect_target(self) -> bool {
+        self.reconnect_target
     }
 }
 

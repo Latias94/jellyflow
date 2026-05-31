@@ -15,7 +15,7 @@ pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
         Ok(policy) => policy,
         Err(plan) => return Some(plan),
     };
-    if !from_policy.connectable_start {
+    if !from_policy.can_start_connection() {
         return Some(ConnectPlan::reject("source port is not connectable"));
     }
 
@@ -23,7 +23,7 @@ pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
         Ok(policy) => policy,
         Err(plan) => return Some(plan),
     };
-    if !to_policy.connectable_end {
+    if !to_policy.can_accept_connection() {
         return Some(ConnectPlan::reject("target port is not connectable"));
     }
 

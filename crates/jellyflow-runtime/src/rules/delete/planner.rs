@@ -56,7 +56,7 @@ impl<'a> DeletePlanner<'a> {
                 continue;
             };
 
-            if !self.state.node_interaction_policy(node).deletable {
+            if !self.state.node_interaction_policy(node).can_delete() {
                 diagnostics.push(delete_diagnostic(
                     "delete.node_not_deletable",
                     DiagnosticTarget::Node { id: *node_id },
@@ -86,7 +86,7 @@ impl<'a> DeletePlanner<'a> {
                 continue;
             };
 
-            if !self.state.edge_interaction_policy(edge).deletable {
+            if !self.state.edge_interaction_policy(edge).can_delete() {
                 diagnostics.push(delete_diagnostic(
                     "delete.edge_not_deletable",
                     DiagnosticTarget::Edge { id: *edge_id },

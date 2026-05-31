@@ -100,10 +100,10 @@ fn reconnect_endpoint_policy_rejection(
 ) -> Option<ConnectPlan> {
     let edge_policy = state.edge_interaction_policy(edge);
     match endpoint {
-        EdgeEndpoint::From if !edge_policy.reconnect_source => Some(ConnectPlan::reject(
+        EdgeEndpoint::From if !edge_policy.can_reconnect_source() => Some(ConnectPlan::reject(
             "edge source endpoint is not reconnectable",
         )),
-        EdgeEndpoint::To if !edge_policy.reconnect_target => Some(ConnectPlan::reject(
+        EdgeEndpoint::To if !edge_policy.can_reconnect_target() => Some(ConnectPlan::reject(
             "edge target endpoint is not reconnectable",
         )),
         _ => None,

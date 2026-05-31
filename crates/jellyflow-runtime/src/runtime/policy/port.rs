@@ -10,6 +10,16 @@ pub struct NodeGraphPortInteractionPolicy {
     pub connectable_end: bool,
 }
 
+impl NodeGraphPortInteractionPolicy {
+    pub fn can_start_connection(self) -> bool {
+        self.connectable_start
+    }
+
+    pub fn can_accept_connection(self) -> bool {
+        self.connectable_end
+    }
+}
+
 pub fn resolve_port_interaction_policy(
     node: &Node,
     port: &Port,

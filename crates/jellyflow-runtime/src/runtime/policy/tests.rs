@@ -82,6 +82,7 @@ fn policy_node_overrides_global_defaults() {
             expand_parent: false,
         }
     );
+    assert!(!default_policy.can_delete());
 
     state.node_extent = None;
     let mut n = node();
@@ -103,6 +104,7 @@ fn policy_node_overrides_global_defaults() {
             expand_parent: true,
         }
     );
+    assert!(resolve_node_interaction_policy(&n, &state).can_delete());
 }
 
 #[test]
@@ -127,6 +129,7 @@ fn policy_port_requires_node_and_port_connectability() {
             connectable_end: false,
         }
     );
+    assert!(!resolve_port_interaction_policy(&n, &p, &state).can_start_connection());
 
     n.connectable = Some(true);
     p.connectable = Some(false);
@@ -143,6 +146,9 @@ fn policy_port_requires_node_and_port_connectability() {
             connectable_end: true,
         }
     );
+    let policy = resolve_port_interaction_policy(&n, &p, &state);
+    assert!(!policy.can_start_connection());
+    assert!(policy.can_accept_connection());
 }
 
 #[test]
@@ -166,7 +172,10 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
             reconnect_target: false,
         }
     );
+    assert!(!default_policy.can_delete());
     assert!(!default_policy.reconnectable());
+    assert!(!default_policy.can_reconnect_source());
+    assert!(!default_policy.can_reconnect_target());
 
     let mut e = edge(from, to);
     e.selectable = Some(true);
@@ -175,6 +184,7 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     let enabled_policy = resolve_edge_interaction_policy(&e, &disabled_state);
     assert!(enabled_policy.selectable);
     assert!(enabled_policy.deletable);
+    assert!(enabled_policy.can_delete());
     assert!(enabled_policy.reconnect_source);
     assert!(enabled_policy.reconnect_target);
     assert!(enabled_policy.reconnectable());
@@ -185,6 +195,8 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     let source_only = resolve_edge_interaction_policy(&e, &disabled_state);
     assert!(source_only.reconnect_source);
     assert!(!source_only.reconnect_target);
+    assert!(source_only.can_reconnect_source());
+    assert!(!source_only.can_reconnect_target());
 
     e.reconnectable = Some(EdgeReconnectable::Endpoint(
         EdgeReconnectableEndpoint::Target,
@@ -192,6 +204,8 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     let target_only = resolve_edge_interaction_policy(&e, &disabled_state);
     assert!(!target_only.reconnect_source);
     assert!(target_only.reconnect_target);
+    assert!(!target_only.can_reconnect_source());
+    assert!(target_only.can_reconnect_target());
 }
 
 #[test]

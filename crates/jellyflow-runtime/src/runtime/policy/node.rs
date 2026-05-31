@@ -11,6 +11,12 @@ pub struct NodeGraphNodeInteractionPolicy {
     pub expand_parent: bool,
 }
 
+impl NodeGraphNodeInteractionPolicy {
+    pub fn can_delete(self) -> bool {
+        self.deletable
+    }
+}
+
 pub fn resolve_node_interaction_policy(
     node: &Node,
     state: &NodeGraphInteractionState,
