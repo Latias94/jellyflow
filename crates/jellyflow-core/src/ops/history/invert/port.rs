@@ -1,3 +1,4 @@
+use crate::core::{Edge, EdgeId, Port, PortId};
 use crate::ops::GraphOp;
 
 pub(super) fn invert_port_op(op: &GraphOp) -> Vec<GraphOp> {
@@ -7,20 +8,7 @@ pub(super) fn invert_port_op(op: &GraphOp) -> Vec<GraphOp> {
             port: port.clone(),
             edges: Vec::new(),
         }],
-        GraphOp::RemovePort { id, port, edges } => {
-            let mut out: Vec<GraphOp> = Vec::new();
-            out.push(GraphOp::AddPort {
-                id: *id,
-                port: port.clone(),
-            });
-            for (edge_id, edge) in edges {
-                out.push(GraphOp::AddEdge {
-                    id: *edge_id,
-                    edge: edge.clone(),
-                });
-            }
-            out
-        }
+        GraphOp::RemovePort { id, port, edges } => restore_removed_port(*id, port, edges),
         GraphOp::SetPortConnectable { id, from, to } => vec![GraphOp::SetPortConnectable {
             id: *id,
             from: *to,
@@ -52,4 +40,19 @@ pub(super) fn invert_port_op(op: &GraphOp) -> Vec<GraphOp> {
         }],
         _ => unreachable!("port invert handler received non-port operation"),
     }
+}
+
+fn restore_removed_port(id: PortId, port: &Port, edges: &[(EdgeId, Edge)]) -> Vec<GraphOp> {
+    let mut out: Vec<GraphOp> = Vec::new();
+    out.push(GraphOp::AddPort {
+        id,
+        port: port.clone(),
+    });
+    for (edge_id, edge) in edges {
+        out.push(GraphOp::AddEdge {
+            id: *edge_id,
+            edge: edge.clone(),
+        });
+    }
+    out
 }
