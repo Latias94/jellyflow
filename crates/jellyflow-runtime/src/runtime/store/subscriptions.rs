@@ -7,12 +7,56 @@ use crate::runtime::events::{
 use super::NodeGraphStore;
 use super::snapshot::StoreSnapshotParts;
 
+type SelectorValue = dyn std::any::Any;
+
 pub(super) struct SelectorSubscription {
     token: SubscriptionToken,
-    compute: Box<dyn for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> Box<dyn std::any::Any>>,
-    equals: Box<dyn Fn(&dyn std::any::Any, &dyn std::any::Any) -> bool>,
-    callback: Box<dyn FnMut(&dyn std::any::Any, &dyn std::any::Any)>,
-    last: Box<dyn std::any::Any>,
+    compute: Box<dyn for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> Box<SelectorValue>>,
+    equals: Box<dyn Fn(&SelectorValue, &SelectorValue) -> bool>,
+    callback: Box<dyn FnMut(&SelectorValue, &SelectorValue)>,
+    last: Box<SelectorValue>,
+}
+
+impl SelectorSubscription {
+    fn new<T>(
+        token: SubscriptionToken,
+        selector: impl for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> T + 'static,
+        initial: T,
+        mut on_change: impl FnMut(&T, &T) + 'static,
+    ) -> Self
+    where
+        T: PartialEq + 'static,
+    {
+        Self {
+            token,
+            compute: Box::new(move |snapshot| Box::new(selector(snapshot)) as Box<SelectorValue>),
+            equals: Box::new(|a, b| {
+                let a = a.downcast_ref::<T>().expect("selector type mismatch");
+                let b = b.downcast_ref::<T>().expect("selector type mismatch");
+                a == b
+            }),
+            callback: Box::new(move |prev, next| {
+                let prev = prev.downcast_ref::<T>().expect("selector type mismatch");
+                let next = next.downcast_ref::<T>().expect("selector type mismatch");
+                on_change(prev, next);
+            }),
+            last: Box::new(initial),
+        }
+    }
+
+    fn token(&self) -> SubscriptionToken {
+        self.token
+    }
+
+    fn notify_if_changed(&mut self, snapshot: NodeGraphStoreSnapshot<'_>) {
+        let next = (self.compute)(snapshot);
+        let changed = !(self.equals)(&*self.last, &*next);
+        if !changed {
+            return;
+        }
+        (self.callback)(&*self.last, &*next);
+        self.last = next;
+    }
 }
 
 impl NodeGraphStore {
@@ -56,7 +100,7 @@ impl NodeGraphStore {
     pub fn subscribe_selector_diff<T>(
         &mut self,
         selector: impl for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> T + 'static,
-        mut on_change: impl FnMut(&T, &T) + 'static,
+        on_change: impl FnMut(&T, &T) + 'static,
     ) -> SubscriptionToken
     where
         T: Clone + PartialEq + 'static,
@@ -66,23 +110,9 @@ impl NodeGraphStore {
 
         let initial = selector(self.snapshot());
 
-        self.selector_subscriptions.push(SelectorSubscription {
-            token,
-            compute: Box::new(move |snapshot| {
-                Box::new(selector(snapshot)) as Box<dyn std::any::Any>
-            }),
-            equals: Box::new(|a, b| {
-                let a = a.downcast_ref::<T>().expect("selector type mismatch");
-                let b = b.downcast_ref::<T>().expect("selector type mismatch");
-                a == b
-            }),
-            callback: Box::new(move |prev, next| {
-                let prev = prev.downcast_ref::<T>().expect("selector type mismatch");
-                let next = next.downcast_ref::<T>().expect("selector type mismatch");
-                on_change(prev, next);
-            }),
-            last: Box::new(initial),
-        });
+        self.selector_subscriptions.push(SelectorSubscription::new(
+            token, selector, initial, on_change,
+        ));
 
         token
     }
@@ -100,7 +130,7 @@ impl NodeGraphStore {
         removed |= before != self.gesture_subscriptions.len();
 
         let before = self.selector_subscriptions.len();
-        self.selector_subscriptions.retain(|s| s.token != token);
+        self.selector_subscriptions.retain(|s| s.token() != token);
         removed |= before != self.selector_subscriptions.len();
 
         removed
@@ -120,13 +150,7 @@ impl NodeGraphStore {
             &self.history,
         );
         for sub in &mut self.selector_subscriptions {
-            let next = (sub.compute)(snapshot_parts.snapshot());
-            let changed = !(sub.equals)(&*sub.last, &*next);
-            if !changed {
-                continue;
-            }
-            (sub.callback)(&*sub.last, &*next);
-            sub.last = next;
+            sub.notify_if_changed(snapshot_parts.snapshot());
         }
     }
 }
