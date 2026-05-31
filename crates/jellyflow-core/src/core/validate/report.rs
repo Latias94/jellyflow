@@ -10,6 +10,14 @@ impl GraphValidationReport {
         self.errors.is_empty()
     }
 
+    pub fn errors(&self) -> &[GraphValidationError] {
+        &self.errors
+    }
+
+    pub fn into_errors(self) -> Vec<GraphValidationError> {
+        self.errors
+    }
+
     pub(crate) fn push(&mut self, error: GraphValidationError) {
         self.errors.push(error);
     }

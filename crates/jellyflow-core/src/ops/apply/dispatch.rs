@@ -15,7 +15,7 @@ pub(super) fn apply_transaction(
     let report = validate_graph_storage(&scratch);
     if !report.is_ok() {
         return Err(ApplyError::InvalidTransactionResult {
-            errors: report.errors,
+            errors: report.into_errors(),
         });
     }
 
