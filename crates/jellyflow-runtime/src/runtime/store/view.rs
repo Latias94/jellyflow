@@ -32,21 +32,13 @@ impl NodeGraphStore {
     /// This emits a document replacement event, not a graph commit. Selection is sanitized against
     /// the new graph.
     pub fn replace_graph(&mut self, graph: Graph) {
-        let before_graph = self.graph.clone();
-        let before_view_state = self.view_state.clone();
-        let before_editor_config = self.editor_config();
-        let before_revision = self.graph_revision;
+        let before = self.capture_document_snapshot();
 
         self.graph = graph;
         self.bump_graph_revision();
         self.view_state.sanitize_for_graph(&self.graph);
         self.lookups.rebuild_from(&self.graph);
-        self.publish_document_replaced(
-            before_graph,
-            before_view_state,
-            before_editor_config,
-            before_revision,
-        );
+        self.publish_document_replaced(before);
     }
 
     /// Replaces the entire document snapshot in one atomic store update.
@@ -59,10 +51,7 @@ impl NodeGraphStore {
         mut view_state: NodeGraphViewState,
         editor_config: NodeGraphEditorConfig,
     ) {
-        let before_graph = self.graph.clone();
-        let before_view_state = self.view_state.clone();
-        let before_editor_config = self.editor_config();
-        let before_revision = self.graph_revision;
+        let before = self.capture_document_snapshot();
 
         view_state.sanitize_for_graph(&graph);
         self.graph = graph;
@@ -72,12 +61,7 @@ impl NodeGraphStore {
         self.runtime_tuning = editor_config.runtime_tuning;
         self.history = GraphHistory::default();
         self.lookups.rebuild_from(&self.graph);
-        self.publish_document_replaced(
-            before_graph,
-            before_view_state,
-            before_editor_config,
-            before_revision,
-        );
+        self.publish_document_replaced(before);
     }
 
     pub fn view_state(&self) -> &NodeGraphViewState {

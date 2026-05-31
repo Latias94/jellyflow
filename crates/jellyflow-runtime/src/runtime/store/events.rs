@@ -9,36 +9,48 @@ use jellyflow_core::core::Graph;
 
 use super::NodeGraphStore;
 
+pub(super) struct DocumentSnapshotParts {
+    graph: Graph,
+    graph_revision: u64,
+    view_state: NodeGraphViewState,
+    editor_config: NodeGraphEditorConfig,
+}
+
+impl DocumentSnapshotParts {
+    fn from_store(store: &NodeGraphStore) -> Self {
+        Self {
+            graph: store.graph.clone(),
+            graph_revision: store.graph_revision,
+            view_state: store.view_state.clone(),
+            editor_config: store.editor_config(),
+        }
+    }
+
+    fn event_snapshot(&self) -> NodeGraphDocumentSnapshot<'_> {
+        NodeGraphDocumentSnapshot {
+            graph: &self.graph,
+            graph_revision: self.graph_revision,
+            view_state: &self.view_state,
+            editor_config: &self.editor_config,
+        }
+    }
+}
+
 impl NodeGraphStore {
     pub(super) fn bump_graph_revision(&mut self) {
         self.graph_revision = self.graph_revision.saturating_add(1);
     }
 
-    pub(super) fn publish_document_replaced(
-        &mut self,
-        before_graph: Graph,
-        before_view_state: NodeGraphViewState,
-        before_editor_config: NodeGraphEditorConfig,
-        before_revision: u64,
-    ) {
-        let after_graph = self.graph.clone();
-        let after_view_state = self.view_state.clone();
-        let after_editor_config = self.editor_config();
-        let after_revision = self.graph_revision;
+    pub(super) fn capture_document_snapshot(&self) -> DocumentSnapshotParts {
+        DocumentSnapshotParts::from_store(self)
+    }
+
+    pub(super) fn publish_document_replaced(&mut self, before: DocumentSnapshotParts) {
+        let after = self.capture_document_snapshot();
 
         self.emit(NodeGraphStoreEvent::DocumentReplaced {
-            before: NodeGraphDocumentSnapshot {
-                graph: &before_graph,
-                graph_revision: before_revision,
-                view_state: &before_view_state,
-                editor_config: &before_editor_config,
-            },
-            after: NodeGraphDocumentSnapshot {
-                graph: &after_graph,
-                graph_revision: after_revision,
-                view_state: &after_view_state,
-                editor_config: &after_editor_config,
-            },
+            before: before.event_snapshot(),
+            after: after.event_snapshot(),
         });
         self.notify_selectors();
     }
