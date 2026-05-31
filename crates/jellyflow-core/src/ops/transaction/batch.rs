@@ -43,6 +43,12 @@ impl GraphTransaction {
         self
     }
 
+    /// Transforms this transaction's ops while preserving metadata.
+    pub fn map_ops(mut self, f: impl FnOnce(Vec<GraphOp>) -> Vec<GraphOp>) -> Self {
+        self.ops = f(self.ops);
+        self
+    }
+
     /// Pushes an op.
     pub fn push(&mut self, op: GraphOp) {
         self.ops.push(op);
@@ -51,6 +57,11 @@ impl GraphTransaction {
     /// Extends this transaction with ops in order.
     pub fn extend(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
         self.ops.extend(ops);
+    }
+
+    /// Retains ops that match `f`.
+    pub fn retain_ops(&mut self, f: impl FnMut(&GraphOp) -> bool) {
+        self.ops.retain(f);
     }
 
     pub fn is_empty(&self) -> bool {
