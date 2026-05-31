@@ -10,27 +10,14 @@ use crate::schema::migration::{
 impl NodeRegistry {
     /// Plans a transaction that rewrites aliased node kinds to their canonical kind.
     pub fn plan_canonicalize_kinds(&self, graph: &Graph) -> CanonicalizeKindsPlan {
-        let mut tx = GraphTransaction::new().with_label("Canonicalize node kinds");
-        let mut rewrites: Vec<NodeKindRewrite> = Vec::new();
+        let mut planner = CanonicalizeKindsPlanner::new();
 
         for (id, node) in &graph.nodes {
             let canonical = self.resolve_kind(&node.kind);
-            if canonical == &node.kind {
-                continue;
-            }
-            tx.push(GraphOp::SetNodeKind {
-                id: *id,
-                from: node.kind.clone(),
-                to: canonical.clone(),
-            });
-            rewrites.push(NodeKindRewrite {
-                node: *id,
-                from: node.kind.clone(),
-                to: canonical.clone(),
-            });
+            planner.rewrite_node_kind(*id, node, canonical);
         }
 
-        CanonicalizeKindsPlan { tx, rewrites }
+        planner.finish()
     }
 
     /// Plans a transaction that upgrades node payloads to the latest registered kind version.
@@ -43,6 +30,44 @@ impl NodeRegistry {
     /// The returned transaction may also include `SetNodeKind` ops for aliased kinds.
     pub fn plan_migrate_nodes(&self, graph: &Graph) -> MigrateNodesPlan {
         MigrateNodesPlanner::new(self, graph).finish()
+    }
+}
+
+struct CanonicalizeKindsPlanner {
+    tx: GraphTransaction,
+    rewrites: Vec<NodeKindRewrite>,
+}
+
+impl CanonicalizeKindsPlanner {
+    fn new() -> Self {
+        Self {
+            tx: GraphTransaction::new().with_label("Canonicalize node kinds"),
+            rewrites: Vec::new(),
+        }
+    }
+
+    fn rewrite_node_kind(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) {
+        if canonical == &node.kind {
+            return;
+        }
+
+        self.tx.push(GraphOp::SetNodeKind {
+            id,
+            from: node.kind.clone(),
+            to: canonical.clone(),
+        });
+        self.rewrites.push(NodeKindRewrite {
+            node: id,
+            from: node.kind.clone(),
+            to: canonical.clone(),
+        });
+    }
+
+    fn finish(self) -> CanonicalizeKindsPlan {
+        CanonicalizeKindsPlan {
+            tx: self.tx,
+            rewrites: self.rewrites,
+        }
     }
 }
 
