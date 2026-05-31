@@ -31,9 +31,9 @@ fn normalize_transaction_drops_noop_set_ops() {
     };
 
     let normalized = crate::ops::normalize_transaction(tx);
-    assert_eq!(normalized.label.as_deref(), Some("Normalize"));
-    assert_eq!(normalized.ops.len(), 1);
-    assert!(matches!(normalized.ops[0], GraphOp::AddNode { .. }));
+    assert_eq!(normalized.label(), Some("Normalize"));
+    assert_eq!(normalized.ops().len(), 1);
+    assert!(matches!(normalized.ops()[0], GraphOp::AddNode { .. }));
 }
 
 #[test]
@@ -50,8 +50,8 @@ fn normalize_transaction_keeps_non_noop_set_ops() {
     };
 
     let normalized = crate::ops::normalize_transaction(tx);
-    assert_eq!(normalized.ops.len(), 1);
-    assert!(matches!(normalized.ops[0], GraphOp::SetNodePos { .. }));
+    assert_eq!(normalized.ops().len(), 1);
+    assert!(matches!(normalized.ops()[0], GraphOp::SetNodePos { .. }));
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn normalize_transaction_coalesces_setter_chains_and_drops_resulting_noops() {
     };
 
     let normalized = crate::ops::normalize_transaction(tx);
-    assert!(normalized.ops.is_empty());
+    assert!(normalized.is_empty());
 }
 
 #[test]
@@ -104,9 +104,9 @@ fn normalize_transaction_coalesces_setter_chains_when_chained() {
     };
 
     let normalized = crate::ops::normalize_transaction(tx);
-    assert_eq!(normalized.ops.len(), 1);
+    assert_eq!(normalized.ops().len(), 1);
     assert!(matches!(
-        &normalized.ops[0],
+        &normalized.ops()[0],
         GraphOp::SetNodeCollapsed {
             id,
             from: false,
