@@ -44,86 +44,103 @@ impl GraphImportClosure {
 /// - the resulting `order` is DFS postorder (dependencies appear before dependents).
 pub fn resolve_import_closure<'a>(
     root_graph: &'a Graph,
-    mut resolver: impl FnMut(GraphId) -> Option<&'a Graph>,
+    resolver: impl FnMut(GraphId) -> Option<&'a Graph>,
 ) -> Result<GraphImportClosure, GraphImportError> {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Mark {
-        Temporary,
-        Permanent,
+    ImportClosureResolver::new(root_graph, resolver).finish()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportVisitMark {
+    Temporary,
+    Permanent,
+}
+
+struct ImportClosureResolver<'a, R>
+where
+    R: FnMut(GraphId) -> Option<&'a Graph>,
+{
+    root: GraphId,
+    root_graph: &'a Graph,
+    resolver: R,
+    marks: BTreeMap<GraphId, ImportVisitMark>,
+    stack: Vec<GraphId>,
+    closure: GraphImportClosure,
+}
+
+impl<'a, R> ImportClosureResolver<'a, R>
+where
+    R: FnMut(GraphId) -> Option<&'a Graph>,
+{
+    fn new(root_graph: &'a Graph, resolver: R) -> Self {
+        Self {
+            root: root_graph.graph_id,
+            root_graph,
+            resolver,
+            marks: BTreeMap::new(),
+            stack: Vec::new(),
+            closure: GraphImportClosure {
+                reachable: BTreeSet::new(),
+                order: Vec::new(),
+            },
+        }
     }
 
-    let root = root_graph.graph_id;
-    let mut marks: BTreeMap<GraphId, Mark> = BTreeMap::new();
-    let mut stack: Vec<GraphId> = Vec::new();
-    let mut closure = GraphImportClosure {
-        reachable: BTreeSet::new(),
-        order: Vec::new(),
-    };
+    fn finish(mut self) -> Result<GraphImportClosure, GraphImportError> {
+        self.visit(self.root, self.root)?;
+        Ok(self.closure)
+    }
 
-    fn visit<'a>(
-        node: GraphId,
-        from: GraphId,
-        root: GraphId,
-        root_graph: &'a Graph,
-        resolver: &mut impl FnMut(GraphId) -> Option<&'a Graph>,
-        marks: &mut BTreeMap<GraphId, Mark>,
-        stack: &mut Vec<GraphId>,
-        closure: &mut GraphImportClosure,
-    ) -> Result<(), GraphImportError> {
-        match marks.get(&node).copied() {
-            Some(Mark::Permanent) => return Ok(()),
-            Some(Mark::Temporary) => {
-                if let Some(pos) = stack.iter().position(|id| *id == node) {
-                    let mut cycle = stack[pos..].to_vec();
-                    cycle.push(node);
-                    return Err(GraphImportError::Cycle { cycle });
-                }
-                return Err(GraphImportError::Cycle {
-                    cycle: vec![node, node],
-                });
-            }
+    fn visit(&mut self, node: GraphId, from: GraphId) -> Result<(), GraphImportError> {
+        match self.marks.get(&node).copied() {
+            Some(ImportVisitMark::Permanent) => return Ok(()),
+            Some(ImportVisitMark::Temporary) => return Err(self.cycle_error(node)),
             None => {}
         }
 
-        marks.insert(node, Mark::Temporary);
-        stack.push(node);
+        self.marks.insert(node, ImportVisitMark::Temporary);
+        self.stack.push(node);
 
-        let map: &BTreeMap<GraphId, GraphImport> = if node == root {
-            &root_graph.imports
-        } else {
-            let Some(graph) = resolver(node) else {
-                return Err(GraphImportError::MissingGraph { from, to: node });
-            };
-            &graph.imports
-        };
-
-        for dep in map.keys() {
-            closure.reachable.insert(*dep);
-            visit(
-                *dep, node, root, root_graph, resolver, marks, stack, closure,
-            )?;
+        for dep in self.dependencies(node, from)? {
+            self.closure.reachable.insert(dep);
+            self.visit(dep, node)?;
         }
 
-        stack.pop();
-        marks.insert(node, Mark::Permanent);
+        self.stack.pop();
+        self.marks.insert(node, ImportVisitMark::Permanent);
 
-        if node != root {
-            closure.order.push(node);
+        if node != self.root {
+            self.closure.order.push(node);
         }
 
         Ok(())
     }
 
-    visit(
-        root,
-        root,
-        root,
-        root_graph,
-        &mut resolver,
-        &mut marks,
-        &mut stack,
-        &mut closure,
-    )?;
+    fn dependencies(
+        &mut self,
+        node: GraphId,
+        from: GraphId,
+    ) -> Result<Vec<GraphId>, GraphImportError> {
+        let imports = if node == self.root {
+            &self.root_graph.imports
+        } else {
+            let Some(graph) = (self.resolver)(node) else {
+                return Err(GraphImportError::MissingGraph { from, to: node });
+            };
+            &graph.imports
+        };
 
-    Ok(closure)
+        Ok(imports.keys().copied().collect())
+    }
+
+    fn cycle_error(&self, node: GraphId) -> GraphImportError {
+        if let Some(pos) = self.stack.iter().position(|id| *id == node) {
+            let mut cycle = self.stack[pos..].to_vec();
+            cycle.push(node);
+            return GraphImportError::Cycle { cycle };
+        }
+
+        GraphImportError::Cycle {
+            cycle: vec![node, node],
+        }
+    }
 }
