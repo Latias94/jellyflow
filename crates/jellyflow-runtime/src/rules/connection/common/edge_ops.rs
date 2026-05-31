@@ -46,6 +46,18 @@ pub(in crate::rules::connection) fn edge_like(edge: &Edge, from: PortId, to: Por
     }
 }
 
+pub(in crate::rules::connection) fn connection_exists(
+    graph: &Graph,
+    edge_kind: EdgeKind,
+    from: PortId,
+    to: PortId,
+    skip_edge: Option<EdgeId>,
+) -> bool {
+    graph.edges.iter().any(|(edge_id, edge)| {
+        Some(*edge_id) != skip_edge && edge.kind == edge_kind && edge.from == from && edge.to == to
+    })
+}
+
 pub(in crate::rules::connection) fn disconnect_for_capacity(
     graph: &Graph,
     edge_kind: EdgeKind,

@@ -6,7 +6,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
 
 use super::super::common::{
-    disconnect_for_capacity, edge_kind_for_port_kind, reject_if_connection_policy_disallows,
+    connection_exists, disconnect_for_capacity, edge_kind_for_port_kind,
+    reject_if_connection_policy_disallows,
 };
 
 /// Plans reconnecting one endpoint of an existing edge to a new port.
@@ -69,7 +70,13 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         ));
     }
 
-    if duplicate_connection_exists(graph, edge_id, edge, candidate) {
+    if connection_exists(
+        graph,
+        edge.kind,
+        candidate.from,
+        candidate.to,
+        Some(edge_id),
+    ) {
         return ConnectPlan::reject("duplicate connection already exists");
     }
 
@@ -161,19 +168,5 @@ fn port_kind_rejection(from: &Port, to: &Port) -> Option<ConnectPlan> {
             "port kinds are incompatible: from={:?} to={:?}",
             from.kind, to.kind
         ))
-    })
-}
-
-fn duplicate_connection_exists(
-    graph: &Graph,
-    edge_id: EdgeId,
-    edge: &Edge,
-    candidate: EdgeEndpoints,
-) -> bool {
-    graph.edges.iter().any(|(other_id, other)| {
-        *other_id != edge_id
-            && other.kind == edge.kind
-            && other.from == candidate.from
-            && other.to == candidate.to
     })
 }

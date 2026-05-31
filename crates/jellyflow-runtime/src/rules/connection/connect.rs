@@ -5,7 +5,7 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphOp;
 
 use super::common::{
-    add_existing_ports_edge_op, disconnect_for_capacity, edge_between,
+    add_existing_ports_edge_op, connection_exists, disconnect_for_capacity, edge_between,
     reject_if_connection_policy_disallows, resolve_connection_endpoints,
 };
 
@@ -31,13 +31,14 @@ pub fn plan_connect_with_mode_and_policy(
         return reject;
     }
 
-    for edge in graph.edges.values() {
-        if edge.kind == endpoints.edge_kind
-            && edge.from == endpoints.from_id
-            && edge.to == endpoints.to_id
-        {
-            return ConnectPlan::accept();
-        }
+    if connection_exists(
+        graph,
+        endpoints.edge_kind,
+        endpoints.from_id,
+        endpoints.to_id,
+        None,
+    ) {
+        return ConnectPlan::accept();
     }
 
     let mut ops: Vec<GraphOp> = disconnect_for_capacity(
