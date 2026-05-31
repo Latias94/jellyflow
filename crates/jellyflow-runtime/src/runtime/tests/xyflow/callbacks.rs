@@ -5,13 +5,13 @@ use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::xyflow::apply::{apply_edge_changes, apply_node_changes};
 use crate::runtime::xyflow::callbacks::{
-    ConnectionChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
-    NodeGraphViewCallbacks, SelectionChange, install_callbacks,
+    ConnectionChange, DeleteChange, EdgeConnection, NodeGraphCommitCallbacks,
+    NodeGraphGestureCallbacks, NodeGraphViewCallbacks, SelectionChange, install_callbacks,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GroupId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKind,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKind, StickyNoteId,
 };
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphOpBuilderExt, GraphTransaction};
 
@@ -195,6 +195,22 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
     let store_json = serde_json::to_value(store.graph()).expect("store json");
     let controlled_json = serde_json::to_value(&*controlled.borrow()).expect("controlled json");
     assert_eq!(store_json, controlled_json);
+}
+
+#[test]
+fn delete_change_facade_consumes_parts() {
+    let node = NodeId::new();
+    let edge = EdgeId::new();
+    let group = GroupId::new();
+    let sticky_note = StickyNoteId::new();
+    let change = DeleteChange::from_parts(vec![node], vec![edge], vec![group], vec![sticky_note]);
+
+    let (nodes, edges, groups, sticky_notes) = change.into_parts();
+
+    assert_eq!(nodes, vec![node]);
+    assert_eq!(edges, vec![edge]);
+    assert_eq!(groups, vec![group]);
+    assert_eq!(sticky_notes, vec![sticky_note]);
 }
 
 #[test]

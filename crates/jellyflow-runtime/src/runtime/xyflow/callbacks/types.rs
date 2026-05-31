@@ -12,6 +12,24 @@ pub struct DeleteChange {
 }
 
 impl DeleteChange {
+    pub fn from_parts(
+        nodes: Vec<NodeId>,
+        edges: Vec<EdgeId>,
+        groups: Vec<GroupId>,
+        sticky_notes: Vec<StickyNoteId>,
+    ) -> Self {
+        Self {
+            nodes,
+            edges,
+            groups,
+            sticky_notes,
+        }
+    }
+
+    pub fn into_parts(self) -> (Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>, Vec<StickyNoteId>) {
+        (self.nodes, self.edges, self.groups, self.sticky_notes)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
             && self.edges.is_empty()
