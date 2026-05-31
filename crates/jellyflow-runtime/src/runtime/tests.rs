@@ -405,6 +405,43 @@ fn changes_to_transaction_is_reversible_and_applicable() {
 }
 
 #[test]
+fn changes_to_transaction_remove_node_captures_ports_and_edges() {
+    let (g0, a, b, out_port, in_port, eid) = make_graph();
+
+    let changes = NodeGraphChanges {
+        nodes: vec![NodeChange::Remove { id: a }],
+        edges: Vec::new(),
+    };
+
+    let tx = changes.to_transaction(&g0).expect("tx");
+    assert_eq!(tx.ops.len(), 1);
+    match &tx.ops[0] {
+        GraphOp::RemoveNode {
+            id, ports, edges, ..
+        } => {
+            assert_eq!(*id, a);
+            assert_eq!(
+                ports.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![out_port]
+            );
+            assert_eq!(
+                edges.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![eid]
+            );
+        }
+        other => panic!("expected remove node op, got {other:?}"),
+    }
+
+    let mut g1 = g0.clone();
+    tx.apply_to(&mut g1).expect("apply");
+    assert!(!g1.nodes.contains_key(&a));
+    assert!(g1.nodes.contains_key(&b));
+    assert!(!g1.ports.contains_key(&out_port));
+    assert!(g1.ports.contains_key(&in_port));
+    assert!(!g1.edges.contains_key(&eid));
+}
+
+#[test]
 fn apply_node_changes_removes_ports_and_incident_edges() {
     let (mut g0, a, b, out_port, in_port, eid) = make_graph();
 
