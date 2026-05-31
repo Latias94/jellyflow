@@ -2,6 +2,8 @@ use crate::rules::ConnectPlan;
 use jellyflow_core::core::{Edge, EdgeId, EdgeKind, Graph, PortCapacity, PortId};
 use jellyflow_core::ops::{GraphMutationError, GraphMutationPlanner, GraphOp};
 
+use super::endpoints::ConnectionEndpoints;
+
 pub(in crate::rules::connection) fn reject_mutation_error(
     error: GraphMutationError,
 ) -> ConnectPlan {
@@ -70,30 +72,65 @@ pub(in crate::rules::connection) fn connection_exists(
     })
 }
 
-pub(in crate::rules::connection) fn disconnect_for_capacity(
-    graph: &Graph,
+#[derive(Clone, Copy)]
+pub(in crate::rules::connection) struct ConnectionCapacity {
     edge_kind: EdgeKind,
     from_id: PortId,
     from_capacity: PortCapacity,
     to_id: PortId,
     to_capacity: PortCapacity,
+}
+
+impl ConnectionCapacity {
+    pub(in crate::rules::connection) fn new(
+        edge_kind: EdgeKind,
+        from_id: PortId,
+        from_capacity: PortCapacity,
+        to_id: PortId,
+        to_capacity: PortCapacity,
+    ) -> Self {
+        Self {
+            edge_kind,
+            from_id,
+            from_capacity,
+            to_id,
+            to_capacity,
+        }
+    }
+
+    pub(in crate::rules::connection) fn from_endpoints(
+        endpoints: &ConnectionEndpoints<'_>,
+    ) -> Self {
+        Self::new(
+            endpoints.edge_kind,
+            endpoints.from_id,
+            endpoints.from.capacity,
+            endpoints.to_id,
+            endpoints.to.capacity,
+        )
+    }
+}
+
+pub(in crate::rules::connection) fn disconnect_for_capacity(
+    graph: &Graph,
+    connection: ConnectionCapacity,
     skip_edge: Option<EdgeId>,
 ) -> Vec<GraphOp> {
     let mut ops: Vec<GraphOp> = Vec::new();
 
     disconnect_for_endpoint_capacity(
         graph,
-        edge_kind,
-        CapacityEndpoint::Source(from_id),
-        from_capacity,
+        connection.edge_kind,
+        CapacityEndpoint::Source(connection.from_id),
+        connection.from_capacity,
         skip_edge,
         &mut ops,
     );
     disconnect_for_endpoint_capacity(
         graph,
-        edge_kind,
-        CapacityEndpoint::Target(to_id),
-        to_capacity,
+        connection.edge_kind,
+        CapacityEndpoint::Target(connection.to_id),
+        connection.to_capacity,
         skip_edge,
         &mut ops,
     );

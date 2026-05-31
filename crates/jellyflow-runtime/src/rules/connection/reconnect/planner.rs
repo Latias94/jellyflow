@@ -6,8 +6,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
 
 use super::super::common::{
-    connection_exists, connection_ports, disconnect_for_capacity, edge_kind_for_port_kind,
-    reject_if_connection_policy_disallows,
+    ConnectionCapacity, connection_exists, connection_ports, disconnect_for_capacity,
+    edge_kind_for_port_kind, reject_if_connection_policy_disallows,
 };
 
 /// Plans reconnecting one endpoint of an existing edge to a new port.
@@ -82,11 +82,13 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
 
     let mut ops: Vec<GraphOp> = disconnect_for_capacity(
         graph,
-        edge.kind,
-        candidate.from,
-        from.capacity,
-        candidate.to,
-        to.capacity,
+        ConnectionCapacity::new(
+            edge.kind,
+            candidate.from,
+            from.capacity,
+            candidate.to,
+            to.capacity,
+        ),
         Some(edge_id),
     );
 

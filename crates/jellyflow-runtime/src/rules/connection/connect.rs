@@ -5,8 +5,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphOp;
 
 use super::common::{
-    add_existing_ports_edge_op, connection_exists, disconnect_for_capacity, edge_between,
-    reject_if_connection_policy_disallows, resolve_connection_endpoints,
+    ConnectionCapacity, add_existing_ports_edge_op, connection_exists, disconnect_for_capacity,
+    edge_between, reject_if_connection_policy_disallows, resolve_connection_endpoints,
 };
 
 /// Plans connecting two ports.
@@ -41,15 +41,8 @@ pub fn plan_connect_with_mode_and_policy(
         return ConnectPlan::accept();
     }
 
-    let mut ops: Vec<GraphOp> = disconnect_for_capacity(
-        graph,
-        endpoints.edge_kind,
-        endpoints.from_id,
-        endpoints.from.capacity,
-        endpoints.to_id,
-        endpoints.to.capacity,
-        None,
-    );
+    let mut ops: Vec<GraphOp> =
+        disconnect_for_capacity(graph, ConnectionCapacity::from_endpoints(&endpoints), None);
 
     let add_edge = match add_existing_ports_edge_op(
         graph,
