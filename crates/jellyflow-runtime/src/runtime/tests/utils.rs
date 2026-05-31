@@ -456,6 +456,89 @@ fn get_nodes_bounds_respects_node_origin() {
 }
 
 #[test]
+fn get_nodes_bounds_uses_fallback_size_for_unsized_nodes() {
+    let mut g = Graph::new(GraphId::from_u128(1));
+    let a = NodeId::new();
+
+    g.nodes
+        .insert(a, node_at(CanvasPoint { x: 5.0, y: 7.0 }, None));
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.rebuild_from(&g);
+
+    assert!(
+        get_nodes_bounds(&lookups, [a], GetNodesBoundsOptions::default()).is_none(),
+        "unsized nodes should not contribute without fallback dimensions"
+    );
+
+    let bounds = get_nodes_bounds(
+        &lookups,
+        [a],
+        GetNodesBoundsOptions {
+            fallback_size: Some(CanvasSize {
+                width: 10.0,
+                height: 20.0,
+            }),
+            ..GetNodesBoundsOptions::default()
+        },
+    )
+    .expect("fallback bounds");
+
+    assert!((bounds.origin.x - 5.0).abs() <= 1.0e-6);
+    assert!((bounds.origin.y - 7.0).abs() <= 1.0e-6);
+    assert!((bounds.size.width - 10.0).abs() <= 1.0e-6);
+    assert!((bounds.size.height - 20.0).abs() <= 1.0e-6);
+}
+
+#[test]
+fn get_nodes_bounds_skips_hidden_nodes_unless_included() {
+    let mut g = Graph::new(GraphId::from_u128(1));
+    let a = NodeId::new();
+    let b = NodeId::new();
+
+    g.nodes.insert(
+        a,
+        node_at(
+            CanvasPoint { x: 0.0, y: 0.0 },
+            Some(CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            }),
+        ),
+    );
+
+    let mut hidden = node_at(
+        CanvasPoint { x: 100.0, y: 0.0 },
+        Some(CanvasSize {
+            width: 10.0,
+            height: 10.0,
+        }),
+    );
+    hidden.hidden = true;
+    g.nodes.insert(b, hidden);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.rebuild_from(&g);
+
+    let visible_bounds =
+        get_nodes_bounds(&lookups, [a, b], GetNodesBoundsOptions::default()).expect("bounds");
+    assert!((visible_bounds.origin.x - 0.0).abs() <= 1.0e-6);
+    assert!((visible_bounds.size.width - 10.0).abs() <= 1.0e-6);
+
+    let all_bounds = get_nodes_bounds(
+        &lookups,
+        [a, b],
+        GetNodesBoundsOptions {
+            include_hidden: true,
+            ..GetNodesBoundsOptions::default()
+        },
+    )
+    .expect("bounds");
+    assert!((all_bounds.origin.x - 0.0).abs() <= 1.0e-6);
+    assert!((all_bounds.size.width - 110.0).abs() <= 1.0e-6);
+}
+
+#[test]
 fn get_nodes_inside_supports_partial_vs_full_inclusion() {
     let mut g = Graph::new(GraphId::from_u128(1));
     let a = NodeId::new();
