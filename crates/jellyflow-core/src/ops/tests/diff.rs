@@ -134,69 +134,69 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     let tx1 = graph_diff(&from, &to);
     let tx2 = graph_diff(&from, &to);
     assert_eq!(
-        serde_json::to_string(&tx1.ops).unwrap(),
-        serde_json::to_string(&tx2.ops).unwrap(),
+        serde_json::to_string(tx1.ops()).unwrap(),
+        serde_json::to_string(tx2.ops()).unwrap(),
         "diff must be deterministic"
     );
 
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetNodeSelectable { id, .. } if *id == a)),
         "diff must include node setter ops for changed fields"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetNodeExtent { id, .. } if *id == a)),
         "diff must include node setter ops for changed fields"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetNodeHidden { id, .. } if *id == a)),
         "diff must include node setter ops for changed fields"
     );
     assert!(
-        !tx1.ops
+        !tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == a)),
         "diff must not use destructive node removal for soft field changes"
     );
 
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetGroupColor { id, .. } if *id == group_id)),
         "diff must prefer group setter ops over remove+add to preserve parent bindings"
     );
     assert!(
-        !tx1.ops
+        !tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveGroup { id, .. } if *id == group_id)),
         "diff must not remove groups for color-only changes"
     );
 
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetStickyNoteText { id, .. } if *id == note_id)),
         "diff must use sticky note setter ops for field changes"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetStickyNoteRect { id, .. } if *id == note_id)),
         "diff must use sticky note setter ops for field changes"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetStickyNoteColor { id, .. } if *id == note_id)),
         "diff must use sticky note setter ops for field changes"
     );
     assert!(
-        !tx1.ops.iter().any(|op| {
+        !tx1.ops().iter().any(|op| {
             matches!(op, GraphOp::RemoveStickyNote { id, .. } if *id == note_id)
                 || matches!(op, GraphOp::AddStickyNote { id, .. } if *id == note_id)
         }),
@@ -204,25 +204,25 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     );
 
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetPortConnectable { id, .. } if *id == out)),
         "diff must use port setter ops for soft fields"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetPortType { id, .. } if *id == out)),
         "diff must use port setter ops for soft fields"
     );
     assert!(
-        tx1.ops
+        tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetPortData { id, .. } if *id == out)),
         "diff must use port setter ops for soft fields"
     );
     assert!(
-        !tx1.ops.iter().any(|op| {
+        !tx1.ops().iter().any(|op| {
             matches!(op, GraphOp::RemovePort { id, .. } if *id == out)
                 || matches!(op, GraphOp::AddPort { id, .. } if *id == out)
         }),
@@ -275,19 +275,19 @@ fn graph_diff_roundtrips_when_deleting_a_node_with_ports_and_edges() {
 
     let tx = graph_diff(&from, &to);
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == b)),
         "diff must use reversible RemoveNode for node deletion"
     );
     assert!(
-        !tx.ops
+        !tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == inn)),
         "diff must not double-remove ports that are already removed by RemoveNode"
     );
     assert!(
-        !tx.ops
+        !tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
         "diff must not double-remove edges that are already removed by RemoveNode"
@@ -339,13 +339,13 @@ fn graph_diff_roundtrips_when_deleting_a_port_with_incident_edges() {
 
     let tx = graph_diff(&from, &to);
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == out)),
         "diff must use reversible RemovePort for port deletion"
     );
     assert!(
-        !tx.ops
+        !tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
         "diff must not double-remove edges that are already removed by RemovePort"
@@ -395,31 +395,31 @@ fn graph_diff_roundtrips_when_a_port_changes_structurally() {
 
     let tx = graph_diff(&from, &to);
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == out)),
         "diff must represent structural port changes as remove+add"
     );
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::AddPort { id, .. } if *id == out)),
         "diff must represent structural port changes as remove+add"
     );
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetNodePorts { id, .. } if *id == a)),
         "diff must restore node port ordering after remove+add"
     );
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)),
         "diff must re-add incident edges removed by RemovePort when they still exist in 'to'"
     );
     assert!(
-        !tx.ops
+        !tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
         "diff must not double-remove edges that are removed by RemovePort"
@@ -473,7 +473,7 @@ fn graph_diff_roundtrips_when_deleting_a_group_with_child_nodes() {
     let tx = graph_diff(&from, &to);
     let expected_detached = vec![(child_b, Some(group_id)), (child_a, Some(group_id))];
     assert!(
-        tx.ops.iter().any(|op| match op {
+        tx.ops().iter().any(|op| match op {
             GraphOp::RemoveGroup { id, detached, .. } if *id == group_id => {
                 detached == &expected_detached
             }
@@ -482,7 +482,7 @@ fn graph_diff_roundtrips_when_deleting_a_group_with_child_nodes() {
         "diff must use reversible RemoveGroup and detach child nodes deterministically"
     );
     assert!(
-        !tx.ops.iter().any(|op| matches!(
+        !tx.ops().iter().any(|op| matches!(
             op,
             GraphOp::SetNodeParent { id, .. } if *id == child_a || *id == child_b
         )),
@@ -536,13 +536,13 @@ fn graph_diff_roundtrips_when_edge_endpoints_change() {
 
     let tx = graph_diff(&from, &to);
     assert!(
-        tx.ops
+        tx.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetEdgeEndpoints { id, .. } if *id == edge_id)),
         "diff must preserve edge identity when endpoints change"
     );
     assert!(
-        !tx.ops.iter().any(|op| {
+        !tx.ops().iter().any(|op| {
             matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)
                 || matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)
         }),
