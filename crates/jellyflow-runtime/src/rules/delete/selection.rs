@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use jellyflow_core::core::{EdgeId, Graph, NodeId};
 
 pub(super) struct DeleteSelection {
-    pub(super) nodes: BTreeSet<NodeId>,
-    pub(super) edges: BTreeSet<EdgeId>,
+    nodes: BTreeSet<NodeId>,
+    edges: BTreeSet<EdgeId>,
     cascaded_edges: BTreeSet<EdgeId>,
 }
 
@@ -27,6 +27,14 @@ impl DeleteSelection {
 
     pub(super) fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.edges.is_empty()
+    }
+
+    pub(super) fn nodes(&self) -> &BTreeSet<NodeId> {
+        &self.nodes
+    }
+
+    pub(super) fn edges(&self) -> &BTreeSet<EdgeId> {
+        &self.edges
     }
 
     pub(super) fn edge_is_cascaded(&self, edge_id: &EdgeId) -> bool {

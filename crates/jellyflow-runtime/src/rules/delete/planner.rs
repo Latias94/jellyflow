@@ -30,9 +30,9 @@ impl<'a> DeletePlanner<'a> {
         }
 
         let mut diagnostics = Vec::new();
-        self.validate_nodes(&selection.nodes, &mut diagnostics);
+        self.validate_nodes(selection.nodes(), &mut diagnostics);
         self.validate_direct_edges(
-            &selection.edges,
+            selection.edges(),
             selection.cascaded_edges(),
             &mut diagnostics,
         );
@@ -101,7 +101,7 @@ impl<'a> DeletePlanner<'a> {
         let mut scratch = self.graph.clone();
         let mut ops = Vec::new();
 
-        for node_id in &selection.nodes {
+        for node_id in selection.nodes() {
             let op = GraphMutationPlanner::new(&scratch)
                 .remove_node_op(*node_id)
                 .map_err(|error| {
@@ -111,7 +111,7 @@ impl<'a> DeletePlanner<'a> {
             ops.push(op);
         }
 
-        for edge_id in &selection.edges {
+        for edge_id in selection.edges() {
             if selection.edge_is_cascaded(edge_id) || !scratch.edges.contains_key(edge_id) {
                 continue;
             }
