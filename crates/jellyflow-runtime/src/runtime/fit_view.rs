@@ -5,6 +5,7 @@
 mod compute;
 mod geometry;
 mod options;
+mod projection;
 mod types;
 
 pub use compute::{compute_fit_view_target, compute_fit_view_target_for_canvas_rect};

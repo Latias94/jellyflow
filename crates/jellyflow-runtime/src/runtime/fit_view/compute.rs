@@ -1,6 +1,7 @@
 use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
 use super::geometry::{compute_fit_view_target_top_left, compute_target_for_canvas_rect};
+use super::projection::project_nodes_to_top_left;
 use super::{FitViewComputeOptions, FitViewNodeInfo};
 
 /// Computes the viewport pan/zoom that frames the given nodes in view.
@@ -30,24 +31,7 @@ pub fn compute_fit_view_target(
         }
         zoom_guess = zoom_guess.clamp(options.min_zoom, options.max_zoom);
 
-        let mut scratch: Vec<FitViewNodeInfo> = Vec::with_capacity(nodes.len());
-        let ox = options.node_origin.0;
-        let oy = options.node_origin.1;
-        for n in nodes {
-            let (w_px, h_px) = n.size_px;
-            if !w_px.is_finite() || !h_px.is_finite() || w_px <= 0.0 || h_px <= 0.0 {
-                continue;
-            }
-            let w_canvas = w_px / zoom_guess;
-            let h_canvas = h_px / zoom_guess;
-            scratch.push(FitViewNodeInfo {
-                pos: CanvasPoint {
-                    x: n.pos.x - ox * w_canvas,
-                    y: n.pos.y - oy * h_canvas,
-                },
-                size_px: n.size_px,
-            });
-        }
+        let scratch = project_nodes_to_top_left(nodes, options.node_origin, zoom_guess);
 
         let Some((pan, zoom_next)) = compute_fit_view_target_top_left(&scratch, options) else {
             return best;
