@@ -43,7 +43,6 @@ impl<'a> StorageValidator<'a> {
         }
 
         self.report
-            .errors
             .push(GraphValidationError::UnsupportedGraphVersion {
                 expected: crate::core::model::GRAPH_VERSION,
                 found: self.graph.graph_version,
@@ -54,12 +53,10 @@ impl<'a> StorageValidator<'a> {
     fn validate_ports_reference_nodes(&mut self) {
         for (port_id, port) in &self.graph.ports {
             if !self.graph.nodes.contains_key(&port.node) {
-                self.report
-                    .errors
-                    .push(GraphValidationError::PortMissingNode {
-                        port: *port_id,
-                        node: port.node,
-                    });
+                self.report.push(GraphValidationError::PortMissingNode {
+                    port: *port_id,
+                    node: port.node,
+                });
             }
         }
     }
@@ -71,7 +68,6 @@ impl<'a> StorageValidator<'a> {
             };
             if !node.ports.contains(port_id) {
                 self.report
-                    .errors
                     .push(GraphValidationError::PortMissingFromOwner {
                         port: *port_id,
                         node: port.node,
@@ -97,7 +93,6 @@ impl<'a> StorageValidator<'a> {
             && !self.graph.groups.contains_key(&group)
         {
             self.report
-                .errors
                 .push(GraphValidationError::NodeParentMissingGroup {
                     node: node_id,
                     group,
@@ -112,13 +107,11 @@ impl<'a> StorageValidator<'a> {
                 || size.width <= 0.0
                 || size.height <= 0.0)
         {
-            self.report
-                .errors
-                .push(GraphValidationError::NodeInvalidSize {
-                    node: node_id,
-                    width: size.width,
-                    height: size.height,
-                });
+            self.report.push(GraphValidationError::NodeInvalidSize {
+                node: node_id,
+                width: size.width,
+                height: size.height,
+            });
         }
     }
 
@@ -126,17 +119,14 @@ impl<'a> StorageValidator<'a> {
         let mut seen: BTreeSet<PortId> = BTreeSet::new();
         for port_id in &node.ports {
             if !seen.insert(*port_id) {
-                self.report
-                    .errors
-                    .push(GraphValidationError::NodePortsDuplicate {
-                        node: node_id,
-                        port: *port_id,
-                    });
+                self.report.push(GraphValidationError::NodePortsDuplicate {
+                    node: node_id,
+                    port: *port_id,
+                });
                 continue;
             }
             let Some(port) = self.graph.ports.get(port_id) else {
                 self.report
-                    .errors
                     .push(GraphValidationError::NodePortsMissingPort {
                         node: node_id,
                         port: *port_id,
@@ -144,13 +134,11 @@ impl<'a> StorageValidator<'a> {
                 continue;
             };
             if port.node != node_id {
-                self.report
-                    .errors
-                    .push(GraphValidationError::NodePortsWrongOwner {
-                        node: node_id,
-                        port: *port_id,
-                        owner: port.node,
-                    });
+                self.report.push(GraphValidationError::NodePortsWrongOwner {
+                    node: node_id,
+                    port: *port_id,
+                    owner: port.node,
+                });
             }
         }
     }
@@ -158,20 +146,16 @@ impl<'a> StorageValidator<'a> {
     fn validate_edges_reference_ports(&mut self) {
         for (edge_id, edge) in &self.graph.edges {
             if !self.graph.ports.contains_key(&edge.from) {
-                self.report
-                    .errors
-                    .push(GraphValidationError::EdgeMissingPort {
-                        edge: *edge_id,
-                        port: edge.from,
-                    });
+                self.report.push(GraphValidationError::EdgeMissingPort {
+                    edge: *edge_id,
+                    port: edge.from,
+                });
             }
             if !self.graph.ports.contains_key(&edge.to) {
-                self.report
-                    .errors
-                    .push(GraphValidationError::EdgeMissingPort {
-                        edge: *edge_id,
-                        port: edge.to,
-                    });
+                self.report.push(GraphValidationError::EdgeMissingPort {
+                    edge: *edge_id,
+                    port: edge.to,
+                });
             }
         }
     }

@@ -29,12 +29,7 @@ impl<'a> StructuralValidator<'a> {
     }
 
     fn finish(mut self) -> GraphValidationReport {
-        if self
-            .report
-            .errors
-            .iter()
-            .any(|error| matches!(error, GraphValidationError::UnsupportedGraphVersion { .. }))
-        {
+        if self.report.has_unsupported_graph_version() {
             return self.report;
         }
 
@@ -56,7 +51,6 @@ impl<'a> StructuralValidator<'a> {
             Ok(Some(target)) => {
                 if !self.graph.imports.contains_key(&target) {
                     self.report
-                        .errors
                         .push(GraphValidationError::SubgraphTargetNotImported {
                             node: node_id,
                             graph_id: target,
@@ -73,7 +67,6 @@ impl<'a> StructuralValidator<'a> {
             Ok(Some(target)) => {
                 if !self.graph.symbols.contains_key(&target) {
                     self.report
-                        .errors
                         .push(GraphValidationError::SymbolRefTargetNotDeclared {
                             node: node_id,
                             symbol_id: target,
@@ -89,17 +82,14 @@ impl<'a> StructuralValidator<'a> {
         match err {
             SubgraphNodeError::MissingGraphId { node } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SubgraphNodeMissingGraphId { node });
             }
             SubgraphNodeError::GraphIdNotString { node } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SubgraphNodeGraphIdNotString { node });
             }
             SubgraphNodeError::InvalidGraphId { node, value } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SubgraphNodeInvalidGraphId { node, value });
             }
         }
@@ -109,17 +99,14 @@ impl<'a> StructuralValidator<'a> {
         match err {
             SymbolRefNodeError::MissingSymbolId { node } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SymbolRefNodeMissingSymbolId { node });
             }
             SymbolRefNodeError::SymbolIdNotString { node } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SymbolRefNodeSymbolIdNotString { node });
             }
             SymbolRefNodeError::InvalidSymbolId { node, value } => {
                 self.report
-                    .errors
                     .push(GraphValidationError::SymbolRefNodeInvalidSymbolId { node, value });
             }
         }
@@ -141,7 +128,6 @@ impl<'a> StructuralValidator<'a> {
 
             if !edge_pairs.insert((from.kind, edge.from, edge.to)) {
                 self.report
-                    .errors
                     .push(GraphValidationError::DuplicateEdge { edge: *edge_id });
             }
 
@@ -160,13 +146,11 @@ impl<'a> StructuralValidator<'a> {
         edge_kind: EdgeKind,
     ) {
         if from_kind != to_kind {
-            self.report
-                .errors
-                .push(GraphValidationError::EdgeKindMismatch {
-                    edge: edge_id,
-                    from_kind,
-                    to_kind,
-                });
+            self.report.push(GraphValidationError::EdgeKindMismatch {
+                edge: edge_id,
+                from_kind,
+                to_kind,
+            });
             return;
         }
 
@@ -176,7 +160,6 @@ impl<'a> StructuralValidator<'a> {
         };
         if edge_kind != expected {
             self.report
-                .errors
                 .push(GraphValidationError::EdgeKindPortKindMismatch {
                     edge: edge_id,
                     edge_kind,
@@ -192,7 +175,6 @@ impl<'a> StructuralValidator<'a> {
             };
             if port.capacity == PortCapacity::Single && count > 1 {
                 self.report
-                    .errors
                     .push(GraphValidationError::PortCapacityExceeded {
                         port: port_id,
                         capacity: port.capacity,
