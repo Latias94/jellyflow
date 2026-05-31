@@ -10,17 +10,17 @@ use jellyflow_core::ops::GraphOp;
 fn changes_to_transaction_is_reversible_and_applicable() {
     let (g0, a, _b, out_port, in_port, eid) = make_graph();
 
-    let changes = NodeGraphChanges {
-        nodes: vec![NodeChange::Position {
+    let changes = NodeGraphChanges::from_parts(
+        vec![NodeChange::Position {
             id: a,
             position: CanvasPoint { x: 42.0, y: 7.0 },
         }],
-        edges: vec![EdgeChange::Endpoints {
+        vec![EdgeChange::Endpoints {
             id: eid,
             from: out_port,
             to: in_port,
         }],
-    };
+    );
 
     let tx = changes.to_transaction(&g0).expect("tx");
     let mut g1 = g0.clone();
@@ -38,14 +38,11 @@ fn changes_to_transaction_is_reversible_and_applicable() {
 fn changes_to_transaction_remove_node_captures_ports_and_edges() {
     let (g0, a, b, out_port, in_port, eid) = make_graph();
 
-    let changes = NodeGraphChanges {
-        nodes: vec![NodeChange::Remove { id: a }],
-        edges: Vec::new(),
-    };
+    let changes = NodeGraphChanges::from_parts(vec![NodeChange::Remove { id: a }], Vec::new());
 
     let tx = changes.to_transaction(&g0).expect("tx");
-    assert_eq!(tx.ops.len(), 1);
-    match &tx.ops[0] {
+    assert_eq!(tx.ops().len(), 1);
+    match &tx.ops()[0] {
         GraphOp::RemoveNode {
             id, ports, edges, ..
         } => {
@@ -75,13 +72,13 @@ fn changes_to_transaction_remove_node_captures_ports_and_edges() {
 fn changes_to_transaction_reports_missing_node() {
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
     let missing = NodeId::new();
-    let changes = NodeGraphChanges {
-        nodes: vec![NodeChange::Position {
+    let changes = NodeGraphChanges::from_parts(
+        vec![NodeChange::Position {
             id: missing,
             position: CanvasPoint { x: 10.0, y: 20.0 },
         }],
-        edges: Vec::new(),
-    };
+        Vec::new(),
+    );
 
     let err = changes.to_transaction(&g0).expect_err("missing node");
     assert!(matches!(err, ChangesToTransactionError::MissingNode(id) if id == missing));
@@ -91,14 +88,14 @@ fn changes_to_transaction_reports_missing_node() {
 fn changes_to_transaction_reports_missing_edge() {
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
     let missing = EdgeId::new();
-    let changes = NodeGraphChanges {
-        nodes: Vec::new(),
-        edges: vec![EdgeChange::Endpoints {
+    let changes = NodeGraphChanges::from_parts(
+        Vec::new(),
+        vec![EdgeChange::Endpoints {
             id: missing,
             from: PortId::new(),
             to: PortId::new(),
         }],
-    };
+    );
 
     let err = changes.to_transaction(&g0).expect_err("missing edge");
     assert!(matches!(err, ChangesToTransactionError::MissingEdge(id) if id == missing));
@@ -107,12 +104,9 @@ fn changes_to_transaction_reports_missing_edge() {
 #[test]
 fn changes_to_transaction_accepts_empty_changes() {
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let changes = NodeGraphChanges {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    };
+    let changes = NodeGraphChanges::from_parts(Vec::new(), Vec::new());
 
     let tx = changes.to_transaction(&g0).expect("tx");
     assert!(tx.is_empty());
-    assert!(tx.label.is_none());
+    assert!(tx.label().is_none());
 }

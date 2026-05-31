@@ -23,6 +23,10 @@ pub enum ChangesToTransactionError {
 }
 
 impl NodeGraphChanges {
+    pub fn from_parts(nodes: Vec<NodeChange>, edges: Vec<EdgeChange>) -> Self {
+        Self { nodes, edges }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.edges.is_empty()
     }
