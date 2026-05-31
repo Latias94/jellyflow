@@ -106,27 +106,10 @@ impl NodeGraphStore {
     /// Creates a store with an explicit editor configuration payload.
     pub fn new(
         graph: Graph,
-        mut view_state: NodeGraphViewState,
+        view_state: NodeGraphViewState,
         editor_config: NodeGraphEditorConfig,
     ) -> Self {
-        view_state.sanitize_for_graph(&graph);
-        let mut lookups = NodeGraphLookups::default();
-        lookups.rebuild_from(&graph);
-        Self {
-            graph,
-            graph_revision: 0,
-            view_state,
-            interaction: editor_config.interaction,
-            runtime_tuning: editor_config.runtime_tuning,
-            history: GraphHistory::default(),
-            profile: None,
-            middleware: None,
-            lookups,
-            next_subscription: 1,
-            event_subscriptions: Vec::new(),
-            gesture_subscriptions: Vec::new(),
-            selector_subscriptions: Vec::new(),
-        }
+        Self::new_with_optional_profile(graph, view_state, editor_config, None)
     }
 
     /// Creates a store with a profile pipeline (apply -> concretize -> validate).
@@ -136,7 +119,15 @@ impl NodeGraphStore {
         editor_config: NodeGraphEditorConfig,
         profile: Box<dyn GraphProfile>,
     ) -> Self {
-        let mut view_state = view_state;
+        Self::new_with_optional_profile(graph, view_state, editor_config, Some(profile))
+    }
+
+    fn new_with_optional_profile(
+        graph: Graph,
+        mut view_state: NodeGraphViewState,
+        editor_config: NodeGraphEditorConfig,
+        profile: Option<Box<dyn GraphProfile>>,
+    ) -> Self {
         view_state.sanitize_for_graph(&graph);
         let mut lookups = NodeGraphLookups::default();
         lookups.rebuild_from(&graph);
@@ -147,7 +138,7 @@ impl NodeGraphStore {
             interaction: editor_config.interaction,
             runtime_tuning: editor_config.runtime_tuning,
             history: GraphHistory::default(),
-            profile: Some(profile),
+            profile,
             middleware: None,
             lookups,
             next_subscription: 1,
