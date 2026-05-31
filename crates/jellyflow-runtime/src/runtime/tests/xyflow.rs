@@ -8,10 +8,12 @@ use crate::runtime::xyflow::callbacks::{
     ConnectionChange, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
     connection_changes_from_transaction, install_callbacks,
 };
-use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
+use crate::runtime::xyflow::changes::{
+    ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GroupId,
-    Node, NodeExtent, NodeId, NodeKindKey, Port,
+    Node, NodeExtent, NodeId, NodeKindKey, Port, PortId,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -334,6 +336,39 @@ fn changes_to_transaction_remove_node_captures_ports_and_edges() {
     assert!(!g1.ports.contains_key(&out_port));
     assert!(g1.ports.contains_key(&in_port));
     assert!(!g1.edges.contains_key(&eid));
+}
+
+#[test]
+fn changes_to_transaction_reports_missing_node() {
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let missing = NodeId::new();
+    let changes = NodeGraphChanges {
+        nodes: vec![NodeChange::Position {
+            id: missing,
+            position: CanvasPoint { x: 10.0, y: 20.0 },
+        }],
+        edges: Vec::new(),
+    };
+
+    let err = changes.to_transaction(&g0).expect_err("missing node");
+    assert!(matches!(err, ChangesToTransactionError::MissingNode(id) if id == missing));
+}
+
+#[test]
+fn changes_to_transaction_reports_missing_edge() {
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let missing = EdgeId::new();
+    let changes = NodeGraphChanges {
+        nodes: Vec::new(),
+        edges: vec![EdgeChange::Endpoints {
+            id: missing,
+            from: PortId::new(),
+            to: PortId::new(),
+        }],
+    };
+
+    let err = changes.to_transaction(&g0).expect_err("missing edge");
+    assert!(matches!(err, ChangesToTransactionError::MissingEdge(id) if id == missing));
 }
 
 #[test]
