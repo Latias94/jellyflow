@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::runtime::xyflow::changes::NodeChange;
-use jellyflow_core::core::{Node, NodeId, PortId};
+use jellyflow_core::core::{Edge, Node, NodeId, PortId};
 
 use super::ApplyChangesPlanner;
 
@@ -80,14 +80,38 @@ impl<'a> ApplyChangesPlanner<'a> {
     }
 
     fn remove_node_owned_resources(&mut self, removed: &Node) {
-        let port_ids = removed.ports.iter().copied().collect::<HashSet<PortId>>();
-        if port_ids.is_empty() {
+        let cascade = RemovedNodeCascade::from_node(removed);
+        if cascade.is_empty() {
             return;
         }
 
-        self.graph.ports.retain(|pid, _| !port_ids.contains(pid));
+        self.graph.ports.retain(|pid, _| !cascade.owns_port(pid));
         self.graph
             .edges
-            .retain(|_, edge| !port_ids.contains(&edge.from) && !port_ids.contains(&edge.to));
+            .retain(|_, edge| !cascade.edge_is_incident(edge));
+    }
+}
+
+struct RemovedNodeCascade {
+    port_ids: HashSet<PortId>,
+}
+
+impl RemovedNodeCascade {
+    fn from_node(node: &Node) -> Self {
+        Self {
+            port_ids: node.ports.iter().copied().collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.port_ids.is_empty()
+    }
+
+    fn owns_port(&self, id: &PortId) -> bool {
+        self.port_ids.contains(id)
+    }
+
+    fn edge_is_incident(&self, edge: &Edge) -> bool {
+        self.port_ids.contains(&edge.from) || self.port_ids.contains(&edge.to)
     }
 }
