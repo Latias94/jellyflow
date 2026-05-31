@@ -91,7 +91,7 @@ impl<'a> StructuralValidator<'a> {
 
             self.validate_edge_kind(*edge_id, from.kind, to.kind, edge.kind);
 
-            if edges.record(from.kind, edge.from, edge.to).is_duplicate {
+            if edges.record(from.kind, edge.from, edge.to) {
                 self.report
                     .push(GraphValidationError::DuplicateEdge { edge: *edge_id });
             }
@@ -151,18 +151,14 @@ struct EdgeValidationAccumulator {
 }
 
 impl EdgeValidationAccumulator {
-    fn record(&mut self, port_kind: PortKind, from: PortId, to: PortId) -> EdgeRecord {
+    fn record(&mut self, port_kind: PortKind, from: PortId, to: PortId) -> bool {
         let is_duplicate = !self.edge_pairs.insert((port_kind, from, to));
         *self.incident_counts.entry(from).or_insert(0) += 1;
         *self.incident_counts.entry(to).or_insert(0) += 1;
-        EdgeRecord { is_duplicate }
+        is_duplicate
     }
 
     fn into_incident_counts(self) -> BTreeMap<PortId, usize> {
         self.incident_counts
     }
-}
-
-struct EdgeRecord {
-    is_duplicate: bool,
 }
