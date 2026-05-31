@@ -30,29 +30,26 @@ fn store_graph_revision_advances_for_graph_mutations() {
     let node_id = NodeId::new();
     let before = store.graph_revision();
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddNode {
-            id: node_id,
-            node: Node {
-                kind: NodeKindKey::new("demo.c"),
-                kind_version: 1,
-                pos: CanvasPoint { x: 0.0, y: 0.0 },
-                selectable: None,
-                draggable: None,
-                connectable: None,
-                deletable: None,
-                parent: None,
-                extent: None,
-                expand_parent: None,
-                size: None,
-                hidden: false,
-                collapsed: false,
-                ports: Vec::new(),
-                data: serde_json::Value::Null,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddNode {
+        id: node_id,
+        node: Node {
+            kind: NodeKindKey::new("demo.c"),
+            kind_version: 1,
+            pos: CanvasPoint { x: 0.0, y: 0.0 },
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::Value::Null,
+        },
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert!(store.graph_revision() > before);

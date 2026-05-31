@@ -112,10 +112,7 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
         data: serde_json::Value::Null,
     };
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddNode { id: new_id, node }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddNode { id: new_id, node }]);
     store.dispatch_transaction(&tx).expect("dispatch");
 
     assert_eq!(node_counts.borrow().as_slice(), &[3]);
