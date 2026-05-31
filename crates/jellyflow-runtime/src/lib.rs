@@ -6,6 +6,8 @@
 
 #![deny(unsafe_code)]
 
+mod node_origin;
+
 pub mod io;
 pub mod profile;
 pub mod rules;

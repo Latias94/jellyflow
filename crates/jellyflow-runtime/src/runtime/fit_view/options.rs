@@ -1,4 +1,4 @@
-use crate::runtime::node_origin::normalize_node_origin;
+use crate::node_origin::normalize_node_origin;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FitViewComputeOptions {

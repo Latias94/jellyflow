@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::node_origin::normalize_node_origin;
+
 /// Node origin (anchor) used to interpret `Node.pos` (XyFlow `nodeOrigin`).
 ///
 /// This is expressed as a normalized fraction of the node rect:
@@ -13,16 +15,8 @@ pub struct NodeGraphNodeOrigin {
 
 impl NodeGraphNodeOrigin {
     pub fn normalized(self) -> Self {
-        let mut out = self;
-        if !out.x.is_finite() {
-            out.x = 0.0;
-        }
-        if !out.y.is_finite() {
-            out.y = 0.0;
-        }
-        out.x = out.x.clamp(0.0, 1.0);
-        out.y = out.y.clamp(0.0, 1.0);
-        out
+        let (x, y) = normalize_node_origin((self.x, self.y));
+        Self { x, y }
     }
 }
 

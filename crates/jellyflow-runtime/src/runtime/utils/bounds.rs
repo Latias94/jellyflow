@@ -1,5 +1,5 @@
+use crate::node_origin::normalize_node_origin;
 use crate::runtime::lookups::{NodeGraphLookups, NodeLookupEntry};
-use crate::runtime::node_origin::normalize_node_origin;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
 use super::geometry::CanvasBounds;
