@@ -6,10 +6,7 @@ pub fn get_outgoers(lookups: &NodeGraphLookups, node: NodeId) -> Vec<NodeId> {
     let Some(conns) = lookups.connections_for_node_side(node, ConnectionSide::Source) else {
         return Vec::new();
     };
-    let mut out: Vec<NodeId> = conns.values().map(|c| c.target_node).collect();
-    out.sort();
-    out.dedup();
-    out
+    sorted_unique(conns.values().map(|c| c.target_node).collect())
 }
 
 /// Returns the nodes connected as *sources* of the given node's incoming edges.
@@ -17,10 +14,7 @@ pub fn get_incomers(lookups: &NodeGraphLookups, node: NodeId) -> Vec<NodeId> {
     let Some(conns) = lookups.connections_for_node_side(node, ConnectionSide::Target) else {
         return Vec::new();
     };
-    let mut out: Vec<NodeId> = conns.values().map(|c| c.source_node).collect();
-    out.sort();
-    out.dedup();
-    out
+    sorted_unique(conns.values().map(|c| c.source_node).collect())
 }
 
 /// Returns all edges incident to the given node (both directions).
@@ -28,10 +22,7 @@ pub fn get_connected_edges(lookups: &NodeGraphLookups, node: NodeId) -> Vec<Edge
     let Some(conns) = lookups.connections_for_node(node) else {
         return Vec::new();
     };
-    let mut out: Vec<EdgeId> = conns.values().map(|c| c.edge).collect();
-    out.sort();
-    out.dedup();
-    out
+    sorted_unique(conns.values().map(|c| c.edge).collect())
 }
 
 /// Returns all edges connected to any node in the given set.
@@ -46,7 +37,11 @@ pub fn get_connected_edges_for_nodes(
     for node in nodes {
         out.extend(get_connected_edges(lookups, node));
     }
-    out.sort();
-    out.dedup();
-    out
+    sorted_unique(out)
+}
+
+fn sorted_unique<T: Ord>(mut items: Vec<T>) -> Vec<T> {
+    items.sort();
+    items.dedup();
+    items
 }
