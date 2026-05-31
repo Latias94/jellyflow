@@ -1,5 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use crate::rules::{ConnectDecision, ConnectPlan, Diagnostic, DiagnosticTarget};
+use crate::rules::{ConnectPlan, Diagnostic, DiagnosticTarget};
 use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
@@ -59,7 +59,7 @@ pub fn plan_connect_typed_with_mode_and_policy(
     compat: &mut dyn TypeCompatibility,
 ) -> ConnectPlan {
     let base = plan_connect_with_mode_and_policy(graph, a, b, mode, state);
-    if base.decision != ConnectDecision::Accept {
+    if !base.is_accept() {
         return base;
     }
 

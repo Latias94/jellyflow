@@ -48,6 +48,22 @@ pub struct ConnectPlan {
 }
 
 impl ConnectPlan {
+    pub fn is_accept(&self) -> bool {
+        self.decision == ConnectDecision::Accept
+    }
+
+    pub fn is_reject(&self) -> bool {
+        self.decision == ConnectDecision::Reject
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn ops(&self) -> &[GraphOp] {
+        &self.ops
+    }
+
     /// Creates an accepted plan with no side effects.
     pub fn accept() -> Self {
         Self {
@@ -107,6 +123,22 @@ pub struct DeletePlan {
 }
 
 impl DeletePlan {
+    pub fn is_accept(&self) -> bool {
+        self.decision == DeleteDecision::Accept
+    }
+
+    pub fn is_reject(&self) -> bool {
+        self.decision == DeleteDecision::Reject
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn ops(&self) -> &[GraphOp] {
+        &self.ops
+    }
+
     /// Creates an accepted plan with no side effects.
     pub fn accept() -> Self {
         Self {

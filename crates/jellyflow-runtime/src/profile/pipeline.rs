@@ -4,7 +4,7 @@
 //! producing `GraphTransaction`s, then passing them through this pipeline to get deterministic
 //! derived edits (dynamic ports, autofixes) and diagnostics.
 
-use crate::rules::{ConnectDecision, ConnectPlan, Diagnostic, DiagnosticSeverity};
+use crate::rules::{ConnectPlan, Diagnostic, DiagnosticSeverity};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{ApplyError, GraphOp, GraphTransaction};
 
@@ -103,15 +103,14 @@ pub fn apply_connect_plan_with_profile(
     profile: &mut dyn GraphProfile,
     plan: &ConnectPlan,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
-    match plan.decision {
-        ConnectDecision::Accept => {
-            let tx = GraphTransaction::from_ops(plan.ops.clone());
-            apply_transaction_with_profile(graph, profile, &tx)
-        }
-        ConnectDecision::Reject => Err(rejected_diagnostics(
-            plan.diagnostics.clone(),
+    if plan.is_accept() {
+        let tx = GraphTransaction::from_ops(plan.ops().iter().cloned());
+        apply_transaction_with_profile(graph, profile, &tx)
+    } else {
+        Err(rejected_diagnostics(
+            plan.diagnostics().to_vec(),
             "connect rejected",
-        )),
+        ))
     }
 }
 
