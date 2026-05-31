@@ -17,11 +17,6 @@ pub fn compute_fit_view_target(
         return None;
     }
 
-    let (viewport_w, viewport_h) = (options.viewport_width_px, options.viewport_height_px);
-    if !viewport_w.is_finite() || !viewport_h.is_finite() {
-        return None;
-    }
-
     let mut zoom_guess = options.max_zoom;
     let mut best: Option<(CanvasPoint, f32)> = None;
 
