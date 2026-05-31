@@ -259,105 +259,140 @@ pub fn install_callbacks(
     let callbacks: Rc<RefCell<Box<dyn NodeGraphCallbacks>>> =
         Rc::new(RefCell::new(Box::new(callbacks)));
     let event_callbacks = callbacks.clone();
-    let token = store.subscribe(move |ev| match ev {
-        NodeGraphStoreEvent::DocumentReplaced { .. } => {}
-        NodeGraphStoreEvent::GraphCommitted { patch } => {
-            let node_edge_changes = NodeGraphChanges::from_patch(patch);
-            let mut callbacks = event_callbacks.borrow_mut();
-            callbacks.on_graph_commit(patch);
-            callbacks.on_node_edge_changes(&node_edge_changes);
-            if !node_edge_changes.nodes.is_empty() {
-                callbacks.on_nodes_change(&node_edge_changes.nodes);
-            }
-            if !node_edge_changes.edges.is_empty() {
-                callbacks.on_edges_change(&node_edge_changes.edges);
-            }
-
-            for change in connection_changes_from_transaction(patch.transaction()) {
-                callbacks.on_connection_change(change);
-                match change {
-                    ConnectionChange::Connected(conn) => callbacks.on_connect(conn),
-                    ConnectionChange::Disconnected(conn) => callbacks.on_disconnect(conn),
-                    ConnectionChange::Reconnected { edge, from, to } => {
-                        callbacks.on_reconnect(edge, from, to);
-                        callbacks.on_edge_update(edge, from, to);
-                    }
-                }
-            }
-
-            let deleted = delete_changes_from_transaction(patch.transaction());
-            if !deleted.nodes.is_empty() {
-                callbacks.on_nodes_delete(&deleted.nodes);
-            }
-            if !deleted.edges.is_empty() {
-                callbacks.on_edges_delete(&deleted.edges);
-            }
-            if !deleted.groups.is_empty() {
-                callbacks.on_groups_delete(&deleted.groups);
-            }
-            if !deleted.sticky_notes.is_empty() {
-                callbacks.on_sticky_notes_delete(&deleted.sticky_notes);
-            }
-            if !deleted.nodes.is_empty()
-                || !deleted.edges.is_empty()
-                || !deleted.groups.is_empty()
-                || !deleted.sticky_notes.is_empty()
-            {
-                callbacks.on_delete(deleted);
-            }
-        }
-        NodeGraphStoreEvent::ViewChanged { changes, .. } => {
-            let mut callbacks = event_callbacks.borrow_mut();
-            callbacks.on_view_change(changes);
-            for change in changes.iter() {
-                match change {
-                    ViewChange::Viewport { pan, zoom } => {
-                        callbacks.on_viewport_change(*pan, *zoom);
-                        callbacks.on_move(*pan, *zoom);
-                    }
-                    ViewChange::Selection {
-                        nodes,
-                        edges,
-                        groups,
-                    } => callbacks.on_selection_change(SelectionChange {
-                        nodes: nodes.clone(),
-                        edges: edges.clone(),
-                        groups: groups.clone(),
-                    }),
-                }
-            }
-        }
+    let token = store.subscribe(move |ev| {
+        let mut callbacks = event_callbacks.borrow_mut();
+        dispatch_store_event_callbacks(callbacks.as_mut(), ev);
     });
 
     let gesture_callbacks = callbacks;
     store.subscribe_gesture_with_token(token, move |ev| {
         let mut callbacks = gesture_callbacks.borrow_mut();
-        match ev {
-            NodeGraphGestureEvent::ConnectStart(ev) => {
-                let is_reconnect = matches!(
-                    ev.kind,
-                    ConnectDragKind::Reconnect { .. } | ConnectDragKind::ReconnectMany { .. }
-                );
-                callbacks.on_connect_start(ev.clone());
-                if is_reconnect {
-                    callbacks.on_reconnect_start(ev.clone());
-                    callbacks.on_edge_update_start(ev);
-                }
-            }
-            NodeGraphGestureEvent::ConnectEnd(ev) => {
-                let is_reconnect = matches!(
-                    ev.kind,
-                    ConnectDragKind::Reconnect { .. } | ConnectDragKind::ReconnectMany { .. }
-                );
-                callbacks.on_connect_end(ev.clone());
-                if is_reconnect {
-                    callbacks.on_reconnect_end(ev.clone());
-                    callbacks.on_edge_update_end(ev);
-                }
-            }
-        }
+        dispatch_gesture_callbacks(callbacks.as_mut(), ev);
     });
     token
+}
+
+fn dispatch_store_event_callbacks(
+    callbacks: &mut dyn NodeGraphCallbacks,
+    ev: NodeGraphStoreEvent<'_>,
+) {
+    match ev {
+        NodeGraphStoreEvent::DocumentReplaced { .. } => {}
+        NodeGraphStoreEvent::GraphCommitted { patch } => {
+            dispatch_graph_commit_callbacks(callbacks, patch);
+        }
+        NodeGraphStoreEvent::ViewChanged { changes, .. } => {
+            dispatch_view_callbacks(callbacks, changes);
+        }
+    }
+}
+
+fn dispatch_graph_commit_callbacks(callbacks: &mut dyn NodeGraphCallbacks, patch: &NodeGraphPatch) {
+    let node_edge_changes = NodeGraphChanges::from_patch(patch);
+    callbacks.on_graph_commit(patch);
+    callbacks.on_node_edge_changes(&node_edge_changes);
+    if !node_edge_changes.nodes.is_empty() {
+        callbacks.on_nodes_change(&node_edge_changes.nodes);
+    }
+    if !node_edge_changes.edges.is_empty() {
+        callbacks.on_edges_change(&node_edge_changes.edges);
+    }
+
+    dispatch_connection_callbacks(callbacks, patch.transaction());
+    dispatch_delete_callbacks(callbacks, patch.transaction());
+}
+
+fn dispatch_connection_callbacks(callbacks: &mut dyn NodeGraphCallbacks, tx: &GraphTransaction) {
+    for change in connection_changes_from_transaction(tx) {
+        callbacks.on_connection_change(change);
+        match change {
+            ConnectionChange::Connected(conn) => callbacks.on_connect(conn),
+            ConnectionChange::Disconnected(conn) => callbacks.on_disconnect(conn),
+            ConnectionChange::Reconnected { edge, from, to } => {
+                callbacks.on_reconnect(edge, from, to);
+                callbacks.on_edge_update(edge, from, to);
+            }
+        }
+    }
+}
+
+fn dispatch_delete_callbacks(callbacks: &mut dyn NodeGraphCallbacks, tx: &GraphTransaction) {
+    let deleted = delete_changes_from_transaction(tx);
+    if !deleted.nodes.is_empty() {
+        callbacks.on_nodes_delete(&deleted.nodes);
+    }
+    if !deleted.edges.is_empty() {
+        callbacks.on_edges_delete(&deleted.edges);
+    }
+    if !deleted.groups.is_empty() {
+        callbacks.on_groups_delete(&deleted.groups);
+    }
+    if !deleted.sticky_notes.is_empty() {
+        callbacks.on_sticky_notes_delete(&deleted.sticky_notes);
+    }
+    if has_delete_changes(&deleted) {
+        callbacks.on_delete(deleted);
+    }
+}
+
+fn has_delete_changes(deleted: &DeleteChange) -> bool {
+    !deleted.nodes.is_empty()
+        || !deleted.edges.is_empty()
+        || !deleted.groups.is_empty()
+        || !deleted.sticky_notes.is_empty()
+}
+
+fn dispatch_view_callbacks(callbacks: &mut dyn NodeGraphCallbacks, changes: &[ViewChange]) {
+    callbacks.on_view_change(changes);
+    for change in changes.iter() {
+        match change {
+            ViewChange::Viewport { pan, zoom } => {
+                callbacks.on_viewport_change(*pan, *zoom);
+                callbacks.on_move(*pan, *zoom);
+            }
+            ViewChange::Selection {
+                nodes,
+                edges,
+                groups,
+            } => callbacks.on_selection_change(SelectionChange {
+                nodes: nodes.clone(),
+                edges: edges.clone(),
+                groups: groups.clone(),
+            }),
+        }
+    }
+}
+
+fn dispatch_gesture_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: NodeGraphGestureEvent) {
+    match ev {
+        NodeGraphGestureEvent::ConnectStart(ev) => dispatch_connect_start_callbacks(callbacks, ev),
+        NodeGraphGestureEvent::ConnectEnd(ev) => dispatch_connect_end_callbacks(callbacks, ev),
+    }
+}
+
+fn dispatch_connect_start_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: ConnectStart) {
+    let is_reconnect = is_reconnect_drag(&ev.kind);
+    callbacks.on_connect_start(ev.clone());
+    if is_reconnect {
+        callbacks.on_reconnect_start(ev.clone());
+        callbacks.on_edge_update_start(ev);
+    }
+}
+
+fn dispatch_connect_end_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: ConnectEnd) {
+    let is_reconnect = is_reconnect_drag(&ev.kind);
+    callbacks.on_connect_end(ev.clone());
+    if is_reconnect {
+        callbacks.on_reconnect_end(ev.clone());
+        callbacks.on_edge_update_end(ev);
+    }
+}
+
+fn is_reconnect_drag(kind: &ConnectDragKind) -> bool {
+    matches!(
+        kind,
+        ConnectDragKind::Reconnect { .. } | ConnectDragKind::ReconnectMany { .. }
+    )
 }
 
 pub fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
