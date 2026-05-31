@@ -1,4 +1,4 @@
-use super::{default_editor_config, make_graph};
+use super::fixtures::{default_editor_config, make_graph};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::commit::NodeGraphPatch;

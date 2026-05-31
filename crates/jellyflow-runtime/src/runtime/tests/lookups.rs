@@ -1,4 +1,4 @@
-use super::make_graph;
+use super::fixtures::make_graph;
 
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 
