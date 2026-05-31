@@ -17,7 +17,7 @@ pub(super) struct StoreSnapshotParts<'a> {
 }
 
 impl<'a> StoreSnapshotParts<'a> {
-    pub(super) fn new(
+    pub(super) fn from_store_fields(
         graph: &'a Graph,
         graph_revision: u64,
         view_state: &'a NodeGraphViewState,
@@ -36,7 +36,7 @@ impl<'a> StoreSnapshotParts<'a> {
     }
 
     fn from_store(store: &'a NodeGraphStore) -> Self {
-        Self::new(
+        Self::from_store_fields(
             &store.graph,
             store.graph_revision,
             &store.view_state,

@@ -141,7 +141,7 @@ impl NodeGraphStore {
             return;
         }
 
-        let snapshot_parts = StoreSnapshotParts::new(
+        let snapshot_parts = StoreSnapshotParts::from_store_fields(
             &self.graph,
             self.graph_revision,
             &self.view_state,

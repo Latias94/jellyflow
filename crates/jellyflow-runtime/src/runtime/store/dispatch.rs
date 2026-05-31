@@ -3,6 +3,8 @@
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use crate::runtime::commit::NodeGraphPatch;
+use crate::runtime::events::NodeGraphStoreSnapshot;
+use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
@@ -144,22 +146,25 @@ impl NodeGraphStore {
         &mut self,
         tx: &mut GraphTransaction,
     ) -> Result<(), ApplyPipelineError> {
-        let snapshot_parts = StoreSnapshotParts::new(
-            &self.graph,
-            self.graph_revision,
-            &self.view_state,
-            &self.interaction,
-            &self.runtime_tuning,
-            &self.history,
-        );
-        if let Some(middleware) = self.middleware.as_deref_mut() {
-            middleware.before_dispatch(snapshot_parts.snapshot(), tx)?;
+        if let Some(result) = self.with_dispatch_middleware_snapshot(|middleware, snapshot| {
+            middleware.before_dispatch(snapshot, tx)
+        }) {
+            result?;
         }
         Ok(())
     }
 
     pub(super) fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
-        let snapshot_parts = StoreSnapshotParts::new(
+        self.with_dispatch_middleware_snapshot(|middleware, snapshot| {
+            middleware.after_dispatch(snapshot, patch);
+        });
+    }
+
+    fn with_dispatch_middleware_snapshot<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn NodeGraphStoreMiddleware, NodeGraphStoreSnapshot<'_>) -> R,
+    ) -> Option<R> {
+        let snapshot_parts = StoreSnapshotParts::from_store_fields(
             &self.graph,
             self.graph_revision,
             &self.view_state,
@@ -167,9 +172,9 @@ impl NodeGraphStore {
             &self.runtime_tuning,
             &self.history,
         );
-        if let Some(middleware) = self.middleware.as_deref_mut() {
-            middleware.after_dispatch(snapshot_parts.snapshot(), patch);
-        }
+        self.middleware
+            .as_deref_mut()
+            .map(|middleware| f(middleware, snapshot_parts.snapshot()))
     }
 
     pub(super) fn apply_to_graph(
