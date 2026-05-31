@@ -57,27 +57,63 @@ pub(in crate::rules::connection) fn disconnect_for_capacity(
 ) -> Vec<GraphOp> {
     let mut ops: Vec<GraphOp> = Vec::new();
 
-    if from_capacity == PortCapacity::Single {
-        for (edge_id, edge) in graph.edges.iter() {
-            if Some(*edge_id) == skip_edge {
-                continue;
-            }
-            if edge.kind == edge_kind && edge.from == from_id {
-                ops.push(remove_edge_op(graph, *edge_id));
-            }
-        }
-    }
-
-    if to_capacity == PortCapacity::Single {
-        for (edge_id, edge) in graph.edges.iter() {
-            if Some(*edge_id) == skip_edge {
-                continue;
-            }
-            if edge.kind == edge_kind && edge.to == to_id {
-                ops.push(remove_edge_op(graph, *edge_id));
-            }
-        }
-    }
+    disconnect_for_endpoint_capacity(
+        graph,
+        edge_kind,
+        CapacityEndpoint::Source(from_id),
+        from_capacity,
+        skip_edge,
+        &mut ops,
+    );
+    disconnect_for_endpoint_capacity(
+        graph,
+        edge_kind,
+        CapacityEndpoint::Target(to_id),
+        to_capacity,
+        skip_edge,
+        &mut ops,
+    );
 
     ops
+}
+
+#[derive(Clone, Copy)]
+enum CapacityEndpoint {
+    Source(PortId),
+    Target(PortId),
+}
+
+fn disconnect_for_endpoint_capacity(
+    graph: &Graph,
+    edge_kind: EdgeKind,
+    endpoint: CapacityEndpoint,
+    capacity: PortCapacity,
+    skip_edge: Option<EdgeId>,
+    ops: &mut Vec<GraphOp>,
+) {
+    if capacity != PortCapacity::Single {
+        return;
+    }
+
+    for (edge_id, edge) in graph.edges.iter() {
+        if Some(*edge_id) == skip_edge {
+            continue;
+        }
+        if endpoint.matches(edge_kind, edge) {
+            ops.push(remove_edge_op(graph, *edge_id));
+        }
+    }
+}
+
+impl CapacityEndpoint {
+    fn matches(self, edge_kind: EdgeKind, edge: &Edge) -> bool {
+        if edge.kind != edge_kind {
+            return false;
+        }
+
+        match self {
+            Self::Source(port) => edge.from == port,
+            Self::Target(port) => edge.to == port,
+        }
+    }
 }
