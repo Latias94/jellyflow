@@ -55,6 +55,17 @@ fn make_port(
     }
 }
 
+fn attach_port(graph: &mut Graph, port_id: PortId, port: Port) {
+    let node_id = port.node;
+    graph.ports.insert(port_id, port);
+    graph
+        .nodes
+        .get_mut(&node_id)
+        .expect("port owner node")
+        .ports
+        .push(port_id);
+}
+
 #[test]
 fn validate_allows_edges_regardless_of_port_direction() {
     let mut graph = Graph::default();
@@ -241,6 +252,138 @@ fn validate_reports_both_missing_edge_endpoints() {
         .collect::<Vec<_>>();
 
     assert_eq!(missing_ports, vec![from, to]);
+}
+
+#[test]
+fn validate_reports_duplicate_edges() {
+    let mut graph = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+
+    let out_a = PortId::new();
+    let in_b = PortId::new();
+    attach_port(
+        &mut graph,
+        out_a,
+        make_port(
+            a,
+            "out",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    attach_port(
+        &mut graph,
+        in_b,
+        make_port(
+            b,
+            "in",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+
+    let first = EdgeId::new();
+    let duplicate = EdgeId::new();
+    for edge_id in [first, duplicate] {
+        graph.edges.insert(
+            edge_id,
+            Edge {
+                kind: EdgeKind::Data,
+                from: out_a,
+                to: in_b,
+                selectable: None,
+                deletable: None,
+                reconnectable: None,
+            },
+        );
+    }
+
+    let report = validate_graph(&graph);
+    let duplicate_edges = report
+        .errors()
+        .iter()
+        .filter_map(|err| match err {
+            GraphValidationError::DuplicateEdge { edge } => Some(*edge),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(duplicate_edges.len(), 1);
+    assert!([first, duplicate].contains(&duplicate_edges[0]));
+}
+
+#[test]
+fn validate_reports_single_port_capacity_exceeded() {
+    let mut graph = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    let c = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+    graph.nodes.insert(c, make_node("core.c"));
+
+    let out_a = PortId::new();
+    let out_c = PortId::new();
+    let in_b = PortId::new();
+    attach_port(
+        &mut graph,
+        out_a,
+        make_port(
+            a,
+            "out",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    attach_port(
+        &mut graph,
+        out_c,
+        make_port(
+            c,
+            "out",
+            PortDirection::Out,
+            PortKind::Data,
+            PortCapacity::Multi,
+        ),
+    );
+    attach_port(
+        &mut graph,
+        in_b,
+        make_port(
+            b,
+            "in",
+            PortDirection::In,
+            PortKind::Data,
+            PortCapacity::Single,
+        ),
+    );
+
+    for from in [out_a, out_c] {
+        graph.edges.insert(
+            EdgeId::new(),
+            Edge {
+                kind: EdgeKind::Data,
+                from,
+                to: in_b,
+                selectable: None,
+                deletable: None,
+                reconnectable: None,
+            },
+        );
+    }
+
+    let report = validate_graph(&graph);
+
+    assert!(report.errors().iter().any(|err| matches!(
+        err,
+        GraphValidationError::PortCapacityExceeded { port, count: 2, .. } if *port == in_b
+    )));
 }
 
 #[test]
