@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(edge_from) = from.edges.get(id) {
                 self.diff_existing_edge(*id, edge_from, edge_to);
             } else {
-                self.tx.ops.push(GraphOp::AddEdge {
+                self.tx.push(GraphOp::AddEdge {
                     id: *id,
                     edge: edge_to.clone(),
                 });
@@ -29,7 +29,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_edge_kind(&mut self, id: EdgeId, edge_from: &Edge, edge_to: &Edge) {
         if edge_from.kind != edge_to.kind {
-            self.tx.ops.push(GraphOp::SetEdgeKind {
+            self.tx.push(GraphOp::SetEdgeKind {
                 id,
                 from: edge_from.kind,
                 to: edge_to.kind,
@@ -41,27 +41,27 @@ impl<'a> GraphDiffPlanner<'a> {
         let from = edge_endpoints(edge_from);
         let to = edge_endpoints(edge_to);
         if from != to {
-            self.tx.ops.push(GraphOp::SetEdgeEndpoints { id, from, to });
+            self.tx.push(GraphOp::SetEdgeEndpoints { id, from, to });
         }
     }
 
     fn diff_edge_policy_fields(&mut self, id: EdgeId, edge_from: &Edge, edge_to: &Edge) {
         if edge_from.selectable != edge_to.selectable {
-            self.tx.ops.push(GraphOp::SetEdgeSelectable {
+            self.tx.push(GraphOp::SetEdgeSelectable {
                 id,
                 from: edge_from.selectable,
                 to: edge_to.selectable,
             });
         }
         if edge_from.deletable != edge_to.deletable {
-            self.tx.ops.push(GraphOp::SetEdgeDeletable {
+            self.tx.push(GraphOp::SetEdgeDeletable {
                 id,
                 from: edge_from.deletable,
                 to: edge_to.deletable,
             });
         }
         if edge_from.reconnectable != edge_to.reconnectable {
-            self.tx.ops.push(GraphOp::SetEdgeReconnectable {
+            self.tx.push(GraphOp::SetEdgeReconnectable {
                 id,
                 from: edge_from.reconnectable,
                 to: edge_to.reconnectable,
@@ -78,7 +78,7 @@ impl<'a> GraphDiffPlanner<'a> {
                 continue;
             }
 
-            self.tx.ops.push(GraphOp::RemoveEdge {
+            self.tx.push(GraphOp::RemoveEdge {
                 id: *id,
                 edge: edge_from.clone(),
             });

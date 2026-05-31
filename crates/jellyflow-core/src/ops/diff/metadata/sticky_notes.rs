@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(note_from) = from.sticky_notes.get(id) {
                 self.diff_existing_sticky_note(*id, note_from, note_to);
             } else {
-                self.tx.ops.push(GraphOp::AddStickyNote {
+                self.tx.push(GraphOp::AddStickyNote {
                     id: *id,
                     note: note_to.clone(),
                 });
@@ -20,7 +20,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, note_from) in &from.sticky_notes {
             if !to.sticky_notes.contains_key(id) {
-                self.tx.ops.push(GraphOp::RemoveStickyNote {
+                self.tx.push(GraphOp::RemoveStickyNote {
                     id: *id,
                     note: note_from.clone(),
                 });
@@ -35,21 +35,21 @@ impl<'a> GraphDiffPlanner<'a> {
         note_to: &StickyNote,
     ) {
         if note_from.text != note_to.text {
-            self.tx.ops.push(GraphOp::SetStickyNoteText {
+            self.tx.push(GraphOp::SetStickyNoteText {
                 id,
                 from: note_from.text.clone(),
                 to: note_to.text.clone(),
             });
         }
         if note_from.rect != note_to.rect {
-            self.tx.ops.push(GraphOp::SetStickyNoteRect {
+            self.tx.push(GraphOp::SetStickyNoteRect {
                 id,
                 from: note_from.rect,
                 to: note_to.rect,
             });
         }
         if note_from.color != note_to.color {
-            self.tx.ops.push(GraphOp::SetStickyNoteColor {
+            self.tx.push(GraphOp::SetStickyNoteColor {
                 id,
                 from: note_from.color.clone(),
                 to: note_to.color.clone(),

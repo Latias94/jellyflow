@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(import_from) = from.imports.get(id) {
                 self.diff_existing_import(*id, import_from, import_to);
             } else {
-                self.tx.ops.push(GraphOp::AddImport {
+                self.tx.push(GraphOp::AddImport {
                     id: *id,
                     import: import_to.clone(),
                 });
@@ -20,7 +20,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, import_from) in &from.imports {
             if !to.imports.contains_key(id) {
-                self.tx.ops.push(GraphOp::RemoveImport {
+                self.tx.push(GraphOp::RemoveImport {
                     id: *id,
                     import: import_from.clone(),
                 });
@@ -35,7 +35,7 @@ impl<'a> GraphDiffPlanner<'a> {
         import_to: &GraphImport,
     ) {
         if import_from.alias != import_to.alias {
-            self.tx.ops.push(GraphOp::SetImportAlias {
+            self.tx.push(GraphOp::SetImportAlias {
                 id,
                 from: import_from.alias.clone(),
                 to: import_to.alias.clone(),

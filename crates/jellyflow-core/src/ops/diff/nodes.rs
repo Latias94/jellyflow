@@ -11,7 +11,7 @@ impl<'a> GraphDiffPlanner<'a> {
             if let Some(node_from) = from.nodes.get(id) {
                 self.diff_existing_node(*id, node_from, node_to);
             } else {
-                self.tx.ops.push(GraphOp::AddNode {
+                self.tx.push(GraphOp::AddNode {
                     id: *id,
                     node: node_to.clone(),
                 });
@@ -35,14 +35,14 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_node_identity_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.kind != node_to.kind {
-            self.tx.ops.push(GraphOp::SetNodeKind {
+            self.tx.push(GraphOp::SetNodeKind {
                 id,
                 from: node_from.kind.clone(),
                 to: node_to.kind.clone(),
             });
         }
         if node_from.kind_version != node_to.kind_version {
-            self.tx.ops.push(GraphOp::SetNodeKindVersion {
+            self.tx.push(GraphOp::SetNodeKindVersion {
                 id,
                 from: node_from.kind_version,
                 to: node_to.kind_version,
@@ -52,28 +52,28 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_node_policy_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.selectable != node_to.selectable {
-            self.tx.ops.push(GraphOp::SetNodeSelectable {
+            self.tx.push(GraphOp::SetNodeSelectable {
                 id,
                 from: node_from.selectable,
                 to: node_to.selectable,
             });
         }
         if node_from.draggable != node_to.draggable {
-            self.tx.ops.push(GraphOp::SetNodeDraggable {
+            self.tx.push(GraphOp::SetNodeDraggable {
                 id,
                 from: node_from.draggable,
                 to: node_to.draggable,
             });
         }
         if node_from.connectable != node_to.connectable {
-            self.tx.ops.push(GraphOp::SetNodeConnectable {
+            self.tx.push(GraphOp::SetNodeConnectable {
                 id,
                 from: node_from.connectable,
                 to: node_to.connectable,
             });
         }
         if node_from.deletable != node_to.deletable {
-            self.tx.ops.push(GraphOp::SetNodeDeletable {
+            self.tx.push(GraphOp::SetNodeDeletable {
                 id,
                 from: node_from.deletable,
                 to: node_to.deletable,
@@ -83,7 +83,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_node_layout_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.pos != node_to.pos {
-            self.tx.ops.push(GraphOp::SetNodePos {
+            self.tx.push(GraphOp::SetNodePos {
                 id,
                 from: node_from.pos,
                 to: node_to.pos,
@@ -91,35 +91,35 @@ impl<'a> GraphDiffPlanner<'a> {
         }
         self.diff_node_parent(id, node_from, node_to);
         if node_from.extent != node_to.extent {
-            self.tx.ops.push(GraphOp::SetNodeExtent {
+            self.tx.push(GraphOp::SetNodeExtent {
                 id,
                 from: node_from.extent,
                 to: node_to.extent,
             });
         }
         if node_from.expand_parent != node_to.expand_parent {
-            self.tx.ops.push(GraphOp::SetNodeExpandParent {
+            self.tx.push(GraphOp::SetNodeExpandParent {
                 id,
                 from: node_from.expand_parent,
                 to: node_to.expand_parent,
             });
         }
         if node_from.size != node_to.size {
-            self.tx.ops.push(GraphOp::SetNodeSize {
+            self.tx.push(GraphOp::SetNodeSize {
                 id,
                 from: node_from.size,
                 to: node_to.size,
             });
         }
         if node_from.hidden != node_to.hidden {
-            self.tx.ops.push(GraphOp::SetNodeHidden {
+            self.tx.push(GraphOp::SetNodeHidden {
                 id,
                 from: node_from.hidden,
                 to: node_to.hidden,
             });
         }
         if node_from.collapsed != node_to.collapsed {
-            self.tx.ops.push(GraphOp::SetNodeCollapsed {
+            self.tx.push(GraphOp::SetNodeCollapsed {
                 id,
                 from: node_from.collapsed,
                 to: node_to.collapsed,
@@ -129,7 +129,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_node_ports(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.ports != node_to.ports {
-            self.tx.ops.push(GraphOp::SetNodePorts {
+            self.tx.push(GraphOp::SetNodePorts {
                 id,
                 from: node_from.ports.clone(),
                 to: node_to.ports.clone(),
@@ -139,7 +139,7 @@ impl<'a> GraphDiffPlanner<'a> {
 
     fn diff_node_data(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.data != node_to.data {
-            self.tx.ops.push(GraphOp::SetNodeData {
+            self.tx.push(GraphOp::SetNodeData {
                 id,
                 from: node_from.data.clone(),
                 to: node_to.data.clone(),
@@ -162,7 +162,7 @@ impl<'a> GraphDiffPlanner<'a> {
         };
 
         if parent_from != node_to.parent {
-            self.tx.ops.push(GraphOp::SetNodeParent {
+            self.tx.push(GraphOp::SetNodeParent {
                 id,
                 from: parent_from,
                 to: node_to.parent,
@@ -182,10 +182,10 @@ impl<'a> GraphDiffPlanner<'a> {
         // Prefer the reversible removal op with captured ports/edges.
         if let Ok(op) = GraphMutationPlanner::new(self.from).remove_node_op(id) {
             self.record_removed_node_cascade(&op);
-            self.tx.ops.push(op);
+            self.tx.push(op);
         } else {
             // Fallback: remove node only (should not happen if graph is consistent).
-            self.tx.ops.push(GraphOp::RemoveNode {
+            self.tx.push(GraphOp::RemoveNode {
                 id,
                 node: node_from.clone(),
                 ports: Vec::new(),
