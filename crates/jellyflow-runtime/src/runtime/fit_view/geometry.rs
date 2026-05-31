@@ -6,20 +6,14 @@ pub(super) fn compute_fit_view_target_top_left(
     nodes: &[FitViewNodeInfo],
     options: FitViewComputeOptions,
 ) -> Option<(CanvasPoint, f32)> {
-    let (viewport_w, viewport_h) = (options.viewport_width_px, options.viewport_height_px);
-    let (margin_x, margin_y) = viewport_margins(options);
+    let frame = ViewportFitFrame::from_options(options);
 
     let spread = NodePositionSpread::from_nodes(nodes)?;
-    let zoom = spread.fit_zoom(options, margin_x, margin_y);
+    let zoom = spread.fit_zoom(options, frame);
     let bounds = CanvasBounds::from_nodes(nodes, zoom)?;
     let center = bounds.center();
 
-    let pan = CanvasPoint {
-        x: 0.5 * viewport_w / zoom - center.x,
-        y: 0.5 * viewport_h / zoom - center.y,
-    };
-
-    Some((pan, zoom))
+    Some((frame.pan_for_center(center, zoom), zoom))
 }
 
 pub(super) fn compute_target_for_canvas_rect(
@@ -30,11 +24,10 @@ pub(super) fn compute_target_for_canvas_rect(
         return None;
     }
 
-    let (viewport_w, viewport_h) = (options.viewport_width_px, options.viewport_height_px);
-    let (margin_x, margin_y) = viewport_margins(options);
+    let frame = ViewportFitFrame::from_options(options);
 
-    let zoom_x = (viewport_w - 2.0 * margin_x) / target_canvas.size.width;
-    let zoom_y = (viewport_h - 2.0 * margin_y) / target_canvas.size.height;
+    let zoom_x = frame.available_width() / target_canvas.size.width;
+    let zoom_y = frame.available_height() / target_canvas.size.height;
     if !zoom_x.is_finite() || !zoom_y.is_finite() {
         return None;
     }
@@ -46,10 +39,13 @@ pub(super) fn compute_target_for_canvas_rect(
 
     let center_x = target_canvas.origin.x + 0.5 * target_canvas.size.width;
     let center_y = target_canvas.origin.y + 0.5 * target_canvas.size.height;
-    let pan = CanvasPoint {
-        x: 0.5 * viewport_w / zoom - center_x,
-        y: 0.5 * viewport_h / zoom - center_y,
-    };
+    let pan = frame.pan_for_center(
+        CanvasPoint {
+            x: center_x,
+            y: center_y,
+        },
+        zoom,
+    );
     if !pan.is_finite() {
         return None;
     }
@@ -57,14 +53,46 @@ pub(super) fn compute_target_for_canvas_rect(
     Some((pan, zoom))
 }
 
-fn viewport_margins(options: FitViewComputeOptions) -> (f32, f32) {
-    if options.padding > 0.0 {
-        (
-            options.viewport_width_px * options.padding,
-            options.viewport_height_px * options.padding,
-        )
-    } else {
-        (options.margin_px_fallback, options.margin_px_fallback)
+#[derive(Clone, Copy)]
+struct ViewportFitFrame {
+    width_px: f32,
+    height_px: f32,
+    margin_x: f32,
+    margin_y: f32,
+}
+
+impl ViewportFitFrame {
+    fn from_options(options: FitViewComputeOptions) -> Self {
+        let (margin_x, margin_y) = if options.padding > 0.0 {
+            (
+                options.viewport_width_px * options.padding,
+                options.viewport_height_px * options.padding,
+            )
+        } else {
+            (options.margin_px_fallback, options.margin_px_fallback)
+        };
+
+        Self {
+            width_px: options.viewport_width_px,
+            height_px: options.viewport_height_px,
+            margin_x,
+            margin_y,
+        }
+    }
+
+    fn available_width(self) -> f32 {
+        self.width_px - 2.0 * self.margin_x
+    }
+
+    fn available_height(self) -> f32 {
+        self.height_px - 2.0 * self.margin_y
+    }
+
+    fn pan_for_center(self, center: CanvasPoint, zoom: f32) -> CanvasPoint {
+        CanvasPoint {
+            x: 0.5 * self.width_px / zoom - center.x,
+            y: 0.5 * self.height_px / zoom - center.y,
+        }
     }
 }
 
@@ -111,17 +139,17 @@ impl NodePositionSpread {
         self.max_h_px = self.max_h_px.max(size_px.height);
     }
 
-    fn fit_zoom(&self, options: FitViewComputeOptions, margin_x: f32, margin_y: f32) -> f32 {
+    fn fit_zoom(&self, options: FitViewComputeOptions, frame: ViewportFitFrame) -> f32 {
         let mut zoom_x = options.max_zoom;
         let mut zoom_y = options.max_zoom;
 
         let spread_x = (self.max_x - self.min_x).max(0.0);
         let spread_y = (self.max_y - self.min_y).max(0.0);
         if spread_x > 1.0e-3 {
-            zoom_x = (options.viewport_width_px - self.max_w_px - 2.0 * margin_x) / spread_x;
+            zoom_x = (frame.available_width() - self.max_w_px) / spread_x;
         }
         if spread_y > 1.0e-3 {
-            zoom_y = (options.viewport_height_px - self.max_h_px - 2.0 * margin_y) / spread_y;
+            zoom_y = (frame.available_height() - self.max_h_px) / spread_y;
         }
 
         let mut zoom = zoom_x.min(zoom_y);
