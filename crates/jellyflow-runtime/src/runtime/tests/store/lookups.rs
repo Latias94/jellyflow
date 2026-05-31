@@ -17,20 +17,17 @@ fn store_lookups_update_after_dispatch_transaction() {
     let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
     assert!(store.lookups().edge_lookup.is_empty());
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddEdge {
-            id: eid,
-            edge: Edge {
-                kind: EdgeKind::Data,
-                from: out_port,
-                to: in_port,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::AddEdge {
+        id: eid,
+        edge: Edge {
+            kind: EdgeKind::Data,
+            from: out_port,
+            to: in_port,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert!(store.lookups().edge_lookup.contains_key(&eid));
@@ -42,14 +39,11 @@ fn store_lookups_update_node_hidden_after_dispatch_transaction() {
     let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
     assert!(!store.lookups().node_lookup.get(&a).unwrap().hidden);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodeHidden {
-            id: a,
-            from: false,
-            to: true,
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeHidden {
+        id: a,
+        from: false,
+        to: true,
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert!(store.lookups().node_lookup.get(&a).unwrap().hidden);
@@ -64,14 +58,11 @@ fn store_lookups_update_edge_reconnectable_after_dispatch_transaction() {
         None
     );
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetEdgeReconnectable {
-            id: eid,
-            from: None,
-            to: Some(EdgeReconnectable::Bool(false)),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeReconnectable {
+        id: eid,
+        from: None,
+        to: Some(EdgeReconnectable::Bool(false)),
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert_eq!(
@@ -87,14 +78,11 @@ fn store_lookups_update_edge_kind_in_connection_lookup_after_dispatch_transactio
     g.ports.get_mut(&in_port).unwrap().kind = PortKind::Exec;
     let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetEdgeKind {
-            id: eid,
-            from: EdgeKind::Data,
-            to: EdgeKind::Exec,
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeKind {
+        id: eid,
+        from: EdgeKind::Data,
+        to: EdgeKind::Exec,
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
 
@@ -142,14 +130,11 @@ fn store_lookups_remove_port_updates_node_ports_and_incident_edges() {
     );
     assert!(store.lookups().edge_lookup.contains_key(&eid));
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::RemovePort {
-            id: out_port,
-            port,
-            edges: vec![(eid, edge)],
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::RemovePort {
+        id: out_port,
+        port,
+        edges: vec![(eid, edge)],
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert!(
@@ -188,14 +173,11 @@ fn store_lookups_remove_group_clears_detached_node_parent() {
         Some(group_id)
     );
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::RemoveGroup {
-            id: group_id,
-            group,
-            detached: vec![(a, Some(group_id))],
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::RemoveGroup {
+        id: group_id,
+        group,
+        detached: vec![(a, Some(group_id))],
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert_eq!(store.lookups().node_lookup.get(&a).unwrap().parent, None);
