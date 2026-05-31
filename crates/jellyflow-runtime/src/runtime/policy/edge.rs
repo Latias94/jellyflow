@@ -1,5 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use jellyflow_core::core::{Edge, EdgeReconnectable, EdgeReconnectableEndpoint};
+use jellyflow_core::core::{Edge, EdgeReconnectable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeGraphEdgeInteractionPolicy {
@@ -22,11 +22,7 @@ pub fn resolve_edge_interaction_policy(
     let reconnectable = edge
         .reconnectable
         .unwrap_or(EdgeReconnectable::Bool(state.edges_reconnectable));
-    let (reconnect_source, reconnect_target) = match reconnectable {
-        EdgeReconnectable::Bool(enabled) => (enabled, enabled),
-        EdgeReconnectable::Endpoint(EdgeReconnectableEndpoint::Source) => (true, false),
-        EdgeReconnectable::Endpoint(EdgeReconnectableEndpoint::Target) => (false, true),
-    };
+    let (reconnect_source, reconnect_target) = reconnectable.endpoint_flags();
 
     NodeGraphEdgeInteractionPolicy {
         selectable: edge.selectable.unwrap_or(state.edges_selectable),

@@ -52,6 +52,26 @@ pub enum EdgeReconnectable {
     Endpoint(EdgeReconnectableEndpoint),
 }
 
+impl EdgeReconnectable {
+    pub fn allows_source(self) -> bool {
+        matches!(
+            self,
+            Self::Bool(true) | Self::Endpoint(EdgeReconnectableEndpoint::Source)
+        )
+    }
+
+    pub fn allows_target(self) -> bool {
+        matches!(
+            self,
+            Self::Bool(true) | Self::Endpoint(EdgeReconnectableEndpoint::Target)
+        )
+    }
+
+    pub fn endpoint_flags(self) -> (bool, bool) {
+        (self.allows_source(), self.allows_target())
+    }
+}
+
 /// Which endpoint is reconnectable (`'source' | 'target'`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
