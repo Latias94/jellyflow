@@ -50,72 +50,95 @@ impl InsertNodeTemplate {
     /// Instantiates this template at a given position by allocating fresh IDs.
     pub fn instantiate(&self, at: CanvasPoint) -> Result<InsertNodeSpec, String> {
         let node_id = NodeId::new();
+        let ports = InstantiatedTemplatePorts::from_template(self, node_id)?;
 
+        Ok(InsertNodeSpec {
+            node_id,
+            node: self.instantiate_node(at),
+            ports: ports.ports,
+            input: ports.input,
+            output: ports.output,
+        })
+    }
+
+    fn instantiate_node(&self, at: CanvasPoint) -> Node {
+        Node {
+            kind: self.kind.clone(),
+            kind_version: self.kind_version,
+            pos: at,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: self.collapsed,
+            ports: Vec::new(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+struct InstantiatedTemplatePorts {
+    ports: Vec<(PortId, Port)>,
+    input: PortId,
+    output: PortId,
+}
+
+impl InstantiatedTemplatePorts {
+    fn from_template(template: &InsertNodeTemplate, node_id: NodeId) -> Result<Self, String> {
         let mut ports: Vec<(PortId, Port)> = Vec::new();
         let mut input: Option<PortId> = None;
         let mut output: Option<PortId> = None;
 
-        for pt in &self.ports {
+        for port_template in &template.ports {
             let port_id = PortId::new();
-            if pt.key == self.input {
+            if port_template.key == template.input {
                 input = Some(port_id);
             }
-            if pt.key == self.output {
+            if port_template.key == template.output {
                 output = Some(port_id);
             }
 
-            ports.push((
-                port_id,
-                Port {
-                    node: node_id,
-                    key: pt.key.clone(),
-                    dir: pt.dir,
-                    kind: pt.kind,
-                    capacity: pt.capacity,
-                    connectable: None,
-                    connectable_start: None,
-                    connectable_end: None,
-                    ty: pt.ty.clone(),
-                    data: pt.data.clone(),
-                },
-            ));
+            ports.push((port_id, instantiate_port(node_id, port_template)));
         }
 
-        let Some(input) = input else {
-            return Err(format!("template is missing input port: {}", self.input.0));
-        };
-        let Some(output) = output else {
-            return Err(format!(
-                "template is missing output port: {}",
-                self.output.0
-            ));
-        };
+        let input = required_template_port(input, "input", &template.input)?;
+        let output = required_template_port(output, "output", &template.output)?;
         if input == output {
             return Err("template input/output ports must be distinct".to_string());
         }
 
-        Ok(InsertNodeSpec {
-            node_id,
-            node: Node {
-                kind: self.kind.clone(),
-                kind_version: self.kind_version,
-                pos: at,
-                selectable: None,
-                draggable: None,
-                connectable: None,
-                deletable: None,
-                parent: None,
-                extent: None,
-                expand_parent: None,
-                size: None,
-                hidden: false,
-                collapsed: self.collapsed,
-                ports: Vec::new(),
-                data: self.data.clone(),
-            },
+        Ok(Self {
             ports,
             input,
             output,
         })
     }
+}
+
+fn instantiate_port(node_id: NodeId, template: &PortTemplate) -> Port {
+    Port {
+        node: node_id,
+        key: template.key.clone(),
+        dir: template.dir,
+        kind: template.kind,
+        capacity: template.capacity,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: template.ty.clone(),
+        data: template.data.clone(),
+    }
+}
+
+fn required_template_port(
+    port: Option<PortId>,
+    role: &str,
+    key: &PortKey,
+) -> Result<PortId, String> {
+    port.ok_or_else(|| format!("template is missing {role} port: {}", key.0))
 }
