@@ -102,10 +102,7 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_node_size(&mut self, node_id: NodeId, size: Option<CanvasSize>) {
         if let Some(size) = size
-            && (!size.width.is_finite()
-                || !size.height.is_finite()
-                || size.width <= 0.0
-                || size.height <= 0.0)
+            && !size.is_positive_finite()
         {
             self.report.push(GraphValidationError::NodeInvalidSize {
                 node: node_id,

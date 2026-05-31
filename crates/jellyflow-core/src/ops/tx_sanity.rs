@@ -1,4 +1,4 @@
-use crate::core::{CanvasPoint, CanvasRect, CanvasSize, NodeExtent};
+use crate::core::NodeExtent;
 
 use super::{EdgeEndpoints, GraphOp, GraphTransaction};
 
@@ -40,18 +40,6 @@ fn find_tx_sanity_issue(
 struct NonFiniteGeometry;
 
 impl NonFiniteGeometry {
-    fn point_is_finite(p: CanvasPoint) -> bool {
-        p.x.is_finite() && p.y.is_finite()
-    }
-
-    fn size_is_finite(s: CanvasSize) -> bool {
-        s.width.is_finite() && s.height.is_finite()
-    }
-
-    fn rect_is_finite(r: CanvasRect) -> bool {
-        Self::point_is_finite(r.origin) && Self::size_is_finite(r.size)
-    }
-
     fn endpoints_is_finite(_e: EdgeEndpoints) -> bool {
         true
     }
@@ -60,36 +48,30 @@ impl NonFiniteGeometry {
         match op {
             GraphOp::AddNode { node, .. } => node
                 .size
-                .and_then(|s| (!Self::size_is_finite(s)).then_some("AddNode.node.size"))
-                .or_else(|| (!Self::point_is_finite(node.pos)).then_some("AddNode.node.pos"))
+                .and_then(|s| (!s.is_finite()).then_some("AddNode.node.size"))
+                .or_else(|| (!node.pos.is_finite()).then_some("AddNode.node.pos"))
                 .or_else(|| match node.extent {
                     Some(NodeExtent::Rect { rect }) => {
-                        (!Self::rect_is_finite(rect)).then_some("AddNode.node.extent.rect")
+                        (!rect.is_finite()).then_some("AddNode.node.extent.rect")
                     }
                     Some(NodeExtent::Parent) | None => None,
                 }),
-            GraphOp::AddGroup { group, .. } => {
-                (!Self::rect_is_finite(group.rect)).then_some("AddGroup.rect")
-            }
+            GraphOp::AddGroup { group, .. } => (!group.rect.is_finite()).then_some("AddGroup.rect"),
             GraphOp::AddStickyNote { note, .. } => {
-                (!Self::rect_is_finite(note.rect)).then_some("AddStickyNote.rect")
+                (!note.rect.is_finite()).then_some("AddStickyNote.rect")
             }
 
-            GraphOp::SetNodePos { to, .. } => {
-                (!Self::point_is_finite(*to)).then_some("SetNodePos.to")
-            }
-            GraphOp::SetGroupRect { to, .. } => {
-                (!Self::rect_is_finite(*to)).then_some("SetGroupRect.to")
-            }
+            GraphOp::SetNodePos { to, .. } => (!to.is_finite()).then_some("SetNodePos.to"),
+            GraphOp::SetGroupRect { to, .. } => (!to.is_finite()).then_some("SetGroupRect.to"),
             GraphOp::SetStickyNoteRect { to, .. } => {
-                (!Self::rect_is_finite(*to)).then_some("SetStickyNoteRect.to")
+                (!to.is_finite()).then_some("SetStickyNoteRect.to")
             }
             GraphOp::SetNodeSize { to, .. } => {
-                to.and_then(|s| (!Self::size_is_finite(s)).then_some("SetNodeSize.to"))
+                to.and_then(|s| (!s.is_finite()).then_some("SetNodeSize.to"))
             }
             GraphOp::SetNodeExtent { to, .. } => match to {
                 Some(NodeExtent::Rect { rect }) => {
-                    (!Self::rect_is_finite(*rect)).then_some("SetNodeExtent.to.rect")
+                    (!rect.is_finite()).then_some("SetNodeExtent.to.rect")
                 }
                 Some(NodeExtent::Parent) | None => None,
             },
@@ -146,17 +128,13 @@ impl NonFiniteGeometry {
 struct InvalidNodeSize;
 
 impl InvalidNodeSize {
-    fn size_is_valid(s: CanvasSize) -> bool {
-        s.width.is_finite() && s.height.is_finite() && s.width > 0.0 && s.height > 0.0
-    }
-
     fn op_field(op: &GraphOp) -> Option<&'static str> {
         match op {
             GraphOp::AddNode { node, .. } => node
                 .size
-                .and_then(|s| (!Self::size_is_valid(s)).then_some("AddNode.node.size")),
+                .and_then(|s| (!s.is_positive_finite()).then_some("AddNode.node.size")),
             GraphOp::SetNodeSize { to, .. } => {
-                to.and_then(|s| (!Self::size_is_valid(s)).then_some("SetNodeSize.to"))
+                to.and_then(|s| (!s.is_positive_finite()).then_some("SetNodeSize.to"))
             }
             _ => None,
         }
