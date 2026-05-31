@@ -158,7 +158,7 @@ impl NodeGraphStore {
         Ok(())
     }
 
-    fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
+    pub(super) fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
         let snapshot_parts = StoreSnapshotParts::new(
             &self.graph,
             self.graph_revision,
