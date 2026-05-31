@@ -129,13 +129,13 @@ impl NodeBoundsResolver {
     }
 
     fn bounds_for_entry(&self, entry: &NodeLookupEntry) -> Option<CanvasBounds> {
-        if !self.include_hidden && entry.hidden {
+        if !entry.is_visible_with_hidden_policy(self.include_hidden) {
             return None;
         }
-        CanvasBounds::from_node(entry.pos, self.resolve_size(entry)?, self.node_origin)
-    }
-
-    fn resolve_size(&self, entry: &NodeLookupEntry) -> Option<CanvasSize> {
-        entry.size.or(self.fallback_size)
+        CanvasBounds::from_node(
+            entry.pos,
+            entry.resolved_size(self.fallback_size)?,
+            self.node_origin,
+        )
     }
 }

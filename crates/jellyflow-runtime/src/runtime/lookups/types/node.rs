@@ -25,4 +25,12 @@ impl NodeLookupEntry {
             ports: node.ports.clone(),
         }
     }
+
+    pub(crate) fn is_visible_with_hidden_policy(&self, include_hidden: bool) -> bool {
+        include_hidden || !self.hidden
+    }
+
+    pub(crate) fn resolved_size(&self, fallback_size: Option<CanvasSize>) -> Option<CanvasSize> {
+        self.size.or(fallback_size)
+    }
 }
