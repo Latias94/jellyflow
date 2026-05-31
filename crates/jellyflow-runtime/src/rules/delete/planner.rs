@@ -23,22 +23,23 @@ impl<'a> DeletePlanner<'a> {
         nodes: impl IntoIterator<Item = NodeId>,
         edges: impl IntoIterator<Item = EdgeId>,
     ) -> DeletePlan {
-        let nodes = nodes.into_iter().collect::<BTreeSet<_>>();
-        let edges = edges.into_iter().collect::<BTreeSet<_>>();
-
-        if nodes.is_empty() && edges.is_empty() {
+        let selection = DeleteSelection::from_requested(self.graph, nodes, edges);
+        if selection.is_empty() {
             return DeletePlan::accept();
         }
 
-        let cascaded_edges = self.cascaded_edges_for_nodes(&nodes);
         let mut diagnostics = Vec::new();
-        self.validate_nodes(&nodes, &mut diagnostics);
-        self.validate_direct_edges(&edges, &cascaded_edges, &mut diagnostics);
+        self.validate_nodes(&selection.nodes, &mut diagnostics);
+        self.validate_direct_edges(
+            &selection.edges,
+            &selection.cascaded_edges,
+            &mut diagnostics,
+        );
         if !diagnostics.is_empty() {
             return rejected(diagnostics);
         }
 
-        match self.build_ops(&nodes, &edges, &cascaded_edges) {
+        match self.build_ops(&selection) {
             Ok(ops) => DeletePlan::from_ops(ops),
             Err(diagnostic) => rejected(vec![diagnostic]),
         }
@@ -95,33 +96,11 @@ impl<'a> DeletePlanner<'a> {
         }
     }
 
-    fn cascaded_edges_for_nodes(&self, nodes: &BTreeSet<NodeId>) -> BTreeSet<EdgeId> {
-        let port_ids = self
-            .graph
-            .ports
-            .iter()
-            .filter_map(|(port_id, port)| nodes.contains(&port.node).then_some(*port_id))
-            .collect::<BTreeSet<_>>();
-
-        self.graph
-            .edges
-            .iter()
-            .filter_map(|(edge_id, edge)| {
-                (port_ids.contains(&edge.from) || port_ids.contains(&edge.to)).then_some(*edge_id)
-            })
-            .collect()
-    }
-
-    fn build_ops(
-        &self,
-        nodes: &BTreeSet<NodeId>,
-        edges: &BTreeSet<EdgeId>,
-        cascaded_edges: &BTreeSet<EdgeId>,
-    ) -> Result<Vec<GraphOp>, Diagnostic> {
+    fn build_ops(&self, selection: &DeleteSelection) -> Result<Vec<GraphOp>, Diagnostic> {
         let mut scratch = self.graph.clone();
         let mut ops = Vec::new();
 
-        for node_id in nodes {
+        for node_id in &selection.nodes {
             let op = GraphMutationPlanner::new(&scratch)
                 .remove_node_op(*node_id)
                 .map_err(|error| {
@@ -131,8 +110,8 @@ impl<'a> DeletePlanner<'a> {
             ops.push(op);
         }
 
-        for edge_id in edges {
-            if cascaded_edges.contains(edge_id) || !scratch.edges.contains_key(edge_id) {
+        for edge_id in &selection.edges {
+            if selection.edge_is_cascaded(edge_id) || !scratch.edges.contains_key(edge_id) {
                 continue;
             }
 
@@ -146,6 +125,54 @@ impl<'a> DeletePlanner<'a> {
         }
 
         Ok(ops)
+    }
+}
+
+struct DeleteSelection {
+    nodes: BTreeSet<NodeId>,
+    edges: BTreeSet<EdgeId>,
+    cascaded_edges: BTreeSet<EdgeId>,
+}
+
+impl DeleteSelection {
+    fn from_requested(
+        graph: &Graph,
+        nodes: impl IntoIterator<Item = NodeId>,
+        edges: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
+        let nodes = nodes.into_iter().collect::<BTreeSet<_>>();
+        let edges = edges.into_iter().collect::<BTreeSet<_>>();
+        let cascaded_edges = Self::cascaded_edges_for_nodes(graph, &nodes);
+
+        Self {
+            nodes,
+            edges,
+            cascaded_edges,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty()
+    }
+
+    fn edge_is_cascaded(&self, edge_id: &EdgeId) -> bool {
+        self.cascaded_edges.contains(edge_id)
+    }
+
+    fn cascaded_edges_for_nodes(graph: &Graph, nodes: &BTreeSet<NodeId>) -> BTreeSet<EdgeId> {
+        let port_ids = graph
+            .ports
+            .iter()
+            .filter_map(|(port_id, port)| nodes.contains(&port.node).then_some(*port_id))
+            .collect::<BTreeSet<_>>();
+
+        graph
+            .edges
+            .iter()
+            .filter_map(|(edge_id, edge)| {
+                (port_ids.contains(&edge.from) || port_ids.contains(&edge.to)).then_some(*edge_id)
+            })
+            .collect()
     }
 }
 
