@@ -1,44 +1,9 @@
-//! Persisted and in-memory editor view state.
-
 use serde::{Deserialize, Serialize};
 
-use jellyflow_core::core::{EdgeId, Graph, GroupId, NodeId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GroupId, NodeId};
 
-/// Pure persisted view-state payload.
-///
-/// This excludes interaction policy and runtime tuning so persistence boundaries can evolve without
-/// forcing every in-memory/runtime consumer to change in the same step.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NodeGraphPureViewState {
-    #[serde(default)]
-    pub pan: jellyflow_core::core::CanvasPoint,
-    #[serde(default = "default_zoom")]
-    pub zoom: f32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selected_nodes: Vec<NodeId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selected_edges: Vec<EdgeId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selected_groups: Vec<GroupId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub draw_order: Vec<NodeId>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group_draw_order: Vec<GroupId>,
-}
-
-impl Default for NodeGraphPureViewState {
-    fn default() -> Self {
-        Self {
-            pan: jellyflow_core::core::CanvasPoint::default(),
-            zoom: default_zoom(),
-            selected_nodes: Vec::new(),
-            selected_edges: Vec::new(),
-            selected_groups: Vec::new(),
-            draw_order: Vec::new(),
-            group_draw_order: Vec::new(),
-        }
-    }
-}
+use super::default_zoom;
+use super::pure::NodeGraphPureViewState;
 
 /// Node graph editor view-state.
 ///
@@ -47,7 +12,7 @@ impl Default for NodeGraphPureViewState {
 pub struct NodeGraphViewState {
     /// Canvas pan in graph space.
     #[serde(default)]
-    pub pan: jellyflow_core::core::CanvasPoint,
+    pub pan: CanvasPoint,
     /// Zoom factor.
     #[serde(default = "default_zoom")]
     pub zoom: f32,
@@ -71,7 +36,7 @@ pub struct NodeGraphViewState {
 impl Default for NodeGraphViewState {
     fn default() -> Self {
         Self {
-            pan: jellyflow_core::core::CanvasPoint::default(),
+            pan: CanvasPoint::default(),
             zoom: default_zoom(),
             selected_nodes: Vec::new(),
             selected_edges: Vec::new(),
@@ -85,7 +50,7 @@ impl Default for NodeGraphViewState {
 impl NodeGraphViewState {
     /// Removes stale IDs (selection / draw order) that no longer exist in the target graph.
     pub fn sanitize_for_graph(&mut self, graph: &Graph) {
-        let visible_node = |id: &NodeId| graph.nodes.get(id).is_some_and(|n| !n.hidden);
+        let visible_node = |id: &NodeId| graph.nodes.get(id).is_some_and(|node| !node.hidden);
 
         self.selected_nodes.retain(visible_node);
         self.selected_edges.retain(|id| {
@@ -148,8 +113,4 @@ impl From<&NodeGraphViewState> for NodeGraphPureViewState {
             group_draw_order: value.group_draw_order.clone(),
         }
     }
-}
-
-fn default_zoom() -> f32 {
-    1.0
 }
