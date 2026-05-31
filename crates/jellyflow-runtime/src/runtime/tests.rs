@@ -1792,6 +1792,35 @@ fn store_replace_view_state_emits_view_changed_event() {
 }
 
 #[test]
+fn store_set_viewport_emits_exact_zoom_changes_below_projection_epsilon() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+
+    let pan = CanvasPoint { x: 10.0, y: 20.0 };
+    store.set_viewport(pan, 1.0);
+
+    let zooms: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+    let zooms2 = zooms.clone();
+    store.subscribe(move |ev| {
+        if let NodeGraphStoreEvent::ViewChanged { changes, .. } = ev {
+            for change in changes {
+                if let crate::runtime::events::ViewChange::Viewport { zoom, .. } = change {
+                    zooms2.borrow_mut().push(*zoom);
+                }
+            }
+        }
+    });
+
+    let zoom = 1.0 + 5.0e-7;
+    store.set_viewport(pan, zoom);
+
+    assert_eq!(zooms.borrow().as_slice(), &[zoom]);
+}
+
+#[test]
 fn store_replace_document_emits_single_document_event_and_clears_history() {
     use std::cell::RefCell;
     use std::rc::Rc;

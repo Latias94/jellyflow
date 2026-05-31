@@ -106,35 +106,23 @@ impl NodeGraphStore {
     /// Replaces the full view-state payload.
     ///
     /// This is the controlled-mode counterpart of `set_viewport`/`set_selection`.
-    pub fn replace_view_state(&mut self, mut view_state: NodeGraphViewState) {
-        view_state.sanitize_for_graph(&self.graph);
-        let before = self.view_state.clone();
-        if view_state_eq(&before, &view_state) {
-            return;
-        }
-
-        self.view_state = view_state;
-        let after = self.view_state.clone();
-
-        let changes = collect_view_projection_changes(&before, &after);
-
-        self.publish_view_changed(&before, &after, &changes);
+    pub fn replace_view_state(&mut self, view_state: NodeGraphViewState) {
+        self.update_view_state_if_changed(
+            |current| *current = view_state,
+            ViewStateSanitizer::SanitizeForGraph,
+            |before, after| !view_state_eq(before, after),
+            collect_view_projection_changes,
+        );
     }
 
     /// Mutates view-state in place and emits derived `ViewChange` events.
     pub fn update_view_state(&mut self, f: impl FnOnce(&mut NodeGraphViewState)) {
-        let before = self.view_state.clone();
-        f(&mut self.view_state);
-        self.view_state.sanitize_for_graph(&self.graph);
-        let after = self.view_state.clone();
-
-        if view_state_eq(&before, &after) {
-            return;
-        }
-
-        let changes = collect_view_projection_changes(&before, &after);
-
-        self.publish_view_changed(&before, &after, &changes);
+        self.update_view_state_if_changed(
+            f,
+            ViewStateSanitizer::SanitizeForGraph,
+            |before, after| !view_state_eq(before, after),
+            collect_view_projection_changes,
+        );
     }
 
     pub fn replace_editor_config(&mut self, editor_config: NodeGraphEditorConfig) {
@@ -169,17 +157,15 @@ impl NodeGraphStore {
         } else {
             1.0
         };
-        let before = self.view_state.clone();
-        if self.view_state.pan == pan && self.view_state.zoom == z {
-            return;
-        }
-
-        self.view_state.pan = pan;
-        self.view_state.zoom = z;
-        let after = self.view_state.clone();
-
-        let changes = [ViewChange::Viewport { pan, zoom: z }];
-        self.publish_view_changed(&before, &after, &changes);
+        self.update_view_state_if_changed(
+            |view_state| {
+                view_state.pan = pan;
+                view_state.zoom = z;
+            },
+            ViewStateSanitizer::Preserve,
+            |before, after| before.pan != after.pan || before.zoom != after.zoom,
+            collect_viewport_change,
+        );
     }
 
     /// Sets selection state and notifies subscribers.
@@ -189,26 +175,48 @@ impl NodeGraphStore {
         edges: Vec<jellyflow_core::core::EdgeId>,
         groups: Vec<jellyflow_core::core::GroupId>,
     ) {
-        let before = self.view_state.clone();
+        self.update_view_state_if_changed(
+            |view_state| {
+                view_state.selected_nodes = nodes;
+                view_state.selected_edges = edges;
+                view_state.selected_groups = groups;
+            },
+            ViewStateSanitizer::SanitizeForGraph,
+            |before, after| {
+                before.selected_nodes != after.selected_nodes
+                    || before.selected_edges != after.selected_edges
+                    || before.selected_groups != after.selected_groups
+            },
+            collect_selection_change,
+        );
+    }
 
-        self.view_state.selected_nodes = nodes;
-        self.view_state.selected_edges = edges;
-        self.view_state.selected_groups = groups;
-        self.view_state.sanitize_for_graph(&self.graph);
+    fn update_view_state_if_changed(
+        &mut self,
+        mutate: impl FnOnce(&mut NodeGraphViewState),
+        sanitizer: ViewStateSanitizer,
+        changed: impl FnOnce(&NodeGraphViewState, &NodeGraphViewState) -> bool,
+        collect_changes: impl FnOnce(&NodeGraphViewState, &NodeGraphViewState) -> Vec<ViewChange>,
+    ) {
+        let before = self.view_state.clone();
+        mutate(&mut self.view_state);
+        sanitizer.apply(&self.graph, &mut self.view_state);
         let after = self.view_state.clone();
 
-        if before.selected_nodes == after.selected_nodes
-            && before.selected_edges == after.selected_edges
-            && before.selected_groups == after.selected_groups
-        {
+        if !changed(&before, &after) {
             return;
         }
 
-        let changes = [ViewChange::Selection {
-            nodes: after.selected_nodes.clone(),
-            edges: after.selected_edges.clone(),
-            groups: after.selected_groups.clone(),
-        }];
+        let changes = collect_changes(&before, &after);
+        self.publish_view_state_change(before, after, changes);
+    }
+
+    fn publish_view_state_change(
+        &mut self,
+        before: NodeGraphViewState,
+        after: NodeGraphViewState,
+        changes: Vec<ViewChange>,
+    ) {
         self.publish_view_changed(&before, &after, &changes);
     }
 
@@ -227,6 +235,21 @@ impl NodeGraphStore {
 
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ViewStateSanitizer {
+    Preserve,
+    SanitizeForGraph,
+}
+
+impl ViewStateSanitizer {
+    fn apply(self, graph: &Graph, view_state: &mut NodeGraphViewState) {
+        match self {
+            Self::Preserve => {}
+            Self::SanitizeForGraph => view_state.sanitize_for_graph(graph),
+        }
     }
 }
 
@@ -262,4 +285,25 @@ fn collect_view_projection_changes(
         });
     }
     changes
+}
+
+fn collect_viewport_change(
+    _before: &NodeGraphViewState,
+    after: &NodeGraphViewState,
+) -> Vec<ViewChange> {
+    vec![ViewChange::Viewport {
+        pan: after.pan,
+        zoom: after.zoom,
+    }]
+}
+
+fn collect_selection_change(
+    _before: &NodeGraphViewState,
+    after: &NodeGraphViewState,
+) -> Vec<ViewChange> {
+    vec![ViewChange::Selection {
+        nodes: after.selected_nodes.clone(),
+        edges: after.selected_edges.clone(),
+        groups: after.selected_groups.clone(),
+    }]
 }
