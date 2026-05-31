@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::types::TypeDesc;
 
 use super::{TypeCompatibility, TypeCompatibilityResult};
@@ -11,7 +13,7 @@ pub struct DefaultTypeCompatibility;
 
 impl TypeCompatibility for DefaultTypeCompatibility {
     fn compatible(&mut self, from: &TypeDesc, to: &TypeDesc) -> TypeCompatibilityResult {
-        use TypeCompatibilityResult::{Compatible, Incompatible};
+        use TypeCompatibilityResult::Compatible;
         use TypeDesc::*;
 
         match (from, to) {
@@ -21,21 +23,11 @@ impl TypeCompatibility for DefaultTypeCompatibility {
             (Unknown, _) => Compatible,
 
             (Never, _) => Compatible,
-            (_, Never) => Incompatible {
-                reason: "cannot assign into never".to_string(),
-            },
+            (_, Never) => incompatible("cannot assign into never"),
 
             (Null, Null) => Compatible,
             (Null, Option { .. }) => Compatible,
-            (Null, Union { types }) => {
-                if types.iter().any(|t| matches!(t, Null)) {
-                    Compatible
-                } else {
-                    Incompatible {
-                        reason: "null is not a member of the union".to_string(),
-                    }
-                }
-            }
+            (Null, Union { types }) => compatible_null_to_union(types),
 
             (Bool, Bool) | (Int, Int) | (Float, Float) | (String, String) | (Bytes, Bytes) => {
                 Compatible
@@ -52,36 +44,13 @@ impl TypeCompatibility for DefaultTypeCompatibility {
                 }
             }
 
-            (Union { types }, other) => {
-                for t in types {
-                    if !self.compatible(t, other).is_compatible() {
-                        return Incompatible {
-                            reason: "union member is incompatible".to_string(),
-                        };
-                    }
-                }
-                Compatible
-            }
-            (other, Union { types }) => {
-                for t in types {
-                    if self.compatible(other, t).is_compatible() {
-                        return Compatible;
-                    }
-                }
-                Incompatible {
-                    reason: "no union member is compatible".to_string(),
-                }
-            }
+            (Union { types }, other) => self.compatible_union_source(types, other),
+            (other, Union { types }) => self.compatible_union_target(other, types),
 
             (List { of: a }, List { of: b }) => self.compatible(a, b),
 
             (Map { key: ak, value: av }, Map { key: bk, value: bv }) => {
-                if !self.compatible(ak, bk).is_compatible() {
-                    return Incompatible {
-                        reason: "map key types are incompatible".to_string(),
-                    };
-                }
-                self.compatible(av, bv)
+                self.compatible_map(ak, av, bk, bv)
             }
 
             (
@@ -93,35 +62,7 @@ impl TypeCompatibility for DefaultTypeCompatibility {
                     fields: b_fields,
                     open: b_open,
                 },
-            ) => {
-                // Conservative rule:
-                // - closed target requires exact field set,
-                // - open target requires at least the target fields.
-                if !*b_open && a_fields.len() != b_fields.len() {
-                    return Incompatible {
-                        reason: "closed object requires exact field set".to_string(),
-                    };
-                }
-                for (name, b_ty) in b_fields {
-                    let Some(a_ty) = a_fields.get(name) else {
-                        return Incompatible {
-                            reason: format!("missing required field: {name}"),
-                        };
-                    };
-                    if !self.compatible(a_ty, b_ty).is_compatible() {
-                        return Incompatible {
-                            reason: format!("field type mismatch: {name}"),
-                        };
-                    }
-                }
-                if !*b_open && *a_open {
-                    // An open source may contain additional unknown fields; keep conservative.
-                    return Incompatible {
-                        reason: "open object is not assignable to closed object".to_string(),
-                    };
-                }
-                Compatible
-            }
+            ) => self.compatible_object(a_fields, *a_open, b_fields, *b_open),
 
             (Var { id: _ }, _) | (_, Var { id: _ }) => Compatible,
 
@@ -134,30 +75,209 @@ impl TypeCompatibility for DefaultTypeCompatibility {
                     key: bk,
                     params: bp,
                 },
-            ) => {
-                if ak != bk {
-                    return Incompatible {
-                        reason: "opaque type keys differ".to_string(),
-                    };
-                }
-                if ap.len() != bp.len() {
-                    return Incompatible {
-                        reason: "opaque type arity differs".to_string(),
-                    };
-                }
-                for (a, b) in ap.iter().zip(bp.iter()) {
-                    if !self.compatible(a, b).is_compatible() {
-                        return Incompatible {
-                            reason: "opaque type parameter mismatch".to_string(),
-                        };
-                    }
-                }
-                Compatible
-            }
+            ) => self.compatible_opaque(ak, ap, bk, bp),
 
-            _ => Incompatible {
-                reason: "types are incompatible".to_string(),
-            },
+            _ => incompatible("types are incompatible"),
         }
+    }
+}
+
+impl DefaultTypeCompatibility {
+    fn compatible_union_source(
+        &mut self,
+        types: &[TypeDesc],
+        other: &TypeDesc,
+    ) -> TypeCompatibilityResult {
+        for ty in types {
+            if !self.compatible(ty, other).is_compatible() {
+                return incompatible("union member is incompatible");
+            }
+        }
+        TypeCompatibilityResult::Compatible
+    }
+
+    fn compatible_union_target(
+        &mut self,
+        other: &TypeDesc,
+        types: &[TypeDesc],
+    ) -> TypeCompatibilityResult {
+        for ty in types {
+            if self.compatible(other, ty).is_compatible() {
+                return TypeCompatibilityResult::Compatible;
+            }
+        }
+        incompatible("no union member is compatible")
+    }
+
+    fn compatible_map(
+        &mut self,
+        source_key: &TypeDesc,
+        source_value: &TypeDesc,
+        target_key: &TypeDesc,
+        target_value: &TypeDesc,
+    ) -> TypeCompatibilityResult {
+        if !self.compatible(source_key, target_key).is_compatible() {
+            return incompatible("map key types are incompatible");
+        }
+        self.compatible(source_value, target_value)
+    }
+
+    fn compatible_object(
+        &mut self,
+        source_fields: &BTreeMap<String, TypeDesc>,
+        source_open: bool,
+        target_fields: &BTreeMap<String, TypeDesc>,
+        target_open: bool,
+    ) -> TypeCompatibilityResult {
+        // Conservative rule:
+        // - closed target requires exact field set,
+        // - open target requires at least the target fields.
+        if !target_open && source_fields.len() != target_fields.len() {
+            return incompatible("closed object requires exact field set");
+        }
+
+        for (name, target_ty) in target_fields {
+            let Some(source_ty) = source_fields.get(name) else {
+                return incompatible(format!("missing required field: {name}"));
+            };
+            if !self.compatible(source_ty, target_ty).is_compatible() {
+                return incompatible(format!("field type mismatch: {name}"));
+            }
+        }
+
+        if !target_open && source_open {
+            // An open source may contain additional unknown fields; keep conservative.
+            return incompatible("open object is not assignable to closed object");
+        }
+
+        TypeCompatibilityResult::Compatible
+    }
+
+    fn compatible_opaque(
+        &mut self,
+        source_key: &str,
+        source_params: &[TypeDesc],
+        target_key: &str,
+        target_params: &[TypeDesc],
+    ) -> TypeCompatibilityResult {
+        if source_key != target_key {
+            return incompatible("opaque type keys differ");
+        }
+        if source_params.len() != target_params.len() {
+            return incompatible("opaque type arity differs");
+        }
+        for (source, target) in source_params.iter().zip(target_params.iter()) {
+            if !self.compatible(source, target).is_compatible() {
+                return incompatible("opaque type parameter mismatch");
+            }
+        }
+        TypeCompatibilityResult::Compatible
+    }
+}
+
+fn compatible_null_to_union(types: &[TypeDesc]) -> TypeCompatibilityResult {
+    if types.iter().any(|ty| matches!(ty, TypeDesc::Null)) {
+        TypeCompatibilityResult::Compatible
+    } else {
+        incompatible("null is not a member of the union")
+    }
+}
+
+fn incompatible(reason: impl Into<String>) -> TypeCompatibilityResult {
+    TypeCompatibilityResult::Incompatible {
+        reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compatibility(from: TypeDesc, to: TypeDesc) -> TypeCompatibilityResult {
+        let mut compat = DefaultTypeCompatibility;
+        compat.compatible(&from, &to)
+    }
+
+    fn assert_compatible(from: TypeDesc, to: TypeDesc) {
+        assert!(compatibility(from, to).is_compatible());
+    }
+
+    fn assert_incompatible(from: TypeDesc, to: TypeDesc, expected_reason: &str) {
+        assert_eq!(
+            compatibility(from, to),
+            TypeCompatibilityResult::Incompatible {
+                reason: expected_reason.to_string(),
+            }
+        );
+    }
+
+    fn object(fields: &[(&str, TypeDesc)], open: bool) -> TypeDesc {
+        TypeDesc::Object {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| ((*name).to_string(), ty.clone()))
+                .collect(),
+            open,
+        }
+    }
+
+    #[test]
+    fn union_target_accepts_any_compatible_member() {
+        assert_compatible(
+            TypeDesc::Int,
+            TypeDesc::Union {
+                types: vec![TypeDesc::String, TypeDesc::Float],
+            },
+        );
+        assert_incompatible(
+            TypeDesc::Bool,
+            TypeDesc::Union {
+                types: vec![TypeDesc::String, TypeDesc::Int],
+            },
+            "no union member is compatible",
+        );
+    }
+
+    #[test]
+    fn object_compatibility_enforces_target_shape() {
+        assert_compatible(
+            object(&[("name", TypeDesc::String), ("age", TypeDesc::Int)], false),
+            object(&[("name", TypeDesc::String)], true),
+        );
+        assert_incompatible(
+            object(&[("name", TypeDesc::String), ("age", TypeDesc::Int)], false),
+            object(&[("name", TypeDesc::String)], false),
+            "closed object requires exact field set",
+        );
+        assert_incompatible(
+            object(&[("name", TypeDesc::String)], true),
+            object(&[("name", TypeDesc::String)], false),
+            "open object is not assignable to closed object",
+        );
+    }
+
+    #[test]
+    fn opaque_compatibility_checks_key_arity_and_params() {
+        assert_compatible(
+            TypeDesc::Opaque {
+                key: "vec".to_string(),
+                params: vec![TypeDesc::Int],
+            },
+            TypeDesc::Opaque {
+                key: "vec".to_string(),
+                params: vec![TypeDesc::Float],
+            },
+        );
+        assert_incompatible(
+            TypeDesc::Opaque {
+                key: "vec".to_string(),
+                params: vec![TypeDesc::String],
+            },
+            TypeDesc::Opaque {
+                key: "vec".to_string(),
+                params: vec![TypeDesc::Float],
+            },
+            "opaque type parameter mismatch",
+        );
     }
 }
