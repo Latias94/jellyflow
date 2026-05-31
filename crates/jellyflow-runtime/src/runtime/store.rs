@@ -16,7 +16,7 @@ mod view;
 use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
-use crate::profile::{ApplyPipelineError, GraphProfile};
+use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::{NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken};
 use crate::runtime::lookups::NodeGraphLookups;
@@ -77,6 +77,20 @@ pub struct NodeGraphStore {
 enum DispatchProfile<'a> {
     StoreProfile,
     External(&'a mut dyn GraphProfile),
+}
+
+impl DispatchProfile<'_> {
+    fn apply_to_graph(
+        &mut self,
+        store: &mut NodeGraphStore,
+        graph: &mut Graph,
+        tx: &GraphTransaction,
+    ) -> Result<GraphTransaction, ApplyPipelineError> {
+        match self {
+            Self::StoreProfile => store.apply_to_graph(graph, tx),
+            Self::External(profile) => apply_transaction_with_profile(graph, &mut **profile, tx),
+        }
+    }
 }
 
 impl std::fmt::Debug for NodeGraphStore {

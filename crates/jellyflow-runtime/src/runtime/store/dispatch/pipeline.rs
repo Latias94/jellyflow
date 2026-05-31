@@ -1,4 +1,4 @@
-use crate::profile::{ApplyPipelineError, apply_transaction_with_profile};
+use crate::profile::ApplyPipelineError;
 use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
@@ -54,12 +54,9 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
         tx: &GraphTransaction,
     ) -> Result<(Graph, GraphTransaction), ApplyPipelineError> {
         let mut scratch = self.store.graph.clone();
-        let committed = match &mut self.dispatch_profile {
-            DispatchProfile::StoreProfile => self.store.apply_to_graph(&mut scratch, tx)?,
-            DispatchProfile::External(profile) => {
-                apply_transaction_with_profile(&mut scratch, &mut **profile, tx)?
-            }
-        };
+        let committed = self
+            .dispatch_profile
+            .apply_to_graph(self.store, &mut scratch, tx)?;
         Ok((scratch, committed))
     }
 

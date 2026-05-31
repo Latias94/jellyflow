@@ -1,4 +1,4 @@
-use crate::profile::{ApplyPipelineError, apply_transaction_with_profile};
+use crate::profile::ApplyPipelineError;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphHistory, GraphTransaction};
 
@@ -76,11 +76,6 @@ impl<'store, 'profile> HistoryReplayPipeline<'store, 'profile> {
         graph: &mut Graph,
         tx: &GraphTransaction,
     ) -> Result<GraphTransaction, ApplyPipelineError> {
-        match &mut self.dispatch_profile {
-            DispatchProfile::StoreProfile => self.store.apply_to_graph(graph, tx),
-            DispatchProfile::External(profile) => {
-                apply_transaction_with_profile(graph, &mut **profile, tx)
-            }
-        }
+        self.dispatch_profile.apply_to_graph(self.store, graph, tx)
     }
 }
