@@ -1,38 +1,17 @@
 use super::super::GraphDiffPlanner;
+use crate::core::{Group, GroupId, NodeId};
 use crate::ops::{GraphMutationPlanner, GraphOp};
 
 impl<'a> GraphDiffPlanner<'a> {
     pub(crate) fn diff_groups(&mut self) {
         let from = self.from;
         let to = self.to;
-        let tx = &mut self.tx;
 
         for (id, group_to) in &to.groups {
             if let Some(group_from) = from.groups.get(id) {
-                if group_from.color != group_to.color {
-                    tx.ops.push(GraphOp::SetGroupColor {
-                        id: *id,
-                        from: group_from.color.clone(),
-                        to: group_to.color.clone(),
-                    });
-                }
-
-                if group_from.rect != group_to.rect {
-                    tx.ops.push(GraphOp::SetGroupRect {
-                        id: *id,
-                        from: group_from.rect,
-                        to: group_to.rect,
-                    });
-                }
-                if group_from.title != group_to.title {
-                    tx.ops.push(GraphOp::SetGroupTitle {
-                        id: *id,
-                        from: group_from.title.clone(),
-                        to: group_to.title.clone(),
-                    });
-                }
+                self.diff_existing_group(*id, group_from, group_to);
             } else {
-                tx.ops.push(GraphOp::AddGroup {
+                self.tx.ops.push(GraphOp::AddGroup {
                     id: *id,
                     group: group_to.clone(),
                 });
@@ -41,23 +20,54 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, group_from) in &from.groups {
             if !to.groups.contains_key(id) {
-                if let Ok(op) = GraphMutationPlanner::new(from).remove_group_op(*id) {
-                    tx.ops.push(op);
-                } else {
-                    let detached: Vec<(crate::core::NodeId, Option<crate::core::GroupId>)> = from
-                        .nodes
-                        .iter()
-                        .filter_map(|(node_id, node)| {
-                            (node.parent == Some(*id)).then_some((*node_id, Some(*id)))
-                        })
-                        .collect();
-                    tx.ops.push(GraphOp::RemoveGroup {
-                        id: *id,
-                        group: group_from.clone(),
-                        detached,
-                    });
-                }
+                self.diff_removed_group(*id, group_from);
             }
+        }
+    }
+
+    fn diff_existing_group(&mut self, id: GroupId, group_from: &Group, group_to: &Group) {
+        if group_from.color != group_to.color {
+            self.tx.ops.push(GraphOp::SetGroupColor {
+                id,
+                from: group_from.color.clone(),
+                to: group_to.color.clone(),
+            });
+        }
+
+        if group_from.rect != group_to.rect {
+            self.tx.ops.push(GraphOp::SetGroupRect {
+                id,
+                from: group_from.rect,
+                to: group_to.rect,
+            });
+        }
+        if group_from.title != group_to.title {
+            self.tx.ops.push(GraphOp::SetGroupTitle {
+                id,
+                from: group_from.title.clone(),
+                to: group_to.title.clone(),
+            });
+        }
+    }
+
+    fn diff_removed_group(&mut self, id: GroupId, group_from: &Group) {
+        let op = GraphMutationPlanner::new(self.from)
+            .remove_group_op(id)
+            .unwrap_or_else(|_| self.fallback_remove_group_op(id, group_from));
+        self.tx.ops.push(op);
+    }
+
+    fn fallback_remove_group_op(&self, id: GroupId, group_from: &Group) -> GraphOp {
+        let detached: Vec<(NodeId, Option<GroupId>)> = self
+            .from
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| (node.parent == Some(id)).then_some((*node_id, Some(id))))
+            .collect();
+        GraphOp::RemoveGroup {
+            id,
+            group: group_from.clone(),
+            detached,
         }
     }
 }
