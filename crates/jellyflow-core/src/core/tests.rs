@@ -213,6 +213,37 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
 }
 
 #[test]
+fn validate_reports_both_missing_edge_endpoints() {
+    let mut graph = Graph::default();
+    let edge_id = EdgeId::new();
+    let from = PortId::new();
+    let to = PortId::new();
+    graph.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from,
+            to,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let report = validate_graph(&graph);
+    let missing_ports = report
+        .errors()
+        .iter()
+        .filter_map(|err| match err {
+            GraphValidationError::EdgeMissingPort { edge, port } if *edge == edge_id => Some(*port),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(missing_ports, vec![from, to]);
+}
+
+#[test]
 fn import_closure_is_deterministic_and_postordered() {
     let a = GraphId::from_u128(1);
     let b = GraphId::from_u128(2);
