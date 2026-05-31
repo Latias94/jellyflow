@@ -116,26 +116,23 @@ pub(in crate::rules::connection) fn disconnect_for_capacity(
     connection: ConnectionCapacity,
     skip_edge: Option<EdgeId>,
 ) -> Vec<GraphOp> {
-    let mut ops: Vec<GraphOp> = Vec::new();
-
-    disconnect_for_endpoint_capacity(
+    let mut plan = CapacityDisconnectPlan::new();
+    plan.extend_endpoint(
         graph,
         connection.edge_kind,
         CapacityEndpoint::Source(connection.from_id),
         connection.from_capacity,
         skip_edge,
-        &mut ops,
     );
-    disconnect_for_endpoint_capacity(
+    plan.extend_endpoint(
         graph,
         connection.edge_kind,
         CapacityEndpoint::Target(connection.to_id),
         connection.to_capacity,
         skip_edge,
-        &mut ops,
     );
 
-    ops
+    plan.into_ops()
 }
 
 #[derive(Clone, Copy)]
@@ -144,25 +141,43 @@ enum CapacityEndpoint {
     Target(PortId),
 }
 
-fn disconnect_for_endpoint_capacity(
-    graph: &Graph,
-    edge_kind: EdgeKind,
-    endpoint: CapacityEndpoint,
-    capacity: PortCapacity,
-    skip_edge: Option<EdgeId>,
-    ops: &mut Vec<GraphOp>,
-) {
-    if capacity != PortCapacity::Single {
-        return;
+struct CapacityDisconnectPlan {
+    ops: Vec<GraphOp>,
+}
+
+impl CapacityDisconnectPlan {
+    fn new() -> Self {
+        Self { ops: Vec::new() }
     }
 
-    for (edge_id, edge) in graph.edges.iter() {
-        if Some(*edge_id) == skip_edge {
-            continue;
+    fn extend_endpoint(
+        &mut self,
+        graph: &Graph,
+        edge_kind: EdgeKind,
+        endpoint: CapacityEndpoint,
+        capacity: PortCapacity,
+        skip_edge: Option<EdgeId>,
+    ) {
+        if capacity != PortCapacity::Single {
+            return;
         }
-        if endpoint.matches(edge_kind, edge) {
-            ops.push(remove_edge_op(graph, *edge_id));
+
+        for (edge_id, edge) in graph.edges.iter() {
+            if Some(*edge_id) == skip_edge {
+                continue;
+            }
+            if endpoint.matches(edge_kind, edge) {
+                self.push_remove_edge(graph, *edge_id);
+            }
         }
+    }
+
+    fn push_remove_edge(&mut self, graph: &Graph, edge_id: EdgeId) {
+        self.ops.push(remove_edge_op(graph, edge_id));
+    }
+
+    fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
     }
 }
 
