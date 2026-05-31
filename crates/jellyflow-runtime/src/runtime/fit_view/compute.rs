@@ -4,6 +4,8 @@ use super::geometry::{compute_fit_view_target_top_left, compute_target_for_canva
 use super::projection::project_nodes_to_top_left;
 use super::{FitViewComputeOptions, FitViewNodeInfo};
 
+const FIT_VIEW_SOLVE_ITERATIONS: usize = 4;
+
 /// Computes the viewport pan/zoom that frames the given nodes in view.
 ///
 /// The returned pan/zoom matches the UI contract: `pan` is in canvas space (added in the render
@@ -20,7 +22,7 @@ pub fn compute_fit_view_target(
     let mut zoom_guess = options.max_zoom;
     let mut best: Option<(CanvasPoint, f32)> = None;
 
-    for _ in 0..4 {
+    for _ in 0..FIT_VIEW_SOLVE_ITERATIONS {
         if !zoom_guess.is_finite() || zoom_guess <= 0.0 {
             zoom_guess = 1.0;
         }
