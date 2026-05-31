@@ -68,13 +68,21 @@ impl ConnectPlan {
 
     /// Creates a rejected plan with a single error diagnostic.
     pub fn reject(message: impl Into<String>) -> Self {
+        Self::reject_with_diagnostic(Diagnostic::error(
+            "connect.rejected",
+            DiagnosticTarget::Graph,
+            message,
+        ))
+    }
+
+    pub fn reject_with_diagnostic(diagnostic: Diagnostic) -> Self {
+        Self::reject_with_diagnostics(vec![diagnostic])
+    }
+
+    pub fn reject_with_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             decision: ConnectDecision::Reject,
-            diagnostics: vec![Diagnostic::error(
-                "connect.rejected",
-                DiagnosticTarget::Graph,
-                message,
-            )],
+            diagnostics,
             ops: Vec::new(),
         }
     }
@@ -119,13 +127,21 @@ impl DeletePlan {
 
     /// Creates a rejected plan with a single graph-level error diagnostic.
     pub fn reject(message: impl Into<String>) -> Self {
+        Self::reject_with_diagnostic(Diagnostic::error(
+            "delete.rejected",
+            DiagnosticTarget::Graph,
+            message,
+        ))
+    }
+
+    pub fn reject_with_diagnostic(diagnostic: Diagnostic) -> Self {
+        Self::reject_with_diagnostics(vec![diagnostic])
+    }
+
+    pub fn reject_with_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
         Self {
             decision: DeleteDecision::Reject,
-            diagnostics: vec![Diagnostic::error(
-                "delete.rejected",
-                DiagnosticTarget::Graph,
-                message,
-            )],
+            diagnostics,
             ops: Vec::new(),
         }
     }

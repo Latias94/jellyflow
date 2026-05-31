@@ -81,16 +81,14 @@ pub fn plan_connect_typed_with_mode_and_policy(
 
     match compat.compatible(&from_ty, &to_ty) {
         TypeCompatibilityResult::Compatible => base,
-        TypeCompatibilityResult::Incompatible { reason } => ConnectPlan {
-            decision: ConnectDecision::Reject,
-            diagnostics: vec![Diagnostic::error(
+        TypeCompatibilityResult::Incompatible { reason } => {
+            ConnectPlan::reject_with_diagnostic(Diagnostic::error(
                 "connect.type_mismatch",
                 DiagnosticTarget::Port {
                     id: endpoints.to_id,
                 },
                 format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
-            )],
-            ops: Vec::new(),
-        },
+            ))
+        }
     }
 }

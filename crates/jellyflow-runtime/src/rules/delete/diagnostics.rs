@@ -1,11 +1,7 @@
-use crate::rules::{DeleteDecision, DeletePlan, Diagnostic, DiagnosticTarget};
+use crate::rules::{DeletePlan, Diagnostic, DiagnosticTarget};
 
 pub(super) fn rejected(diagnostics: Vec<Diagnostic>) -> DeletePlan {
-    DeletePlan {
-        decision: DeleteDecision::Reject,
-        diagnostics,
-        ops: Vec::new(),
-    }
+    DeletePlan::reject_with_diagnostics(diagnostics)
 }
 
 pub(super) fn delete_diagnostic(
