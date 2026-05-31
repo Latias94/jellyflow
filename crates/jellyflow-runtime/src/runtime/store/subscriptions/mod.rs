@@ -42,7 +42,7 @@ impl NodeGraphStore {
         mut on_change: impl FnMut(&T) + 'static,
     ) -> SubscriptionToken
     where
-        T: Clone + PartialEq + 'static,
+        T: PartialEq + 'static,
     {
         self.subscribe_selector_diff(selector, move |_prev, next| on_change(next))
     }
@@ -54,7 +54,7 @@ impl NodeGraphStore {
         on_change: impl FnMut(&T, &T) + 'static,
     ) -> SubscriptionToken
     where
-        T: Clone + PartialEq + 'static,
+        T: PartialEq + 'static,
     {
         let token = self.allocate_subscription_token();
         let initial = selector(self.snapshot());
