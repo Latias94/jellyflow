@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
 use super::{FitViewComputeOptions, FitViewNodeInfo};
 
@@ -72,10 +72,6 @@ fn canvas_rect_is_valid(rect: CanvasRect) -> bool {
     rect.origin.is_finite() && rect.size.is_positive_finite()
 }
 
-fn size_is_valid(width: f32, height: f32) -> bool {
-    CanvasSize { width, height }.is_positive_finite()
-}
-
 struct NodePositionSpread {
     min_x: f32,
     min_y: f32,
@@ -106,8 +102,8 @@ impl NodePositionSpread {
     }
 
     fn include(&mut self, node: &FitViewNodeInfo) {
-        let (width_px, height_px) = node.size_px;
-        if !size_is_valid(width_px, height_px) {
+        let size_px = node.pixel_size();
+        if !size_px.is_positive_finite() {
             return;
         }
 
@@ -115,8 +111,8 @@ impl NodePositionSpread {
         self.min_y = self.min_y.min(node.pos.y);
         self.max_x = self.max_x.max(node.pos.x);
         self.max_y = self.max_y.max(node.pos.y);
-        self.max_w_px = self.max_w_px.max(width_px);
-        self.max_h_px = self.max_h_px.max(height_px);
+        self.max_w_px = self.max_w_px.max(size_px.width);
+        self.max_h_px = self.max_h_px.max(size_px.height);
     }
 
     fn fit_zoom(&self, options: FitViewComputeOptions, margin_x: f32, margin_y: f32) -> f32 {
@@ -173,17 +169,14 @@ impl CanvasBounds {
     }
 
     fn include(&mut self, node: &FitViewNodeInfo, zoom: f32) {
-        let (width_px, height_px) = node.size_px;
-        if !size_is_valid(width_px, height_px) {
+        let Some(size_canvas) = node.canvas_size_at_zoom(zoom) else {
             return;
-        }
+        };
 
-        let width = width_px / zoom;
-        let height = height_px / zoom;
         self.min_x = self.min_x.min(node.pos.x);
         self.min_y = self.min_y.min(node.pos.y);
-        self.max_x = self.max_x.max(node.pos.x + width);
-        self.max_y = self.max_y.max(node.pos.y + height);
+        self.max_x = self.max_x.max(node.pos.x + size_canvas.width);
+        self.max_y = self.max_y.max(node.pos.y + size_canvas.height);
     }
 
     fn center(&self) -> CanvasPoint {
