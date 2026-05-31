@@ -62,8 +62,8 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
 
     // Deterministic for a given seed and input.
     assert_eq!(
-        serde_json::to_string(&tx1.ops).unwrap(),
-        serde_json::to_string(&tx2.ops).unwrap()
+        serde_json::to_string(tx1.ops()).unwrap(),
+        serde_json::to_string(tx2.ops()).unwrap()
     );
 
     // Apply into a new graph succeeds and preserves counts.
