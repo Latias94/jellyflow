@@ -197,4 +197,24 @@ impl SelectionChange {
             groups,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.edges.is_empty() && self.groups.is_empty()
+    }
+
+    pub fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+
+    pub fn edges(&self) -> &[EdgeId] {
+        &self.edges
+    }
+
+    pub fn groups(&self) -> &[GroupId] {
+        &self.groups
+    }
+
+    pub fn into_parts(self) -> (Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>) {
+        (self.nodes, self.edges, self.groups)
+    }
 }

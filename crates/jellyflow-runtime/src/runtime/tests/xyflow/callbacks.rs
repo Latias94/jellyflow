@@ -214,6 +214,25 @@ fn delete_change_facade_consumes_parts() {
 }
 
 #[test]
+fn selection_change_facade_exposes_and_consumes_parts() {
+    let node = NodeId::new();
+    let edge = EdgeId::new();
+    let group = GroupId::new();
+    let change = SelectionChange::new(vec![node], vec![edge], vec![group]);
+
+    assert!(!change.is_empty());
+    assert_eq!(change.nodes(), &[node]);
+    assert_eq!(change.edges(), &[edge]);
+    assert_eq!(change.groups(), &[group]);
+
+    let (nodes, edges, groups) = change.into_parts();
+
+    assert_eq!(nodes, vec![node]);
+    assert_eq!(edges, vec![edge]);
+    assert_eq!(groups, vec![group]);
+}
+
+#[test]
 fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
     use std::cell::RefCell;
     use std::rc::Rc;
