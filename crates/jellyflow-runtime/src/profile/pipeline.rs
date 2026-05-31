@@ -53,7 +53,7 @@ fn apply_original_transaction(
     committed: &mut GraphTransaction,
 ) -> Result<(), ApplyPipelineError> {
     tx.apply_to(graph)?;
-    committed.ops.extend(tx.ops.clone());
+    committed.extend(tx.ops.iter().cloned());
     Ok(())
 }
 
@@ -71,7 +71,7 @@ fn concretize_to_fixed_point(
         }
 
         apply_derived_ops(graph, &derived_ops)?;
-        committed.ops.extend(derived_ops);
+        committed.extend(derived_ops);
     }
 
     Err(ApplyPipelineError::ConcretizeNonConvergent { bound })

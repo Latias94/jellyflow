@@ -9,7 +9,7 @@ use crate::ops::{GraphOp, GraphTransaction};
 pub fn invert_transaction(tx: &GraphTransaction) -> GraphTransaction {
     let mut out = GraphTransaction::new();
     for op in tx.ops.iter().rev() {
-        out.ops.extend(invert_op(op));
+        out.extend(invert_op(op));
     }
     out
 }

@@ -104,7 +104,7 @@ impl<'a> FragmentPastePlanner<'a> {
         let mut batch = GraphMutationBatchPlanner::new(&planning_graph);
         self.stage_nodes(&mut batch);
         self.stage_edges(&mut batch);
-        self.tx.ops.extend(batch.into_ops());
+        self.tx.extend(batch.into_ops());
     }
 
     fn planning_graph(&self) -> Graph {

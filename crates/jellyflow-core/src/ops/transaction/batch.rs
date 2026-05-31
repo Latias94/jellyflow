@@ -37,6 +37,11 @@ impl GraphTransaction {
         self.ops.push(op);
     }
 
+    /// Extends this transaction with ops in order.
+    pub fn extend(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
+        self.ops.extend(ops);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
