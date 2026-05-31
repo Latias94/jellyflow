@@ -193,3 +193,27 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     assert!(!target_only.reconnect_source);
     assert!(target_only.reconnect_target);
 }
+
+#[test]
+fn interaction_state_exposes_policy_facades() {
+    let node_id = NodeId::new();
+    let from = PortId::new();
+    let to = PortId::new();
+    let state = NodeGraphInteractionState::default();
+    let n = node();
+    let p = port(node_id);
+    let e = edge(from, to);
+
+    assert_eq!(
+        state.node_interaction_policy(&n),
+        resolve_node_interaction_policy(&n, &state)
+    );
+    assert_eq!(
+        state.port_interaction_policy(&n, &p),
+        resolve_port_interaction_policy(&n, &p, &state)
+    );
+    assert_eq!(
+        state.edge_interaction_policy(&e),
+        resolve_edge_interaction_policy(&e, &state)
+    );
+}

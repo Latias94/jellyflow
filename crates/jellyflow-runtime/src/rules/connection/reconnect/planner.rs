@@ -1,6 +1,5 @@
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, EdgeEndpoint};
-use crate::runtime::policy::resolve_edge_interaction_policy;
 use jellyflow_core::core::{Edge, EdgeId, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::EdgeEndpoints;
@@ -99,7 +98,7 @@ fn reconnect_endpoint_policy_rejection(
     endpoint: EdgeEndpoint,
     state: &NodeGraphInteractionState,
 ) -> Option<ConnectPlan> {
-    let edge_policy = resolve_edge_interaction_policy(edge, state);
+    let edge_policy = state.edge_interaction_policy(edge);
     match endpoint {
         EdgeEndpoint::From if !edge_policy.reconnect_source => Some(ConnectPlan::reject(
             "edge source endpoint is not reconnectable",

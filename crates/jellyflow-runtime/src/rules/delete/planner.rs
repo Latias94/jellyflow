@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{DeletePlan, Diagnostic, DiagnosticTarget};
-use crate::runtime::policy::{resolve_edge_interaction_policy, resolve_node_interaction_policy};
 use jellyflow_core::core::{EdgeId, Graph, NodeId};
 use jellyflow_core::ops::{GraphMutationPlanner, GraphOp, GraphTransaction};
 
@@ -57,7 +56,7 @@ impl<'a> DeletePlanner<'a> {
                 continue;
             };
 
-            if !resolve_node_interaction_policy(node, self.state).deletable {
+            if !self.state.node_interaction_policy(node).deletable {
                 diagnostics.push(delete_diagnostic(
                     "delete.node_not_deletable",
                     DiagnosticTarget::Node { id: *node_id },
@@ -87,7 +86,7 @@ impl<'a> DeletePlanner<'a> {
                 continue;
             };
 
-            if !resolve_edge_interaction_policy(edge, self.state).deletable {
+            if !self.state.edge_interaction_policy(edge).deletable {
                 diagnostics.push(delete_diagnostic(
                     "delete.edge_not_deletable",
                     DiagnosticTarget::Edge { id: *edge_id },

@@ -1,6 +1,6 @@
 use crate::io::NodeGraphInteractionState;
 use crate::rules::ConnectPlan;
-use crate::runtime::policy::{NodeGraphPortInteractionPolicy, resolve_port_interaction_policy};
+use crate::runtime::policy::NodeGraphPortInteractionPolicy;
 use jellyflow_core::core::{Graph, PortId};
 
 use super::rejections::{reject_missing_port, reject_missing_port_owner_node};
@@ -41,5 +41,5 @@ fn port_policy_or_reject(
     let Some(node) = graph.nodes.get(&port.node) else {
         return Err(reject_missing_port_owner_node(port.node));
     };
-    Ok(resolve_port_interaction_policy(node, port, state))
+    Ok(state.port_interaction_policy(node, port))
 }
