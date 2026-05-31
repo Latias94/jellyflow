@@ -1,5 +1,6 @@
 mod diagnostics;
 mod planner;
+mod selection;
 
 use crate::io::NodeGraphInteractionState;
 use jellyflow_core::core::{EdgeId, Graph, NodeId};

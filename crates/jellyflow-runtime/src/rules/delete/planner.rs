@@ -7,6 +7,7 @@ use jellyflow_core::core::{EdgeId, Graph, NodeId};
 use jellyflow_core::ops::{GraphMutationPlanner, GraphOp, GraphTransaction};
 
 use super::diagnostics::{delete_diagnostic, planning_diagnostic, rejected};
+use super::selection::DeleteSelection;
 
 pub(super) struct DeletePlanner<'a> {
     graph: &'a Graph,
@@ -32,7 +33,7 @@ impl<'a> DeletePlanner<'a> {
         self.validate_nodes(&selection.nodes, &mut diagnostics);
         self.validate_direct_edges(
             &selection.edges,
-            &selection.cascaded_edges,
+            selection.cascaded_edges(),
             &mut diagnostics,
         );
         if !diagnostics.is_empty() {
@@ -125,54 +126,6 @@ impl<'a> DeletePlanner<'a> {
         }
 
         Ok(ops)
-    }
-}
-
-struct DeleteSelection {
-    nodes: BTreeSet<NodeId>,
-    edges: BTreeSet<EdgeId>,
-    cascaded_edges: BTreeSet<EdgeId>,
-}
-
-impl DeleteSelection {
-    fn from_requested(
-        graph: &Graph,
-        nodes: impl IntoIterator<Item = NodeId>,
-        edges: impl IntoIterator<Item = EdgeId>,
-    ) -> Self {
-        let nodes = nodes.into_iter().collect::<BTreeSet<_>>();
-        let edges = edges.into_iter().collect::<BTreeSet<_>>();
-        let cascaded_edges = Self::cascaded_edges_for_nodes(graph, &nodes);
-
-        Self {
-            nodes,
-            edges,
-            cascaded_edges,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.nodes.is_empty() && self.edges.is_empty()
-    }
-
-    fn edge_is_cascaded(&self, edge_id: &EdgeId) -> bool {
-        self.cascaded_edges.contains(edge_id)
-    }
-
-    fn cascaded_edges_for_nodes(graph: &Graph, nodes: &BTreeSet<NodeId>) -> BTreeSet<EdgeId> {
-        let port_ids = graph
-            .ports
-            .iter()
-            .filter_map(|(port_id, port)| nodes.contains(&port.node).then_some(*port_id))
-            .collect::<BTreeSet<_>>();
-
-        graph
-            .edges
-            .iter()
-            .filter_map(|(edge_id, edge)| {
-                (port_ids.contains(&edge.from) || port_ids.contains(&edge.to)).then_some(*edge_id)
-            })
-            .collect()
     }
 }
 
