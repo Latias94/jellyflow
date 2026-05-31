@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeRegistry, NodeSchema};
 use jellyflow_core::core::{Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_core::ops::GraphOp;
 
 struct DummyMigrator;
 
@@ -20,6 +21,19 @@ impl NodeKindMigrator for DummyMigrator {
             "prev": data,
             "migrated": true,
         }))
+    }
+}
+
+struct IdentityMigrator;
+
+impl NodeKindMigrator for IdentityMigrator {
+    fn migrate(
+        &self,
+        _from_version: u32,
+        _to_version: u32,
+        data: &serde_json::Value,
+    ) -> Result<serde_json::Value, NodeKindMigrateError> {
+        Ok(data.clone())
     }
 }
 
@@ -161,4 +175,59 @@ fn migrate_nodes_reports_missing_migrator_and_emits_no_tx() {
     let plan = registry.plan_migrate_nodes(&graph);
     assert_eq!(plan.report().missing_migrator().len(), 1);
     assert!(plan.transaction().is_empty());
+}
+
+#[test]
+fn migrate_nodes_skips_noop_data_updates() {
+    let mut registry = NodeRegistry::new();
+    registry.register(NodeSchema {
+        kind: NodeKindKey::new("demo.add"),
+        latest_kind_version: 2,
+        kind_aliases: Vec::new(),
+        title: "Add".into(),
+        category: Vec::new(),
+        keywords: Vec::new(),
+        ports: Vec::new(),
+        default_data: serde_json::Value::Null,
+    });
+    registry.register_migrator(NodeKindKey::new("demo.add"), Arc::new(IdentityMigrator));
+
+    let id = NodeId::new();
+    let mut graph = Graph::new(GraphId::new());
+    graph.nodes.insert(
+        id,
+        Node {
+            kind: NodeKindKey::new("demo.add"),
+            kind_version: 1,
+            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: json!({"x": 1}),
+        },
+    );
+
+    let plan = registry.plan_migrate_nodes(&graph);
+    assert_eq!(plan.report().upgraded().len(), 1);
+    assert!(
+        plan.transaction()
+            .ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetNodeKindVersion { id: op_id, .. } if *op_id == id))
+    );
+    assert!(
+        !plan
+            .transaction()
+            .ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetNodeData { id: op_id, .. } if *op_id == id))
+    );
 }

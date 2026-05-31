@@ -58,6 +58,10 @@ impl NodeKindTxWriter {
     }
 
     fn update_node_data(&mut self, id: NodeId, node: &Node, new_data: Value) {
+        if node.data == new_data {
+            return;
+        }
+
         self.tx.push(GraphOp::SetNodeData {
             id,
             from: node.data.clone(),
