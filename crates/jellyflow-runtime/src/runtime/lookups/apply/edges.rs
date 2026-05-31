@@ -5,18 +5,13 @@ use jellyflow_core::ops::EdgeEndpoints;
 
 impl NodeGraphLookups {
     pub(super) fn apply_add_edge(&mut self, graph: &Graph, id: EdgeId, edge: &Edge) -> bool {
-        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+        self.insert_edge_lookup_from_parts(
             graph,
             id,
             edge.kind,
             EdgeEndpoints::from_edge(edge),
             edge.reconnectable,
-        ) else {
-            return false;
-        };
-        self.edge_lookup.insert(id, entry);
-        self.add_edge_connection(conn);
-        true
+        )
     }
 
     pub(super) fn apply_remove_edge(&mut self, id: EdgeId) -> bool {
@@ -88,18 +83,13 @@ impl NodeGraphLookups {
         let Some(edge) = graph.edges.get(&id) else {
             return false;
         };
-        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+        self.insert_edge_lookup_from_parts(
             graph,
             id,
             kind,
             EdgeEndpoints::from_edge(edge),
             reconnectable,
-        ) else {
-            return false;
-        };
-        self.edge_lookup.insert(id, entry);
-        self.add_edge_connection(conn);
-        true
+        )
     }
 
     pub(super) fn apply_set_edge_endpoints(
@@ -115,13 +105,26 @@ impl NodeGraphLookups {
             self.slow_remove_edge_from_connection_lookup(id);
         }
 
-        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+        self.insert_edge_lookup_from_parts(
             graph,
             id,
             self.edge_kind_for_endpoint_update(graph, id),
             to,
             self.edge_reconnectable_for_endpoint_update(graph, id),
-        ) else {
+        )
+    }
+
+    fn insert_edge_lookup_from_parts(
+        &mut self,
+        graph: &Graph,
+        id: EdgeId,
+        kind: EdgeKind,
+        endpoints: EdgeEndpoints,
+        reconnectable: Option<EdgeReconnectable>,
+    ) -> bool {
+        let Some((entry, conn)) =
+            Self::edge_lookup_entry_from_graph(graph, id, kind, endpoints, reconnectable)
+        else {
             return false;
         };
         self.edge_lookup.insert(id, entry);
