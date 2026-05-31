@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::core::{Graph, Node, NodeId, Port, PortId};
+use crate::core::{Edge, EdgeId, Graph, Node, NodeId, Port, PortId};
 use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
@@ -55,21 +55,13 @@ impl GraphMutationPlanner<'_> {
     }
 
     pub fn remove_node_op(&self, id: NodeId) -> Result<GraphOp, GraphMutationError> {
-        let node = self
-            .graph
-            .nodes
-            .get(&id)
-            .cloned()
-            .ok_or(GraphMutationError::MissingNode(id))?;
-
-        let ports = ports_for_node(self.graph, id);
-        let port_ids: BTreeSet<PortId> = ports.iter().map(|(port_id, _)| *port_id).collect();
+        let snapshot = NodeRemovalSnapshot::capture(self.graph, id)?;
 
         Ok(GraphOp::RemoveNode {
             id,
-            node,
-            ports,
-            edges: incident_edges_for_ports(self.graph, &port_ids),
+            node: snapshot.node,
+            ports: snapshot.ports,
+            edges: snapshot.edges,
         })
     }
 
@@ -88,6 +80,12 @@ impl GraphMutationPlanner<'_> {
 struct NodePortsForInsert {
     ports: Vec<(PortId, Port)>,
     order: Vec<PortId>,
+}
+
+struct NodeRemovalSnapshot {
+    node: Node,
+    ports: Vec<(PortId, Port)>,
+    edges: Vec<(EdgeId, Edge)>,
 }
 
 impl NodePortsForInsert {
@@ -125,5 +123,25 @@ impl NodePortsForInsert {
             ports: collected,
             order,
         })
+    }
+}
+
+impl NodeRemovalSnapshot {
+    fn capture(graph: &Graph, node_id: NodeId) -> Result<Self, GraphMutationError> {
+        let node = graph
+            .nodes
+            .get(&node_id)
+            .cloned()
+            .ok_or(GraphMutationError::MissingNode(node_id))?;
+
+        let ports = ports_for_node(graph, node_id);
+        let port_ids = Self::port_ids(&ports);
+        let edges = incident_edges_for_ports(graph, &port_ids);
+
+        Ok(Self { node, ports, edges })
+    }
+
+    fn port_ids(ports: &[(PortId, Port)]) -> BTreeSet<PortId> {
+        ports.iter().map(|(port_id, _)| *port_id).collect()
     }
 }
