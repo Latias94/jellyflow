@@ -1,4 +1,6 @@
-use super::*;
+use super::make_graph;
+
+use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 
 #[test]
 fn lookups_rebuild_populates_connection_lookup() {
