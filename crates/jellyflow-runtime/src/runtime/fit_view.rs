@@ -52,6 +52,32 @@ mod tests {
     }
 
     #[test]
+    fn compute_fit_view_target_handles_center_node_origin() {
+        let nodes = [FitViewNodeInfo {
+            pos: CanvasPoint { x: 100.0, y: 50.0 },
+            size_px: (200.0, 100.0),
+        }];
+
+        let (pan, zoom) = compute_fit_view_target(
+            &nodes,
+            FitViewComputeOptions {
+                viewport_width_px: 800.0,
+                viewport_height_px: 600.0,
+                node_origin: (0.5, 0.5),
+                padding: 0.0,
+                margin_px_fallback: 0.0,
+                min_zoom: 0.1,
+                max_zoom: 4.0,
+            },
+        )
+        .expect("target");
+
+        assert!((zoom - 4.0).abs() <= 1.0e-6);
+        assert!((pan.x - 0.0).abs() <= 1.0e-6);
+        assert!((pan.y - 25.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
     fn compute_fit_view_target_for_canvas_rect_returns_valid_viewport() {
         let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
             CanvasRect {
