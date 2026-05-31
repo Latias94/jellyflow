@@ -1,4 +1,4 @@
-use crate::rules::{DeleteDecision, DeletePlan, Diagnostic, DiagnosticSeverity, DiagnosticTarget};
+use crate::rules::{DeleteDecision, DeletePlan, Diagnostic, DiagnosticTarget};
 
 pub(super) fn rejected(diagnostics: Vec<Diagnostic>) -> DeletePlan {
     DeletePlan {
@@ -13,13 +13,7 @@ pub(super) fn delete_diagnostic(
     target: DiagnosticTarget,
     message: impl Into<String>,
 ) -> Diagnostic {
-    Diagnostic {
-        key: key.into(),
-        severity: DiagnosticSeverity::Error,
-        target,
-        message: message.into(),
-        fixes: Vec::new(),
-    }
+    Diagnostic::error(key, target, message)
 }
 
 pub(super) fn planning_diagnostic(message: impl Into<String>) -> Diagnostic {

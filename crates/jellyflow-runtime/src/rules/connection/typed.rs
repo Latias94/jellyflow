@@ -1,7 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use crate::rules::{
-    ConnectDecision, ConnectPlan, Diagnostic, DiagnosticSeverity, DiagnosticTarget,
-};
+use crate::rules::{ConnectDecision, ConnectPlan, Diagnostic, DiagnosticTarget};
 use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
@@ -85,15 +83,13 @@ pub fn plan_connect_typed_with_mode_and_policy(
         TypeCompatibilityResult::Compatible => base,
         TypeCompatibilityResult::Incompatible { reason } => ConnectPlan {
             decision: ConnectDecision::Reject,
-            diagnostics: vec![Diagnostic {
-                key: "connect.type_mismatch".to_string(),
-                severity: DiagnosticSeverity::Error,
-                target: DiagnosticTarget::Port {
+            diagnostics: vec![Diagnostic::error(
+                "connect.type_mismatch",
+                DiagnosticTarget::Port {
                     id: endpoints.to_id,
                 },
-                message: format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
-                fixes: Vec::new(),
-            }],
+                format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
+            )],
             ops: Vec::new(),
         },
     }

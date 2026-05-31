@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use jellyflow_core::ops::GraphOp;
 
-use super::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
+use super::{Diagnostic, DiagnosticTarget};
 
 /// Connection decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,13 +70,11 @@ impl ConnectPlan {
     pub fn reject(message: impl Into<String>) -> Self {
         Self {
             decision: ConnectDecision::Reject,
-            diagnostics: vec![Diagnostic {
-                key: "connect.rejected".to_string(),
-                severity: DiagnosticSeverity::Error,
-                target: DiagnosticTarget::Graph,
-                message: message.into(),
-                fixes: Vec::new(),
-            }],
+            diagnostics: vec![Diagnostic::error(
+                "connect.rejected",
+                DiagnosticTarget::Graph,
+                message,
+            )],
             ops: Vec::new(),
         }
     }
@@ -123,13 +121,11 @@ impl DeletePlan {
     pub fn reject(message: impl Into<String>) -> Self {
         Self {
             decision: DeleteDecision::Reject,
-            diagnostics: vec![Diagnostic {
-                key: "delete.rejected".to_string(),
-                severity: DiagnosticSeverity::Error,
-                target: DiagnosticTarget::Graph,
-                message: message.into(),
-                fixes: Vec::new(),
-            }],
+            diagnostics: vec![Diagnostic::error(
+                "delete.rejected",
+                DiagnosticTarget::Graph,
+                message,
+            )],
             ops: Vec::new(),
         }
     }

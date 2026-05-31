@@ -1,5 +1,5 @@
 use crate::profile::ApplyPipelineError;
-use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
+use crate::rules::{Diagnostic, DiagnosticTarget};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
@@ -81,13 +81,7 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
     fn reject_tx(key: String, message: String) -> ApplyPipelineError {
         ApplyPipelineError::Rejected {
             message: message.clone(),
-            diagnostics: vec![Diagnostic {
-                key,
-                severity: DiagnosticSeverity::Error,
-                target: DiagnosticTarget::Graph,
-                message,
-                fixes: Vec::new(),
-            }],
+            diagnostics: vec![Diagnostic::error(key, DiagnosticTarget::Graph, message)],
         }
     }
 }

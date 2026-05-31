@@ -46,3 +46,19 @@ pub struct Diagnostic {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<GraphOp>,
 }
+
+impl Diagnostic {
+    pub fn error(
+        key: impl Into<String>,
+        target: DiagnosticTarget,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            severity: DiagnosticSeverity::Error,
+            target,
+            message: message.into(),
+            fixes: Vec::new(),
+        }
+    }
+}
