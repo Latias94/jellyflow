@@ -5,8 +5,6 @@ use serde_json::Value;
 use super::NodeRegistry;
 use crate::schema::migration::{
     CanonicalizeKindsPlan, MigrateNodesPlan, MigrateNodesReport, NodeKindRewrite,
-    NodeMigrationErrorEntry, NodeMigrationMissingMigrator, NodeMigrationMissingSchema,
-    NodeMigrationNewerThanSchema, NodeMigrationUpgraded,
 };
 
 impl NodeRegistry {
@@ -79,10 +77,7 @@ impl<'a> MigrateNodesPlanner<'a> {
     fn plan_node(&mut self, id: NodeId, node: &Node) {
         let canonical = self.registry.resolve_kind(&node.kind).clone();
         let Some(schema) = self.registry.get(&canonical) else {
-            self.report.missing_schema.push(NodeMigrationMissingSchema {
-                node: id,
-                kind: node.kind.clone(),
-            });
+            self.report.push_missing_schema(id, node.kind.clone());
             return;
         };
 
@@ -93,26 +88,22 @@ impl<'a> MigrateNodesPlanner<'a> {
             return;
         }
         if node.kind_version > latest_kind_version {
-            self.report
-                .newer_than_schema
-                .push(NodeMigrationNewerThanSchema {
-                    node: id,
-                    kind: canonical,
-                    node_kind_version: node.kind_version,
-                    schema_latest_kind_version: latest_kind_version,
-                });
+            self.report.push_newer_than_schema(
+                id,
+                canonical,
+                node.kind_version,
+                latest_kind_version,
+            );
             return;
         }
 
         let Some(migrator) = self.registry.migrators.get(&canonical) else {
-            self.report
-                .missing_migrator
-                .push(NodeMigrationMissingMigrator {
-                    node: id,
-                    kind: canonical,
-                    from: node.kind_version,
-                    to: latest_kind_version,
-                });
+            self.report.push_missing_migrator(
+                id,
+                canonical,
+                node.kind_version,
+                latest_kind_version,
+            );
             return;
         };
 
@@ -120,13 +111,13 @@ impl<'a> MigrateNodesPlanner<'a> {
             Ok(new_data) => {
                 self.push_node_upgrade(id, node, canonical, latest_kind_version, new_data)
             }
-            Err(err) => self.report.errors.push(NodeMigrationErrorEntry {
-                node: id,
-                kind: canonical,
-                from: node.kind_version,
-                to: latest_kind_version,
-                message: err.to_string(),
-            }),
+            Err(err) => self.report.push_error(
+                id,
+                canonical,
+                node.kind_version,
+                latest_kind_version,
+                err.to_string(),
+            ),
         }
     }
 
@@ -158,11 +149,7 @@ impl<'a> MigrateNodesPlanner<'a> {
             from: node.kind_version,
             to: latest_kind_version,
         });
-        self.report.upgraded.push(NodeMigrationUpgraded {
-            node: id,
-            kind: canonical,
-            from: node.kind_version,
-            to: latest_kind_version,
-        });
+        self.report
+            .push_upgraded(id, canonical, node.kind_version, latest_kind_version);
     }
 }

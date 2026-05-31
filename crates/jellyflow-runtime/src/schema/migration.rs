@@ -48,6 +48,75 @@ pub struct MigrateNodesReport {
     pub errors: Vec<NodeMigrationErrorEntry>,
 }
 
+impl MigrateNodesReport {
+    pub(in crate::schema) fn push_upgraded(
+        &mut self,
+        node: NodeId,
+        kind: NodeKindKey,
+        from: u32,
+        to: u32,
+    ) {
+        self.upgraded.push(NodeMigrationUpgraded {
+            node,
+            kind,
+            from,
+            to,
+        });
+    }
+
+    pub(in crate::schema) fn push_missing_schema(&mut self, node: NodeId, kind: NodeKindKey) {
+        self.missing_schema
+            .push(NodeMigrationMissingSchema { node, kind });
+    }
+
+    pub(in crate::schema) fn push_missing_migrator(
+        &mut self,
+        node: NodeId,
+        kind: NodeKindKey,
+        from: u32,
+        to: u32,
+    ) {
+        self.missing_migrator.push(NodeMigrationMissingMigrator {
+            node,
+            kind,
+            from,
+            to,
+        });
+    }
+
+    pub(in crate::schema) fn push_newer_than_schema(
+        &mut self,
+        node: NodeId,
+        kind: NodeKindKey,
+        node_kind_version: u32,
+        schema_latest_kind_version: u32,
+    ) {
+        self.newer_than_schema.push(NodeMigrationNewerThanSchema {
+            node,
+            kind,
+            node_kind_version,
+            schema_latest_kind_version,
+        });
+    }
+
+    pub(in crate::schema) fn push_error(
+        &mut self,
+        node: NodeId,
+        kind: NodeKindKey,
+        from: u32,
+        to: u32,
+        message: impl Into<String>,
+    ) {
+        self.errors.push(NodeMigrationErrorEntry {
+            node,
+            kind,
+            from,
+            to,
+            message: message.into(),
+        });
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeMigrationUpgraded {
     pub node: NodeId,
