@@ -105,10 +105,14 @@ impl NodeGraphLookups {
             self.slow_remove_edge_from_connection_lookup(id);
         }
 
+        let Some(kind) = self.edge_kind_for_endpoint_update(graph, id) else {
+            return false;
+        };
+
         self.insert_edge_lookup_from_parts(
             graph,
             id,
-            self.edge_kind_for_endpoint_update(graph, id),
+            kind,
             to,
             self.edge_reconnectable_for_endpoint_update(graph, id),
         )
@@ -132,13 +136,12 @@ impl NodeGraphLookups {
         true
     }
 
-    fn edge_kind_for_endpoint_update(&self, graph: &Graph, id: EdgeId) -> EdgeKind {
+    fn edge_kind_for_endpoint_update(&self, graph: &Graph, id: EdgeId) -> Option<EdgeKind> {
         graph
             .edges
             .get(&id)
             .map(|edge| edge.kind)
             .or_else(|| self.edge_lookup.get(&id).map(|entry| entry.kind))
-            .unwrap_or(EdgeKind::Data)
     }
 
     fn edge_reconnectable_for_endpoint_update(

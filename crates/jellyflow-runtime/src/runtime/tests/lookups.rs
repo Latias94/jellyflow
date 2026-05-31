@@ -2,7 +2,7 @@ use super::fixtures::make_graph;
 
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 use jellyflow_core::core::{EdgeKind, EdgeReconnectable, PortKind};
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 #[test]
 fn lookups_rebuild_populates_connection_lookup() {
@@ -185,5 +185,28 @@ fn lookups_apply_edge_kind_repairs_missing_connection_lookup() {
             .connections_for_port(b, ConnectionSide::Target, in_port)
             .expect("target connections")
             .contains_key(&eid)
+    );
+}
+
+#[test]
+fn lookups_apply_edge_endpoints_rebuilds_when_edge_is_missing() {
+    let (mut g, _a, _b, out_port, in_port, eid) = make_graph();
+    g.edges.remove(&eid);
+    let endpoints = EdgeEndpoints::new(out_port, in_port);
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
+        id: eid,
+        from: endpoints,
+        to: endpoints,
+    }]);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.apply_transaction(&g, &tx);
+
+    assert!(!lookups.edge_lookup.contains_key(&eid));
+    assert!(
+        lookups
+            .connection_lookup
+            .values()
+            .all(|connections| !connections.contains_key(&eid))
     );
 }
