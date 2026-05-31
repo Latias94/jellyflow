@@ -22,11 +22,9 @@ impl CanvasBounds {
 
     pub(super) fn from_node(
         pos: CanvasPoint,
-        size: Option<CanvasSize>,
+        size: CanvasSize,
         node_origin: (f32, f32),
-        fallback_size: Option<CanvasSize>,
     ) -> Option<Self> {
-        let size = size.or(fallback_size)?;
         let width = size.width;
         let height = size.height;
         if !size.is_positive_finite() {

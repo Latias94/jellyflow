@@ -132,6 +132,10 @@ impl NodeBoundsResolver {
         if !self.include_hidden && entry.hidden {
             return None;
         }
-        CanvasBounds::from_node(entry.pos, entry.size, self.node_origin, self.fallback_size)
+        CanvasBounds::from_node(entry.pos, self.resolve_size(entry)?, self.node_origin)
+    }
+
+    fn resolve_size(&self, entry: &NodeLookupEntry) -> Option<CanvasSize> {
+        entry.size.or(self.fallback_size)
     }
 }
