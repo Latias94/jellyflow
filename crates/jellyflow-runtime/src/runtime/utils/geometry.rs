@@ -47,13 +47,6 @@ impl CanvasBounds {
         })
     }
 
-    pub(super) fn is_finite(self) -> bool {
-        self.min_x.is_finite()
-            && self.min_y.is_finite()
-            && self.max_x.is_finite()
-            && self.max_y.is_finite()
-    }
-
     pub(super) fn top_left(self) -> CanvasPoint {
         CanvasPoint {
             x: self.min_x,

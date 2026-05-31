@@ -62,10 +62,11 @@ pub fn get_nodes_inside(
     options: GetNodesInsideOptions,
 ) -> Vec<NodeId> {
     let resolver = NodeBoundsResolver::from_inside_options(options);
-    let query = CanvasBounds::from_rect(rect);
-    if !query.is_finite() {
+    if !rect.is_positive_finite() {
         return Vec::new();
     }
+
+    let query = CanvasBounds::from_rect(rect);
 
     let mut out: Vec<NodeId> = Vec::new();
     for (node, entry) in &lookups.node_lookup {

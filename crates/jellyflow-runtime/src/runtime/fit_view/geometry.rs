@@ -26,7 +26,7 @@ pub(super) fn compute_target_for_canvas_rect(
     target_canvas: CanvasRect,
     options: FitViewComputeOptions,
 ) -> Option<(CanvasPoint, f32)> {
-    if !canvas_rect_is_valid(target_canvas) {
+    if !target_canvas.is_positive_finite() {
         return None;
     }
 
@@ -66,10 +66,6 @@ fn viewport_margins(options: FitViewComputeOptions) -> (f32, f32) {
     } else {
         (options.margin_px_fallback, options.margin_px_fallback)
     }
-}
-
-fn canvas_rect_is_valid(rect: CanvasRect) -> bool {
-    rect.origin.is_finite() && rect.size.is_positive_finite()
 }
 
 struct NodePositionSpread {

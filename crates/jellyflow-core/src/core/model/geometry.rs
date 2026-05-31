@@ -47,4 +47,43 @@ impl CanvasRect {
     pub fn is_finite(self) -> bool {
         self.origin.is_finite() && self.size.is_finite()
     }
+
+    pub fn is_positive_finite(self) -> bool {
+        self.origin.is_finite() && self.size.is_positive_finite()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CanvasPoint, CanvasRect, CanvasSize};
+
+    #[test]
+    fn canvas_rect_is_positive_finite_requires_finite_origin_and_positive_size() {
+        let valid = CanvasRect {
+            origin: CanvasPoint { x: 1.0, y: -2.0 },
+            size: CanvasSize {
+                width: 10.0,
+                height: 20.0,
+            },
+        };
+        assert!(valid.is_positive_finite());
+
+        let zero_width = CanvasRect {
+            size: CanvasSize {
+                width: 0.0,
+                height: 20.0,
+            },
+            ..valid
+        };
+        assert!(!zero_width.is_positive_finite());
+
+        let non_finite_origin = CanvasRect {
+            origin: CanvasPoint {
+                x: f32::INFINITY,
+                y: 0.0,
+            },
+            ..valid
+        };
+        assert!(!non_finite_origin.is_positive_finite());
+    }
 }
