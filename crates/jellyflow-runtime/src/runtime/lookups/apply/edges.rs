@@ -5,13 +5,13 @@ use jellyflow_core::ops::EdgeEndpoints;
 
 impl NodeGraphLookups {
     pub(super) fn apply_add_edge(&mut self, graph: &Graph, id: EdgeId, edge: &Edge) -> bool {
-        let endpoints = EdgeEndpoints {
-            from: edge.from,
-            to: edge.to,
-        };
-        let Some((entry, conn)) =
-            Self::edge_lookup_entry_from_graph(graph, id, edge.kind, endpoints, edge.reconnectable)
-        else {
+        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+            graph,
+            id,
+            edge.kind,
+            edge_endpoints(edge),
+            edge.reconnectable,
+        ) else {
             return false;
         };
         self.edge_lookup.insert(id, entry);
@@ -54,13 +54,13 @@ impl NodeGraphLookups {
         let Some(edge) = graph.edges.get(&id) else {
             return false;
         };
-        let endpoints = EdgeEndpoints {
-            from: edge.from,
-            to: edge.to,
-        };
-        let Some((entry, _conn)) =
-            Self::edge_lookup_entry_from_graph(graph, id, edge.kind, endpoints, reconnectable)
-        else {
+        let Some((entry, _conn)) = Self::edge_lookup_entry_from_graph(
+            graph,
+            id,
+            edge.kind,
+            edge_endpoints(edge),
+            reconnectable,
+        ) else {
             return false;
         };
         self.edge_lookup.insert(id, entry);
@@ -80,25 +80,49 @@ impl NodeGraphLookups {
             self.slow_remove_edge_from_connection_lookup(id);
         }
 
-        let kind = graph.edges.get(&id).map(|e| e.kind).unwrap_or_else(|| {
-            self.edge_lookup
-                .get(&id)
-                .map(|e| e.kind)
-                .unwrap_or(EdgeKind::Data)
-        });
-        let reconnectable = graph
-            .edges
-            .get(&id)
-            .and_then(|e| e.reconnectable)
-            .or_else(|| self.edge_lookup.get(&id).and_then(|e| e.reconnectable));
-
-        let Some((entry, conn)) =
-            Self::edge_lookup_entry_from_graph(graph, id, kind, to, reconnectable)
-        else {
+        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
+            graph,
+            id,
+            self.edge_kind_for_endpoint_update(graph, id),
+            to,
+            self.edge_reconnectable_for_endpoint_update(graph, id),
+        ) else {
             return false;
         };
         self.edge_lookup.insert(id, entry);
         self.add_edge_connection(conn);
         true
+    }
+
+    fn edge_kind_for_endpoint_update(&self, graph: &Graph, id: EdgeId) -> EdgeKind {
+        graph
+            .edges
+            .get(&id)
+            .map(|edge| edge.kind)
+            .or_else(|| self.edge_lookup.get(&id).map(|entry| entry.kind))
+            .unwrap_or(EdgeKind::Data)
+    }
+
+    fn edge_reconnectable_for_endpoint_update(
+        &self,
+        graph: &Graph,
+        id: EdgeId,
+    ) -> Option<EdgeReconnectable> {
+        graph
+            .edges
+            .get(&id)
+            .and_then(|edge| edge.reconnectable)
+            .or_else(|| {
+                self.edge_lookup
+                    .get(&id)
+                    .and_then(|entry| entry.reconnectable)
+            })
+    }
+}
+
+fn edge_endpoints(edge: &Edge) -> EdgeEndpoints {
+    EdgeEndpoints {
+        from: edge.from,
+        to: edge.to,
     }
 }
