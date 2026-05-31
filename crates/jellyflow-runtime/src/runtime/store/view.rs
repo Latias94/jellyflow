@@ -119,6 +119,16 @@ impl NodeGraphStore {
     }
 
     pub fn replace_editor_config(&mut self, editor_config: NodeGraphEditorConfig) {
+        self.install_editor_config_if_changed(editor_config);
+    }
+
+    pub fn update_editor_config(&mut self, f: impl FnOnce(&mut NodeGraphEditorConfig)) {
+        let mut next = self.editor_config();
+        f(&mut next);
+        self.install_editor_config_if_changed(next);
+    }
+
+    fn install_editor_config_if_changed(&mut self, editor_config: NodeGraphEditorConfig) {
         if self.interaction == editor_config.interaction
             && self.runtime_tuning == editor_config.runtime_tuning
         {
@@ -127,19 +137,6 @@ impl NodeGraphStore {
 
         self.interaction = editor_config.interaction;
         self.runtime_tuning = editor_config.runtime_tuning;
-        self.notify_selectors();
-    }
-
-    pub fn update_editor_config(&mut self, f: impl FnOnce(&mut NodeGraphEditorConfig)) {
-        let before = self.editor_config();
-        let mut next = before.clone();
-        f(&mut next);
-        if before == next {
-            return;
-        }
-
-        self.interaction = next.interaction;
-        self.runtime_tuning = next.runtime_tuning;
         self.notify_selectors();
     }
 

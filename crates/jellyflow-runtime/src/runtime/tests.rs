@@ -2035,6 +2035,35 @@ fn store_replace_editor_config_notifies_selectors_for_runtime_tuning_only_change
 }
 
 #[test]
+fn store_update_editor_config_notifies_selectors_only_when_changed() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+
+    let runtime_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let runtime_flags2 = runtime_flags.clone();
+    store.subscribe_selector(
+        |s| s.runtime_tuning.only_render_visible_elements,
+        move |value| runtime_flags2.borrow_mut().push(*value),
+    );
+
+    store.update_editor_config(|_| {});
+    assert!(runtime_flags.borrow().is_empty());
+
+    store.update_editor_config(|config| {
+        config.runtime_tuning.only_render_visible_elements = false;
+    });
+    assert_eq!(runtime_flags.borrow().as_slice(), &[false]);
+
+    store.update_editor_config(|config| {
+        config.runtime_tuning.only_render_visible_elements = false;
+    });
+    assert_eq!(runtime_flags.borrow().as_slice(), &[false]);
+}
+
+#[test]
 fn store_update_view_state_notifies_selectors_for_draw_order_only_changes() {
     use std::cell::RefCell;
     use std::rc::Rc;
