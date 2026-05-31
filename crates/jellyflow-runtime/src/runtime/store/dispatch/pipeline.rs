@@ -33,19 +33,19 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
         mut self,
         tx: &GraphTransaction,
     ) -> Result<DispatchPipelineResult, ApplyPipelineError> {
-        let mut tx = Self::normalize_and_validate(tx.clone())?;
+        let mut tx = DispatchTransactionGate::normalize_and_validate(tx.clone())?;
         if tx.is_empty() {
             return Ok(DispatchPipelineResult::Empty(tx));
         }
 
         self.store.run_before_dispatch_middleware(&mut tx)?;
-        tx = Self::normalize_and_validate(tx)?;
+        tx = DispatchTransactionGate::normalize_and_validate(tx)?;
         if tx.is_empty() {
             return Ok(DispatchPipelineResult::Empty(tx));
         }
 
         let (graph, committed) = self.apply_to_scratch(&tx)?;
-        let committed = Self::normalize_and_validate(committed)?;
+        let committed = DispatchTransactionGate::normalize_and_validate(committed)?;
         Ok(DispatchPipelineResult::Commit { graph, committed })
     }
 
@@ -59,26 +59,30 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
             .apply_to_graph(self.store, &mut scratch, tx)?;
         Ok((scratch, committed))
     }
+}
 
+struct DispatchTransactionGate;
+
+impl DispatchTransactionGate {
     fn normalize_and_validate(
         tx: GraphTransaction,
     ) -> Result<GraphTransaction, ApplyPipelineError> {
         let tx = normalize_transaction(tx);
-        Self::validate_transaction(&tx)?;
+        Self::validate(&tx)?;
         Ok(tx)
     }
 
-    fn validate_transaction(tx: &GraphTransaction) -> Result<(), ApplyPipelineError> {
+    fn validate(tx: &GraphTransaction) -> Result<(), ApplyPipelineError> {
         if let Some((key, message)) = jellyflow_core::ops::find_non_finite_in_tx(tx) {
-            return Err(Self::reject_tx(key, message));
+            return Err(Self::reject(key, message));
         }
         if let Some((key, message)) = jellyflow_core::ops::find_invalid_size_in_tx(tx) {
-            return Err(Self::reject_tx(key, message));
+            return Err(Self::reject(key, message));
         }
         Ok(())
     }
 
-    fn reject_tx(key: String, message: String) -> ApplyPipelineError {
+    fn reject(key: String, message: String) -> ApplyPipelineError {
         ApplyPipelineError::Rejected {
             message: message.clone(),
             diagnostics: vec![Diagnostic::error(key, DiagnosticTarget::Graph, message)],
