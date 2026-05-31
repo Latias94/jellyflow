@@ -4,7 +4,7 @@ use crate::runtime::events::{NodeGraphStoreSnapshot, SubscriptionToken};
 
 type SelectorValue = dyn Any;
 
-pub(crate) struct SelectorSubscription {
+pub(super) struct SelectorSubscription {
     token: SubscriptionToken,
     compute: Box<dyn for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> Box<SelectorValue>>,
     equals: Box<dyn Fn(&SelectorValue, &SelectorValue) -> bool>,
@@ -13,7 +13,7 @@ pub(crate) struct SelectorSubscription {
 }
 
 impl SelectorSubscription {
-    pub(crate) fn new<T>(
+    pub(super) fn new<T>(
         token: SubscriptionToken,
         selector: impl for<'a> Fn(NodeGraphStoreSnapshot<'a>) -> T + 'static,
         initial: T,
@@ -39,11 +39,11 @@ impl SelectorSubscription {
         }
     }
 
-    pub(crate) fn token(&self) -> SubscriptionToken {
+    pub(super) fn token(&self) -> SubscriptionToken {
         self.token
     }
 
-    pub(crate) fn notify_if_changed(&mut self, snapshot: NodeGraphStoreSnapshot<'_>) {
+    pub(super) fn notify_if_changed(&mut self, snapshot: NodeGraphStoreSnapshot<'_>) {
         let next = (self.compute)(snapshot);
         let changed = !(self.equals)(&*self.last, &*next);
         if !changed {

@@ -18,7 +18,6 @@ use crate::io::{
 };
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::events::{NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken};
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use jellyflow_core::core::Graph;
@@ -64,14 +63,7 @@ pub struct NodeGraphStore {
     profile: Option<Box<dyn GraphProfile>>,
     middleware: Option<Box<dyn NodeGraphStoreMiddleware>>,
     lookups: NodeGraphLookups,
-
-    next_subscription: u64,
-    event_subscriptions: Vec<(
-        SubscriptionToken,
-        Box<dyn for<'a> FnMut(NodeGraphStoreEvent<'a>)>,
-    )>,
-    gesture_subscriptions: Vec<(SubscriptionToken, Box<dyn FnMut(NodeGraphGestureEvent)>)>,
-    selector_subscriptions: Vec<subscriptions::SelectorSubscription>,
+    subscriptions: subscriptions::StoreSubscriptions,
 }
 
 enum DispatchProfile<'a> {
@@ -105,14 +97,17 @@ impl std::fmt::Debug for NodeGraphStore {
             .field("undo_len", &self.history.undo_len())
             .field("redo_len", &self.history.redo_len())
             .field("has_profile", &self.profile.is_some())
-            .field("event_subscription_count", &self.event_subscriptions.len())
+            .field(
+                "event_subscription_count",
+                &self.subscriptions.event_subscription_count(),
+            )
             .field(
                 "gesture_subscription_count",
-                &self.gesture_subscriptions.len(),
+                &self.subscriptions.gesture_subscription_count(),
             )
             .field(
                 "selector_subscription_count",
-                &self.selector_subscriptions.len(),
+                &self.subscriptions.selector_subscription_count(),
             )
             .finish()
     }
@@ -157,10 +152,7 @@ impl NodeGraphStore {
             profile,
             middleware: None,
             lookups,
-            next_subscription: 1,
-            event_subscriptions: Vec::new(),
-            gesture_subscriptions: Vec::new(),
-            selector_subscriptions: Vec::new(),
+            subscriptions: subscriptions::StoreSubscriptions::default(),
         }
     }
 

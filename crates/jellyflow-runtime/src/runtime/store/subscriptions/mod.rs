@@ -7,9 +7,10 @@ use crate::runtime::events::{
 use super::NodeGraphStore;
 use super::snapshot::StoreSnapshotParts;
 
+mod registry;
 mod selectors;
 
-pub(crate) use self::selectors::SelectorSubscription;
+pub(super) use self::registry::StoreSubscriptions;
 
 impl NodeGraphStore {
     /// Subscribes to store events (graph commits + view-state changes).
@@ -19,9 +20,7 @@ impl NodeGraphStore {
         &mut self,
         f: impl for<'a> FnMut(NodeGraphStoreEvent<'a>) + 'static,
     ) -> SubscriptionToken {
-        let token = self.allocate_subscription_token();
-        self.event_subscriptions.push((token, Box::new(f)));
-        token
+        self.subscriptions.subscribe_event(f)
     }
 
     pub(crate) fn subscribe_gesture_with_token(
@@ -29,7 +28,7 @@ impl NodeGraphStore {
         token: SubscriptionToken,
         f: impl FnMut(NodeGraphGestureEvent) + 'static,
     ) {
-        self.gesture_subscriptions.push((token, Box::new(f)));
+        self.subscriptions.subscribe_gesture_with_token(token, f);
     }
 
     /// Subscribes to a derived projection of store state and only fires when the derived value
@@ -56,30 +55,21 @@ impl NodeGraphStore {
     where
         T: PartialEq + 'static,
     {
-        let token = self.allocate_subscription_token();
+        let token = self.subscriptions.allocate_token();
         let initial = selector(self.snapshot());
 
-        self.selector_subscriptions.push(SelectorSubscription::new(
-            token, selector, initial, on_change,
-        ));
-
+        self.subscriptions
+            .subscribe_selector_with_token(token, selector, initial, on_change);
         token
     }
 
     /// Removes a subscription.
     pub fn unsubscribe(&mut self, token: SubscriptionToken) -> bool {
-        let mut removed = false;
-
-        removed |= remove_subscription_token(&mut self.event_subscriptions, token);
-        removed |= remove_subscription_token(&mut self.gesture_subscriptions, token);
-
-        removed |= remove_selector_subscription(&mut self.selector_subscriptions, token);
-
-        removed
+        self.subscriptions.unsubscribe(token)
     }
 
     pub(super) fn notify_selectors(&mut self) {
-        if self.selector_subscriptions.is_empty() {
+        if !self.subscriptions.has_selectors() {
             return;
         }
 
@@ -91,32 +81,7 @@ impl NodeGraphStore {
             &self.runtime_tuning,
             &self.history,
         );
-        for sub in &mut self.selector_subscriptions {
-            sub.notify_if_changed(snapshot_parts.snapshot());
-        }
+        self.subscriptions
+            .notify_selectors(snapshot_parts.snapshot());
     }
-
-    fn allocate_subscription_token(&mut self) -> SubscriptionToken {
-        let token = SubscriptionToken::new(self.next_subscription);
-        self.next_subscription = self.next_subscription.saturating_add(1).max(1);
-        token
-    }
-}
-
-fn remove_subscription_token<T>(
-    subscriptions: &mut Vec<(SubscriptionToken, T)>,
-    token: SubscriptionToken,
-) -> bool {
-    let before = subscriptions.len();
-    subscriptions.retain(|(subscription_token, _)| *subscription_token != token);
-    before != subscriptions.len()
-}
-
-fn remove_selector_subscription(
-    subscriptions: &mut Vec<SelectorSubscription>,
-    token: SubscriptionToken,
-) -> bool {
-    let before = subscriptions.len();
-    subscriptions.retain(|subscription| subscription.token() != token);
-    before != subscriptions.len()
 }

@@ -77,15 +77,11 @@ impl NodeGraphStore {
     }
 
     pub(super) fn emit(&mut self, event: NodeGraphStoreEvent<'_>) {
-        for (_, sub) in &mut self.event_subscriptions {
-            sub(event);
-        }
+        self.subscriptions.emit_event(event);
     }
 
     /// Emits a transient gesture event for adapter layers that own pointer/keyboard gestures.
     pub fn emit_gesture(&mut self, event: NodeGraphGestureEvent) {
-        for (_, sub) in &mut self.gesture_subscriptions {
-            sub(event.clone());
-        }
+        self.subscriptions.emit_gesture(event);
     }
 }
