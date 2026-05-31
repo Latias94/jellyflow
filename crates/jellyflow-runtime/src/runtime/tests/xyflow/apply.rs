@@ -10,7 +10,7 @@ fn apply_node_changes_removes_ports_and_incident_edges() {
 
     let report = apply_node_changes(&mut g0, &[NodeChange::Remove { id: a }]);
     assert!(report.did_change());
-    assert_eq!(report.ignored, 0);
+    assert_eq!(report.ignored(), 0);
 
     assert!(!g0.nodes.contains_key(&a));
     assert!(g0.nodes.contains_key(&b));
@@ -37,6 +37,6 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
         ],
     );
     assert!(report.did_change());
-    assert_eq!(report.ignored, 1);
+    assert_eq!(report.ignored(), 1);
     assert_eq!(g0.edges.get(&eid).unwrap().kind, EdgeKind::Exec);
 }

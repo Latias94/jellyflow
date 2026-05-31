@@ -28,6 +28,14 @@ impl ApplyChangesReport {
         self.applied > 0
     }
 
+    pub fn applied(&self) -> usize {
+        self.applied
+    }
+
+    pub fn ignored(&self) -> usize {
+        self.ignored
+    }
+
     pub(crate) fn mark_applied(&mut self) {
         self.applied += 1;
     }
