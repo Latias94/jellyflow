@@ -145,10 +145,7 @@ fn mutation_planner_connect_and_disconnect_edges() {
         .expect("disconnect ops");
     assert_eq!(disconnect_ops.len(), 1);
 
-    let disconnect = GraphTransaction {
-        label: Some("Disconnect".to_string()),
-        ops: disconnect_ops,
-    };
+    let disconnect = GraphTransaction::from_ops(disconnect_ops).with_label("Disconnect");
     apply_transaction(&mut graph, &disconnect).expect("disconnect apply");
     assert!(graph.edges.is_empty());
 }
@@ -264,10 +261,7 @@ fn mutation_batch_planner_allows_edges_to_staged_ports() {
         )
         .expect("add second edge");
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: batch.into_ops(),
-    };
+    let tx = GraphTransaction::from_ops(batch.into_ops());
     apply_transaction(&mut graph, &tx).expect("apply");
 
     assert_eq!(
@@ -365,10 +359,7 @@ fn mutation_batch_planner_set_edge_endpoints_can_target_staged_port() {
         )
         .expect("set endpoint");
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: batch.into_ops(),
-    };
+    let tx = GraphTransaction::from_ops(batch.into_ops());
     apply_transaction(&mut graph, &tx).expect("apply");
 
     assert_eq!(graph.edges.get(&edge_id).unwrap().to, inserted_in);
@@ -453,7 +444,7 @@ fn build_disconnect_port_ops_removes_incident_edges() {
         .expect("disconnect ops");
     assert_eq!(ops.len(), 1);
 
-    let tx = crate::ops::GraphTransaction { label: None, ops };
+    let tx = GraphTransaction::from_ops(ops);
     apply_transaction(&mut graph, &tx).expect("apply");
     assert!(graph.edges.is_empty());
 }
