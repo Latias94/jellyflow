@@ -87,6 +87,40 @@ fn lookups_apply_edge_reconnectable_recovers_missing_edge_lookup_with_connection
 }
 
 #[test]
+fn lookups_apply_edge_reconnectable_repairs_missing_connection_lookup() {
+    let (mut g, a, b, out_port, in_port, eid) = make_graph();
+    let reconnectable = Some(EdgeReconnectable::Bool(false));
+    let mut lookups = NodeGraphLookups::default();
+    lookups.rebuild_from(&g);
+    lookups.connection_lookup.clear();
+
+    g.edges.get_mut(&eid).unwrap().reconnectable = reconnectable;
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeReconnectable {
+        id: eid,
+        from: None,
+        to: reconnectable,
+    }]);
+    lookups.apply_transaction(&g, &tx);
+
+    assert_eq!(
+        lookups.edge_lookup.get(&eid).unwrap().reconnectable,
+        reconnectable
+    );
+    assert!(
+        lookups
+            .connections_for_port(a, ConnectionSide::Source, out_port)
+            .expect("source connections")
+            .contains_key(&eid)
+    );
+    assert!(
+        lookups
+            .connections_for_port(b, ConnectionSide::Target, in_port)
+            .expect("target connections")
+            .contains_key(&eid)
+    );
+}
+
+#[test]
 fn lookups_apply_edge_kind_recovers_missing_edge_lookup_with_connections() {
     let (mut g, a, b, out_port, in_port, eid) = make_graph();
     g.ports.get_mut(&out_port).unwrap().kind = PortKind::Exec;

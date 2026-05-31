@@ -67,6 +67,9 @@ impl NodeGraphLookups {
     ) -> bool {
         if let Some(e) = self.edge_lookup.get_mut(&id) {
             e.reconnectable = reconnectable;
+            if let Some(conn) = self.connection_from_edge_lookup(id) {
+                self.add_edge_connection(conn);
+            }
             return true;
         }
         let Some(edge) = graph.edges.get(&id) else {
