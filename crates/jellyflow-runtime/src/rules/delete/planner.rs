@@ -130,10 +130,7 @@ impl<'a> DeletePlanner<'a> {
 }
 
 fn apply_planned_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Diagnostic> {
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![op.clone()],
-    };
+    let tx = GraphTransaction::from_ops([op.clone()]);
     tx.apply_to(graph)
         .map_err(|error| planning_diagnostic(format!("failed to apply planned deletion: {error}")))
 }

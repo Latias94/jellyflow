@@ -39,10 +39,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
     }
 
     pub fn into_transaction(self, label: impl Into<String>) -> GraphTransaction {
-        GraphTransaction {
-            label: Some(label.into()),
-            ops: self.ops,
-        }
+        GraphTransaction::new().with_label(label).with_ops(self.ops)
     }
 
     pub fn add_node_with_ports(

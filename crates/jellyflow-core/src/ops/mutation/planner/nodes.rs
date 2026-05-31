@@ -15,10 +15,9 @@ impl GraphMutationPlanner<'_> {
         ports: impl IntoIterator<Item = (PortId, Port)>,
         label: impl Into<String>,
     ) -> Result<GraphTransaction, GraphMutationError> {
-        Ok(GraphTransaction {
-            label: Some(label.into()),
-            ops: self.add_node_with_ports_ops(id, node, ports)?,
-        })
+        Ok(GraphTransaction::new()
+            .with_label(label)
+            .with_ops(self.add_node_with_ports_ops(id, node, ports)?))
     }
 
     pub fn add_node_with_ports_ops(
@@ -70,10 +69,9 @@ impl GraphMutationPlanner<'_> {
         id: NodeId,
         label: impl Into<String>,
     ) -> Result<GraphTransaction, GraphMutationError> {
-        Ok(GraphTransaction {
-            label: Some(label.into()),
-            ops: vec![self.remove_node_op(id)?],
-        })
+        Ok(GraphTransaction::new()
+            .with_label(label)
+            .with_ops([self.remove_node_op(id)?]))
     }
 }
 

@@ -21,6 +21,11 @@ impl GraphTransaction {
         Self::default()
     }
 
+    /// Creates an unlabeled transaction from ops.
+    pub fn from_ops(ops: impl IntoIterator<Item = GraphOp>) -> Self {
+        Self::new().with_ops(ops)
+    }
+
     /// Builds a deterministic transaction that transforms `from` into `to`.
     pub fn diff(from: &Graph, to: &Graph) -> Self {
         crate::ops::diff::graph_diff(from, to)
@@ -29,6 +34,12 @@ impl GraphTransaction {
     /// Sets a label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Adds ops in order and returns this transaction.
+    pub fn with_ops(mut self, ops: impl IntoIterator<Item = GraphOp>) -> Self {
+        self.extend(ops);
         self
     }
 

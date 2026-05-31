@@ -11,10 +11,9 @@ impl GraphMutationPlanner<'_> {
         edge: Edge,
         label: impl Into<String>,
     ) -> Result<GraphTransaction, GraphMutationError> {
-        Ok(GraphTransaction {
-            label: Some(label.into()),
-            ops: vec![self.add_edge_op(id, edge)?],
-        })
+        Ok(GraphTransaction::new()
+            .with_label(label)
+            .with_ops([self.add_edge_op(id, edge)?]))
     }
 
     pub fn add_edge_op(&self, id: EdgeId, edge: Edge) -> Result<GraphOp, GraphMutationError> {
@@ -45,9 +44,8 @@ impl GraphMutationPlanner<'_> {
         id: EdgeId,
         label: impl Into<String>,
     ) -> Result<GraphTransaction, GraphMutationError> {
-        Ok(GraphTransaction {
-            label: Some(label.into()),
-            ops: vec![self.remove_edge_op(id)?],
-        })
+        Ok(GraphTransaction::new()
+            .with_label(label)
+            .with_ops([self.remove_edge_op(id)?]))
     }
 }

@@ -26,9 +26,8 @@ impl GraphMutationPlanner<'_> {
         id: GroupId,
         label: impl Into<String>,
     ) -> Result<GraphTransaction, GraphMutationError> {
-        Ok(GraphTransaction {
-            label: Some(label.into()),
-            ops: vec![self.remove_group_op(id)?],
-        })
+        Ok(GraphTransaction::new()
+            .with_label(label)
+            .with_ops([self.remove_group_op(id)?]))
     }
 }

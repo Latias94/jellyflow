@@ -106,10 +106,7 @@ impl NodeGraphStore {
             apply_transaction_with_profile(graph, profile, tx)
         } else {
             tx.apply_to(graph)?;
-            Ok(GraphTransaction {
-                label: tx.label.clone(),
-                ops: tx.ops.clone(),
-            })
+            Ok(tx.clone())
         }
     }
 

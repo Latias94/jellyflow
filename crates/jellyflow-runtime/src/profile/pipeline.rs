@@ -78,10 +78,7 @@ fn concretize_to_fixed_point(
 }
 
 fn apply_derived_ops(graph: &mut Graph, ops: &[GraphOp]) -> Result<(), ApplyPipelineError> {
-    let derived_tx = GraphTransaction {
-        label: None,
-        ops: ops.to_vec(),
-    };
+    let derived_tx = GraphTransaction::from_ops(ops.iter().cloned());
     derived_tx.apply_to(graph)?;
     Ok(())
 }
@@ -108,10 +105,7 @@ pub fn apply_connect_plan_with_profile(
 ) -> Result<GraphTransaction, ApplyPipelineError> {
     match plan.decision {
         ConnectDecision::Accept => {
-            let tx = GraphTransaction {
-                label: None,
-                ops: plan.ops.clone(),
-            };
+            let tx = GraphTransaction::from_ops(plan.ops.clone());
             apply_transaction_with_profile(graph, profile, &tx)
         }
         ConnectDecision::Reject => Err(rejected_diagnostics(
