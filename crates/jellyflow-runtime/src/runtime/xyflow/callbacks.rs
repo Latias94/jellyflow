@@ -20,7 +20,7 @@ use crate::runtime::events::{
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId};
-use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
+use jellyflow_core::ops::{EdgeEndpoints, GraphTransaction};
 
 pub use crate::runtime::events::{ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart};
 
@@ -361,98 +361,9 @@ pub fn install_callbacks(
 }
 
 pub fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
-    let mut out = Vec::new();
-    out.reserve(tx.ops.len().min(8));
-
-    let mut removed_edges: std::collections::BTreeSet<EdgeId> = std::collections::BTreeSet::new();
-    for op in &tx.ops {
-        match op {
-            GraphOp::AddEdge { id, edge } => {
-                out.push(ConnectionChange::Connected(EdgeConnection {
-                    edge: *id,
-                    from: edge.from,
-                    to: edge.to,
-                    kind: edge.kind,
-                }))
-            }
-            GraphOp::RemoveNode { edges, .. } => {
-                for (id, edge) in edges {
-                    if !removed_edges.insert(*id) {
-                        continue;
-                    }
-                    out.push(ConnectionChange::Disconnected(EdgeConnection {
-                        edge: *id,
-                        from: edge.from,
-                        to: edge.to,
-                        kind: edge.kind,
-                    }))
-                }
-            }
-            GraphOp::RemovePort { edges, .. } => {
-                for (id, edge) in edges {
-                    if !removed_edges.insert(*id) {
-                        continue;
-                    }
-                    out.push(ConnectionChange::Disconnected(EdgeConnection {
-                        edge: *id,
-                        from: edge.from,
-                        to: edge.to,
-                        kind: edge.kind,
-                    }))
-                }
-            }
-            GraphOp::RemoveEdge { id, edge } => {
-                let _ = removed_edges.insert(*id);
-                out.push(ConnectionChange::Disconnected(EdgeConnection {
-                    edge: *id,
-                    from: edge.from,
-                    to: edge.to,
-                    kind: edge.kind,
-                }))
-            }
-            GraphOp::SetEdgeEndpoints { id, from, to } => out.push(ConnectionChange::Reconnected {
-                edge: *id,
-                from: *from,
-                to: *to,
-            }),
-            _ => {}
-        }
-    }
-
-    out
+    crate::runtime::xyflow::projection::connection_changes_from_transaction(tx)
 }
 
 pub fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
-    let mut out = DeleteChange::default();
-
-    for op in &tx.ops {
-        match op {
-            GraphOp::RemoveNode { id, edges, .. } => {
-                out.nodes.push(*id);
-                for (edge_id, _edge) in edges {
-                    out.edges.push(*edge_id);
-                }
-            }
-            GraphOp::RemoveEdge { id, .. } => out.edges.push(*id),
-            GraphOp::RemoveGroup { id, .. } => out.groups.push(*id),
-            GraphOp::RemoveStickyNote { id, .. } => out.sticky_notes.push(*id),
-            GraphOp::RemovePort { edges, .. } => {
-                for (edge_id, _edge) in edges {
-                    out.edges.push(*edge_id);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    out.nodes.sort_unstable();
-    out.nodes.dedup();
-    out.edges.sort_unstable();
-    out.edges.dedup();
-    out.groups.sort_unstable();
-    out.groups.dedup();
-    out.sticky_notes.sort_unstable();
-    out.sticky_notes.dedup();
-
-    out
+    crate::runtime::xyflow::projection::delete_changes_from_transaction(tx)
 }

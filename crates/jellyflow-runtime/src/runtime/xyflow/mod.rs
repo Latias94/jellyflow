@@ -10,6 +10,7 @@
 pub mod apply;
 pub mod callbacks;
 pub mod changes;
+mod projection;
 pub mod store;
 mod transaction;
 
