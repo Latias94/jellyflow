@@ -1,0 +1,118 @@
+use super::super::fixtures::make_graph;
+
+use crate::runtime::xyflow::changes::{
+    ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges,
+};
+use jellyflow_core::core::{CanvasPoint, EdgeId, NodeId, PortId};
+use jellyflow_core::ops::GraphOp;
+
+#[test]
+fn changes_to_transaction_is_reversible_and_applicable() {
+    let (g0, a, _b, out_port, in_port, eid) = make_graph();
+
+    let changes = NodeGraphChanges {
+        nodes: vec![NodeChange::Position {
+            id: a,
+            position: CanvasPoint { x: 42.0, y: 7.0 },
+        }],
+        edges: vec![EdgeChange::Endpoints {
+            id: eid,
+            from: out_port,
+            to: in_port,
+        }],
+    };
+
+    let tx = changes.to_transaction(&g0).expect("tx");
+    let mut g1 = g0.clone();
+    tx.apply_to(&mut g1).expect("apply");
+
+    assert_eq!(
+        g1.nodes.get(&a).unwrap().pos,
+        CanvasPoint { x: 42.0, y: 7.0 }
+    );
+    assert_eq!(g1.edges.get(&eid).unwrap().from, out_port);
+    assert_eq!(g1.edges.get(&eid).unwrap().to, in_port);
+}
+
+#[test]
+fn changes_to_transaction_remove_node_captures_ports_and_edges() {
+    let (g0, a, b, out_port, in_port, eid) = make_graph();
+
+    let changes = NodeGraphChanges {
+        nodes: vec![NodeChange::Remove { id: a }],
+        edges: Vec::new(),
+    };
+
+    let tx = changes.to_transaction(&g0).expect("tx");
+    assert_eq!(tx.ops.len(), 1);
+    match &tx.ops[0] {
+        GraphOp::RemoveNode {
+            id, ports, edges, ..
+        } => {
+            assert_eq!(*id, a);
+            assert_eq!(
+                ports.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![out_port]
+            );
+            assert_eq!(
+                edges.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![eid]
+            );
+        }
+        other => panic!("expected remove node op, got {other:?}"),
+    }
+
+    let mut g1 = g0.clone();
+    tx.apply_to(&mut g1).expect("apply");
+    assert!(!g1.nodes.contains_key(&a));
+    assert!(g1.nodes.contains_key(&b));
+    assert!(!g1.ports.contains_key(&out_port));
+    assert!(g1.ports.contains_key(&in_port));
+    assert!(!g1.edges.contains_key(&eid));
+}
+
+#[test]
+fn changes_to_transaction_reports_missing_node() {
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let missing = NodeId::new();
+    let changes = NodeGraphChanges {
+        nodes: vec![NodeChange::Position {
+            id: missing,
+            position: CanvasPoint { x: 10.0, y: 20.0 },
+        }],
+        edges: Vec::new(),
+    };
+
+    let err = changes.to_transaction(&g0).expect_err("missing node");
+    assert!(matches!(err, ChangesToTransactionError::MissingNode(id) if id == missing));
+}
+
+#[test]
+fn changes_to_transaction_reports_missing_edge() {
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let missing = EdgeId::new();
+    let changes = NodeGraphChanges {
+        nodes: Vec::new(),
+        edges: vec![EdgeChange::Endpoints {
+            id: missing,
+            from: PortId::new(),
+            to: PortId::new(),
+        }],
+    };
+
+    let err = changes.to_transaction(&g0).expect_err("missing edge");
+    assert!(matches!(err, ChangesToTransactionError::MissingEdge(id) if id == missing));
+}
+
+#[test]
+fn changes_to_transaction_accepts_empty_changes() {
+    let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let changes = NodeGraphChanges {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+
+    let tx = changes.to_transaction(&g0).expect("tx");
+    assert!(tx.is_empty());
+    assert!(tx.label.is_none());
+}
