@@ -1,8 +1,6 @@
-use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, EdgeId, EdgeKind, EdgeReconnectable, GroupId, Node, NodeId,
-    NodeKindKey, PortDirection, PortId,
-};
-use jellyflow_core::ops::EdgeEndpoints;
+use jellyflow_core::core::{EdgeId, EdgeKind, NodeId, PortDirection, PortId};
+
+use super::edge::EdgeLookupEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConnectionSide {
@@ -44,7 +42,7 @@ pub struct HandleConnection {
 }
 
 impl HandleConnection {
-    pub(super) fn from_edge_lookup(edge: EdgeId, entry: EdgeLookupEntry) -> Self {
+    pub(crate) fn from_edge_lookup(edge: EdgeId, entry: EdgeLookupEntry) -> Self {
         Self {
             edge,
             source_node: entry.from_node,
@@ -55,7 +53,7 @@ impl HandleConnection {
         }
     }
 
-    pub(super) fn lookup_keys(self) -> [ConnectionLookupKey; 6] {
+    pub(crate) fn lookup_keys(self) -> [ConnectionLookupKey; 6] {
         [
             ConnectionLookupKey::Node(self.source_node),
             ConnectionLookupKey::NodeSide {
@@ -78,61 +76,5 @@ impl HandleConnection {
                 port: self.target_port,
             },
         ]
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeLookupEntry {
-    pub kind: NodeKindKey,
-    pub kind_version: u32,
-    pub pos: CanvasPoint,
-    pub parent: Option<GroupId>,
-    pub size: Option<CanvasSize>,
-    pub hidden: bool,
-    pub collapsed: bool,
-    pub ports: Vec<PortId>,
-}
-
-impl NodeLookupEntry {
-    pub(super) fn from_node(node: &Node) -> Self {
-        Self {
-            kind: node.kind.clone(),
-            kind_version: node.kind_version,
-            pos: node.pos,
-            parent: node.parent,
-            size: node.size,
-            hidden: node.hidden,
-            collapsed: node.collapsed,
-            ports: node.ports.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EdgeLookupEntry {
-    pub kind: EdgeKind,
-    pub from: PortId,
-    pub to: PortId,
-    pub from_node: NodeId,
-    pub to_node: NodeId,
-    pub reconnectable: Option<EdgeReconnectable>,
-}
-
-impl EdgeLookupEntry {
-    pub(super) fn with_parts(
-        kind: EdgeKind,
-        endpoints: EdgeEndpoints,
-        from_node: NodeId,
-        to_node: NodeId,
-        reconnectable: Option<EdgeReconnectable>,
-    ) -> Self {
-        Self {
-            kind,
-            from: endpoints.from,
-            to: endpoints.to,
-            from_node,
-            to_node,
-            reconnectable,
-        }
     }
 }
