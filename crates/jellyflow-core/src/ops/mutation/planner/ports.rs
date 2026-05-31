@@ -1,4 +1,4 @@
-use crate::core::{Port, PortId};
+use crate::core::{NodeId, Port, PortId};
 use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
@@ -41,28 +41,14 @@ impl GraphMutationPlanner<'_> {
             });
         }
 
-        let from = node.ports.clone();
-        let mut to = from.clone();
-        match insert {
-            PortInsert::Append => to.push(id),
-            PortInsert::At(index) => {
-                if index > to.len() {
-                    return Err(GraphMutationError::PortInsertOutOfBounds {
-                        node: node_id,
-                        index,
-                        len: to.len(),
-                    });
-                }
-                to.insert(index, id);
-            }
-        }
+        let order = NodePortOrderEdit::insert(node_id, &node.ports, id, insert)?;
 
         Ok(vec![
             GraphOp::AddPort { id, port },
             GraphOp::SetNodePorts {
                 id: node_id,
-                from,
-                to,
+                from: order.from,
+                to: order.to,
             },
         ])
     }
@@ -100,5 +86,37 @@ impl GraphMutationPlanner<'_> {
             label: Some(label.into()),
             ops: vec![self.remove_port_op(id)?],
         })
+    }
+}
+
+struct NodePortOrderEdit {
+    from: Vec<PortId>,
+    to: Vec<PortId>,
+}
+
+impl NodePortOrderEdit {
+    fn insert(
+        node: NodeId,
+        existing: &[PortId],
+        inserted: PortId,
+        insert: PortInsert,
+    ) -> Result<Self, GraphMutationError> {
+        let from = existing.to_vec();
+        let mut to = from.clone();
+        match insert {
+            PortInsert::Append => to.push(inserted),
+            PortInsert::At(index) => {
+                if index > to.len() {
+                    return Err(GraphMutationError::PortInsertOutOfBounds {
+                        node,
+                        index,
+                        len: to.len(),
+                    });
+                }
+                to.insert(index, inserted);
+            }
+        }
+
+        Ok(Self { from, to })
     }
 }
