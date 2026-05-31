@@ -10,5 +10,4 @@ pub use auto_pan::NodeGraphAutoPanTuning;
 pub use paint_cache::NodeGraphPaintCachePruneTuning;
 pub use pan_inertia::NodeGraphPanInertiaTuning;
 pub use runtime::NodeGraphRuntimeTuning;
-pub(crate) use runtime::default_only_render_visible_elements;
 pub use spatial_index::NodeGraphSpatialIndexTuning;

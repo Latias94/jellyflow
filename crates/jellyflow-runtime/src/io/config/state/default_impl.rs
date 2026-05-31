@@ -3,8 +3,7 @@ use jellyflow_core::interaction::{
 };
 
 use crate::io::tuning::{
-    NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
-    NodeGraphSpatialIndexTuning, default_only_render_visible_elements,
+    NodeGraphAutoPanTuning, NodeGraphPanInertiaTuning, NodeGraphRuntimeTuning,
 };
 
 use crate::io::config::defaults::*;
@@ -18,6 +17,7 @@ use super::NodeGraphInteractionState;
 
 impl Default for NodeGraphInteractionState {
     fn default() -> Self {
+        let runtime_tuning = NodeGraphRuntimeTuning::default();
         Self {
             elements_selectable: default_elements_selectable(),
             nodes_draggable: default_nodes_draggable(),
@@ -33,11 +33,11 @@ impl Default for NodeGraphInteractionState {
             reconnect_on_drop_empty: false,
             edge_interaction_width: default_edge_interaction_width(),
             bezier_hit_test_steps: default_bezier_hit_test_steps(),
-            spatial_index: NodeGraphSpatialIndexTuning::default(),
-            only_render_visible_elements: default_only_render_visible_elements(),
+            spatial_index: runtime_tuning.spatial_index,
+            only_render_visible_elements: runtime_tuning.only_render_visible_elements,
             elevate_nodes_on_select: default_elevate_nodes_on_select(),
             elevate_edges_on_select: default_elevate_edges_on_select(),
-            paint_cache_prune: NodeGraphPaintCachePruneTuning::default(),
+            paint_cache_prune: runtime_tuning.paint_cache_prune,
             snap_to_grid: false,
             snap_grid: default_snap_grid(),
             snaplines: default_snaplines(),
