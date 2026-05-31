@@ -84,8 +84,8 @@ pub fn get_node_position_with_origin(
 ) -> Option<CanvasPoint> {
     let entry = lookups.node_lookup.get(&node)?;
     let (ox, oy) = normalize_node_origin(node_origin);
-    let (x0, y0, _x1, _y1) = node_rect_xy(entry.pos, entry.size, (ox, oy), fallback_size)?;
-    Some(CanvasPoint { x: x0, y: y0 })
+    let bounds = CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), fallback_size)?;
+    Some(bounds.top_left())
 }
 
 /// Returns the node's canvas-space bounding rect.
@@ -97,14 +97,8 @@ pub fn get_node_rect(
 ) -> Option<CanvasRect> {
     let entry = lookups.node_lookup.get(&node)?;
     let (ox, oy) = normalize_node_origin(node_origin);
-    let (x0, y0, x1, y1) = node_rect_xy(entry.pos, entry.size, (ox, oy), fallback_size)?;
-    Some(CanvasRect {
-        origin: CanvasPoint { x: x0, y: y0 },
-        size: CanvasSize {
-            width: (x1 - x0).max(0.0),
-            height: (y1 - y0).max(0.0),
-        },
-    })
+    let bounds = CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), fallback_size)?;
+    Some(bounds.to_rect())
 }
 
 /// Returns the nodes connected as *sources* of the given node's incoming edges.
@@ -156,10 +150,7 @@ pub fn get_nodes_bounds(
     options: GetNodesBoundsOptions,
 ) -> Option<CanvasRect> {
     let (ox, oy) = normalize_node_origin(options.node_origin);
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
+    let mut bounds: Option<CanvasBounds> = None;
 
     for node in nodes {
         let Some(entry) = lookups.node_lookup.get(&node) else {
@@ -168,28 +159,18 @@ pub fn get_nodes_bounds(
         if !options.include_hidden && entry.hidden {
             continue;
         }
-        let Some((x0, y0, x1, y1)) =
-            node_rect_xy(entry.pos, entry.size, (ox, oy), options.fallback_size)
+        let Some(node_bounds) =
+            CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), options.fallback_size)
         else {
             continue;
         };
-        min_x = min_x.min(x0);
-        min_y = min_y.min(y0);
-        max_x = max_x.max(x1);
-        max_y = max_y.max(y1);
+        bounds = Some(match bounds {
+            Some(current) => current.union(node_bounds),
+            None => node_bounds,
+        });
     }
 
-    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
-        return None;
-    }
-
-    Some(CanvasRect {
-        origin: CanvasPoint { x: min_x, y: min_y },
-        size: CanvasSize {
-            width: (max_x - min_x).max(0.0),
-            height: (max_y - min_y).max(0.0),
-        },
-    })
+    bounds.map(CanvasBounds::to_rect)
 }
 
 /// Returns the nodes that are inside the given query rect.
@@ -199,8 +180,8 @@ pub fn get_nodes_inside(
     options: GetNodesInsideOptions,
 ) -> Vec<NodeId> {
     let (ox, oy) = normalize_node_origin(options.node_origin);
-    let (rx0, ry0, rx1, ry1) = rect_xy(rect);
-    if !rx0.is_finite() || !ry0.is_finite() || !rx1.is_finite() || !ry1.is_finite() {
+    let query = CanvasBounds::from_rect(rect);
+    if !query.is_finite() {
         return Vec::new();
     }
 
@@ -209,15 +190,15 @@ pub fn get_nodes_inside(
         if !options.include_hidden && entry.hidden {
             continue;
         }
-        let Some((x0, y0, x1, y1)) =
-            node_rect_xy(entry.pos, entry.size, (ox, oy), options.fallback_size)
+        let Some(node_bounds) =
+            CanvasBounds::from_node(entry.pos, entry.size, (ox, oy), options.fallback_size)
         else {
             continue;
         };
 
         let keep = match options.inclusion {
-            NodeInclusion::Partial => rects_intersect((rx0, ry0, rx1, ry1), (x0, y0, x1, y1)),
-            NodeInclusion::Full => rect_contains((rx0, ry0, rx1, ry1), (x0, y0, x1, y1)),
+            NodeInclusion::Partial => query.intersects(node_bounds),
+            NodeInclusion::Full => query.contains(node_bounds),
         };
         if keep {
             out.push(*node);
@@ -240,45 +221,99 @@ fn normalize_node_origin(origin: (f32, f32)) -> (f32, f32) {
     (ox.clamp(0.0, 1.0), oy.clamp(0.0, 1.0))
 }
 
-fn rect_xy(rect: CanvasRect) -> (f32, f32, f32, f32) {
-    let x0 = rect.origin.x;
-    let y0 = rect.origin.y;
-    let w = rect.size.width.max(0.0);
-    let h = rect.size.height.max(0.0);
-    (x0, y0, x0 + w, y0 + h)
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CanvasBounds {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
 }
 
-fn node_rect_xy(
-    pos: CanvasPoint,
-    size: Option<CanvasSize>,
-    node_origin: (f32, f32),
-    fallback_size: Option<CanvasSize>,
-) -> Option<(f32, f32, f32, f32)> {
-    let size = size.or(fallback_size)?;
-    let w = size.width;
-    let h = size.height;
-    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
-        return None;
+impl CanvasBounds {
+    fn from_rect(rect: CanvasRect) -> Self {
+        let width = rect.size.width.max(0.0);
+        let height = rect.size.height.max(0.0);
+        Self {
+            min_x: rect.origin.x,
+            min_y: rect.origin.y,
+            max_x: rect.origin.x + width,
+            max_y: rect.origin.y + height,
+        }
     }
-    if !pos.x.is_finite() || !pos.y.is_finite() {
-        return None;
+
+    fn from_node(
+        pos: CanvasPoint,
+        size: Option<CanvasSize>,
+        node_origin: (f32, f32),
+        fallback_size: Option<CanvasSize>,
+    ) -> Option<Self> {
+        let size = size.or(fallback_size)?;
+        let width = size.width;
+        let height = size.height;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        if !pos.x.is_finite() || !pos.y.is_finite() {
+            return None;
+        }
+
+        let (origin_x, origin_y) = node_origin;
+        let min_x = pos.x - origin_x * width;
+        let min_y = pos.y - origin_y * height;
+        Some(Self {
+            min_x,
+            min_y,
+            max_x: min_x + width,
+            max_y: min_y + height,
+        })
     }
-    let (ox, oy) = node_origin;
-    let x0 = pos.x - ox * w;
-    let y0 = pos.y - oy * h;
-    Some((x0, y0, x0 + w, y0 + h))
-}
 
-fn rects_intersect(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
-    let (ax0, ay0, ax1, ay1) = a;
-    let (bx0, by0, bx1, by1) = b;
-    ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0
-}
+    fn is_finite(self) -> bool {
+        self.min_x.is_finite()
+            && self.min_y.is_finite()
+            && self.max_x.is_finite()
+            && self.max_y.is_finite()
+    }
 
-fn rect_contains(outer: (f32, f32, f32, f32), inner: (f32, f32, f32, f32)) -> bool {
-    let (ox0, oy0, ox1, oy1) = outer;
-    let (ix0, iy0, ix1, iy1) = inner;
-    ix0 >= ox0 && iy0 >= oy0 && ix1 <= ox1 && iy1 <= oy1
+    fn top_left(self) -> CanvasPoint {
+        CanvasPoint {
+            x: self.min_x,
+            y: self.min_y,
+        }
+    }
+
+    fn to_rect(self) -> CanvasRect {
+        CanvasRect {
+            origin: self.top_left(),
+            size: CanvasSize {
+                width: (self.max_x - self.min_x).max(0.0),
+                height: (self.max_y - self.min_y).max(0.0),
+            },
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        }
+    }
+
+    fn intersects(self, other: Self) -> bool {
+        self.min_x < other.max_x
+            && self.max_x > other.min_x
+            && self.min_y < other.max_y
+            && self.max_y > other.min_y
+    }
+
+    fn contains(self, other: Self) -> bool {
+        other.min_x >= self.min_x
+            && other.min_y >= self.min_y
+            && other.max_x <= self.max_x
+            && other.max_y <= self.max_y
+    }
 }
 
 #[cfg(test)]
@@ -798,5 +833,46 @@ mod tests {
             },
         );
         assert_eq!(full, vec![a]);
+    }
+
+    #[test]
+    fn get_nodes_inside_rejects_non_finite_query_rect() {
+        let mut g = Graph::new(GraphId::from_u128(1));
+        let a = NodeId::new();
+        g.nodes.insert(
+            a,
+            node_at(
+                CanvasPoint { x: 0.0, y: 0.0 },
+                Some(CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                }),
+            ),
+        );
+
+        let mut lookups = NodeGraphLookups::default();
+        lookups.rebuild_from(&g);
+
+        let found = get_nodes_inside(
+            &lookups,
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: f32::INFINITY,
+                    y: 0.0,
+                },
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+            GetNodesInsideOptions {
+                inclusion: NodeInclusion::Partial,
+                node_origin: (0.0, 0.0),
+                include_hidden: true,
+                fallback_size: None,
+            },
+        );
+
+        assert!(found.is_empty());
     }
 }
