@@ -28,4 +28,17 @@ impl FitViewNodeInfo {
             height: size_px.height / zoom,
         })
     }
+
+    pub fn top_left_at_zoom(&self, node_origin: (f32, f32), zoom: f32) -> Option<CanvasPoint> {
+        if !self.pos.is_finite() {
+            return None;
+        }
+
+        let size_canvas = self.canvas_size_at_zoom(zoom)?;
+        let (origin_x, origin_y) = node_origin;
+        Some(CanvasPoint {
+            x: self.pos.x - origin_x * size_canvas.width,
+            y: self.pos.y - origin_y * size_canvas.height,
+        })
+    }
 }

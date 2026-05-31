@@ -1,5 +1,3 @@
-use jellyflow_core::core::CanvasPoint;
-
 use super::FitViewNodeInfo;
 
 pub(super) fn project_nodes_to_top_left(
@@ -8,18 +6,14 @@ pub(super) fn project_nodes_to_top_left(
     zoom: f32,
 ) -> Vec<FitViewNodeInfo> {
     let mut projected = Vec::with_capacity(nodes.len());
-    let (origin_x, origin_y) = node_origin;
 
     for node in nodes {
-        let Some(size_canvas) = node.canvas_size_at_zoom(zoom) else {
+        let Some(pos) = node.top_left_at_zoom(node_origin, zoom) else {
             continue;
         };
 
         projected.push(FitViewNodeInfo {
-            pos: CanvasPoint {
-                x: node.pos.x - origin_x * size_canvas.width,
-                y: node.pos.y - origin_y * size_canvas.height,
-            },
+            pos,
             size_px: node.size_px,
         });
     }
