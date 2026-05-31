@@ -58,14 +58,11 @@ fn install_callbacks_receives_graph_and_view_events() {
     let recorder = Recorder { log: log.clone() };
     let _token = install_callbacks(&mut store, recorder);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 1.0, y: 2.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 1.0, y: 2.0 },
+    }]);
     let _ = store.dispatch_transaction(&tx).expect("dispatch");
 
     store.update_view_state(|s| {
@@ -118,14 +115,12 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
     };
     let _token = install_callbacks(&mut store, recorder);
 
-    let tx = GraphTransaction {
-        label: Some("Port Data".into()),
-        ops: vec![GraphOp::SetPortData {
-            id: out_port,
-            from: serde_json::Value::Null,
-            to: serde_json::json!({ "unit": "kg" }),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetPortData {
+        id: out_port,
+        from: serde_json::Value::Null,
+        to: serde_json::json!({ "unit": "kg" }),
+    }])
+    .with_label("Port Data");
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
 
     assert!(matches!(
@@ -178,26 +173,23 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
         },
     );
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![
-            GraphOp::SetNodePos {
-                id: a,
-                from: CanvasPoint { x: 0.0, y: 0.0 },
-                to: CanvasPoint { x: 123.0, y: 456.0 },
-            },
-            GraphOp::SetNodeHidden {
-                id: a,
-                from: false,
-                to: true,
-            },
-            GraphOp::SetEdgeReconnectable {
-                id: eid,
-                from: None,
-                to: Some(EdgeReconnectable::Bool(false)),
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: a,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 123.0, y: 456.0 },
+        },
+        GraphOp::SetNodeHidden {
+            id: a,
+            from: false,
+            to: true,
+        },
+        GraphOp::SetEdgeReconnectable {
+            id: eid,
+            from: None,
+            to: Some(EdgeReconnectable::Bool(false)),
+        },
+    ]);
     let _ = store.dispatch_transaction(&tx).expect("dispatch");
 
     let store_json = serde_json::to_value(store.graph()).expect("store json");
@@ -299,54 +291,45 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
     store.set_selection(vec![a], vec![eid], vec![GroupId::new()]);
 
     let e2 = EdgeId::new();
-    let tx_add = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::AddEdge {
-            id: e2,
-            edge: Edge {
-                kind: EdgeKind::Data,
-                from: out_port,
-                to: in_port,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        }],
-    };
+    let tx_add = GraphTransaction::from_ops([GraphOp::AddEdge {
+        id: e2,
+        edge: Edge {
+            kind: EdgeKind::Data,
+            from: out_port,
+            to: in_port,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    }]);
     let _ = store.dispatch_transaction(&tx_add).expect("dispatch add");
 
-    let tx_reconnect = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetEdgeEndpoints {
-            id: e2,
-            from: EdgeEndpoints {
-                from: out_port,
-                to: in_port,
-            },
-            to: EdgeEndpoints {
-                from: out_port,
-                to: in2,
-            },
-        }],
-    };
+    let tx_reconnect = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
+        id: e2,
+        from: EdgeEndpoints {
+            from: out_port,
+            to: in_port,
+        },
+        to: EdgeEndpoints {
+            from: out_port,
+            to: in2,
+        },
+    }]);
     let _ = store
         .dispatch_transaction(&tx_reconnect)
         .expect("dispatch reconnect");
 
-    let tx_remove = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::RemoveEdge {
-            id: e2,
-            edge: Edge {
-                kind: EdgeKind::Data,
-                from: out_port,
-                to: in2,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        }],
-    };
+    let tx_remove = GraphTransaction::from_ops([GraphOp::RemoveEdge {
+        id: e2,
+        edge: Edge {
+            kind: EdgeKind::Data,
+            from: out_port,
+            to: in2,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    }]);
     let _ = store
         .dispatch_transaction(&tx_remove)
         .expect("dispatch remove");
@@ -411,10 +394,7 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
         .graph()
         .build_remove_node_op(a)
         .expect("remove node op");
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![op],
-    };
+    let tx = GraphTransaction::from_ops([op]);
     let _ = store.dispatch_transaction(&tx).expect("dispatch remove");
 
     assert!(nodes_deleted.borrow().contains(&a));
