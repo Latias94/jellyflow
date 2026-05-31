@@ -11,7 +11,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
     ) -> Result<(), ChangesToTransactionError> {
         match change {
             NodeChange::Add { id, node } => {
-                self.tx.push(GraphOp::AddNode {
+                self.push_op(GraphOp::AddNode {
                     id: *id,
                     node: node.clone(),
                 });
@@ -132,7 +132,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
         let op = GraphMutationPlanner::new(self.graph)
             .remove_node_op(id)
             .map_err(|_| ChangesToTransactionError::MissingNode(id))?;
-        self.tx.push(op);
+        self.push_op(op);
         Ok(())
     }
 
@@ -145,7 +145,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
             let node = self.existing_node(id)?;
             build(node)
         };
-        self.tx.push(op);
+        self.push_op(op);
         Ok(())
     }
 }

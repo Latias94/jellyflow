@@ -5,7 +5,7 @@ mod nodes;
 
 use crate::runtime::xyflow::changes::{ChangesToTransactionError, NodeGraphChanges};
 use jellyflow_core::core::{Edge, EdgeId, Graph, Node, NodeId};
-use jellyflow_core::ops::GraphTransaction;
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 pub(super) fn changes_to_transaction(
     changes: &NodeGraphChanges,
@@ -53,5 +53,9 @@ impl<'a> ChangesTransactionPlanner<'a> {
             .edges
             .get(&id)
             .ok_or(ChangesToTransactionError::MissingEdge(id))
+    }
+
+    fn push_op(&mut self, op: GraphOp) {
+        self.tx.push(op);
     }
 }

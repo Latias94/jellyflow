@@ -11,7 +11,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
     ) -> Result<(), ChangesToTransactionError> {
         match change {
             EdgeChange::Add { id, edge } => {
-                self.tx.push(GraphOp::AddEdge {
+                self.push_op(GraphOp::AddEdge {
                     id: *id,
                     edge: edge.clone(),
                 });
@@ -65,7 +65,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
         let op = GraphMutationPlanner::new(self.graph)
             .remove_edge_op(id)
             .map_err(|_| ChangesToTransactionError::MissingEdge(id))?;
-        self.tx.push(op);
+        self.push_op(op);
         Ok(())
     }
 
@@ -78,7 +78,7 @@ impl<'a> ChangesTransactionPlanner<'a> {
             let edge = self.existing_edge(id)?;
             build(edge)
         };
-        self.tx.push(op);
+        self.push_op(op);
         Ok(())
     }
 }
