@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{Graph, PortId};
+use jellyflow_core::core::{Edge, EdgeId, Graph, Node, NodeId, PortId};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyChangesReport {
@@ -102,124 +102,49 @@ impl<'a> ApplyChangesPlanner<'a> {
                 self.mark_applied();
             }
             NodeChange::Position { id, position } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.pos = *position;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.pos = *position);
             }
             NodeChange::Kind { id, kind } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.kind = kind.clone();
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.kind = kind.clone());
             }
             NodeChange::KindVersion { id, kind_version } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.kind_version = *kind_version;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.kind_version = *kind_version);
             }
             NodeChange::Selectable { id, selectable } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.selectable = *selectable;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.selectable = *selectable);
             }
             NodeChange::Draggable { id, draggable } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.draggable = *draggable;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.draggable = *draggable);
             }
             NodeChange::Connectable { id, connectable } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.connectable = *connectable;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.connectable = *connectable);
             }
             NodeChange::Deletable { id, deletable } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.deletable = *deletable;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.deletable = *deletable);
             }
             NodeChange::Parent { id, parent } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.parent = *parent;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.parent = *parent);
             }
             NodeChange::Extent { id, extent } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.extent = *extent;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.extent = *extent);
             }
             NodeChange::ExpandParent { id, expand_parent } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.expand_parent = *expand_parent;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.expand_parent = *expand_parent);
             }
             NodeChange::Size { id, size } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.size = *size;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.size = *size);
             }
             NodeChange::Hidden { id, hidden } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.hidden = *hidden;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.hidden = *hidden);
             }
             NodeChange::Collapsed { id, collapsed } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.collapsed = *collapsed;
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.collapsed = *collapsed);
             }
             NodeChange::Data { id, data } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.data = data.clone();
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.data = data.clone());
             }
             NodeChange::Ports { id, ports } => {
-                let Some(node) = self.graph.nodes.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                node.ports = ports.clone();
-                self.mark_applied();
+                self.mutate_existing_node(*id, |node| node.ports = ports.clone());
             }
         }
     }
@@ -244,47 +169,42 @@ impl<'a> ApplyChangesPlanner<'a> {
                 }
             }
             EdgeChange::Kind { id, kind } => {
-                let Some(edge) = self.graph.edges.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                edge.kind = *kind;
-                self.mark_applied();
+                self.mutate_existing_edge(*id, |edge| edge.kind = *kind);
             }
             EdgeChange::Selectable { id, selectable } => {
-                let Some(edge) = self.graph.edges.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                edge.selectable = *selectable;
-                self.mark_applied();
+                self.mutate_existing_edge(*id, |edge| edge.selectable = *selectable);
             }
             EdgeChange::Deletable { id, deletable } => {
-                let Some(edge) = self.graph.edges.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                edge.deletable = *deletable;
-                self.mark_applied();
+                self.mutate_existing_edge(*id, |edge| edge.deletable = *deletable);
             }
             EdgeChange::Reconnectable { id, reconnectable } => {
-                let Some(edge) = self.graph.edges.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                edge.reconnectable = *reconnectable;
-                self.mark_applied();
+                self.mutate_existing_edge(*id, |edge| edge.reconnectable = *reconnectable);
             }
             EdgeChange::Endpoints { id, from, to } => {
-                let Some(edge) = self.graph.edges.get_mut(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-                edge.from = *from;
-                edge.to = *to;
-                self.mark_applied();
+                self.mutate_existing_edge(*id, |edge| {
+                    edge.from = *from;
+                    edge.to = *to;
+                });
             }
         }
+    }
+
+    fn mutate_existing_node(&mut self, id: NodeId, f: impl FnOnce(&mut Node)) {
+        let Some(node) = self.graph.nodes.get_mut(&id) else {
+            self.mark_ignored();
+            return;
+        };
+        f(node);
+        self.mark_applied();
+    }
+
+    fn mutate_existing_edge(&mut self, id: EdgeId, f: impl FnOnce(&mut Edge)) {
+        let Some(edge) = self.graph.edges.get_mut(&id) else {
+            self.mark_ignored();
+            return;
+        };
+        f(edge);
+        self.mark_applied();
     }
 
     fn mark_applied(&mut self) {
