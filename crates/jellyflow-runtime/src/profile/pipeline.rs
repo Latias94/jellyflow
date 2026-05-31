@@ -40,44 +40,64 @@ pub fn apply_transaction_with_profile(
     profile: &mut dyn GraphProfile,
     tx: &GraphTransaction,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
-    let mut committed = GraphTransaction {
-        label: tx.label.clone(),
-        ops: Vec::new(),
-    };
+    let mut committed = GraphTransaction::new();
+    committed.label = tx.label.clone();
+    apply_original_transaction(graph, tx, &mut committed)?;
 
+    concretize_to_fixed_point(graph, profile, committed)
+}
+
+fn apply_original_transaction(
+    graph: &mut Graph,
+    tx: &GraphTransaction,
+    committed: &mut GraphTransaction,
+) -> Result<(), ApplyPipelineError> {
     tx.apply_to(graph)?;
     committed.ops.extend(tx.ops.clone());
+    Ok(())
+}
 
+fn concretize_to_fixed_point(
+    graph: &mut Graph,
+    profile: &mut dyn GraphProfile,
+    mut committed: GraphTransaction,
+) -> Result<GraphTransaction, ApplyPipelineError> {
     let bound = profile.concretize_bound();
     for _ in 0..bound {
         let derived_ops: Vec<GraphOp> = profile.concretize(graph);
         if derived_ops.is_empty() {
-            let diagnostics = profile.validate_graph(graph);
-            let rejected = diagnostics
-                .iter()
-                .any(|d| d.severity == DiagnosticSeverity::Error);
-            if rejected {
-                let message = diagnostics
-                    .first()
-                    .map(|d| d.message.clone())
-                    .unwrap_or_else(|| "transaction rejected".to_string());
-                return Err(ApplyPipelineError::Rejected {
-                    message,
-                    diagnostics,
-                });
-            }
+            validate_profile_graph(profile, graph)?;
             return Ok(committed);
         }
 
-        let derived_tx = GraphTransaction {
-            label: None,
-            ops: derived_ops.clone(),
-        };
-        derived_tx.apply_to(graph)?;
+        apply_derived_ops(graph, &derived_ops)?;
         committed.ops.extend(derived_ops);
     }
 
     Err(ApplyPipelineError::ConcretizeNonConvergent { bound })
+}
+
+fn apply_derived_ops(graph: &mut Graph, ops: &[GraphOp]) -> Result<(), ApplyPipelineError> {
+    let derived_tx = GraphTransaction {
+        label: None,
+        ops: ops.to_vec(),
+    };
+    derived_tx.apply_to(graph)?;
+    Ok(())
+}
+
+fn validate_profile_graph(
+    profile: &mut dyn GraphProfile,
+    graph: &Graph,
+) -> Result<(), ApplyPipelineError> {
+    let diagnostics = profile.validate_graph(graph);
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == DiagnosticSeverity::Error)
+    {
+        return Err(rejected_diagnostics(diagnostics, "transaction rejected"));
+    }
+    Ok(())
 }
 
 /// Helper for UI loops: apply a `ConnectPlan` as a transaction via the profile pipeline.
@@ -94,16 +114,23 @@ pub fn apply_connect_plan_with_profile(
             };
             apply_transaction_with_profile(graph, profile, &tx)
         }
-        ConnectDecision::Reject => {
-            let message = plan
-                .diagnostics
-                .first()
-                .map(|d| d.message.clone())
-                .unwrap_or_else(|| "connect rejected".to_string());
-            Err(ApplyPipelineError::Rejected {
-                message,
-                diagnostics: plan.diagnostics.clone(),
-            })
-        }
+        ConnectDecision::Reject => Err(rejected_diagnostics(
+            plan.diagnostics.clone(),
+            "connect rejected",
+        )),
+    }
+}
+
+fn rejected_diagnostics(
+    diagnostics: Vec<Diagnostic>,
+    fallback_message: &str,
+) -> ApplyPipelineError {
+    let message = diagnostics
+        .first()
+        .map(|d| d.message.clone())
+        .unwrap_or_else(|| fallback_message.to_string());
+    ApplyPipelineError::Rejected {
+        message,
+        diagnostics,
     }
 }
