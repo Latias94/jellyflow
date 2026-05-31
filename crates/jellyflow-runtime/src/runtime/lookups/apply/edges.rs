@@ -20,13 +20,17 @@ impl NodeGraphLookups {
     }
 
     pub(super) fn apply_remove_edge(&mut self, id: EdgeId) -> bool {
-        if let Some(conn) = self.connection_from_edge_lookup(id) {
+        self.remove_edge_from_lookups(id);
+        true
+    }
+
+    pub(super) fn remove_edge_from_lookups(&mut self, edge_id: EdgeId) {
+        if let Some(conn) = self.connection_from_edge_lookup(edge_id) {
             self.remove_edge_connection(conn);
         } else {
-            self.slow_remove_edge_from_connection_lookup(id);
+            self.slow_remove_edge_from_connection_lookup(edge_id);
         }
-        self.edge_lookup.remove(&id);
-        true
+        self.edge_lookup.remove(&edge_id);
     }
 
     pub(super) fn apply_set_edge_kind(&mut self, id: EdgeId, kind: EdgeKind) -> bool {
