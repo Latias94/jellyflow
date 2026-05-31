@@ -1,0 +1,46 @@
+use crate::io::NodeGraphInteractionState;
+use crate::rules::ConnectPlan;
+use crate::runtime::policy::{NodeGraphPortInteractionPolicy, resolve_port_interaction_policy};
+use jellyflow_core::core::{Graph, PortId};
+
+pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
+    graph: &Graph,
+    from_id: PortId,
+    to_id: PortId,
+    state: &NodeGraphInteractionState,
+) -> Option<ConnectPlan> {
+    let from_policy = match port_policy_or_reject(graph, from_id, state) {
+        Ok(policy) => policy,
+        Err(plan) => return Some(plan),
+    };
+    if !from_policy.connectable_start {
+        return Some(ConnectPlan::reject("source port is not connectable"));
+    }
+
+    let to_policy = match port_policy_or_reject(graph, to_id, state) {
+        Ok(policy) => policy,
+        Err(plan) => return Some(plan),
+    };
+    if !to_policy.connectable_end {
+        return Some(ConnectPlan::reject("target port is not connectable"));
+    }
+
+    None
+}
+
+fn port_policy_or_reject(
+    graph: &Graph,
+    port_id: PortId,
+    state: &NodeGraphInteractionState,
+) -> Result<NodeGraphPortInteractionPolicy, ConnectPlan> {
+    let Some(port) = graph.ports.get(&port_id) else {
+        return Err(ConnectPlan::reject(format!("missing port: {port_id:?}")));
+    };
+    let Some(node) = graph.nodes.get(&port.node) else {
+        return Err(ConnectPlan::reject(format!(
+            "missing port owner node: {:?}",
+            port.node
+        )));
+    };
+    Ok(resolve_port_interaction_policy(node, port, state))
+}
