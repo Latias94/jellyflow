@@ -1,3 +1,4 @@
+use crate::core::{Group, GroupId, NodeId};
 use crate::ops::GraphOp;
 
 pub(super) fn invert_document_op(op: &GraphOp) -> Vec<GraphOp> {
@@ -54,21 +55,7 @@ pub(super) fn invert_document_op(op: &GraphOp) -> Vec<GraphOp> {
             id,
             group,
             detached,
-        } => {
-            let mut out: Vec<GraphOp> = Vec::new();
-            out.push(GraphOp::AddGroup {
-                id: *id,
-                group: group.clone(),
-            });
-            for (node_id, parent) in detached {
-                out.push(GraphOp::SetNodeParent {
-                    id: *node_id,
-                    from: None,
-                    to: *parent,
-                });
-            }
-            out
-        }
+        } => restore_removed_group(*id, group, detached),
         GraphOp::SetGroupRect { id, from, to } => vec![GraphOp::SetGroupRect {
             id: *id,
             from: *to,
@@ -110,4 +97,24 @@ pub(super) fn invert_document_op(op: &GraphOp) -> Vec<GraphOp> {
         }],
         _ => unreachable!("document invert handler received element operation"),
     }
+}
+
+fn restore_removed_group(
+    id: GroupId,
+    group: &Group,
+    detached: &[(NodeId, Option<GroupId>)],
+) -> Vec<GraphOp> {
+    let mut out: Vec<GraphOp> = Vec::new();
+    out.push(GraphOp::AddGroup {
+        id,
+        group: group.clone(),
+    });
+    for (node_id, parent) in detached {
+        out.push(GraphOp::SetNodeParent {
+            id: *node_id,
+            from: None,
+            to: *parent,
+        });
+    }
+    out
 }
