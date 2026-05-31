@@ -1,6 +1,6 @@
 use crate::rules::ConnectPlan;
 use jellyflow_core::core::{Edge, EdgeId, EdgeKind, Graph, PortCapacity, PortId};
-use jellyflow_core::ops::{GraphMutationError, GraphMutationPlanner, GraphOp};
+use jellyflow_core::ops::{EdgeEndpoints, GraphMutationError, GraphMutationPlanner, GraphOp};
 
 use super::endpoints::ConnectionEndpoints;
 
@@ -72,6 +72,43 @@ pub(in crate::rules::connection) fn connection_exists(
     })
 }
 
+pub(in crate::rules::connection) struct ConnectionOpBuilder {
+    ops: Vec<GraphOp>,
+}
+
+impl ConnectionOpBuilder {
+    pub(in crate::rules::connection) fn with_capacity_disconnects(
+        graph: &Graph,
+        connection: ConnectionCapacity,
+        skip_edge: Option<EdgeId>,
+    ) -> Self {
+        Self {
+            ops: disconnect_for_capacity(graph, connection, skip_edge),
+        }
+    }
+
+    pub(in crate::rules::connection) fn push(&mut self, op: GraphOp) {
+        self.ops.push(op);
+    }
+
+    pub(in crate::rules::connection) fn extend(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
+        self.ops.extend(ops);
+    }
+
+    pub(in crate::rules::connection) fn push_set_edge_endpoints(
+        &mut self,
+        id: EdgeId,
+        from: EdgeEndpoints,
+        to: EdgeEndpoints,
+    ) {
+        self.push(GraphOp::SetEdgeEndpoints { id, from, to });
+    }
+
+    pub(in crate::rules::connection) fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::rules::connection) struct ConnectionCapacity {
     edge_kind: EdgeKind,
@@ -111,7 +148,7 @@ impl ConnectionCapacity {
     }
 }
 
-pub(in crate::rules::connection) fn disconnect_for_capacity(
+fn disconnect_for_capacity(
     graph: &Graph,
     connection: ConnectionCapacity,
     skip_edge: Option<EdgeId>,

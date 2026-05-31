@@ -2,10 +2,9 @@ use crate::io::NodeGraphInteractionState;
 use crate::rules::ConnectPlan;
 use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::GraphOp;
 
 use super::common::{
-    ConnectionCapacity, add_existing_ports_edge_op, connection_exists, disconnect_for_capacity,
+    ConnectionCapacity, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
     edge_between, reject_if_connection_policy_disallows, resolve_connection_endpoints,
 };
 
@@ -41,8 +40,11 @@ pub fn plan_connect_with_mode_and_policy(
         return ConnectPlan::accept();
     }
 
-    let mut ops: Vec<GraphOp> =
-        disconnect_for_capacity(graph, ConnectionCapacity::from_endpoints(&endpoints), None);
+    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
+        graph,
+        ConnectionCapacity::from_endpoints(&endpoints),
+        None,
+    );
 
     let add_edge = match add_existing_ports_edge_op(
         graph,
@@ -54,7 +56,7 @@ pub fn plan_connect_with_mode_and_policy(
     };
     ops.push(add_edge);
 
-    ConnectPlan::from_ops(ops)
+    ConnectPlan::from_ops(ops.into_ops())
 }
 
 /// Plans connecting two ports with default interaction policy.

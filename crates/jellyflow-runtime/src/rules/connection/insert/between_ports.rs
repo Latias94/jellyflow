@@ -2,10 +2,10 @@ use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::{GraphMutationBatchPlanner, GraphOp};
+use jellyflow_core::ops::GraphMutationBatchPlanner;
 
 use super::super::common::{
-    ConnectionCapacity, disconnect_for_capacity, edge_between, ensure_edge_id_available,
+    ConnectionCapacity, ConnectionOpBuilder, edge_between, ensure_edge_id_available,
     reject_if_connection_policy_disallows, reject_mutation_error, resolve_connection_endpoints,
     validate_insert_node_spec,
 };
@@ -53,8 +53,11 @@ pub fn plan_connect_by_inserting_node_with_policy(
         Err(plan) => return plan,
     };
 
-    let mut ops: Vec<GraphOp> =
-        disconnect_for_capacity(graph, ConnectionCapacity::from_endpoints(&endpoints), None);
+    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
+        graph,
+        ConnectionCapacity::from_endpoints(&endpoints),
+        None,
+    );
 
     let mut batch = GraphMutationBatchPlanner::new(graph);
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
@@ -74,7 +77,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
     }
     ops.extend(batch.into_ops());
 
-    ConnectPlan::from_ops(ops)
+    ConnectPlan::from_ops(ops.into_ops())
 }
 
 /// Plans connecting two ports by inserting a node with default interaction policy.

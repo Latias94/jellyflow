@@ -3,10 +3,10 @@ use crate::rules::{ConnectPlan, EdgeEndpoint};
 use crate::runtime::policy::resolve_edge_interaction_policy;
 use jellyflow_core::core::{Edge, EdgeId, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
+use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::common::{
-    ConnectionCapacity, connection_exists, connection_ports, disconnect_for_capacity,
+    ConnectionCapacity, ConnectionOpBuilder, connection_exists, connection_ports,
     reject_duplicate_connection, reject_edge_kind_incompatible_with_ports,
     reject_if_connection_policy_disallows, reject_incompatible_port_kinds, reject_missing_edge,
     reject_reconnect_directions_required, reject_self_connection,
@@ -77,7 +77,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return reject_duplicate_connection();
     }
 
-    let mut ops: Vec<GraphOp> = disconnect_for_capacity(
+    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
         graph,
         ConnectionCapacity::new(
             edge.kind,
@@ -89,13 +89,9 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         Some(edge_id),
     );
 
-    ops.push(GraphOp::SetEdgeEndpoints {
-        id: edge_id,
-        from: old,
-        to: candidate,
-    });
+    ops.push_set_edge_endpoints(edge_id, old, candidate);
 
-    ConnectPlan::from_ops(ops)
+    ConnectPlan::from_ops(ops.into_ops())
 }
 
 fn reconnect_endpoint_policy_rejection(

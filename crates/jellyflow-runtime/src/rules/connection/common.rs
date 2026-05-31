@@ -5,7 +5,7 @@ mod policy;
 mod rejections;
 
 pub(super) use edge_ops::{
-    ConnectionCapacity, add_existing_ports_edge_op, connection_exists, disconnect_for_capacity,
+    ConnectionCapacity, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
     edge_between, edge_like, ensure_edge_id_available, reject_mutation_error,
 };
 pub(super) use endpoints::{connection_ports, resolve_connection_endpoints};
