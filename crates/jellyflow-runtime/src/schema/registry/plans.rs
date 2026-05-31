@@ -33,22 +33,20 @@ impl NodeRegistry {
     }
 }
 
-struct CanonicalizeKindsPlanner {
+struct NodeKindTxWriter {
     tx: GraphTransaction,
-    rewrites: Vec<NodeKindRewrite>,
 }
 
-impl CanonicalizeKindsPlanner {
-    fn new() -> Self {
+impl NodeKindTxWriter {
+    fn new(label: &str) -> Self {
         Self {
-            tx: GraphTransaction::new().with_label("Canonicalize node kinds"),
-            rewrites: Vec::new(),
+            tx: GraphTransaction::new().with_label(label),
         }
     }
 
-    fn rewrite_node_kind(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) {
+    fn rewrite_node_kind(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) -> bool {
         if canonical == &node.kind {
-            return;
+            return false;
         }
 
         self.tx.push(GraphOp::SetNodeKind {
@@ -56,6 +54,48 @@ impl CanonicalizeKindsPlanner {
             from: node.kind.clone(),
             to: canonical.clone(),
         });
+        true
+    }
+
+    fn update_node_data(&mut self, id: NodeId, node: &Node, new_data: Value) {
+        self.tx.push(GraphOp::SetNodeData {
+            id,
+            from: node.data.clone(),
+            to: new_data,
+        });
+    }
+
+    fn update_node_kind_version(&mut self, id: NodeId, node: &Node, latest_kind_version: u32) {
+        self.tx.push(GraphOp::SetNodeKindVersion {
+            id,
+            from: node.kind_version,
+            to: latest_kind_version,
+        });
+    }
+
+    fn into_tx(self) -> GraphTransaction {
+        self.tx
+    }
+}
+
+struct CanonicalizeKindsPlanner {
+    tx: NodeKindTxWriter,
+    rewrites: Vec<NodeKindRewrite>,
+}
+
+impl CanonicalizeKindsPlanner {
+    fn new() -> Self {
+        Self {
+            tx: NodeKindTxWriter::new("Canonicalize node kinds"),
+            rewrites: Vec::new(),
+        }
+    }
+
+    fn rewrite_node_kind(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) {
+        if !self.tx.rewrite_node_kind(id, node, canonical) {
+            return;
+        }
+
         self.rewrites.push(NodeKindRewrite {
             node: id,
             from: node.kind.clone(),
@@ -65,7 +105,7 @@ impl CanonicalizeKindsPlanner {
 
     fn finish(self) -> CanonicalizeKindsPlan {
         CanonicalizeKindsPlan {
-            tx: self.tx,
+            tx: self.tx.into_tx(),
             rewrites: self.rewrites,
         }
     }
@@ -74,7 +114,7 @@ impl CanonicalizeKindsPlanner {
 struct MigrateNodesPlanner<'a> {
     registry: &'a NodeRegistry,
     graph: &'a Graph,
-    tx: GraphTransaction,
+    tx: NodeKindTxWriter,
     report: MigrateNodesReport,
 }
 
@@ -83,7 +123,7 @@ impl<'a> MigrateNodesPlanner<'a> {
         Self {
             registry,
             graph,
-            tx: GraphTransaction::new().with_label("Migrate node kinds"),
+            tx: NodeKindTxWriter::new("Migrate node kinds"),
             report: MigrateNodesReport::default(),
         }
     }
@@ -94,7 +134,7 @@ impl<'a> MigrateNodesPlanner<'a> {
         }
 
         MigrateNodesPlan {
-            tx: self.tx,
+            tx: self.tx.into_tx(),
             report: self.report,
         }
     }
@@ -147,13 +187,7 @@ impl<'a> MigrateNodesPlanner<'a> {
     }
 
     fn push_kind_canonicalization(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) {
-        if canonical != &node.kind {
-            self.tx.push(GraphOp::SetNodeKind {
-                id,
-                from: node.kind.clone(),
-                to: canonical.clone(),
-            });
-        }
+        self.tx.rewrite_node_kind(id, node, canonical);
     }
 
     fn push_node_upgrade(
@@ -164,16 +198,9 @@ impl<'a> MigrateNodesPlanner<'a> {
         latest_kind_version: u32,
         new_data: Value,
     ) {
-        self.tx.push(GraphOp::SetNodeData {
-            id,
-            from: node.data.clone(),
-            to: new_data,
-        });
-        self.tx.push(GraphOp::SetNodeKindVersion {
-            id,
-            from: node.kind_version,
-            to: latest_kind_version,
-        });
+        self.tx.update_node_data(id, node, new_data);
+        self.tx
+            .update_node_kind_version(id, node, latest_kind_version);
         self.report
             .push_upgraded(id, canonical, node.kind_version, latest_kind_version);
     }
