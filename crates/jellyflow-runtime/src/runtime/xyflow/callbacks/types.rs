@@ -1,4 +1,6 @@
-use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId};
+use jellyflow_core::core::{
+    CanvasPoint, Edge, EdgeId, EdgeKind, GroupId, NodeId, PortId, StickyNoteId,
+};
 use jellyflow_core::ops::EdgeEndpoints;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,6 +136,21 @@ pub struct EdgeConnection {
     pub from: PortId,
     pub to: PortId,
     pub kind: EdgeKind,
+}
+
+impl EdgeConnection {
+    pub fn new(edge: EdgeId, from: PortId, to: PortId, kind: EdgeKind) -> Self {
+        Self {
+            edge,
+            from,
+            to,
+            kind,
+        }
+    }
+
+    pub(in crate::runtime::xyflow) fn from_edge(edge_id: EdgeId, edge: &Edge) -> Self {
+        Self::new(edge_id, edge.from, edge.to, edge.kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

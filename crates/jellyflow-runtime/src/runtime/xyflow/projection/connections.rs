@@ -47,7 +47,9 @@ impl ConnectionChangeAccumulator {
 
     fn push_connected(&mut self, id: EdgeId, edge: &Edge) {
         self.out
-            .push(ConnectionChange::Connected(edge_connection(id, edge)));
+            .push(ConnectionChange::Connected(EdgeConnection::from_edge(
+                id, edge,
+            )));
     }
 
     fn push_disconnected_edges(&mut self, edges: &[(EdgeId, Edge)]) {
@@ -59,20 +61,13 @@ impl ConnectionChangeAccumulator {
     fn push_disconnected_edge(&mut self, id: EdgeId, edge: &Edge) {
         if self.removed_edges.insert(id) {
             self.out
-                .push(ConnectionChange::Disconnected(edge_connection(id, edge)));
+                .push(ConnectionChange::Disconnected(EdgeConnection::from_edge(
+                    id, edge,
+                )));
         }
     }
 
     fn finish(self) -> Vec<ConnectionChange> {
         self.out
-    }
-}
-
-fn edge_connection(id: EdgeId, edge: &Edge) -> EdgeConnection {
-    EdgeConnection {
-        edge: id,
-        from: edge.from,
-        to: edge.to,
-        kind: edge.kind,
     }
 }
