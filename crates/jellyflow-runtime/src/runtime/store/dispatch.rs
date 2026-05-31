@@ -147,14 +147,14 @@ impl NodeGraphStore {
         tx: &mut GraphTransaction,
     ) -> Result<(), ApplyPipelineError> {
         if let Some(middleware) = self.middleware.as_deref_mut() {
-            let snapshot = NodeGraphStoreSnapshot {
-                graph: &self.graph,
-                graph_revision: self.graph_revision,
-                view_state: &self.view_state,
-                interaction: &self.interaction,
-                runtime_tuning: &self.runtime_tuning,
-                history: &self.history,
-            };
+            let snapshot = NodeGraphStoreSnapshot::new(
+                &self.graph,
+                self.graph_revision,
+                &self.view_state,
+                &self.interaction,
+                &self.runtime_tuning,
+                &self.history,
+            );
             middleware.before_dispatch(snapshot, tx)?;
         }
         Ok(())
@@ -162,14 +162,14 @@ impl NodeGraphStore {
 
     fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
         if let Some(middleware) = self.middleware.as_deref_mut() {
-            let snapshot = NodeGraphStoreSnapshot {
-                graph: &self.graph,
-                graph_revision: self.graph_revision,
-                view_state: &self.view_state,
-                interaction: &self.interaction,
-                runtime_tuning: &self.runtime_tuning,
-                history: &self.history,
-            };
+            let snapshot = NodeGraphStoreSnapshot::new(
+                &self.graph,
+                self.graph_revision,
+                &self.view_state,
+                &self.interaction,
+                &self.runtime_tuning,
+                &self.history,
+            );
             middleware.after_dispatch(snapshot, patch);
         }
     }

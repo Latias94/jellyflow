@@ -7,8 +7,9 @@ use crate::io::{
 };
 use crate::rules::EdgeEndpoint;
 use crate::runtime::commit::NodeGraphPatch;
-use jellyflow_core::core::{CanvasPoint, EdgeId, PortId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::GraphHistory;
 
 /// Subscription token returned by [`crate::runtime::store::NodeGraphStore::subscribe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,12 +24,32 @@ impl SubscriptionToken {
 /// Immutable snapshot of store state for selector subscriptions.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeGraphStoreSnapshot<'a> {
-    pub graph: &'a jellyflow_core::core::Graph,
+    pub graph: &'a Graph,
     pub graph_revision: u64,
-    pub view_state: &'a crate::io::NodeGraphViewState,
+    pub view_state: &'a NodeGraphViewState,
     pub interaction: &'a NodeGraphInteractionConfig,
     pub runtime_tuning: &'a NodeGraphRuntimeTuning,
-    pub history: &'a jellyflow_core::ops::GraphHistory,
+    pub history: &'a GraphHistory,
+}
+
+impl<'a> NodeGraphStoreSnapshot<'a> {
+    pub(crate) fn new(
+        graph: &'a Graph,
+        graph_revision: u64,
+        view_state: &'a NodeGraphViewState,
+        interaction: &'a NodeGraphInteractionConfig,
+        runtime_tuning: &'a NodeGraphRuntimeTuning,
+        history: &'a GraphHistory,
+    ) -> Self {
+        Self {
+            graph,
+            graph_revision,
+            view_state,
+            interaction,
+            runtime_tuning,
+            history,
+        }
+    }
 }
 
 /// Atomic document replacement snapshot.
