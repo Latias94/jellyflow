@@ -69,17 +69,15 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
     let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
 
     let from = store.graph().nodes.get(&a).expect("node a").pos;
-    let tx = GraphTransaction {
-        label: Some("seed history".to_string()),
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from,
-            to: CanvasPoint {
-                x: from.x + 10.0,
-                y: from.y + 5.0,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from,
+        to: CanvasPoint {
+            x: from.x + 10.0,
+            y: from.y + 5.0,
+        },
+    }])
+    .with_label("seed history");
     store.dispatch_transaction(&tx).expect("seed history");
     assert!(store.can_undo());
 
@@ -158,17 +156,15 @@ fn store_replace_graph_emits_document_event_and_preserves_history_policy() {
     store.set_selection(vec![b], Vec::new(), Vec::new());
 
     let from = store.graph().nodes.get(&a).expect("node a").pos;
-    let tx = GraphTransaction {
-        label: Some("seed history".to_string()),
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from,
-            to: CanvasPoint {
-                x: from.x + 10.0,
-                y: from.y + 5.0,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from,
+        to: CanvasPoint {
+            x: from.x + 10.0,
+            y: from.y + 5.0,
+        },
+    }])
+    .with_label("seed history");
     store.dispatch_transaction(&tx).expect("seed history");
     assert!(store.can_undo());
 
