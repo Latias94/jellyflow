@@ -3,6 +3,8 @@ use crate::rules::ConnectPlan;
 use crate::runtime::policy::{NodeGraphPortInteractionPolicy, resolve_port_interaction_policy};
 use jellyflow_core::core::{Graph, PortId};
 
+use super::rejections::{reject_missing_port, reject_missing_port_owner_node};
+
 pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
     graph: &Graph,
     from_id: PortId,
@@ -34,13 +36,10 @@ fn port_policy_or_reject(
     state: &NodeGraphInteractionState,
 ) -> Result<NodeGraphPortInteractionPolicy, ConnectPlan> {
     let Some(port) = graph.ports.get(&port_id) else {
-        return Err(ConnectPlan::reject(format!("missing port: {port_id:?}")));
+        return Err(reject_missing_port(port_id));
     };
     let Some(node) = graph.nodes.get(&port.node) else {
-        return Err(ConnectPlan::reject(format!(
-            "missing port owner node: {:?}",
-            port.node
-        )));
+        return Err(reject_missing_port_owner_node(port.node));
     };
     Ok(resolve_port_interaction_policy(node, port, state))
 }

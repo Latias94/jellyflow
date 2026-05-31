@@ -7,7 +7,10 @@ use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
 
 use super::super::common::{
     ConnectionCapacity, connection_exists, connection_ports, disconnect_for_capacity,
-    edge_kind_for_port_kind, reject_if_connection_policy_disallows,
+    edge_kind_for_port_kind, reject_duplicate_connection, reject_edge_kind_incompatible_with_ports,
+    reject_if_connection_policy_disallows, reject_incompatible_port_kind,
+    reject_incompatible_port_kinds, reject_missing_edge, reject_reconnect_directions_required,
+    reject_self_connection,
 };
 
 /// Plans reconnecting one endpoint of an existing edge to a new port.
@@ -22,7 +25,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
     let Some(edge) = graph.edges.get(&edge_id) else {
-        return ConnectPlan::reject(format!("missing edge: {edge_id:?}"));
+        return reject_missing_edge(edge_id);
     };
 
     if let Some(reject) = reconnect_endpoint_policy_rejection(edge, endpoint, state) {
@@ -33,7 +36,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
     let candidate = reconnect_candidate(edge, endpoint, new_port);
 
     if candidate.from == candidate.to {
-        return ConnectPlan::reject("cannot connect a port to itself");
+        return reject_self_connection();
     }
 
     if candidate == old {
@@ -60,14 +63,11 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
     }
 
     let Some(expected_edge_kind) = edge_kind_for_port_kind(from.kind) else {
-        return ConnectPlan::reject("port kinds are incompatible");
+        return reject_incompatible_port_kind();
     };
 
     if edge.kind != expected_edge_kind {
-        return ConnectPlan::reject(format!(
-            "edge kind is incompatible with ports: edge={:?} expected={:?}",
-            edge.kind, expected_edge_kind
-        ));
+        return reject_edge_kind_incompatible_with_ports(edge.kind, expected_edge_kind);
     }
 
     if connection_exists(
@@ -77,7 +77,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         candidate.to,
         Some(edge_id),
     ) {
-        return ConnectPlan::reject("duplicate connection already exists");
+        return reject_duplicate_connection();
     }
 
     let mut ops: Vec<GraphOp> = disconnect_for_capacity(
@@ -145,14 +145,9 @@ fn strict_mode_rejection(
 ) -> Option<ConnectPlan> {
     (mode == NodeGraphConnectionMode::Strict
         && (from.dir != PortDirection::Out || to.dir != PortDirection::In))
-        .then(|| ConnectPlan::reject("ports must be out -> in for reconnection"))
+        .then(reject_reconnect_directions_required)
 }
 
 fn port_kind_rejection(from: &Port, to: &Port) -> Option<ConnectPlan> {
-    (from.kind != to.kind).then(|| {
-        ConnectPlan::reject(format!(
-            "port kinds are incompatible: from={:?} to={:?}",
-            from.kind, to.kind
-        ))
-    })
+    (from.kind != to.kind).then(|| reject_incompatible_port_kinds(from.kind, to.kind))
 }

@@ -3,6 +3,10 @@ use jellyflow_core::core::{EdgeKind, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::kinds::edge_kind_for_port_kind;
+use super::rejections::{
+    reject_incompatible_port_kind, reject_incompatible_port_kinds, reject_missing_port,
+    reject_opposite_directions_required, reject_self_connection,
+};
 
 pub(in crate::rules::connection) struct ConnectionEndpoints<'a> {
     pub from_id: PortId,
@@ -19,14 +23,14 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
     mode: NodeGraphConnectionMode,
 ) -> Result<ConnectionEndpoints<'_>, ConnectPlan> {
     if a == b {
-        return Err(ConnectPlan::reject("cannot connect a port to itself"));
+        return Err(reject_self_connection());
     }
 
     let Some(port_a) = graph.ports.get(&a) else {
-        return Err(ConnectPlan::reject(format!("missing port: {a:?}")));
+        return Err(reject_missing_port(a));
     };
     let Some(port_b) = graph.ports.get(&b) else {
-        return Err(ConnectPlan::reject(format!("missing port: {b:?}")));
+        return Err(reject_missing_port(b));
     };
 
     let (from_id, to_id) = match mode {
@@ -34,9 +38,7 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
             (PortDirection::Out, PortDirection::In) => (a, b),
             (PortDirection::In, PortDirection::Out) => (b, a),
             _ => {
-                return Err(ConnectPlan::reject(
-                    "ports must have opposite directions (in/out)",
-                ));
+                return Err(reject_opposite_directions_required());
             }
         },
         NodeGraphConnectionMode::Loose => match port_a.dir {
@@ -48,14 +50,11 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
     let (from, to) = connection_ports(graph, from_id, to_id)?;
 
     if from.kind != to.kind {
-        return Err(ConnectPlan::reject(format!(
-            "port kinds are incompatible: from={:?} to={:?}",
-            from.kind, to.kind
-        )));
+        return Err(reject_incompatible_port_kinds(from.kind, to.kind));
     }
 
     let Some(edge_kind) = edge_kind_for_port_kind(from.kind) else {
-        return Err(ConnectPlan::reject("port kinds are incompatible"));
+        return Err(reject_incompatible_port_kind());
     };
 
     Ok(ConnectionEndpoints {
@@ -73,10 +72,10 @@ pub(in crate::rules::connection) fn connection_ports(
     to_id: PortId,
 ) -> Result<(&Port, &Port), ConnectPlan> {
     let Some(from) = graph.ports.get(&from_id) else {
-        return Err(ConnectPlan::reject(format!("missing port: {from_id:?}")));
+        return Err(reject_missing_port(from_id));
     };
     let Some(to) = graph.ports.get(&to_id) else {
-        return Err(ConnectPlan::reject(format!("missing port: {to_id:?}")));
+        return Err(reject_missing_port(to_id));
     };
     Ok((from, to))
 }
