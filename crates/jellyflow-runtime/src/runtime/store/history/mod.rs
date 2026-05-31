@@ -5,7 +5,8 @@ mod replay;
 use crate::profile::{ApplyPipelineError, GraphProfile};
 
 use self::replay::{HistoryReplayDirection, HistoryReplayPipeline};
-use super::{DispatchError, DispatchOutcome, DispatchProfile, NodeGraphStore};
+use super::dispatch_profile::DispatchProfile;
+use super::{DispatchError, DispatchOutcome, NodeGraphStore};
 
 impl NodeGraphStore {
     /// Undoes the last committed transaction.

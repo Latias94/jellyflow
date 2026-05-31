@@ -3,7 +3,7 @@ use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
-use super::super::{DispatchProfile, NodeGraphStore};
+use super::super::{NodeGraphStore, dispatch_profile::DispatchProfile};
 
 pub(super) struct DispatchPipeline<'store, 'profile> {
     store: &'store mut NodeGraphStore,

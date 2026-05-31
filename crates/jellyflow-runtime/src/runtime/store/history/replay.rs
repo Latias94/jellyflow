@@ -2,7 +2,7 @@ use crate::profile::ApplyPipelineError;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphHistory, GraphTransaction};
 
-use super::super::{DispatchProfile, NodeGraphStore};
+use super::super::{NodeGraphStore, dispatch_profile::DispatchProfile};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum HistoryReplayDirection {

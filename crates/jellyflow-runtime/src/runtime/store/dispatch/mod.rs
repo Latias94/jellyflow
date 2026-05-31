@@ -9,8 +9,9 @@ use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::GraphTransaction;
 
+use super::dispatch_profile::DispatchProfile;
 use super::snapshot::StoreSnapshotParts;
-use super::{DispatchError, DispatchOutcome, DispatchProfile, NodeGraphStore};
+use super::{DispatchError, DispatchOutcome, NodeGraphStore};
 
 use self::pipeline::{DispatchPipeline, DispatchPipelineResult};
 

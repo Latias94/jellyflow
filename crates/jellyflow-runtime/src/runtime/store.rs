@@ -7,6 +7,7 @@
 //! - dispatch methods that return a full-fidelity `NodeGraphPatch`.
 
 mod dispatch;
+mod dispatch_profile;
 mod events;
 mod history;
 mod snapshot;
@@ -16,7 +17,7 @@ mod view;
 use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
-use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
+use crate::profile::{ApplyPipelineError, GraphProfile};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
@@ -64,25 +65,6 @@ pub struct NodeGraphStore {
     middleware: Option<Box<dyn NodeGraphStoreMiddleware>>,
     lookups: NodeGraphLookups,
     subscriptions: subscriptions::StoreSubscriptions,
-}
-
-enum DispatchProfile<'a> {
-    StoreProfile,
-    External(&'a mut dyn GraphProfile),
-}
-
-impl DispatchProfile<'_> {
-    fn apply_to_graph(
-        &mut self,
-        store: &mut NodeGraphStore,
-        graph: &mut Graph,
-        tx: &GraphTransaction,
-    ) -> Result<GraphTransaction, ApplyPipelineError> {
-        match self {
-            Self::StoreProfile => store.apply_to_graph(graph, tx),
-            Self::External(profile) => apply_transaction_with_profile(graph, &mut **profile, tx),
-        }
-    }
 }
 
 impl std::fmt::Debug for NodeGraphStore {
