@@ -78,11 +78,11 @@ impl ConnectPlan {
     }
 
     /// Creates an accepted plan with planned connection ops.
-    pub fn from_ops(ops: Vec<GraphOp>) -> Self {
+    pub fn from_ops(ops: impl IntoIterator<Item = GraphOp>) -> Self {
         Self {
             decision: ConnectDecision::Accept,
             diagnostics: Vec::new(),
-            ops,
+            ops: ops.into_iter().collect(),
         }
     }
 
@@ -157,11 +157,11 @@ impl DeletePlan {
     }
 
     /// Creates an accepted plan with planned delete ops.
-    pub fn from_ops(ops: Vec<GraphOp>) -> Self {
+    pub fn from_ops(ops: impl IntoIterator<Item = GraphOp>) -> Self {
         Self {
             decision: DeleteDecision::Accept,
             diagnostics: Vec::new(),
-            ops,
+            ops: ops.into_iter().collect(),
         }
     }
 
