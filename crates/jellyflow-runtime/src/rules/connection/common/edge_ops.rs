@@ -8,6 +8,18 @@ pub(in crate::rules::connection) fn reject_mutation_error(
     ConnectPlan::reject(error.to_string())
 }
 
+pub(in crate::rules::connection) fn ensure_edge_id_available(
+    graph: &Graph,
+    edge_id: EdgeId,
+) -> Result<(), ConnectPlan> {
+    if graph.edges.contains_key(&edge_id) {
+        return Err(ConnectPlan::reject(format!(
+            "edge already exists: {edge_id:?}"
+        )));
+    }
+    Ok(())
+}
+
 fn remove_edge_op(graph: &Graph, edge_id: EdgeId) -> GraphOp {
     GraphMutationPlanner::new(graph)
         .remove_edge_op(edge_id)

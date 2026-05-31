@@ -3,7 +3,8 @@ use jellyflow_core::core::{EdgeId, Graph, PortDirection};
 use jellyflow_core::ops::{EdgeEndpoints, GraphMutationBatchPlanner};
 
 use super::super::common::{
-    edge_like, port_kind_for_edge_kind, reject_mutation_error, validate_insert_node_spec,
+    edge_like, ensure_edge_id_available, port_kind_for_edge_kind, reject_mutation_error,
+    validate_insert_node_spec,
 };
 
 /// Plans splitting an existing edge by inserting a node (preserving the edge identity for the first segment).
@@ -16,8 +17,8 @@ pub fn plan_split_edge_by_inserting_node(
     let Some(edge) = graph.edges.get(&edge_id) else {
         return ConnectPlan::reject(format!("missing edge: {edge_id:?}"));
     };
-    if graph.edges.contains_key(&new_edge_id) {
-        return ConnectPlan::reject(format!("edge already exists: {new_edge_id:?}"));
+    if let Err(reject) = ensure_edge_id_available(graph, new_edge_id) {
+        return reject;
     }
 
     let Some(from_port) = graph.ports.get(&edge.from) else {

@@ -5,7 +5,7 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphMutationBatchPlanner, GraphOp};
 
 use super::super::common::{
-    disconnect_for_capacity, edge_between, port_kind_for_edge_kind,
+    disconnect_for_capacity, edge_between, ensure_edge_id_available, port_kind_for_edge_kind,
     reject_if_connection_policy_disallows, reject_mutation_error, resolve_connection_endpoints,
     validate_insert_node_spec,
 };
@@ -34,11 +34,11 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return reject;
     };
 
-    if graph.edges.contains_key(&first_edge_id) {
-        return ConnectPlan::reject(format!("edge already exists: {first_edge_id:?}"));
+    if let Err(reject) = ensure_edge_id_available(graph, first_edge_id) {
+        return reject;
     }
-    if graph.edges.contains_key(&second_edge_id) {
-        return ConnectPlan::reject(format!("edge already exists: {second_edge_id:?}"));
+    if let Err(reject) = ensure_edge_id_available(graph, second_edge_id) {
+        return reject;
     }
 
     let expected_port_kind = port_kind_for_edge_kind(endpoints.edge_kind);

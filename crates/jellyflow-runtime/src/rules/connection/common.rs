@@ -6,7 +6,7 @@ mod policy;
 
 pub(super) use edge_ops::{
     add_existing_ports_edge_op, connection_exists, disconnect_for_capacity, edge_between,
-    edge_like, reject_mutation_error,
+    edge_like, ensure_edge_id_available, reject_mutation_error,
 };
 pub(super) use endpoints::resolve_connection_endpoints;
 pub(super) use insert_spec::validate_insert_node_spec;
