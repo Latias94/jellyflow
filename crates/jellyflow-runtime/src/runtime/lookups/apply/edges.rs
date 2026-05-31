@@ -64,7 +64,7 @@ impl NodeGraphLookups {
         let Some(edge) = graph.edges.get(&id) else {
             return false;
         };
-        let Some((entry, _conn)) = Self::edge_lookup_entry_from_graph(
+        let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
             graph,
             id,
             edge.kind,
@@ -74,6 +74,7 @@ impl NodeGraphLookups {
             return false;
         };
         self.edge_lookup.insert(id, entry);
+        self.add_edge_connection(conn);
         true
     }
 

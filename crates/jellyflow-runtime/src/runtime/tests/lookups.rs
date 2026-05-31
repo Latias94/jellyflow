@@ -1,6 +1,8 @@
 use super::fixtures::make_graph;
 
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
+use jellyflow_core::core::EdgeReconnectable;
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn lookups_rebuild_populates_connection_lookup() {
@@ -50,4 +52,36 @@ fn lookups_connections_for_node_side_filters_by_direction() {
     assert!(b_source.is_none() || !b_source.unwrap().contains_key(&eid));
 
     let _ = (out_port, in_port);
+}
+
+#[test]
+fn lookups_apply_edge_reconnectable_recovers_missing_edge_lookup_with_connections() {
+    let (mut g, a, b, out_port, in_port, eid) = make_graph();
+    let reconnectable = Some(EdgeReconnectable::Bool(false));
+    g.edges.get_mut(&eid).unwrap().reconnectable = reconnectable;
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeReconnectable {
+        id: eid,
+        from: None,
+        to: reconnectable,
+    }]);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.apply_transaction(&g, &tx);
+
+    assert_eq!(
+        lookups.edge_lookup.get(&eid).unwrap().reconnectable,
+        reconnectable
+    );
+    assert!(
+        lookups
+            .connections_for_port(a, ConnectionSide::Source, out_port)
+            .expect("source connections")
+            .contains_key(&eid)
+    );
+    assert!(
+        lookups
+            .connections_for_port(b, ConnectionSide::Target, in_port)
+            .expect("target connections")
+            .contains_key(&eid)
+    );
 }
