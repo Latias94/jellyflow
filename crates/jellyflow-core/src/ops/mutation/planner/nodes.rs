@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::core::{Node, NodeId, Port, PortId};
+use crate::core::{Graph, Node, NodeId, Port, PortId};
 use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
@@ -36,39 +36,19 @@ impl GraphMutationPlanner<'_> {
             return Err(GraphMutationError::MissingGroup(parent));
         }
 
-        let ports: Vec<(PortId, Port)> = ports.into_iter().collect();
-        let mut seen = BTreeSet::new();
-        let mut port_order = Vec::with_capacity(ports.len());
-        for (port_id, port) in &ports {
-            if self.graph.ports.contains_key(port_id) {
-                return Err(GraphMutationError::PortAlreadyExists(*port_id));
-            }
-            if !seen.insert(*port_id) {
-                return Err(GraphMutationError::DuplicateNodePort {
-                    node: id,
-                    port: *port_id,
-                });
-            }
-            if port.node != id {
-                return Err(GraphMutationError::PortOwnerMismatch {
-                    port: *port_id,
-                    expected: id,
-                    got: port.node,
-                });
-            }
-            port_order.push(*port_id);
-        }
+        let NodePortsForInsert { ports, order } =
+            NodePortsForInsert::collect(self.graph, id, ports)?;
 
         node.ports = Vec::new();
         let mut ops = vec![GraphOp::AddNode { id, node }];
         for (port_id, port) in ports {
             ops.push(GraphOp::AddPort { id: port_id, port });
         }
-        if !port_order.is_empty() {
+        if !order.is_empty() {
             ops.push(GraphOp::SetNodePorts {
                 id,
                 from: Vec::new(),
-                to: port_order,
+                to: order,
             });
         }
         Ok(ops)
@@ -101,6 +81,49 @@ impl GraphMutationPlanner<'_> {
         Ok(GraphTransaction {
             label: Some(label.into()),
             ops: vec![self.remove_node_op(id)?],
+        })
+    }
+}
+
+struct NodePortsForInsert {
+    ports: Vec<(PortId, Port)>,
+    order: Vec<PortId>,
+}
+
+impl NodePortsForInsert {
+    fn collect(
+        graph: &Graph,
+        node: NodeId,
+        ports: impl IntoIterator<Item = (PortId, Port)>,
+    ) -> Result<Self, GraphMutationError> {
+        let mut seen = BTreeSet::new();
+        let mut collected = Vec::new();
+        let mut order = Vec::new();
+
+        for (port_id, port) in ports {
+            if graph.ports.contains_key(&port_id) {
+                return Err(GraphMutationError::PortAlreadyExists(port_id));
+            }
+            if !seen.insert(port_id) {
+                return Err(GraphMutationError::DuplicateNodePort {
+                    node,
+                    port: port_id,
+                });
+            }
+            if port.node != node {
+                return Err(GraphMutationError::PortOwnerMismatch {
+                    port: port_id,
+                    expected: node,
+                    got: port.node,
+                });
+            }
+            order.push(port_id);
+            collected.push((port_id, port));
+        }
+
+        Ok(Self {
+            ports: collected,
+            order,
         })
     }
 }
