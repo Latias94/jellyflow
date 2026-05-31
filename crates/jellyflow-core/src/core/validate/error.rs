@@ -1,5 +1,6 @@
 use crate::core::{
-    EdgeId, EdgeKind, GraphId, GroupId, NodeId, PortCapacity, PortId, PortKind, SymbolId,
+    EdgeId, EdgeKind, GraphId, GroupId, NodeId, PortCapacity, PortId, PortKind, SubgraphNodeError,
+    SymbolId, SymbolRefNodeError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -96,4 +97,34 @@ pub enum GraphValidationError {
         "symbol ref node target symbol is not declared in symbols: node={node:?} symbol_id={symbol_id:?}"
     )]
     SymbolRefTargetNotDeclared { node: NodeId, symbol_id: SymbolId },
+}
+
+impl From<SubgraphNodeError> for GraphValidationError {
+    fn from(err: SubgraphNodeError) -> Self {
+        match err {
+            SubgraphNodeError::MissingGraphId { node } => Self::SubgraphNodeMissingGraphId { node },
+            SubgraphNodeError::GraphIdNotString { node } => {
+                Self::SubgraphNodeGraphIdNotString { node }
+            }
+            SubgraphNodeError::InvalidGraphId { node, value } => {
+                Self::SubgraphNodeInvalidGraphId { node, value }
+            }
+        }
+    }
+}
+
+impl From<SymbolRefNodeError> for GraphValidationError {
+    fn from(err: SymbolRefNodeError) -> Self {
+        match err {
+            SymbolRefNodeError::MissingSymbolId { node } => {
+                Self::SymbolRefNodeMissingSymbolId { node }
+            }
+            SymbolRefNodeError::SymbolIdNotString { node } => {
+                Self::SymbolRefNodeSymbolIdNotString { node }
+            }
+            SymbolRefNodeError::InvalidSymbolId { node, value } => {
+                Self::SymbolRefNodeInvalidSymbolId { node, value }
+            }
+        }
+    }
 }

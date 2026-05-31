@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
-    EdgeId, EdgeKind, Graph, Node, NodeId, PortCapacity, PortId, PortKind, SubgraphNodeError,
-    SymbolRefNodeError, subgraph_target_graph_id, symbol_ref_target_symbol_id,
+    EdgeId, EdgeKind, Graph, Node, NodeId, PortCapacity, PortId, PortKind,
+    subgraph_target_graph_id, symbol_ref_target_symbol_id,
 };
 
 use super::{GraphValidationError, GraphValidationReport, validate_graph_storage};
@@ -58,7 +58,7 @@ impl<'a> StructuralValidator<'a> {
                 }
             }
             Ok(None) => {}
-            Err(err) => self.push_subgraph_error(err),
+            Err(err) => self.report.push(err.into()),
         }
     }
 
@@ -74,41 +74,7 @@ impl<'a> StructuralValidator<'a> {
                 }
             }
             Ok(None) => {}
-            Err(err) => self.push_symbol_ref_error(err),
-        }
-    }
-
-    fn push_subgraph_error(&mut self, err: SubgraphNodeError) {
-        match err {
-            SubgraphNodeError::MissingGraphId { node } => {
-                self.report
-                    .push(GraphValidationError::SubgraphNodeMissingGraphId { node });
-            }
-            SubgraphNodeError::GraphIdNotString { node } => {
-                self.report
-                    .push(GraphValidationError::SubgraphNodeGraphIdNotString { node });
-            }
-            SubgraphNodeError::InvalidGraphId { node, value } => {
-                self.report
-                    .push(GraphValidationError::SubgraphNodeInvalidGraphId { node, value });
-            }
-        }
-    }
-
-    fn push_symbol_ref_error(&mut self, err: SymbolRefNodeError) {
-        match err {
-            SymbolRefNodeError::MissingSymbolId { node } => {
-                self.report
-                    .push(GraphValidationError::SymbolRefNodeMissingSymbolId { node });
-            }
-            SymbolRefNodeError::SymbolIdNotString { node } => {
-                self.report
-                    .push(GraphValidationError::SymbolRefNodeSymbolIdNotString { node });
-            }
-            SymbolRefNodeError::InvalidSymbolId { node, value } => {
-                self.report
-                    .push(GraphValidationError::SymbolRefNodeInvalidSymbolId { node, value });
-            }
+            Err(err) => self.report.push(err.into()),
         }
     }
 
