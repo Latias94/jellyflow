@@ -53,11 +53,9 @@ impl NodeGraphLookups {
             };
             return self.recover_edge_lookup_from_graph(graph, id, kind, edge.reconnectable);
         }
-        let Some(conn) = self.connection_from_edge_lookup(id) else {
-            self.slow_update_edge_kind_in_connection_lookup(id, kind);
-            return true;
-        };
-        self.update_edge_kind_in_connection_lookup(conn, kind);
+        if let Some(conn) = self.connection_from_edge_lookup(id) {
+            self.add_edge_connection(conn);
+        }
         true
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::{ConnectionLookupKey, ConnectionSide, HandleConnection, NodeGraphLookups};
-use jellyflow_core::core::{EdgeId, EdgeKind, NodeId, PortId};
+use jellyflow_core::core::{EdgeId, NodeId, PortId};
 
 impl NodeGraphLookups {
     pub fn connections(
@@ -77,31 +77,5 @@ impl NodeGraphLookups {
     pub(super) fn connection_from_edge_lookup(&self, edge: EdgeId) -> Option<HandleConnection> {
         let entry = *self.edge_lookup.get(&edge)?;
         Some(HandleConnection::from_edge_lookup(edge, entry))
-    }
-
-    pub(super) fn update_edge_kind_in_connection_lookup(
-        &mut self,
-        conn: HandleConnection,
-        kind: EdgeKind,
-    ) {
-        for key in conn.lookup_keys() {
-            if let Some(map) = self.connection_lookup.get_mut(&key)
-                && let Some(entry) = map.get_mut(&conn.edge)
-            {
-                entry.kind = kind;
-            }
-        }
-    }
-
-    pub(super) fn slow_update_edge_kind_in_connection_lookup(
-        &mut self,
-        edge: EdgeId,
-        kind: EdgeKind,
-    ) {
-        for map in self.connection_lookup.values_mut() {
-            if let Some(entry) = map.get_mut(&edge) {
-                entry.kind = kind;
-            }
-        }
     }
 }
