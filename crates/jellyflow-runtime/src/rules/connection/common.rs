@@ -1,7 +1,6 @@
 mod edge_ops;
 mod endpoints;
 mod insert_spec;
-mod kinds;
 mod policy;
 mod rejections;
 
@@ -11,7 +10,6 @@ pub(super) use edge_ops::{
 };
 pub(super) use endpoints::{connection_ports, resolve_connection_endpoints};
 pub(super) use insert_spec::validate_insert_node_spec;
-pub(super) use kinds::{edge_kind_for_port_kind, port_kind_for_edge_kind};
 pub(super) use policy::reject_if_connection_policy_disallows;
 pub(super) use rejections::{
     reject_duplicate_connection, reject_edge_kind_incompatible,

@@ -6,8 +6,8 @@ use jellyflow_core::ops::{GraphMutationBatchPlanner, GraphOp};
 
 use super::super::common::{
     ConnectionCapacity, disconnect_for_capacity, edge_between, ensure_edge_id_available,
-    port_kind_for_edge_kind, reject_if_connection_policy_disallows, reject_mutation_error,
-    resolve_connection_endpoints, validate_insert_node_spec,
+    reject_if_connection_policy_disallows, reject_mutation_error, resolve_connection_endpoints,
+    validate_insert_node_spec,
 };
 
 /// Plans connecting two ports by inserting a node between them.
@@ -41,7 +41,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
         return reject;
     }
 
-    let expected_port_kind = port_kind_for_edge_kind(endpoints.edge_kind);
+    let expected_port_kind = endpoints.edge_kind.port_kind();
     let inserted_ports = match validate_insert_node_spec(
         graph,
         &inserted,

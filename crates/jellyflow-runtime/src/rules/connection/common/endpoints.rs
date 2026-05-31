@@ -2,7 +2,6 @@ use crate::rules::ConnectPlan;
 use jellyflow_core::core::{EdgeKind, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
-use super::kinds::edge_kind_for_port_kind;
 use super::rejections::{
     reject_incompatible_port_kinds, reject_missing_port, reject_opposite_directions_required,
     reject_self_connection,
@@ -53,7 +52,7 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         return Err(reject_incompatible_port_kinds(from.kind, to.kind));
     }
 
-    let edge_kind = edge_kind_for_port_kind(from.kind);
+    let edge_kind = from.kind.edge_kind();
 
     Ok(ConnectionEndpoints {
         from_id,

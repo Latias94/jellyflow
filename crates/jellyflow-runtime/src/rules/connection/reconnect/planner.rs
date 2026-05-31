@@ -7,7 +7,7 @@ use jellyflow_core::ops::{EdgeEndpoints, GraphOp};
 
 use super::super::common::{
     ConnectionCapacity, connection_exists, connection_ports, disconnect_for_capacity,
-    edge_kind_for_port_kind, reject_duplicate_connection, reject_edge_kind_incompatible_with_ports,
+    reject_duplicate_connection, reject_edge_kind_incompatible_with_ports,
     reject_if_connection_policy_disallows, reject_incompatible_port_kinds, reject_missing_edge,
     reject_reconnect_directions_required, reject_self_connection,
 };
@@ -61,7 +61,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return reject;
     }
 
-    let expected_edge_kind = edge_kind_for_port_kind(from.kind);
+    let expected_edge_kind = from.kind.edge_kind();
 
     if edge.kind != expected_edge_kind {
         return reject_edge_kind_incompatible_with_ports(edge.kind, expected_edge_kind);
