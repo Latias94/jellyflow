@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::runtime::xyflow::changes::NodeChange;
-use jellyflow_core::core::PortId;
+use jellyflow_core::core::{Node, NodeId, PortId};
 
 use super::ApplyChangesPlanner;
 
@@ -19,20 +19,7 @@ impl<'a> ApplyChangesPlanner<'a> {
                 self.mark_applied();
             }
             NodeChange::Remove { id } => {
-                let Some(removed) = self.graph.nodes.remove(id) else {
-                    self.mark_ignored();
-                    return;
-                };
-
-                let port_ids: HashSet<PortId> =
-                    removed.ports.iter().copied().collect::<HashSet<_>>();
-                if !port_ids.is_empty() {
-                    self.graph.ports.retain(|pid, _| !port_ids.contains(pid));
-                    self.graph
-                        .edges
-                        .retain(|_, e| !port_ids.contains(&e.from) && !port_ids.contains(&e.to));
-                }
-                self.mark_applied();
+                self.remove_node_change(*id);
             }
             NodeChange::Position { id, position } => {
                 self.mutate_existing_node(*id, |node| node.pos = *position);
@@ -80,5 +67,27 @@ impl<'a> ApplyChangesPlanner<'a> {
                 self.mutate_existing_node(*id, |node| node.ports = ports.clone());
             }
         }
+    }
+
+    fn remove_node_change(&mut self, id: NodeId) {
+        let Some(removed) = self.graph.nodes.remove(&id) else {
+            self.mark_ignored();
+            return;
+        };
+
+        self.remove_node_owned_resources(&removed);
+        self.mark_applied();
+    }
+
+    fn remove_node_owned_resources(&mut self, removed: &Node) {
+        let port_ids = removed.ports.iter().copied().collect::<HashSet<PortId>>();
+        if port_ids.is_empty() {
+            return;
+        }
+
+        self.graph.ports.retain(|pid, _| !port_ids.contains(pid));
+        self.graph
+            .edges
+            .retain(|_, edge| !port_ids.contains(&edge.from) && !port_ids.contains(&edge.to));
     }
 }
