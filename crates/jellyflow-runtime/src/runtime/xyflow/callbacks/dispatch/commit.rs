@@ -1,5 +1,5 @@
 use super::super::traits::NodeGraphCallbacks;
-use super::super::types::{ConnectionChange, DeleteChange};
+use super::super::types::ConnectionChange;
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::changes::NodeGraphChanges;
 use jellyflow_core::ops::GraphTransaction;
@@ -52,14 +52,7 @@ fn dispatch_delete_callbacks(callbacks: &mut dyn NodeGraphCallbacks, tx: &GraphT
     if !deleted.sticky_notes.is_empty() {
         callbacks.on_sticky_notes_delete(&deleted.sticky_notes);
     }
-    if has_delete_changes(&deleted) {
+    if !deleted.is_empty() {
         callbacks.on_delete(deleted);
     }
-}
-
-fn has_delete_changes(deleted: &DeleteChange) -> bool {
-    !deleted.nodes.is_empty()
-        || !deleted.edges.is_empty()
-        || !deleted.groups.is_empty()
-        || !deleted.sticky_notes.is_empty()
 }

@@ -9,6 +9,15 @@ pub struct DeleteChange {
     pub sticky_notes: Vec<StickyNoteId>,
 }
 
+impl DeleteChange {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.edges.is_empty()
+            && self.groups.is_empty()
+            && self.sticky_notes.is_empty()
+    }
+}
+
 /// Viewport move gesture kind (UI-driven).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportMoveKind {
