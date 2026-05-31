@@ -2,15 +2,17 @@ use crate::runtime::xyflow::changes::{EdgeChange, NodeGraphChanges};
 use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::GraphOp;
 
-pub(super) fn push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) {
+pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> bool {
     match op {
         GraphOp::RemovePort { edges, .. } => {
             push_removed_edge_changes(edges, out);
         }
-        GraphOp::AddEdge { id, edge } => out.push_edge(EdgeChange::Add {
-            id: *id,
-            edge: edge.clone(),
-        }),
+        GraphOp::AddEdge { id, edge } => {
+            out.push_edge(EdgeChange::Add {
+                id: *id,
+                edge: edge.clone(),
+            });
+        }
         GraphOp::RemoveEdge { id, .. } => out.push_edge(EdgeChange::Remove { id: *id }),
         GraphOp::SetEdgeKind { id, to, .. } => {
             out.push_edge(EdgeChange::Kind { id: *id, kind: *to })
@@ -32,8 +34,9 @@ pub(super) fn push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) {
             from: to.from,
             to: to.to,
         }),
-        _ => unreachable!("edge projection called with non-edge graph operation"),
+        _ => return false,
     }
+    true
 }
 
 pub(super) fn push_removed_edge_changes(edges: &[(EdgeId, Edge)], out: &mut NodeGraphChanges) {

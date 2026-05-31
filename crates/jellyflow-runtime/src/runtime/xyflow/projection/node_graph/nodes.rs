@@ -3,12 +3,14 @@ use jellyflow_core::ops::GraphOp;
 
 use super::edges::push_removed_edge_changes;
 
-pub(super) fn push_node_change(op: &GraphOp, out: &mut NodeGraphChanges) {
+pub(super) fn try_push_node_change(op: &GraphOp, out: &mut NodeGraphChanges) -> bool {
     match op {
-        GraphOp::AddNode { id, node } => out.push_node(NodeChange::Add {
-            id: *id,
-            node: node.clone(),
-        }),
+        GraphOp::AddNode { id, node } => {
+            out.push_node(NodeChange::Add {
+                id: *id,
+                node: node.clone(),
+            });
+        }
         GraphOp::RemoveNode { id, edges, .. } => {
             out.push_node(NodeChange::Remove { id: *id });
             push_removed_edge_changes(edges, out);
@@ -80,6 +82,7 @@ pub(super) fn push_node_change(op: &GraphOp, out: &mut NodeGraphChanges) {
                 });
             }
         }
-        _ => unreachable!("node projection called with non-node graph operation"),
+        _ => return false,
     }
+    true
 }

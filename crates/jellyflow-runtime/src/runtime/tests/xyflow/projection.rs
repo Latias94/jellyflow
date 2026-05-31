@@ -4,6 +4,7 @@ use crate::runtime::xyflow::callbacks::{ConnectionChange, connection_changes_fro
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable, GroupId, NodeExtent,
+    PortId,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -87,6 +88,26 @@ fn changes_from_transaction_maps_node_edge_policy_ops() {
         }
         other => panic!("unexpected edge change: {other:?}"),
     }
+}
+
+#[test]
+fn changes_from_transaction_ignores_non_node_edge_resource_ops() {
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetPortData {
+            id: PortId::new(),
+            from: serde_json::Value::Null,
+            to: serde_json::json!({ "port": true }),
+        },
+        GraphOp::SetGroupTitle {
+            id: GroupId::new(),
+            from: "old".to_owned(),
+            to: "new".to_owned(),
+        },
+    ]);
+
+    let changes = NodeGraphChanges::from_transaction(&tx);
+
+    assert!(changes.is_empty());
 }
 
 #[test]
