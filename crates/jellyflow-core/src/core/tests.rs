@@ -76,7 +76,8 @@ fn validate_allows_edges_regardless_of_port_direction() {
 
     let out_a = PortId::new();
     let out_b = PortId::new();
-    graph.ports.insert(
+    attach_port(
+        &mut graph,
         out_a,
         make_port(
             a,
@@ -86,7 +87,8 @@ fn validate_allows_edges_regardless_of_port_direction() {
             PortCapacity::Multi,
         ),
     );
-    graph.ports.insert(
+    attach_port(
+        &mut graph,
         out_b,
         make_port(
             b,
@@ -96,8 +98,6 @@ fn validate_allows_edges_regardless_of_port_direction() {
             PortCapacity::Multi,
         ),
     );
-    graph.nodes.get_mut(&a).unwrap().ports.push(out_a);
-    graph.nodes.get_mut(&b).unwrap().ports.push(out_b);
 
     let edge_id = EdgeId::new();
     graph.edges.insert(
@@ -185,7 +185,8 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
 
     let out_a = PortId::new();
     let in_b = PortId::new();
-    graph.ports.insert(
+    attach_port(
+        &mut graph,
         out_a,
         make_port(
             a,
@@ -195,7 +196,8 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
             PortCapacity::Multi,
         ),
     );
-    graph.ports.insert(
+    attach_port(
+        &mut graph,
         in_b,
         make_port(
             b,
