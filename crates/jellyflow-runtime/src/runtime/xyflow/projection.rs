@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::runtime::xyflow::callbacks::{ConnectionChange, DeleteChange, EdgeConnection};
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::EdgeId;
+use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 pub(super) fn node_graph_changes_from_transaction(tx: &GraphTransaction) -> NodeGraphChanges {
@@ -44,9 +44,7 @@ impl<'a> TransactionProjectionPlanner<'a> {
             }),
             GraphOp::RemoveNode { id, edges, .. } => {
                 out.nodes.push(NodeChange::Remove { id: *id });
-                for (edge_id, _edge) in edges {
-                    out.edges.push(EdgeChange::Remove { id: *edge_id });
-                }
+                push_removed_edge_changes(edges, &mut out.edges);
             }
             GraphOp::SetNodePos { id, to, .. } => out.nodes.push(NodeChange::Position {
                 id: *id,
@@ -110,9 +108,7 @@ impl<'a> TransactionProjectionPlanner<'a> {
                 ports: to.clone(),
             }),
             GraphOp::RemovePort { edges, .. } => {
-                for (edge_id, _edge) in edges {
-                    out.edges.push(EdgeChange::Remove { id: *edge_id });
-                }
+                push_removed_edge_changes(edges, &mut out.edges);
             }
             GraphOp::AddEdge { id, edge } => out.edges.push(EdgeChange::Add {
                 id: *id,
@@ -188,12 +184,7 @@ impl<'a> TransactionProjectionPlanner<'a> {
         for op in &self.tx.ops {
             match op {
                 GraphOp::AddEdge { id, edge } => {
-                    out.push(ConnectionChange::Connected(EdgeConnection {
-                        edge: *id,
-                        from: edge.from,
-                        to: edge.to,
-                        kind: edge.kind,
-                    }))
+                    out.push(ConnectionChange::Connected(edge_connection(*id, edge)))
                 }
                 GraphOp::RemoveNode { edges, .. } => {
                     Self::push_disconnected_edges(edges, &mut removed_edges, &mut out);
@@ -203,12 +194,7 @@ impl<'a> TransactionProjectionPlanner<'a> {
                 }
                 GraphOp::RemoveEdge { id, edge } => {
                     let _ = removed_edges.insert(*id);
-                    out.push(ConnectionChange::Disconnected(EdgeConnection {
-                        edge: *id,
-                        from: edge.from,
-                        to: edge.to,
-                        kind: edge.kind,
-                    }))
+                    out.push(ConnectionChange::Disconnected(edge_connection(*id, edge)))
                 }
                 GraphOp::SetEdgeEndpoints { id, from, to } => {
                     out.push(ConnectionChange::Reconnected {
@@ -233,12 +219,7 @@ impl<'a> TransactionProjectionPlanner<'a> {
             if !removed_edges.insert(*id) {
                 continue;
             }
-            out.push(ConnectionChange::Disconnected(EdgeConnection {
-                edge: *id,
-                from: edge.from,
-                to: edge.to,
-                kind: edge.kind,
-            }))
+            out.push(ConnectionChange::Disconnected(edge_connection(*id, edge)))
         }
     }
 
@@ -249,31 +230,47 @@ impl<'a> TransactionProjectionPlanner<'a> {
             match op {
                 GraphOp::RemoveNode { id, edges, .. } => {
                     out.nodes.push(*id);
-                    for (edge_id, _edge) in edges {
-                        out.edges.push(*edge_id);
-                    }
+                    push_deleted_edge_ids(edges, &mut out.edges);
                 }
                 GraphOp::RemoveEdge { id, .. } => out.edges.push(*id),
                 GraphOp::RemoveGroup { id, .. } => out.groups.push(*id),
                 GraphOp::RemoveStickyNote { id, .. } => out.sticky_notes.push(*id),
                 GraphOp::RemovePort { edges, .. } => {
-                    for (edge_id, _edge) in edges {
-                        out.edges.push(*edge_id);
-                    }
+                    push_deleted_edge_ids(edges, &mut out.edges);
                 }
                 _ => {}
             }
         }
 
-        out.nodes.sort_unstable();
-        out.nodes.dedup();
-        out.edges.sort_unstable();
-        out.edges.dedup();
-        out.groups.sort_unstable();
-        out.groups.dedup();
-        out.sticky_notes.sort_unstable();
-        out.sticky_notes.dedup();
+        sort_dedup(&mut out.nodes);
+        sort_dedup(&mut out.edges);
+        sort_dedup(&mut out.groups);
+        sort_dedup(&mut out.sticky_notes);
 
         out
     }
+}
+
+fn push_removed_edge_changes(edges: &[(EdgeId, Edge)], out: &mut Vec<EdgeChange>) {
+    for (id, _edge) in edges {
+        out.push(EdgeChange::Remove { id: *id });
+    }
+}
+
+fn push_deleted_edge_ids(edges: &[(EdgeId, Edge)], out: &mut Vec<EdgeId>) {
+    out.extend(edges.iter().map(|(id, _edge)| *id));
+}
+
+fn edge_connection(id: EdgeId, edge: &Edge) -> EdgeConnection {
+    EdgeConnection {
+        edge: id,
+        from: edge.from,
+        to: edge.to,
+        kind: edge.kind,
+    }
+}
+
+fn sort_dedup<T: Ord>(items: &mut Vec<T>) {
+    items.sort_unstable();
+    items.dedup();
 }
