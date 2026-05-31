@@ -26,14 +26,11 @@ fn store_middleware_can_rewrite_transactions() {
     let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config())
         .with_middleware(DropOps);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 10.0, y: 20.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 10.0, y: 20.0 },
+    }]);
 
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
     assert!(outcome.patch.ops().is_empty());
@@ -78,14 +75,11 @@ fn store_middleware_can_reject_transactions() {
     )
     .with_middleware(RejectAll);
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 10.0, y: 20.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 10.0, y: 20.0 },
+    }]);
 
     let err = store.dispatch_transaction(&tx).expect_err("reject");
     let crate::runtime::store::DispatchError::Apply(crate::profile::ApplyPipelineError::Rejected {
@@ -146,14 +140,11 @@ fn store_middleware_after_dispatch_observes_undo_and_redo() {
             after_calls: after_calls.clone(),
         });
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetNodePos {
-            id: a,
-            from: CanvasPoint { x: 0.0, y: 0.0 },
-            to: CanvasPoint { x: 10.0, y: 20.0 },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: a,
+        from: CanvasPoint { x: 0.0, y: 0.0 },
+        to: CanvasPoint { x: 10.0, y: 20.0 },
+    }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
     store.undo().expect("undo").expect("undo outcome");
