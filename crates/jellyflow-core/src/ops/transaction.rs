@@ -1,20 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-use super::apply::ApplyError;
 use crate::core::EdgeReconnectable;
 use crate::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, GraphImport,
-    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortId, StickyNote, StickyNoteId,
-    Symbol, SymbolId,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphId, GraphImport, Group,
+    GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortId, StickyNote, StickyNoteId, Symbol,
+    SymbolId,
 };
 use crate::types::TypeDesc;
 
-/// Edge endpoint pair (from/to ports).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct EdgeEndpoints {
-    pub from: PortId,
-    pub to: PortId,
-}
+mod batch;
+mod endpoints;
+
+pub use batch::GraphTransaction;
+pub use endpoints::EdgeEndpoints;
 
 /// A reversible edit operation.
 ///
@@ -287,52 +285,4 @@ pub enum GraphOp {
         from: Option<String>,
         to: Option<String>,
     },
-}
-
-/// A batch of edit operations that should be applied and undone as one unit.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GraphTransaction {
-    /// Optional human-readable label for history UI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Operations in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ops: Vec<GraphOp>,
-}
-
-impl GraphTransaction {
-    /// Creates an empty transaction.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Builds a deterministic transaction that transforms `from` into `to`.
-    pub fn diff(from: &Graph, to: &Graph) -> Self {
-        super::diff::graph_diff(from, to)
-    }
-
-    /// Sets a label.
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    /// Pushes an op.
-    pub fn push(&mut self, op: GraphOp) {
-        self.ops.push(op);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
-    }
-
-    /// Applies this transaction atomically to `graph`.
-    pub fn apply_to(&self, graph: &mut Graph) -> Result<(), ApplyError> {
-        super::apply::apply_transaction(graph, self)
-    }
-
-    /// Builds the inverse transaction for undo/redo.
-    pub fn inverse(&self) -> Self {
-        super::history::invert_transaction(self)
-    }
 }
