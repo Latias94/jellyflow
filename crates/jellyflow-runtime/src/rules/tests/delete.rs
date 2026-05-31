@@ -2,8 +2,7 @@ use super::fixtures::{insert_edge, insert_port, make_node, make_port};
 
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{
-    DeleteDecision, plan_delete_edge, plan_delete_elements_with_policy,
-    plan_delete_node_with_policy,
+    plan_delete_edge, plan_delete_elements_with_policy, plan_delete_node_with_policy,
 };
 use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
@@ -51,25 +50,22 @@ fn plan_delete_node_respects_policy_and_cascades_incident_edges() {
         ..NodeGraphInteractionState::default()
     };
     let rejected = plan_delete_node_with_policy(&graph, a, &disabled);
-    assert_eq!(rejected.decision, DeleteDecision::Reject);
-    assert!(rejected.ops.is_empty());
+    assert!(rejected.is_reject());
+    assert!(rejected.ops().is_empty());
 
     graph.nodes.get_mut(&a).unwrap().deletable = Some(true);
     let accepted = plan_delete_node_with_policy(&graph, a, &disabled);
-    assert_eq!(accepted.decision, DeleteDecision::Accept);
-    assert_eq!(accepted.ops.len(), 1);
+    assert!(accepted.is_accept());
+    assert_eq!(accepted.ops().len(), 1);
     assert!(matches!(
-        &accepted.ops[0],
+        &accepted.ops()[0],
         GraphOp::RemoveNode { id, edges, .. }
             if *id == a && edges.iter().any(|(id, _)| *id == edge_id)
     ));
 
-    GraphTransaction {
-        label: None,
-        ops: accepted.ops,
-    }
-    .apply_to(&mut graph)
-    .unwrap();
+    GraphTransaction::from_ops(accepted.into_ops())
+        .apply_to(&mut graph)
+        .unwrap();
 
     assert!(!graph.nodes.contains_key(&a));
     assert!(graph.nodes.contains_key(&b));
@@ -120,23 +116,20 @@ fn plan_delete_edge_respects_policy_overrides() {
         ..NodeGraphInteractionState::default()
     };
     let default_plan = plan_delete_edge(&graph, edge_id);
-    assert_eq!(default_plan.decision, DeleteDecision::Accept);
+    assert!(default_plan.is_accept());
 
     let rejected = plan_delete_elements_with_policy(&graph, [], [edge_id], &disabled);
-    assert_eq!(rejected.decision, DeleteDecision::Reject);
-    assert!(rejected.ops.is_empty());
+    assert!(rejected.is_reject());
+    assert!(rejected.ops().is_empty());
 
     graph.edges.get_mut(&edge_id).unwrap().deletable = Some(true);
     let accepted = plan_delete_elements_with_policy(&graph, [], [edge_id], &disabled);
-    assert_eq!(accepted.decision, DeleteDecision::Accept);
-    assert_eq!(accepted.ops.len(), 1);
+    assert!(accepted.is_accept());
+    assert_eq!(accepted.ops().len(), 1);
 
-    GraphTransaction {
-        label: None,
-        ops: accepted.ops,
-    }
-    .apply_to(&mut graph)
-    .unwrap();
+    GraphTransaction::from_ops(accepted.into_ops())
+        .apply_to(&mut graph)
+        .unwrap();
 
     assert!(!graph.edges.contains_key(&edge_id));
 }
@@ -187,25 +180,22 @@ fn plan_delete_elements_dedupes_node_cascaded_edges() {
         ..NodeGraphInteractionState::default()
     };
     let plan = plan_delete_elements_with_policy(&graph, [a, b], [edge_id], &disabled);
-    assert_eq!(plan.decision, DeleteDecision::Accept);
-    assert_eq!(plan.ops.len(), 2);
+    assert!(plan.is_accept());
+    assert_eq!(plan.ops().len(), 2);
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == a))
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == b))
     );
 
-    GraphTransaction {
-        label: None,
-        ops: plan.ops,
-    }
-    .apply_to(&mut graph)
-    .unwrap();
+    GraphTransaction::from_ops(plan.into_ops())
+        .apply_to(&mut graph)
+        .unwrap();
 
     assert!(!graph.nodes.contains_key(&a));
     assert!(!graph.nodes.contains_key(&b));

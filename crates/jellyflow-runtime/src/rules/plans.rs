@@ -64,6 +64,10 @@ impl ConnectPlan {
         &self.ops
     }
 
+    pub fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
+    }
+
     /// Creates an accepted plan with no side effects.
     pub fn accept() -> Self {
         Self {
@@ -137,6 +141,10 @@ impl DeletePlan {
 
     pub fn ops(&self) -> &[GraphOp] {
         &self.ops
+    }
+
+    pub fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
     }
 
     /// Creates an accepted plan with no side effects.
