@@ -40,7 +40,7 @@ pub fn apply_transaction_with_profile(
     profile: &mut dyn GraphProfile,
     tx: &GraphTransaction,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
-    let mut committed = GraphTransaction::new().with_optional_label(tx.label().map(str::to_owned));
+    let mut committed = CommittedTransactionBuilder::new(tx);
     apply_original_transaction(graph, tx, &mut committed)?;
 
     concretize_to_fixed_point(graph, profile, committed)
@@ -49,31 +49,55 @@ pub fn apply_transaction_with_profile(
 fn apply_original_transaction(
     graph: &mut Graph,
     tx: &GraphTransaction,
-    committed: &mut GraphTransaction,
+    committed: &mut CommittedTransactionBuilder,
 ) -> Result<(), ApplyPipelineError> {
     tx.apply_to(graph)?;
-    committed.extend(tx.ops().iter().cloned());
+    committed.extend_original(tx);
     Ok(())
 }
 
 fn concretize_to_fixed_point(
     graph: &mut Graph,
     profile: &mut dyn GraphProfile,
-    mut committed: GraphTransaction,
+    mut committed: CommittedTransactionBuilder,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
     let bound = profile.concretize_bound();
     for _ in 0..bound {
         let derived_ops: Vec<GraphOp> = profile.concretize(graph);
         if derived_ops.is_empty() {
             validate_profile_graph(profile, graph)?;
-            return Ok(committed);
+            return Ok(committed.finish());
         }
 
         apply_derived_ops(graph, &derived_ops)?;
-        committed.extend(derived_ops);
+        committed.extend_derived(derived_ops);
     }
 
     Err(ApplyPipelineError::ConcretizeNonConvergent { bound })
+}
+
+struct CommittedTransactionBuilder {
+    tx: GraphTransaction,
+}
+
+impl CommittedTransactionBuilder {
+    fn new(source: &GraphTransaction) -> Self {
+        Self {
+            tx: GraphTransaction::new().with_optional_label(source.label().map(str::to_owned)),
+        }
+    }
+
+    fn extend_original(&mut self, source: &GraphTransaction) {
+        self.tx.extend(source.ops().iter().cloned());
+    }
+
+    fn extend_derived(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
+        self.tx.extend(ops);
+    }
+
+    fn finish(self) -> GraphTransaction {
+        self.tx
+    }
 }
 
 fn apply_derived_ops(graph: &mut Graph, ops: &[GraphOp]) -> Result<(), ApplyPipelineError> {
