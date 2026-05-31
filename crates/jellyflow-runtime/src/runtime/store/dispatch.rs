@@ -5,7 +5,7 @@ use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::NodeGraphStoreSnapshot;
 use jellyflow_core::core::Graph;
-use jellyflow_core::ops::{GraphHistory, GraphTransaction, normalize_transaction};
+use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
 use super::{DispatchError, DispatchOutcome, DispatchProfile, NodeGraphStore};
 
@@ -20,25 +20,6 @@ enum DispatchPipelineResult {
         graph: Graph,
         committed: GraphTransaction,
     },
-}
-
-#[derive(Debug, Clone, Copy)]
-enum HistoryReplayDirection {
-    Undo,
-    Redo,
-}
-
-impl HistoryReplayDirection {
-    fn replay<E>(
-        self,
-        history: &mut GraphHistory,
-        apply: impl FnMut(&GraphTransaction) -> Result<GraphTransaction, E>,
-    ) -> Result<bool, E> {
-        match self {
-            Self::Undo => history.undo(apply),
-            Self::Redo => history.redo(apply),
-        }
-    }
 }
 
 impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
@@ -186,81 +167,7 @@ impl NodeGraphStore {
         }
     }
 
-    /// Undoes the last committed transaction.
-    pub fn undo(&mut self) -> Result<Option<DispatchOutcome>, DispatchError> {
-        self.replay_history(HistoryReplayDirection::Undo, DispatchProfile::StoreProfile)
-            .map_err(DispatchError::Apply)
-    }
-
-    /// Undoes the last committed transaction using an externally-owned profile pipeline.
-    pub fn undo_with_profile(
-        &mut self,
-        profile: &mut dyn GraphProfile,
-    ) -> Result<Option<DispatchOutcome>, ApplyPipelineError> {
-        self.replay_history(
-            HistoryReplayDirection::Undo,
-            DispatchProfile::External(profile),
-        )
-    }
-
-    /// Redoes the last undone transaction.
-    pub fn redo(&mut self) -> Result<Option<DispatchOutcome>, DispatchError> {
-        self.replay_history(HistoryReplayDirection::Redo, DispatchProfile::StoreProfile)
-            .map_err(DispatchError::Apply)
-    }
-
-    /// Redoes the last undone transaction using an externally-owned profile pipeline.
-    pub fn redo_with_profile(
-        &mut self,
-        profile: &mut dyn GraphProfile,
-    ) -> Result<Option<DispatchOutcome>, ApplyPipelineError> {
-        self.replay_history(
-            HistoryReplayDirection::Redo,
-            DispatchProfile::External(profile),
-        )
-    }
-
-    fn replay_history(
-        &mut self,
-        direction: HistoryReplayDirection,
-        mut dispatch_profile: DispatchProfile<'_>,
-    ) -> Result<Option<DispatchOutcome>, ApplyPipelineError> {
-        let mut scratch = self.graph.clone();
-        let mut committed: Option<GraphTransaction> = None;
-
-        let mut history = std::mem::take(&mut self.history);
-        let did: Result<bool, ApplyPipelineError> = direction.replay(&mut history, |tx| {
-            let committed_tx =
-                self.apply_history_transaction(&mut scratch, &mut dispatch_profile, tx)?;
-            committed = Some(committed_tx.clone());
-            Ok(committed_tx)
-        });
-        self.history = history;
-        let did = did?;
-        if !did {
-            return Ok(None);
-        }
-
-        let committed = committed.unwrap_or_default();
-        let patch = self.prepare_committed_graph_patch(scratch, committed);
-        Ok(Some(self.publish_dispatch_outcome(patch)))
-    }
-
-    fn apply_history_transaction(
-        &mut self,
-        graph: &mut Graph,
-        dispatch_profile: &mut DispatchProfile<'_>,
-        tx: &GraphTransaction,
-    ) -> Result<GraphTransaction, ApplyPipelineError> {
-        match dispatch_profile {
-            DispatchProfile::StoreProfile => self.apply_to_graph(graph, tx),
-            DispatchProfile::External(profile) => {
-                apply_transaction_with_profile(graph, &mut **profile, tx)
-            }
-        }
-    }
-
-    fn apply_to_graph(
+    pub(super) fn apply_to_graph(
         &mut self,
         graph: &mut Graph,
         tx: &GraphTransaction,
@@ -282,7 +189,7 @@ impl NodeGraphStore {
         self.lookups.apply_transaction(&self.graph, committed);
     }
 
-    fn prepare_committed_graph_patch(
+    pub(super) fn prepare_committed_graph_patch(
         &mut self,
         graph: Graph,
         committed: GraphTransaction,
@@ -291,7 +198,7 @@ impl NodeGraphStore {
         NodeGraphPatch::new(committed)
     }
 
-    fn publish_dispatch_outcome(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
+    pub(super) fn publish_dispatch_outcome(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
         self.publish_graph_commit(&patch);
         DispatchOutcome::new(patch)
     }

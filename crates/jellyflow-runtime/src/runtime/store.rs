@@ -8,6 +8,7 @@
 
 mod dispatch;
 mod events;
+mod history;
 mod subscriptions;
 mod view;
 
