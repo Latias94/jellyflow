@@ -1,3 +1,5 @@
+use crate::runtime::node_origin::normalize_node_origin;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FitViewComputeOptions {
     /// Viewport width in logical px.
@@ -31,14 +33,7 @@ impl FitViewComputeOptions {
             return None;
         }
 
-        if !self.node_origin.0.is_finite() {
-            self.node_origin.0 = 0.0;
-        }
-        if !self.node_origin.1.is_finite() {
-            self.node_origin.1 = 0.0;
-        }
-        self.node_origin.0 = self.node_origin.0.clamp(0.0, 1.0);
-        self.node_origin.1 = self.node_origin.1.clamp(0.0, 1.0);
+        self.node_origin = normalize_node_origin(self.node_origin);
 
         if !self.margin_px_fallback.is_finite() || self.margin_px_fallback < 0.0 {
             self.margin_px_fallback = 0.0;
