@@ -5,7 +5,7 @@ use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::events::NodeGraphStoreSnapshot;
 use jellyflow_core::core::Graph;
-use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
+use jellyflow_core::ops::{GraphHistory, GraphTransaction, normalize_transaction};
 
 use super::{DispatchError, DispatchOutcome, DispatchProfile, NodeGraphStore};
 
@@ -26,6 +26,19 @@ enum DispatchPipelineResult {
 enum HistoryReplayDirection {
     Undo,
     Redo,
+}
+
+impl HistoryReplayDirection {
+    fn replay<E>(
+        self,
+        history: &mut GraphHistory,
+        apply: impl FnMut(&GraphTransaction) -> Result<GraphTransaction, E>,
+    ) -> Result<bool, E> {
+        match self {
+            Self::Undo => history.undo(apply),
+            Self::Redo => history.redo(apply),
+        }
+    }
 }
 
 impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
@@ -216,24 +229,12 @@ impl NodeGraphStore {
         let mut committed: Option<GraphTransaction> = None;
 
         let mut history = std::mem::take(&mut self.history);
-        let did = match direction {
-            HistoryReplayDirection::Undo => {
-                history.undo(|tx| -> Result<GraphTransaction, ApplyPipelineError> {
-                    let committed_tx =
-                        self.apply_history_transaction(&mut scratch, &mut dispatch_profile, tx)?;
-                    committed = Some(committed_tx.clone());
-                    Ok(committed_tx)
-                })
-            }
-            HistoryReplayDirection::Redo => {
-                history.redo(|tx| -> Result<GraphTransaction, ApplyPipelineError> {
-                    let committed_tx =
-                        self.apply_history_transaction(&mut scratch, &mut dispatch_profile, tx)?;
-                    committed = Some(committed_tx.clone());
-                    Ok(committed_tx)
-                })
-            }
-        };
+        let did: Result<bool, ApplyPipelineError> = direction.replay(&mut history, |tx| {
+            let committed_tx =
+                self.apply_history_transaction(&mut scratch, &mut dispatch_profile, tx)?;
+            committed = Some(committed_tx.clone());
+            Ok(committed_tx)
+        });
         self.history = history;
         let did = did?;
         if !did {
