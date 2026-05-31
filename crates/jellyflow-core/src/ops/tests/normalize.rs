@@ -103,3 +103,25 @@ fn normalize_transaction_coalesces_setter_chains_when_chained() {
         } if *id == node_id
     ));
 }
+
+#[test]
+fn normalize_transaction_does_not_coalesce_non_contiguous_setter_chains() {
+    let node_id = NodeId::new();
+
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: node_id,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 10.0, y: 10.0 },
+        },
+        GraphOp::SetNodePos {
+            id: node_id,
+            from: CanvasPoint { x: 20.0, y: 20.0 },
+            to: CanvasPoint { x: 30.0, y: 30.0 },
+        },
+    ]);
+
+    let normalized = crate::ops::normalize_transaction(tx);
+
+    assert_eq!(normalized.ops().len(), 2);
+}
