@@ -9,6 +9,7 @@
 mod dispatch;
 mod events;
 mod history;
+mod snapshot;
 mod subscriptions;
 mod view;
 

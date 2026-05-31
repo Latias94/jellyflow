@@ -3,10 +3,10 @@
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::rules::{Diagnostic, DiagnosticSeverity, DiagnosticTarget};
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::events::NodeGraphStoreSnapshot;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphTransaction, normalize_transaction};
 
+use super::snapshot::StoreSnapshotParts;
 use super::{DispatchError, DispatchOutcome, DispatchProfile, NodeGraphStore};
 
 struct DispatchPipeline<'store, 'profile> {
@@ -139,31 +139,31 @@ impl NodeGraphStore {
         &mut self,
         tx: &mut GraphTransaction,
     ) -> Result<(), ApplyPipelineError> {
+        let snapshot_parts = StoreSnapshotParts::new(
+            &self.graph,
+            self.graph_revision,
+            &self.view_state,
+            &self.interaction,
+            &self.runtime_tuning,
+            &self.history,
+        );
         if let Some(middleware) = self.middleware.as_deref_mut() {
-            let snapshot = NodeGraphStoreSnapshot::new(
-                &self.graph,
-                self.graph_revision,
-                &self.view_state,
-                &self.interaction,
-                &self.runtime_tuning,
-                &self.history,
-            );
-            middleware.before_dispatch(snapshot, tx)?;
+            middleware.before_dispatch(snapshot_parts.snapshot(), tx)?;
         }
         Ok(())
     }
 
     fn run_after_dispatch_middleware(&mut self, patch: &NodeGraphPatch) {
+        let snapshot_parts = StoreSnapshotParts::new(
+            &self.graph,
+            self.graph_revision,
+            &self.view_state,
+            &self.interaction,
+            &self.runtime_tuning,
+            &self.history,
+        );
         if let Some(middleware) = self.middleware.as_deref_mut() {
-            let snapshot = NodeGraphStoreSnapshot::new(
-                &self.graph,
-                self.graph_revision,
-                &self.view_state,
-                &self.interaction,
-                &self.runtime_tuning,
-                &self.history,
-            );
-            middleware.after_dispatch(snapshot, patch);
+            middleware.after_dispatch(snapshot_parts.snapshot(), patch);
         }
     }
 

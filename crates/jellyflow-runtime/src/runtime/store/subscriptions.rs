@@ -5,6 +5,7 @@ use crate::runtime::events::{
 };
 
 use super::NodeGraphStore;
+use super::snapshot::StoreSnapshotParts;
 
 pub(super) struct SelectorSubscription {
     token: SubscriptionToken,
@@ -63,15 +64,7 @@ impl NodeGraphStore {
         let token = SubscriptionToken::new(self.next_subscription);
         self.next_subscription = self.next_subscription.saturating_add(1).max(1);
 
-        let snapshot = NodeGraphStoreSnapshot::new(
-            &self.graph,
-            self.graph_revision,
-            &self.view_state,
-            &self.interaction,
-            &self.runtime_tuning,
-            &self.history,
-        );
-        let initial = selector(snapshot);
+        let initial = selector(self.snapshot());
 
         self.selector_subscriptions.push(SelectorSubscription {
             token,
@@ -118,22 +111,16 @@ impl NodeGraphStore {
             return;
         }
 
-        let graph = &self.graph;
-        let graph_revision = self.graph_revision;
-        let view_state = &self.view_state;
-        let interaction = &self.interaction;
-        let runtime_tuning = &self.runtime_tuning;
-        let history = &self.history;
+        let snapshot_parts = StoreSnapshotParts::new(
+            &self.graph,
+            self.graph_revision,
+            &self.view_state,
+            &self.interaction,
+            &self.runtime_tuning,
+            &self.history,
+        );
         for sub in &mut self.selector_subscriptions {
-            let snapshot = NodeGraphStoreSnapshot::new(
-                graph,
-                graph_revision,
-                view_state,
-                interaction,
-                runtime_tuning,
-                history,
-            );
-            let next = (sub.compute)(snapshot);
+            let next = (sub.compute)(snapshot_parts.snapshot());
             let changed = !(sub.equals)(&*sub.last, &*next);
             if !changed {
                 continue;
