@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::core::{CanvasSize, Graph, Node, NodeId, PortId};
+use crate::core::{CanvasSize, EdgeId, Graph, Node, NodeId, PortId};
 
 use super::{GraphValidationError, GraphValidationReport};
 
@@ -142,18 +142,17 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_edges_reference_ports(&mut self) {
         for (edge_id, edge) in &self.graph.edges {
-            if !self.graph.ports.contains_key(&edge.from) {
-                self.report.push(GraphValidationError::EdgeMissingPort {
-                    edge: *edge_id,
-                    port: edge.from,
-                });
-            }
-            if !self.graph.ports.contains_key(&edge.to) {
-                self.report.push(GraphValidationError::EdgeMissingPort {
-                    edge: *edge_id,
-                    port: edge.to,
-                });
-            }
+            self.validate_edge_endpoint(*edge_id, edge.from);
+            self.validate_edge_endpoint(*edge_id, edge.to);
+        }
+    }
+
+    fn validate_edge_endpoint(&mut self, edge_id: EdgeId, port_id: PortId) {
+        if !self.graph.ports.contains_key(&port_id) {
+            self.report.push(GraphValidationError::EdgeMissingPort {
+                edge: edge_id,
+                port: port_id,
+            });
         }
     }
 }
