@@ -12,6 +12,17 @@ enum HistoryReplayDirection {
     Redo,
 }
 
+struct HistoryReplayPipeline<'store, 'profile> {
+    store: &'store mut NodeGraphStore,
+    direction: HistoryReplayDirection,
+    dispatch_profile: DispatchProfile<'profile>,
+}
+
+struct HistoryReplayResult {
+    graph: Graph,
+    committed: GraphTransaction,
+}
+
 impl HistoryReplayDirection {
     fn replay<E>(
         self,
@@ -21,6 +32,57 @@ impl HistoryReplayDirection {
         match self {
             Self::Undo => history.undo(apply),
             Self::Redo => history.redo(apply),
+        }
+    }
+}
+
+impl<'store, 'profile> HistoryReplayPipeline<'store, 'profile> {
+    fn new(
+        store: &'store mut NodeGraphStore,
+        direction: HistoryReplayDirection,
+        dispatch_profile: DispatchProfile<'profile>,
+    ) -> Self {
+        Self {
+            store,
+            direction,
+            dispatch_profile,
+        }
+    }
+
+    fn run(mut self) -> Result<Option<HistoryReplayResult>, ApplyPipelineError> {
+        let mut scratch = self.store.graph.clone();
+        let mut committed: Option<GraphTransaction> = None;
+
+        let mut history = std::mem::take(&mut self.store.history);
+        let did: Result<bool, ApplyPipelineError> = self.direction.replay(&mut history, |tx| {
+            let committed_tx = self.apply_transaction(&mut scratch, tx)?;
+            committed = Some(committed_tx.clone());
+            Ok(committed_tx)
+        });
+        self.store.history = history;
+        let did = did?;
+        if !did {
+            return Ok(None);
+        }
+
+        let committed =
+            committed.expect("history replay must apply a transaction when it reports progress");
+        Ok(Some(HistoryReplayResult {
+            graph: scratch,
+            committed,
+        }))
+    }
+
+    fn apply_transaction(
+        &mut self,
+        graph: &mut Graph,
+        tx: &GraphTransaction,
+    ) -> Result<GraphTransaction, ApplyPipelineError> {
+        match &mut self.dispatch_profile {
+            DispatchProfile::StoreProfile => self.store.apply_to_graph(graph, tx),
+            DispatchProfile::External(profile) => {
+                apply_transaction_with_profile(graph, &mut **profile, tx)
+            }
         }
     }
 }
@@ -63,40 +125,14 @@ impl NodeGraphStore {
     fn replay_history(
         &mut self,
         direction: HistoryReplayDirection,
-        mut dispatch_profile: DispatchProfile<'_>,
+        dispatch_profile: DispatchProfile<'_>,
     ) -> Result<Option<DispatchOutcome>, ApplyPipelineError> {
-        let mut scratch = self.graph.clone();
-        let mut committed: Option<GraphTransaction> = None;
-
-        let mut history = std::mem::take(&mut self.history);
-        let did: Result<bool, ApplyPipelineError> = direction.replay(&mut history, |tx| {
-            let committed_tx =
-                self.apply_history_transaction(&mut scratch, &mut dispatch_profile, tx)?;
-            committed = Some(committed_tx.clone());
-            Ok(committed_tx)
-        });
-        self.history = history;
-        let did = did?;
-        if !did {
+        let Some(replayed) = HistoryReplayPipeline::new(self, direction, dispatch_profile).run()?
+        else {
             return Ok(None);
-        }
+        };
 
-        let committed = committed.unwrap_or_default();
-        let patch = self.prepare_committed_graph_patch(scratch, committed);
+        let patch = self.prepare_committed_graph_patch(replayed.graph, replayed.committed);
         Ok(Some(self.publish_dispatch_outcome(patch)))
-    }
-
-    fn apply_history_transaction(
-        &mut self,
-        graph: &mut Graph,
-        dispatch_profile: &mut DispatchProfile<'_>,
-        tx: &GraphTransaction,
-    ) -> Result<GraphTransaction, ApplyPipelineError> {
-        match dispatch_profile {
-            DispatchProfile::StoreProfile => self.apply_to_graph(graph, tx),
-            DispatchProfile::External(profile) => {
-                apply_transaction_with_profile(graph, &mut **profile, tx)
-            }
-        }
     }
 }
