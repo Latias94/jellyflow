@@ -1,6 +1,7 @@
 use crate::rules::ConnectPlan;
 use jellyflow_core::core::{Edge, EdgeId, EdgeKind, Graph, PortCapacity, PortId};
 use jellyflow_core::ops::{EdgeEndpoints, GraphMutationError, GraphMutationPlanner, GraphOp};
+use std::collections::BTreeSet;
 
 use super::endpoints::ConnectionEndpoints;
 
@@ -179,12 +180,16 @@ enum CapacityEndpoint {
 }
 
 struct CapacityDisconnectPlan {
+    removed_edges: BTreeSet<EdgeId>,
     ops: Vec<GraphOp>,
 }
 
 impl CapacityDisconnectPlan {
     fn new() -> Self {
-        Self { ops: Vec::new() }
+        Self {
+            removed_edges: BTreeSet::new(),
+            ops: Vec::new(),
+        }
     }
 
     fn extend_endpoint(
@@ -210,7 +215,9 @@ impl CapacityDisconnectPlan {
     }
 
     fn push_remove_edge(&mut self, graph: &Graph, edge_id: EdgeId) {
-        self.ops.push(remove_edge_op(graph, edge_id));
+        if self.removed_edges.insert(edge_id) {
+            self.ops.push(remove_edge_op(graph, edge_id));
+        }
     }
 
     fn into_ops(self) -> Vec<GraphOp> {
@@ -228,5 +235,35 @@ impl CapacityEndpoint {
             Self::Source(port) => edge.from == port,
             Self::Target(port) => edge.to == port,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_disconnects_deduplicate_edges_matching_both_endpoints() {
+        let mut graph = Graph::default();
+        let port_id = PortId::from_u128(1);
+        let edge_id = EdgeId::from_u128(2);
+        graph
+            .edges
+            .insert(edge_id, edge_between(EdgeKind::Data, port_id, port_id));
+
+        let ops = disconnect_for_capacity(
+            &graph,
+            ConnectionCapacity::new(
+                EdgeKind::Data,
+                port_id,
+                PortCapacity::Single,
+                port_id,
+                PortCapacity::Single,
+            ),
+            None,
+        );
+
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], GraphOp::RemoveEdge { id, .. } if id == edge_id));
     }
 }
