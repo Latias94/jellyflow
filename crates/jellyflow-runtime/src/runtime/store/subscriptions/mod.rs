@@ -19,8 +19,7 @@ impl NodeGraphStore {
         &mut self,
         f: impl for<'a> FnMut(NodeGraphStoreEvent<'a>) + 'static,
     ) -> SubscriptionToken {
-        let token = SubscriptionToken::new(self.next_subscription);
-        self.next_subscription = self.next_subscription.saturating_add(1).max(1);
+        let token = self.allocate_subscription_token();
         self.event_subscriptions.push((token, Box::new(f)));
         token
     }
@@ -57,9 +56,7 @@ impl NodeGraphStore {
     where
         T: Clone + PartialEq + 'static,
     {
-        let token = SubscriptionToken::new(self.next_subscription);
-        self.next_subscription = self.next_subscription.saturating_add(1).max(1);
-
+        let token = self.allocate_subscription_token();
         let initial = selector(self.snapshot());
 
         self.selector_subscriptions.push(SelectorSubscription::new(
@@ -73,17 +70,10 @@ impl NodeGraphStore {
     pub fn unsubscribe(&mut self, token: SubscriptionToken) -> bool {
         let mut removed = false;
 
-        let before = self.event_subscriptions.len();
-        self.event_subscriptions.retain(|(t, _)| *t != token);
-        removed |= before != self.event_subscriptions.len();
+        removed |= remove_subscription_token(&mut self.event_subscriptions, token);
+        removed |= remove_subscription_token(&mut self.gesture_subscriptions, token);
 
-        let before = self.gesture_subscriptions.len();
-        self.gesture_subscriptions.retain(|(t, _)| *t != token);
-        removed |= before != self.gesture_subscriptions.len();
-
-        let before = self.selector_subscriptions.len();
-        self.selector_subscriptions.retain(|s| s.token() != token);
-        removed |= before != self.selector_subscriptions.len();
+        removed |= remove_selector_subscription(&mut self.selector_subscriptions, token);
 
         removed
     }
@@ -105,4 +95,28 @@ impl NodeGraphStore {
             sub.notify_if_changed(snapshot_parts.snapshot());
         }
     }
+
+    fn allocate_subscription_token(&mut self) -> SubscriptionToken {
+        let token = SubscriptionToken::new(self.next_subscription);
+        self.next_subscription = self.next_subscription.saturating_add(1).max(1);
+        token
+    }
+}
+
+fn remove_subscription_token<T>(
+    subscriptions: &mut Vec<(SubscriptionToken, T)>,
+    token: SubscriptionToken,
+) -> bool {
+    let before = subscriptions.len();
+    subscriptions.retain(|(subscription_token, _)| *subscription_token != token);
+    before != subscriptions.len()
+}
+
+fn remove_selector_subscription(
+    subscriptions: &mut Vec<SelectorSubscription>,
+    token: SubscriptionToken,
+) -> bool {
+    let before = subscriptions.len();
+    subscriptions.retain(|subscription| subscription.token() != token);
+    before != subscriptions.len()
 }
