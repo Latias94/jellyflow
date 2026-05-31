@@ -100,7 +100,7 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
         fn on_node_edge_changes(&mut self, changes: &NodeGraphChanges) {
             self.node_edge_counts
                 .borrow_mut()
-                .push((changes.nodes.len(), changes.edges.len()));
+                .push((changes.nodes().len(), changes.edges().len()));
         }
     }
 
@@ -133,8 +133,8 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
         Some(GraphOp::SetPortData { id, .. }) if *id == out_port
     ));
     let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
-    assert!(node_edge_changes.nodes.is_empty());
-    assert!(node_edge_changes.edges.is_empty());
+    assert!(node_edge_changes.nodes().is_empty());
+    assert!(node_edge_changes.edges().is_empty());
     assert!(*saw_port_patch.borrow());
     assert_eq!(&*node_edge_counts.borrow(), &[(0, 0)]);
 }

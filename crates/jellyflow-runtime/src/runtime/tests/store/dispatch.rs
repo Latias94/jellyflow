@@ -53,11 +53,11 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
         if let NodeGraphStoreEvent::GraphCommitted { patch } = ev {
             let node_edge_changes = NodeGraphChanges::from_patch(patch);
             let hidden = node_edge_changes
-                .nodes
+                .nodes()
                 .iter()
                 .any(|change| matches!(change, NodeChange::Hidden { hidden: true, .. }));
             let reconnectable = node_edge_changes
-                .edges
+                .edges()
                 .iter()
                 .find_map(|change| match change {
                     EdgeChange::Reconnectable { reconnectable, .. } => *reconnectable,
@@ -95,11 +95,11 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
     let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
     assert!(
         node_edge_changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Hidden { id, hidden: true } if *id == a))
     );
-    assert!(node_edge_changes.edges.iter().any(|change| matches!(
+    assert!(node_edge_changes.edges().iter().any(|change| matches!(
         change,
         EdgeChange::Reconnectable {
             id,
@@ -180,7 +180,7 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
             assert!(snapshot.history.can_undo());
             assert_eq!(patch.ops().len(), 2);
             let node_edge_changes = NodeGraphChanges::from_patch(patch);
-            assert_eq!(node_edge_changes.nodes.len(), 2);
+            assert_eq!(node_edge_changes.nodes().len(), 2);
         }
     }
 
@@ -205,9 +205,9 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
         if let NodeGraphStoreEvent::GraphCommitted { patch } = ev {
             let node_edge_changes = NodeGraphChanges::from_patch(patch);
             *observed2.borrow_mut() = Some((
-                node_edge_changes.nodes.len(),
+                node_edge_changes.nodes().len(),
                 node_edge_changes
-                    .nodes
+                    .nodes()
                     .iter()
                     .any(|change| matches!(change, NodeChange::Hidden { hidden: true, .. })),
             ));

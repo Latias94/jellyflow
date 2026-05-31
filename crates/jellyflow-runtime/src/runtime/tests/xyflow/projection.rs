@@ -28,10 +28,10 @@ fn changes_from_transaction_maps_ops() {
     };
 
     let changes = NodeGraphChanges::from_transaction(&tx);
-    assert_eq!(changes.nodes.len(), 1);
-    assert_eq!(changes.edges.len(), 1);
+    assert_eq!(changes.nodes().len(), 1);
+    assert_eq!(changes.edges().len(), 1);
 
-    match &changes.nodes[0] {
+    match &changes.nodes()[0] {
         NodeChange::Position {
             id: node_id,
             position: node_position,
@@ -42,7 +42,7 @@ fn changes_from_transaction_maps_ops() {
         other => panic!("unexpected node change: {other:?}"),
     }
 
-    match &changes.edges[0] {
+    match &changes.edges()[0] {
         EdgeChange::Kind {
             id: edge_id,
             kind: edge_kind,
@@ -75,10 +75,10 @@ fn changes_from_transaction_maps_node_edge_policy_ops() {
     };
 
     let changes = NodeGraphChanges::from_transaction(&tx);
-    assert_eq!(changes.nodes.len(), 1);
-    assert_eq!(changes.edges.len(), 1);
+    assert_eq!(changes.nodes().len(), 1);
+    assert_eq!(changes.edges().len(), 1);
 
-    match &changes.nodes[0] {
+    match &changes.nodes()[0] {
         NodeChange::Hidden { id, hidden } => {
             assert_eq!(*id, a);
             assert!(*hidden);
@@ -86,7 +86,7 @@ fn changes_from_transaction_maps_node_edge_policy_ops() {
         other => panic!("unexpected node change: {other:?}"),
     }
 
-    match &changes.edges[0] {
+    match &changes.edges()[0] {
         EdgeChange::Reconnectable { id, reconnectable } => {
             assert_eq!(*id, eid);
             assert_eq!(*reconnectable, Some(EdgeReconnectable::Bool(false)));
@@ -166,58 +166,58 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
     };
 
     let changes = NodeGraphChanges::from_transaction(&tx);
-    assert_eq!(changes.nodes.len(), 8);
-    assert_eq!(changes.edges.len(), 2);
+    assert_eq!(changes.nodes().len(), 8);
+    assert_eq!(changes.edges().len(), 2);
 
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Selectable { id, selectable: Some(false) } if *id == a))
     );
-    assert!(changes.nodes.iter().any(
+    assert!(changes.nodes().iter().any(
         |change| matches!(change, NodeChange::Draggable { id, draggable: Some(true) } if *id == a)
     ));
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Connectable { id, connectable: Some(false) } if *id == a))
     );
-    assert!(changes.nodes.iter().any(
+    assert!(changes.nodes().iter().any(
         |change| matches!(change, NodeChange::Deletable { id, deletable: Some(true) } if *id == a)
     ));
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Parent { id, parent: Some(found) } if *id == a && *found == group))
     );
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Extent { id, extent: Some(found) } if *id == a && *found == extent))
     );
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::ExpandParent { id, expand_parent: Some(true) } if *id == a))
     );
     assert!(
         changes
-            .nodes
+            .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Ports { id, ports } if *id == a && ports == &vec![out_port, in_port]))
     );
     assert!(
         changes
-            .edges
+            .edges()
             .iter()
             .any(|change| matches!(change, EdgeChange::Selectable { id, selectable: Some(false) } if *id == eid))
     );
-    assert!(changes.edges.iter().any(
+    assert!(changes.edges().iter().any(
         |change| matches!(change, EdgeChange::Deletable { id, deletable: Some(true) } if *id == eid)
     ));
 }
@@ -241,7 +241,7 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
     let remove_node_changes = NodeGraphChanges::from_transaction(&remove_node_tx);
     assert!(
         remove_node_changes
-            .edges
+            .edges()
             .iter()
             .any(|change| matches!(change, EdgeChange::Remove { id } if *id == eid))
     );
@@ -257,7 +257,7 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
     let remove_port_changes = NodeGraphChanges::from_transaction(&remove_port_tx);
     assert!(
         remove_port_changes
-            .edges
+            .edges()
             .iter()
             .any(|change| matches!(change, EdgeChange::Remove { id } if *id == eid))
     );
