@@ -11,9 +11,7 @@ impl NodeGraphLookups {
         if let Some(n) = self.node_lookup.get_mut(&port.node) {
             n.ports.retain(|port_id| *port_id != id);
         }
-        for (edge_id, _edge) in edges {
-            self.remove_edge_from_lookups(*edge_id);
-        }
+        self.remove_edges_from_lookups(edges);
         true
     }
 }

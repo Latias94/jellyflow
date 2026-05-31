@@ -33,6 +33,12 @@ impl NodeGraphLookups {
         self.edge_lookup.remove(&edge_id);
     }
 
+    pub(super) fn remove_edges_from_lookups(&mut self, edges: &[(EdgeId, Edge)]) {
+        for (edge_id, _edge) in edges {
+            self.remove_edge_from_lookups(*edge_id);
+        }
+    }
+
     pub(super) fn apply_set_edge_kind(&mut self, id: EdgeId, kind: EdgeKind) -> bool {
         if let Some(e) = self.edge_lookup.get_mut(&id) {
             e.kind = kind;
