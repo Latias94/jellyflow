@@ -39,9 +39,19 @@ impl NodeGraphLookups {
         }
     }
 
-    pub(super) fn apply_set_edge_kind(&mut self, id: EdgeId, kind: EdgeKind) -> bool {
+    pub(super) fn apply_set_edge_kind(
+        &mut self,
+        graph: &Graph,
+        id: EdgeId,
+        kind: EdgeKind,
+    ) -> bool {
         if let Some(e) = self.edge_lookup.get_mut(&id) {
             e.kind = kind;
+        } else {
+            let Some(edge) = graph.edges.get(&id) else {
+                return false;
+            };
+            return self.recover_edge_lookup_from_graph(graph, id, kind, edge.reconnectable);
         }
         let Some(conn) = self.connection_from_edge_lookup(id) else {
             self.slow_update_edge_kind_in_connection_lookup(id, kind);
@@ -64,10 +74,23 @@ impl NodeGraphLookups {
         let Some(edge) = graph.edges.get(&id) else {
             return false;
         };
+        self.recover_edge_lookup_from_graph(graph, id, edge.kind, reconnectable)
+    }
+
+    fn recover_edge_lookup_from_graph(
+        &mut self,
+        graph: &Graph,
+        id: EdgeId,
+        kind: EdgeKind,
+        reconnectable: Option<EdgeReconnectable>,
+    ) -> bool {
+        let Some(edge) = graph.edges.get(&id) else {
+            return false;
+        };
         let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
             graph,
             id,
-            edge.kind,
+            kind,
             EdgeEndpoints::from_edge(edge),
             reconnectable,
         ) else {

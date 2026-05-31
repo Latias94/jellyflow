@@ -34,7 +34,7 @@ impl NodeGraphLookups {
             GraphOp::RemovePort { id, port, edges } => self.apply_remove_port(*id, port, edges),
             GraphOp::AddEdge { id, edge } => self.apply_add_edge(graph, *id, edge),
             GraphOp::RemoveEdge { id, .. } => self.apply_remove_edge(*id),
-            GraphOp::SetEdgeKind { id, to, .. } => self.apply_set_edge_kind(*id, *to),
+            GraphOp::SetEdgeKind { id, to, .. } => self.apply_set_edge_kind(graph, *id, *to),
             GraphOp::SetEdgeReconnectable { id, to, .. } => {
                 self.apply_set_edge_reconnectable(graph, *id, *to)
             }
