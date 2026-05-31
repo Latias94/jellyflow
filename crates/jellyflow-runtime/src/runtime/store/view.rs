@@ -109,20 +109,13 @@ impl NodeGraphStore {
     pub fn replace_view_state(&mut self, view_state: NodeGraphViewState) {
         self.update_view_state_if_changed(
             |current| *current = view_state,
-            ViewStateSanitizer::SanitizeForGraph,
-            |before, after| !view_state_eq(before, after),
-            collect_view_projection_changes,
+            ViewStateMutationKind::FullState,
         );
     }
 
     /// Mutates view-state in place and emits derived `ViewChange` events.
     pub fn update_view_state(&mut self, f: impl FnOnce(&mut NodeGraphViewState)) {
-        self.update_view_state_if_changed(
-            f,
-            ViewStateSanitizer::SanitizeForGraph,
-            |before, after| !view_state_eq(before, after),
-            collect_view_projection_changes,
-        );
+        self.update_view_state_if_changed(f, ViewStateMutationKind::FullState);
     }
 
     pub fn replace_editor_config(&mut self, editor_config: NodeGraphEditorConfig) {
@@ -162,9 +155,7 @@ impl NodeGraphStore {
                 view_state.pan = pan;
                 view_state.zoom = z;
             },
-            ViewStateSanitizer::Preserve,
-            |before, after| before.pan != after.pan || before.zoom != after.zoom,
-            collect_viewport_change,
+            ViewStateMutationKind::Viewport,
         );
     }
 
@@ -181,33 +172,25 @@ impl NodeGraphStore {
                 view_state.selected_edges = edges;
                 view_state.selected_groups = groups;
             },
-            ViewStateSanitizer::SanitizeForGraph,
-            |before, after| {
-                before.selected_nodes != after.selected_nodes
-                    || before.selected_edges != after.selected_edges
-                    || before.selected_groups != after.selected_groups
-            },
-            collect_selection_change,
+            ViewStateMutationKind::Selection,
         );
     }
 
     fn update_view_state_if_changed(
         &mut self,
         mutate: impl FnOnce(&mut NodeGraphViewState),
-        sanitizer: ViewStateSanitizer,
-        changed: impl FnOnce(&NodeGraphViewState, &NodeGraphViewState) -> bool,
-        collect_changes: impl FnOnce(&NodeGraphViewState, &NodeGraphViewState) -> Vec<ViewChange>,
+        kind: ViewStateMutationKind,
     ) {
         let before = self.view_state.clone();
         mutate(&mut self.view_state);
-        sanitizer.apply(&self.graph, &mut self.view_state);
+        kind.sanitize(&self.graph, &mut self.view_state);
         let after = self.view_state.clone();
 
-        if !changed(&before, &after) {
+        if !kind.changed(&before, &after) {
             return;
         }
 
-        let changes = collect_changes(&before, &after);
+        let changes = kind.collect_changes(&before, &after);
         self.publish_view_state_change(before, after, changes);
     }
 
@@ -239,16 +222,48 @@ impl NodeGraphStore {
 }
 
 #[derive(Clone, Copy)]
-enum ViewStateSanitizer {
-    Preserve,
-    SanitizeForGraph,
+enum ViewStateMutationKind {
+    FullState,
+    Viewport,
+    Selection,
 }
 
-impl ViewStateSanitizer {
-    fn apply(self, graph: &Graph, view_state: &mut NodeGraphViewState) {
+impl ViewStateMutationKind {
+    fn sanitize(self, graph: &Graph, view_state: &mut NodeGraphViewState) {
         match self {
-            Self::Preserve => {}
-            Self::SanitizeForGraph => view_state.sanitize_for_graph(graph),
+            Self::FullState | Self::Selection => view_state.sanitize_for_graph(graph),
+            Self::Viewport => {}
+        }
+    }
+
+    fn changed(self, before: &NodeGraphViewState, after: &NodeGraphViewState) -> bool {
+        match self {
+            Self::FullState => !view_state_eq(before, after),
+            Self::Viewport => before.pan != after.pan || before.zoom != after.zoom,
+            Self::Selection => {
+                before.selected_nodes != after.selected_nodes
+                    || before.selected_edges != after.selected_edges
+                    || before.selected_groups != after.selected_groups
+            }
+        }
+    }
+
+    fn collect_changes(
+        self,
+        before: &NodeGraphViewState,
+        after: &NodeGraphViewState,
+    ) -> Vec<ViewChange> {
+        match self {
+            Self::FullState => collect_view_projection_changes(before, after),
+            Self::Viewport => vec![ViewChange::Viewport {
+                pan: after.pan,
+                zoom: after.zoom,
+            }],
+            Self::Selection => vec![ViewChange::Selection {
+                nodes: after.selected_nodes.clone(),
+                edges: after.selected_edges.clone(),
+                groups: after.selected_groups.clone(),
+            }],
         }
     }
 }
@@ -285,25 +300,4 @@ fn collect_view_projection_changes(
         });
     }
     changes
-}
-
-fn collect_viewport_change(
-    _before: &NodeGraphViewState,
-    after: &NodeGraphViewState,
-) -> Vec<ViewChange> {
-    vec![ViewChange::Viewport {
-        pan: after.pan,
-        zoom: after.zoom,
-    }]
-}
-
-fn collect_selection_change(
-    _before: &NodeGraphViewState,
-    after: &NodeGraphViewState,
-) -> Vec<ViewChange> {
-    vec![ViewChange::Selection {
-        nodes: after.selected_nodes.clone(),
-        edges: after.selected_edges.clone(),
-        groups: after.selected_groups.clone(),
-    }]
 }
