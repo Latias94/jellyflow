@@ -26,7 +26,7 @@ fn find_tx_sanity_issue(
     label: &'static str,
     mut op_field: impl FnMut(&GraphOp) -> Option<&'static str>,
 ) -> Option<(String, String)> {
-    for (ix, op) in tx.ops.iter().enumerate() {
+    for (ix, op) in tx.ops().iter().enumerate() {
         if let Some(field) = op_field(op) {
             return Some((
                 code.to_string(),

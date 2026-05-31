@@ -57,6 +57,16 @@ impl GraphTransaction {
         self.ops.is_empty()
     }
 
+    /// Returns ops in order.
+    pub fn ops(&self) -> &[GraphOp] {
+        &self.ops
+    }
+
+    /// Returns the number of ops.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
     /// Applies this transaction atomically to `graph`.
     pub fn apply_to(&self, graph: &mut Graph) -> Result<(), ApplyError> {
         crate::ops::apply::apply_transaction(graph, self)

@@ -53,7 +53,7 @@ fn apply_original_transaction(
     committed: &mut GraphTransaction,
 ) -> Result<(), ApplyPipelineError> {
     tx.apply_to(graph)?;
-    committed.extend(tx.ops.iter().cloned());
+    committed.extend(tx.ops().iter().cloned());
     Ok(())
 }
 

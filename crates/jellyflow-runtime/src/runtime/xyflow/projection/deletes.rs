@@ -4,7 +4,7 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 pub(super) fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
     let mut accumulator = DeleteChangeAccumulator::default();
-    for op in &tx.ops {
+    for op in tx.ops() {
         accumulator.push_op(op);
     }
     accumulator.finish()

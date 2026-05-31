@@ -8,7 +8,7 @@ use crate::ops::{GraphOp, GraphTransaction};
 /// Builds an inverse transaction that restores the graph state before `tx`.
 pub fn invert_transaction(tx: &GraphTransaction) -> GraphTransaction {
     let mut out = GraphTransaction::new();
-    for op in tx.ops.iter().rev() {
+    for op in tx.ops().iter().rev() {
         out.extend(invert_op(op));
     }
     out

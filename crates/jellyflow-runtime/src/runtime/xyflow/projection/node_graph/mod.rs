@@ -9,7 +9,7 @@ use self::target::NodeGraphProjectionTarget;
 
 pub(super) fn node_graph_changes_from_transaction(tx: &GraphTransaction) -> NodeGraphChanges {
     let mut out = NodeGraphChanges::default();
-    for op in &tx.ops {
+    for op in tx.ops() {
         push_node_graph_change(op, &mut out);
     }
     out

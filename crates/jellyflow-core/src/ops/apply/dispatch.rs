@@ -8,7 +8,7 @@ pub(super) fn apply_transaction(
     tx: &GraphTransaction,
 ) -> Result<(), ApplyError> {
     let mut scratch = graph.clone();
-    for op in &tx.ops {
+    for op in tx.ops() {
         apply_op(&mut scratch, op)?;
     }
 

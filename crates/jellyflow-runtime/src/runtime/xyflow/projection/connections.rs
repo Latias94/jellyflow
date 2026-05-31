@@ -5,8 +5,8 @@ use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 pub(super) fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
-    let mut accumulator = ConnectionChangeAccumulator::new(tx.ops.len());
-    for op in &tx.ops {
+    let mut accumulator = ConnectionChangeAccumulator::new(tx.len());
+    for op in tx.ops() {
         accumulator.push_op(op);
     }
     accumulator.finish()

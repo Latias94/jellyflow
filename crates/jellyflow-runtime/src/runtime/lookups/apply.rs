@@ -9,7 +9,7 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 impl NodeGraphLookups {
     pub fn apply_transaction(&mut self, graph: &Graph, tx: &GraphTransaction) {
-        for op in &tx.ops {
+        for op in tx.ops() {
             if !self.apply_op(graph, op) {
                 self.rebuild_from(graph);
                 return;
