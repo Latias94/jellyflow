@@ -69,7 +69,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
         for (port_id, _) in ports {
             self.staged.insert_port(port_id);
         }
-        self.ops.extend(ops);
+        self.extend_ops(ops);
         Ok(())
     }
 
@@ -81,7 +81,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
         self.require_known_port(edge.to)?;
 
         self.staged.insert_edge(id, &edge);
-        self.ops.push(GraphOp::AddEdge { id, edge });
+        self.push_op(GraphOp::AddEdge { id, edge });
         Ok(())
     }
 
@@ -108,8 +108,16 @@ impl<'a> GraphMutationBatchPlanner<'a> {
         };
 
         self.staged.set_edge_endpoints(id, to);
-        self.ops.push(GraphOp::SetEdgeEndpoints { id, from, to });
+        self.push_op(GraphOp::SetEdgeEndpoints { id, from, to });
         Ok(())
+    }
+
+    fn push_op(&mut self, op: GraphOp) {
+        self.ops.push(op);
+    }
+
+    fn extend_ops(&mut self, ops: impl IntoIterator<Item = GraphOp>) {
+        self.ops.extend(ops);
     }
 
     fn require_known_port(&self, id: PortId) -> Result<(), GraphMutationError> {
