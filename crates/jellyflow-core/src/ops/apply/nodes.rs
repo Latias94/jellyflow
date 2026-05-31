@@ -1,4 +1,4 @@
-use crate::core::Graph;
+use crate::core::{Edge, EdgeId, Graph, GroupId, Node, NodeId, Port, PortId};
 use crate::ops::GraphOp;
 
 use super::ApplyError;
@@ -6,147 +6,144 @@ use super::resources::{remove_edge_exact, remove_port_exact};
 
 pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
-        GraphOp::AddNode { id, node } => {
-            if graph.nodes.contains_key(id) {
-                return Err(ApplyError::NodeAlreadyExists { id: *id });
-            }
-            graph.nodes.insert(*id, node.clone());
-        }
+        GraphOp::AddNode { id, node } => apply_add_node(graph, *id, node)?,
         GraphOp::RemoveNode {
             id,
             node,
             ports,
             edges,
-        } => {
-            let Some(current) = graph.nodes.get(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            if current.kind != node.kind || current.kind_version != node.kind_version {
-                return Err(ApplyError::RemoveNodeMismatch { id: *id });
-            }
-
-            for (edge_id, edge) in edges {
-                remove_edge_exact(graph, *edge_id, edge)?;
-            }
-            for (port_id, port) in ports {
-                remove_port_exact(graph, *port_id, port)?;
-            }
-
-            graph.nodes.remove(id);
-        }
+        } => apply_remove_node(graph, *id, node, ports, edges)?,
         GraphOp::SetNodePos { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.pos = *to;
+            node_mut(graph, *id)?.pos = *to;
         }
         GraphOp::SetNodeKind { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.kind = to.clone();
+            node_mut(graph, *id)?.kind = to.clone();
         }
         GraphOp::SetNodeKindVersion { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.kind_version = *to;
+            node_mut(graph, *id)?.kind_version = *to;
         }
         GraphOp::SetNodeSelectable { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.selectable = *to;
+            node_mut(graph, *id)?.selectable = *to;
         }
         GraphOp::SetNodeDraggable { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.draggable = *to;
+            node_mut(graph, *id)?.draggable = *to;
         }
         GraphOp::SetNodeConnectable { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.connectable = *to;
+            node_mut(graph, *id)?.connectable = *to;
         }
         GraphOp::SetNodeDeletable { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.deletable = *to;
+            node_mut(graph, *id)?.deletable = *to;
         }
         GraphOp::SetNodeParent { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            if let Some(group) = to
-                && !graph.groups.contains_key(group)
-            {
-                return Err(ApplyError::NodeParentMissingGroup {
-                    node: *id,
-                    group: *group,
-                });
-            }
-            node.parent = *to;
+            apply_set_node_parent(graph, *id, *to)?;
         }
         GraphOp::SetNodeExtent { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.extent = *to;
+            node_mut(graph, *id)?.extent = *to;
         }
         GraphOp::SetNodeExpandParent { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.expand_parent = *to;
+            node_mut(graph, *id)?.expand_parent = *to;
         }
         GraphOp::SetNodeSize { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.size = *to;
+            node_mut(graph, *id)?.size = *to;
         }
         GraphOp::SetNodeHidden { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.hidden = *to;
+            node_mut(graph, *id)?.hidden = *to;
         }
         GraphOp::SetNodeCollapsed { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.collapsed = *to;
+            node_mut(graph, *id)?.collapsed = *to;
         }
         GraphOp::SetNodePorts { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            for port_id in to {
-                let Some(port) = graph.ports.get(port_id) else {
-                    return Err(ApplyError::NodePortsUnknownPort {
-                        node: *id,
-                        port: *port_id,
-                    });
-                };
-                if port.node != *id {
-                    return Err(ApplyError::NodePortsUnknownPort {
-                        node: *id,
-                        port: *port_id,
-                    });
-                }
-            }
-            node.ports = to.clone();
+            apply_set_node_ports(graph, *id, to)?;
         }
         GraphOp::SetNodeData { id, to, .. } => {
-            let Some(node) = graph.nodes.get_mut(id) else {
-                return Err(ApplyError::MissingNode { id: *id });
-            };
-            node.data = to.clone();
+            node_mut(graph, *id)?.data = to.clone();
         }
         _ => unreachable!("non-node op routed to node apply"),
     }
     Ok(())
+}
+
+fn apply_add_node(graph: &mut Graph, id: NodeId, node: &Node) -> Result<(), ApplyError> {
+    if graph.nodes.contains_key(&id) {
+        return Err(ApplyError::NodeAlreadyExists { id });
+    }
+    graph.nodes.insert(id, node.clone());
+    Ok(())
+}
+
+fn apply_remove_node(
+    graph: &mut Graph,
+    id: NodeId,
+    node: &Node,
+    ports: &[(PortId, Port)],
+    edges: &[(EdgeId, Edge)],
+) -> Result<(), ApplyError> {
+    let Some(current) = graph.nodes.get(&id) else {
+        return Err(ApplyError::MissingNode { id });
+    };
+    if current.kind != node.kind || current.kind_version != node.kind_version {
+        return Err(ApplyError::RemoveNodeMismatch { id });
+    }
+
+    for (edge_id, edge) in edges {
+        remove_edge_exact(graph, *edge_id, edge)?;
+    }
+    for (port_id, port) in ports {
+        remove_port_exact(graph, *port_id, port)?;
+    }
+
+    graph.nodes.remove(&id);
+    Ok(())
+}
+
+fn apply_set_node_parent(
+    graph: &mut Graph,
+    id: NodeId,
+    parent: Option<GroupId>,
+) -> Result<(), ApplyError> {
+    ensure_node_exists(graph, id)?;
+    if let Some(group) = parent
+        && !graph.groups.contains_key(&group)
+    {
+        return Err(ApplyError::NodeParentMissingGroup { node: id, group });
+    }
+
+    node_mut(graph, id)?.parent = parent;
+    Ok(())
+}
+
+fn apply_set_node_ports(graph: &mut Graph, id: NodeId, ports: &[PortId]) -> Result<(), ApplyError> {
+    ensure_node_exists(graph, id)?;
+    for port_id in ports {
+        let Some(port) = graph.ports.get(port_id) else {
+            return Err(ApplyError::NodePortsUnknownPort {
+                node: id,
+                port: *port_id,
+            });
+        };
+        if port.node != id {
+            return Err(ApplyError::NodePortsUnknownPort {
+                node: id,
+                port: *port_id,
+            });
+        }
+    }
+
+    node_mut(graph, id)?.ports = ports.to_vec();
+    Ok(())
+}
+
+fn ensure_node_exists(graph: &Graph, id: NodeId) -> Result<(), ApplyError> {
+    if graph.nodes.contains_key(&id) {
+        Ok(())
+    } else {
+        Err(ApplyError::MissingNode { id })
+    }
+}
+
+fn node_mut(graph: &mut Graph, id: NodeId) -> Result<&mut Node, ApplyError> {
+    graph
+        .nodes
+        .get_mut(&id)
+        .ok_or(ApplyError::MissingNode { id })
 }
