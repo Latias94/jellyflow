@@ -9,84 +9,14 @@ pub(super) fn compute_fit_view_target_top_left(
     let (viewport_w, viewport_h) = (options.viewport_width_px, options.viewport_height_px);
     let (margin_x, margin_y) = viewport_margins(options);
 
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    let mut max_w = 0.0f32;
-    let mut max_h = 0.0f32;
-
-    for n in nodes {
-        let (w, h) = n.size_px;
-        if !size_is_valid(w, h) {
-            continue;
-        }
-        min_x = min_x.min(n.pos.x);
-        min_y = min_y.min(n.pos.y);
-        max_x = max_x.max(n.pos.x);
-        max_y = max_y.max(n.pos.y);
-        max_w = max_w.max(w);
-        max_h = max_h.max(h);
-    }
-
-    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
-        return None;
-    }
-
-    let spread_x = (max_x - min_x).max(0.0);
-    let spread_y = (max_y - min_y).max(0.0);
-
-    let mut zoom_x = options.max_zoom;
-    let mut zoom_y = options.max_zoom;
-    if spread_x > 1.0e-3 {
-        zoom_x = (viewport_w - max_w - 2.0 * margin_x) / spread_x;
-    }
-    if spread_y > 1.0e-3 {
-        zoom_y = (viewport_h - max_h - 2.0 * margin_y) / spread_y;
-    }
-
-    let mut zoom = zoom_x.min(zoom_y);
-    if !zoom.is_finite() {
-        zoom = 1.0;
-    }
-    zoom = zoom.clamp(options.min_zoom, options.max_zoom);
-
-    let mut rect_min_x = f32::INFINITY;
-    let mut rect_min_y = f32::INFINITY;
-    let mut rect_max_x = f32::NEG_INFINITY;
-    let mut rect_max_y = f32::NEG_INFINITY;
-    for n in nodes {
-        let (w_px, h_px) = n.size_px;
-        if !size_is_valid(w_px, h_px) {
-            continue;
-        }
-        let w = w_px / zoom;
-        let h = h_px / zoom;
-        rect_min_x = rect_min_x.min(n.pos.x);
-        rect_min_y = rect_min_y.min(n.pos.y);
-        rect_max_x = rect_max_x.max(n.pos.x + w);
-        rect_max_y = rect_max_y.max(n.pos.y + h);
-    }
-
-    if !rect_min_x.is_finite()
-        || !rect_min_y.is_finite()
-        || !rect_max_x.is_finite()
-        || !rect_max_y.is_finite()
-    {
-        return None;
-    }
-
-    let center_x = 0.5 * (rect_min_x + rect_max_x);
-    let center_y = 0.5 * (rect_min_y + rect_max_y);
-
-    let viewport_w_canvas = viewport_w / zoom;
-    let viewport_h_canvas = viewport_h / zoom;
-    let target_center_x = 0.5 * viewport_w_canvas;
-    let target_center_y = 0.5 * viewport_h_canvas;
+    let spread = NodePositionSpread::from_nodes(nodes)?;
+    let zoom = spread.fit_zoom(options, margin_x, margin_y);
+    let bounds = CanvasBounds::from_nodes(nodes, zoom)?;
+    let center = bounds.center();
 
     let pan = CanvasPoint {
-        x: target_center_x - center_x,
-        y: target_center_y - center_y,
+        x: 0.5 * viewport_w / zoom - center.x,
+        y: 0.5 * viewport_h / zoom - center.y,
     };
 
     Some((pan, zoom))
@@ -149,4 +79,129 @@ fn canvas_rect_is_valid(rect: CanvasRect) -> bool {
 
 fn size_is_valid(width: f32, height: f32) -> bool {
     width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
+}
+
+struct NodePositionSpread {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    max_w_px: f32,
+    max_h_px: f32,
+}
+
+impl NodePositionSpread {
+    fn new() -> Self {
+        Self {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+            max_w_px: 0.0,
+            max_h_px: 0.0,
+        }
+    }
+
+    fn from_nodes(nodes: &[FitViewNodeInfo]) -> Option<Self> {
+        let mut spread = Self::new();
+        for node in nodes {
+            spread.include(node);
+        }
+        spread.is_valid().then_some(spread)
+    }
+
+    fn include(&mut self, node: &FitViewNodeInfo) {
+        let (width_px, height_px) = node.size_px;
+        if !size_is_valid(width_px, height_px) {
+            return;
+        }
+
+        self.min_x = self.min_x.min(node.pos.x);
+        self.min_y = self.min_y.min(node.pos.y);
+        self.max_x = self.max_x.max(node.pos.x);
+        self.max_y = self.max_y.max(node.pos.y);
+        self.max_w_px = self.max_w_px.max(width_px);
+        self.max_h_px = self.max_h_px.max(height_px);
+    }
+
+    fn fit_zoom(&self, options: FitViewComputeOptions, margin_x: f32, margin_y: f32) -> f32 {
+        let mut zoom_x = options.max_zoom;
+        let mut zoom_y = options.max_zoom;
+
+        let spread_x = (self.max_x - self.min_x).max(0.0);
+        let spread_y = (self.max_y - self.min_y).max(0.0);
+        if spread_x > 1.0e-3 {
+            zoom_x = (options.viewport_width_px - self.max_w_px - 2.0 * margin_x) / spread_x;
+        }
+        if spread_y > 1.0e-3 {
+            zoom_y = (options.viewport_height_px - self.max_h_px - 2.0 * margin_y) / spread_y;
+        }
+
+        let mut zoom = zoom_x.min(zoom_y);
+        if !zoom.is_finite() {
+            zoom = 1.0;
+        }
+        zoom.clamp(options.min_zoom, options.max_zoom)
+    }
+
+    fn is_valid(&self) -> bool {
+        self.min_x.is_finite()
+            && self.min_y.is_finite()
+            && self.max_x.is_finite()
+            && self.max_y.is_finite()
+    }
+}
+
+struct CanvasBounds {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+impl CanvasBounds {
+    fn new() -> Self {
+        Self {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+        }
+    }
+
+    fn from_nodes(nodes: &[FitViewNodeInfo], zoom: f32) -> Option<Self> {
+        let mut bounds = Self::new();
+        for node in nodes {
+            bounds.include(node, zoom);
+        }
+        bounds.is_valid().then_some(bounds)
+    }
+
+    fn include(&mut self, node: &FitViewNodeInfo, zoom: f32) {
+        let (width_px, height_px) = node.size_px;
+        if !size_is_valid(width_px, height_px) {
+            return;
+        }
+
+        let width = width_px / zoom;
+        let height = height_px / zoom;
+        self.min_x = self.min_x.min(node.pos.x);
+        self.min_y = self.min_y.min(node.pos.y);
+        self.max_x = self.max_x.max(node.pos.x + width);
+        self.max_y = self.max_y.max(node.pos.y + height);
+    }
+
+    fn center(&self) -> CanvasPoint {
+        CanvasPoint {
+            x: 0.5 * (self.min_x + self.max_x),
+            y: 0.5 * (self.min_y + self.max_y),
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.min_x.is_finite()
+            && self.min_y.is_finite()
+            && self.max_x.is_finite()
+            && self.max_y.is_finite()
+    }
 }
