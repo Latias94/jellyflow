@@ -9,6 +9,7 @@
 
 mod bounds;
 mod connections;
+mod geometry;
 mod options;
 
 pub use bounds::{
