@@ -1,5 +1,6 @@
-use jellyflow_core::core::Graph;
+use jellyflow_core::core::{Graph, Node, NodeId, NodeKindKey};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use serde_json::Value;
 
 use super::NodeRegistry;
 use crate::schema::migration::{
@@ -43,80 +44,125 @@ impl NodeRegistry {
     ///
     /// The returned transaction may also include `SetNodeKind` ops for aliased kinds.
     pub fn plan_migrate_nodes(&self, graph: &Graph) -> MigrateNodesPlan {
-        let mut tx = GraphTransaction::new().with_label("Migrate node kinds");
-        let mut report = MigrateNodesReport::default();
+        MigrateNodesPlanner::new(self, graph).finish()
+    }
+}
 
-        for (id, node) in &graph.nodes {
-            let canonical = self.resolve_kind(&node.kind);
-            let schema = self.get(canonical);
-            let Some(schema) = schema else {
-                report.missing_schema.push(NodeMigrationMissingSchema {
-                    node: *id,
-                    kind: node.kind.clone(),
-                });
-                continue;
-            };
+struct MigrateNodesPlanner<'a> {
+    registry: &'a NodeRegistry,
+    graph: &'a Graph,
+    tx: GraphTransaction,
+    report: MigrateNodesReport,
+}
 
-            if canonical != &node.kind {
-                tx.push(GraphOp::SetNodeKind {
-                    id: *id,
-                    from: node.kind.clone(),
-                    to: canonical.clone(),
-                });
-            }
+impl<'a> MigrateNodesPlanner<'a> {
+    fn new(registry: &'a NodeRegistry, graph: &'a Graph) -> Self {
+        Self {
+            registry,
+            graph,
+            tx: GraphTransaction::new().with_label("Migrate node kinds"),
+            report: MigrateNodesReport::default(),
+        }
+    }
 
-            if node.kind_version == schema.latest_kind_version {
-                continue;
-            }
-            if node.kind_version > schema.latest_kind_version {
-                report.newer_than_schema.push(NodeMigrationNewerThanSchema {
-                    node: *id,
-                    kind: canonical.clone(),
-                    node_kind_version: node.kind_version,
-                    schema_latest_kind_version: schema.latest_kind_version,
-                });
-                continue;
-            }
-
-            let Some(migrator) = self.migrators.get(canonical) else {
-                report.missing_migrator.push(NodeMigrationMissingMigrator {
-                    node: *id,
-                    kind: canonical.clone(),
-                    from: node.kind_version,
-                    to: schema.latest_kind_version,
-                });
-                continue;
-            };
-
-            match migrator.migrate(node.kind_version, schema.latest_kind_version, &node.data) {
-                Ok(new_data) => {
-                    tx.push(GraphOp::SetNodeData {
-                        id: *id,
-                        from: node.data.clone(),
-                        to: new_data,
-                    });
-                    tx.push(GraphOp::SetNodeKindVersion {
-                        id: *id,
-                        from: node.kind_version,
-                        to: schema.latest_kind_version,
-                    });
-                    report.upgraded.push(NodeMigrationUpgraded {
-                        node: *id,
-                        kind: canonical.clone(),
-                        from: node.kind_version,
-                        to: schema.latest_kind_version,
-                    });
-                }
-                Err(err) => report.errors.push(NodeMigrationErrorEntry {
-                    node: *id,
-                    kind: canonical.clone(),
-                    from: node.kind_version,
-                    to: schema.latest_kind_version,
-                    message: err.to_string(),
-                }),
-            }
+    fn finish(mut self) -> MigrateNodesPlan {
+        for (id, node) in &self.graph.nodes {
+            self.plan_node(*id, node);
         }
 
-        MigrateNodesPlan { tx, report }
+        MigrateNodesPlan {
+            tx: self.tx,
+            report: self.report,
+        }
+    }
+
+    fn plan_node(&mut self, id: NodeId, node: &Node) {
+        let canonical = self.registry.resolve_kind(&node.kind).clone();
+        let Some(schema) = self.registry.get(&canonical) else {
+            self.report.missing_schema.push(NodeMigrationMissingSchema {
+                node: id,
+                kind: node.kind.clone(),
+            });
+            return;
+        };
+
+        let latest_kind_version = schema.latest_kind_version;
+        self.push_kind_canonicalization(id, node, &canonical);
+
+        if node.kind_version == latest_kind_version {
+            return;
+        }
+        if node.kind_version > latest_kind_version {
+            self.report
+                .newer_than_schema
+                .push(NodeMigrationNewerThanSchema {
+                    node: id,
+                    kind: canonical,
+                    node_kind_version: node.kind_version,
+                    schema_latest_kind_version: latest_kind_version,
+                });
+            return;
+        }
+
+        let Some(migrator) = self.registry.migrators.get(&canonical) else {
+            self.report
+                .missing_migrator
+                .push(NodeMigrationMissingMigrator {
+                    node: id,
+                    kind: canonical,
+                    from: node.kind_version,
+                    to: latest_kind_version,
+                });
+            return;
+        };
+
+        match migrator.migrate(node.kind_version, latest_kind_version, &node.data) {
+            Ok(new_data) => {
+                self.push_node_upgrade(id, node, canonical, latest_kind_version, new_data)
+            }
+            Err(err) => self.report.errors.push(NodeMigrationErrorEntry {
+                node: id,
+                kind: canonical,
+                from: node.kind_version,
+                to: latest_kind_version,
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    fn push_kind_canonicalization(&mut self, id: NodeId, node: &Node, canonical: &NodeKindKey) {
+        if canonical != &node.kind {
+            self.tx.push(GraphOp::SetNodeKind {
+                id,
+                from: node.kind.clone(),
+                to: canonical.clone(),
+            });
+        }
+    }
+
+    fn push_node_upgrade(
+        &mut self,
+        id: NodeId,
+        node: &Node,
+        canonical: NodeKindKey,
+        latest_kind_version: u32,
+        new_data: Value,
+    ) {
+        self.tx.push(GraphOp::SetNodeData {
+            id,
+            from: node.data.clone(),
+            to: new_data,
+        });
+        self.tx.push(GraphOp::SetNodeKindVersion {
+            id,
+            from: node.kind_version,
+            to: latest_kind_version,
+        });
+        self.report.upgraded.push(NodeMigrationUpgraded {
+            node: id,
+            kind: canonical,
+            from: node.kind_version,
+            to: latest_kind_version,
+        });
     }
 }
