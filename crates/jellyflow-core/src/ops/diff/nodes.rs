@@ -26,6 +26,14 @@ impl<'a> GraphDiffPlanner<'a> {
     }
 
     fn diff_existing_node(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
+        self.diff_node_identity_fields(id, node_from, node_to);
+        self.diff_node_policy_fields(id, node_from, node_to);
+        self.diff_node_layout_fields(id, node_from, node_to);
+        self.diff_node_ports(id, node_from, node_to);
+        self.diff_node_data(id, node_from, node_to);
+    }
+
+    fn diff_node_identity_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.kind != node_to.kind {
             self.tx.ops.push(GraphOp::SetNodeKind {
                 id,
@@ -40,6 +48,9 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.kind_version,
             });
         }
+    }
+
+    fn diff_node_policy_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.selectable != node_to.selectable {
             self.tx.ops.push(GraphOp::SetNodeSelectable {
                 id,
@@ -68,6 +79,9 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.deletable,
             });
         }
+    }
+
+    fn diff_node_layout_fields(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.pos != node_to.pos {
             self.tx.ops.push(GraphOp::SetNodePos {
                 id,
@@ -111,6 +125,9 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.collapsed,
             });
         }
+    }
+
+    fn diff_node_ports(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.ports != node_to.ports {
             self.tx.ops.push(GraphOp::SetNodePorts {
                 id,
@@ -118,6 +135,9 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.ports.clone(),
             });
         }
+    }
+
+    fn diff_node_data(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
         if node_from.data != node_to.data {
             self.tx.ops.push(GraphOp::SetNodeData {
                 id,
