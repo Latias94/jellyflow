@@ -1,6 +1,6 @@
 use crate::core::NodeExtent;
 
-use super::{EdgeEndpoints, GraphOp, GraphTransaction};
+use super::{GraphOp, GraphTransaction};
 
 pub fn find_non_finite_in_tx(tx: &GraphTransaction) -> Option<(String, String)> {
     find_tx_sanity_issue(
@@ -40,10 +40,6 @@ fn find_tx_sanity_issue(
 struct NonFiniteGeometry;
 
 impl NonFiniteGeometry {
-    fn endpoints_is_finite(_e: EdgeEndpoints) -> bool {
-        true
-    }
-
     fn op_field(op: &GraphOp) -> Option<&'static str> {
         match op {
             GraphOp::AddNode { node, .. } => node
@@ -75,10 +71,6 @@ impl NonFiniteGeometry {
                 }
                 Some(NodeExtent::Parent) | None => None,
             },
-
-            GraphOp::SetEdgeEndpoints { from, to, .. } => (!Self::endpoints_is_finite(*from))
-                .then_some("SetEdgeEndpoints.from")
-                .or_else(|| (!Self::endpoints_is_finite(*to)).then_some("SetEdgeEndpoints.to")),
 
             GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }
@@ -115,6 +107,7 @@ impl NonFiniteGeometry {
             | GraphOp::RemovePort { .. }
             | GraphOp::AddEdge { .. }
             | GraphOp::RemoveEdge { .. }
+            | GraphOp::SetEdgeEndpoints { .. }
             | GraphOp::SetEdgeKind { .. }
             | GraphOp::AddSymbol { .. }
             | GraphOp::RemoveSymbol { .. }
