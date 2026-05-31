@@ -1,4 +1,5 @@
 use crate::runtime::xyflow::changes::{ChangesToTransactionError, NodeChange};
+use jellyflow_core::core::{Node, NodeId};
 use jellyflow_core::ops::{GraphMutationPlanner, GraphOp};
 
 use super::ChangesTransactionPlanner;
@@ -9,137 +10,142 @@ impl<'a> ChangesTransactionPlanner<'a> {
         change: &NodeChange,
     ) -> Result<(), ChangesToTransactionError> {
         match change {
-            NodeChange::Add { id, node } => self.tx.push(GraphOp::AddNode {
-                id: *id,
-                node: node.clone(),
-            }),
+            NodeChange::Add { id, node } => {
+                self.tx.push(GraphOp::AddNode {
+                    id: *id,
+                    node: node.clone(),
+                });
+            }
             NodeChange::Remove { id } => {
-                let op = GraphMutationPlanner::new(self.graph)
-                    .remove_node_op(*id)
-                    .map_err(|_| ChangesToTransactionError::MissingNode(*id))?;
-                self.tx.push(op);
+                self.push_remove_node_change(*id)?;
             }
             NodeChange::Position { id, position } => {
-                let from = self.existing_node(*id)?.pos;
-                self.tx.push(GraphOp::SetNodePos {
+                self.push_node_update(*id, |node| GraphOp::SetNodePos {
                     id: *id,
-                    from,
+                    from: node.pos,
                     to: *position,
-                });
+                })?;
             }
             NodeChange::Kind { id, kind } => {
-                let from = self.existing_node(*id)?.kind.clone();
-                self.tx.push(GraphOp::SetNodeKind {
+                self.push_node_update(*id, |node| GraphOp::SetNodeKind {
                     id: *id,
-                    from,
+                    from: node.kind.clone(),
                     to: kind.clone(),
-                });
+                })?;
             }
             NodeChange::KindVersion { id, kind_version } => {
-                let from = self.existing_node(*id)?.kind_version;
-                self.tx.push(GraphOp::SetNodeKindVersion {
+                self.push_node_update(*id, |node| GraphOp::SetNodeKindVersion {
                     id: *id,
-                    from,
+                    from: node.kind_version,
                     to: *kind_version,
-                });
+                })?;
             }
             NodeChange::Selectable { id, selectable } => {
-                let from = self.existing_node(*id)?.selectable;
-                self.tx.push(GraphOp::SetNodeSelectable {
+                self.push_node_update(*id, |node| GraphOp::SetNodeSelectable {
                     id: *id,
-                    from,
+                    from: node.selectable,
                     to: *selectable,
-                });
+                })?;
             }
             NodeChange::Draggable { id, draggable } => {
-                let from = self.existing_node(*id)?.draggable;
-                self.tx.push(GraphOp::SetNodeDraggable {
+                self.push_node_update(*id, |node| GraphOp::SetNodeDraggable {
                     id: *id,
-                    from,
+                    from: node.draggable,
                     to: *draggable,
-                });
+                })?;
             }
             NodeChange::Connectable { id, connectable } => {
-                let from = self.existing_node(*id)?.connectable;
-                self.tx.push(GraphOp::SetNodeConnectable {
+                self.push_node_update(*id, |node| GraphOp::SetNodeConnectable {
                     id: *id,
-                    from,
+                    from: node.connectable,
                     to: *connectable,
-                });
+                })?;
             }
             NodeChange::Deletable { id, deletable } => {
-                let from = self.existing_node(*id)?.deletable;
-                self.tx.push(GraphOp::SetNodeDeletable {
+                self.push_node_update(*id, |node| GraphOp::SetNodeDeletable {
                     id: *id,
-                    from,
+                    from: node.deletable,
                     to: *deletable,
-                });
+                })?;
             }
             NodeChange::Parent { id, parent } => {
-                let from = self.existing_node(*id)?.parent;
-                self.tx.push(GraphOp::SetNodeParent {
+                self.push_node_update(*id, |node| GraphOp::SetNodeParent {
                     id: *id,
-                    from,
+                    from: node.parent,
                     to: *parent,
-                });
+                })?;
             }
             NodeChange::Extent { id, extent } => {
-                let from = self.existing_node(*id)?.extent;
-                self.tx.push(GraphOp::SetNodeExtent {
+                self.push_node_update(*id, |node| GraphOp::SetNodeExtent {
                     id: *id,
-                    from,
+                    from: node.extent,
                     to: *extent,
-                });
+                })?;
             }
             NodeChange::ExpandParent { id, expand_parent } => {
-                let from = self.existing_node(*id)?.expand_parent;
-                self.tx.push(GraphOp::SetNodeExpandParent {
+                self.push_node_update(*id, |node| GraphOp::SetNodeExpandParent {
                     id: *id,
-                    from,
+                    from: node.expand_parent,
                     to: *expand_parent,
-                });
+                })?;
             }
             NodeChange::Size { id, size } => {
-                let from = self.existing_node(*id)?.size;
-                self.tx.push(GraphOp::SetNodeSize {
+                self.push_node_update(*id, |node| GraphOp::SetNodeSize {
                     id: *id,
-                    from,
+                    from: node.size,
                     to: *size,
-                });
+                })?;
             }
             NodeChange::Hidden { id, hidden } => {
-                let from = self.existing_node(*id)?.hidden;
-                self.tx.push(GraphOp::SetNodeHidden {
+                self.push_node_update(*id, |node| GraphOp::SetNodeHidden {
                     id: *id,
-                    from,
+                    from: node.hidden,
                     to: *hidden,
-                });
+                })?;
             }
             NodeChange::Collapsed { id, collapsed } => {
-                let from = self.existing_node(*id)?.collapsed;
-                self.tx.push(GraphOp::SetNodeCollapsed {
+                self.push_node_update(*id, |node| GraphOp::SetNodeCollapsed {
                     id: *id,
-                    from,
+                    from: node.collapsed,
                     to: *collapsed,
-                });
+                })?;
             }
             NodeChange::Data { id, data } => {
-                let from = self.existing_node(*id)?.data.clone();
-                self.tx.push(GraphOp::SetNodeData {
+                self.push_node_update(*id, |node| GraphOp::SetNodeData {
                     id: *id,
-                    from,
+                    from: node.data.clone(),
                     to: data.clone(),
-                });
+                })?;
             }
             NodeChange::Ports { id, ports } => {
-                let from = self.existing_node(*id)?.ports.clone();
-                self.tx.push(GraphOp::SetNodePorts {
+                self.push_node_update(*id, |node| GraphOp::SetNodePorts {
                     id: *id,
-                    from,
+                    from: node.ports.clone(),
                     to: ports.clone(),
-                });
+                })?;
             }
         }
+        Ok(())
+    }
+
+    fn push_remove_node_change(&mut self, id: NodeId) -> Result<(), ChangesToTransactionError> {
+        let op = GraphMutationPlanner::new(self.graph)
+            .remove_node_op(id)
+            .map_err(|_| ChangesToTransactionError::MissingNode(id))?;
+        self.tx.push(op);
+        Ok(())
+    }
+
+    fn push_node_update(
+        &mut self,
+        id: NodeId,
+        build: impl FnOnce(&Node) -> GraphOp,
+    ) -> Result<(), ChangesToTransactionError> {
+        let op = {
+            let node = self.existing_node(id)?;
+            build(node)
+        };
+        self.tx.push(op);
         Ok(())
     }
 }
