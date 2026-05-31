@@ -6,6 +6,10 @@
 //! In Jellyflow, the authoritative representation is a `Graph` (hash maps) and undo/redo is
 //! powered by reversible `GraphTransaction`. This module provides best-effort, order-preserving
 //! application of change events to a `Graph` for controlled integrations.
+//!
+//! Use `NodeGraphStore::dispatch_changes` when an integration wants canonical transaction
+//! validation, profile middleware, undo/redo, and atomic failure semantics. These helpers
+//! intentionally keep the XyFlow-style "apply what exists, ignore what does not" contract.
 
 use std::collections::HashSet;
 
@@ -25,223 +29,269 @@ impl ApplyChangesReport {
 }
 
 pub fn apply_graph_changes(graph: &mut Graph, changes: &NodeGraphChanges) -> ApplyChangesReport {
-    let mut report = apply_node_changes(graph, &changes.nodes);
-    let edge_report = apply_edge_changes(graph, &changes.edges);
-    report.applied += edge_report.applied;
-    report.ignored += edge_report.ignored;
-    report
+    ApplyChangesPlanner::new(graph).apply_graph_changes(changes)
 }
 
 pub fn apply_node_changes(graph: &mut Graph, changes: &[NodeChange]) -> ApplyChangesReport {
-    let mut report = ApplyChangesReport::default();
+    ApplyChangesPlanner::new(graph).apply_node_changes(changes)
+}
 
-    for change in changes {
+pub fn apply_edge_changes(graph: &mut Graph, changes: &[EdgeChange]) -> ApplyChangesReport {
+    ApplyChangesPlanner::new(graph).apply_edge_changes(changes)
+}
+
+struct ApplyChangesPlanner<'a> {
+    graph: &'a mut Graph,
+    report: ApplyChangesReport,
+}
+
+impl<'a> ApplyChangesPlanner<'a> {
+    fn new(graph: &'a mut Graph) -> Self {
+        Self {
+            graph,
+            report: ApplyChangesReport::default(),
+        }
+    }
+
+    fn apply_graph_changes(mut self, changes: &NodeGraphChanges) -> ApplyChangesReport {
+        self.apply_nodes(&changes.nodes);
+        self.apply_edges(&changes.edges);
+        self.finish()
+    }
+
+    fn apply_node_changes(mut self, changes: &[NodeChange]) -> ApplyChangesReport {
+        self.apply_nodes(changes);
+        self.finish()
+    }
+
+    fn apply_edge_changes(mut self, changes: &[EdgeChange]) -> ApplyChangesReport {
+        self.apply_edges(changes);
+        self.finish()
+    }
+
+    fn finish(self) -> ApplyChangesReport {
+        self.report
+    }
+
+    fn apply_nodes(&mut self, changes: &[NodeChange]) {
+        for change in changes {
+            self.apply_node_change(change);
+        }
+    }
+
+    fn apply_node_change(&mut self, change: &NodeChange) {
         match change {
             NodeChange::Add { id, node } => {
-                graph.nodes.insert(*id, node.clone());
-                report.applied += 1;
+                self.graph.nodes.insert(*id, node.clone());
+                self.mark_applied();
             }
             NodeChange::Remove { id } => {
-                let Some(removed) = graph.nodes.remove(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(removed) = self.graph.nodes.remove(id) else {
+                    self.mark_ignored();
+                    return;
                 };
 
                 let port_ids: HashSet<PortId> =
                     removed.ports.iter().copied().collect::<HashSet<_>>();
                 if !port_ids.is_empty() {
-                    graph.ports.retain(|pid, _| !port_ids.contains(pid));
-                    graph
+                    self.graph.ports.retain(|pid, _| !port_ids.contains(pid));
+                    self.graph
                         .edges
                         .retain(|_, e| !port_ids.contains(&e.from) && !port_ids.contains(&e.to));
                 }
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Position { id, position } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.pos = *position;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Kind { id, kind } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.kind = kind.clone();
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::KindVersion { id, kind_version } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.kind_version = *kind_version;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Selectable { id, selectable } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.selectable = *selectable;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Draggable { id, draggable } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.draggable = *draggable;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Connectable { id, connectable } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.connectable = *connectable;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Deletable { id, deletable } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.deletable = *deletable;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Parent { id, parent } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.parent = *parent;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Extent { id, extent } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.extent = *extent;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::ExpandParent { id, expand_parent } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.expand_parent = *expand_parent;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Size { id, size } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.size = *size;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Hidden { id, hidden } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.hidden = *hidden;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Collapsed { id, collapsed } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.collapsed = *collapsed;
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Data { id, data } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.data = data.clone();
-                report.applied += 1;
+                self.mark_applied();
             }
             NodeChange::Ports { id, ports } => {
-                let Some(node) = graph.nodes.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(node) = self.graph.nodes.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 node.ports = ports.clone();
-                report.applied += 1;
+                self.mark_applied();
             }
         }
     }
 
-    report
-}
+    fn apply_edges(&mut self, changes: &[EdgeChange]) {
+        for change in changes {
+            self.apply_edge_change(change);
+        }
+    }
 
-pub fn apply_edge_changes(graph: &mut Graph, changes: &[EdgeChange]) -> ApplyChangesReport {
-    let mut report = ApplyChangesReport::default();
-
-    for change in changes {
+    fn apply_edge_change(&mut self, change: &EdgeChange) {
         match change {
             EdgeChange::Add { id, edge } => {
-                graph.edges.insert(*id, edge.clone());
-                report.applied += 1;
+                self.graph.edges.insert(*id, edge.clone());
+                self.mark_applied();
             }
             EdgeChange::Remove { id } => {
-                if graph.edges.remove(id).is_some() {
-                    report.applied += 1;
+                if self.graph.edges.remove(id).is_some() {
+                    self.mark_applied();
                 } else {
-                    report.ignored += 1;
+                    self.mark_ignored();
                 }
             }
             EdgeChange::Kind { id, kind } => {
-                let Some(edge) = graph.edges.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(edge) = self.graph.edges.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 edge.kind = *kind;
-                report.applied += 1;
+                self.mark_applied();
             }
             EdgeChange::Selectable { id, selectable } => {
-                let Some(edge) = graph.edges.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(edge) = self.graph.edges.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 edge.selectable = *selectable;
-                report.applied += 1;
+                self.mark_applied();
             }
             EdgeChange::Deletable { id, deletable } => {
-                let Some(edge) = graph.edges.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(edge) = self.graph.edges.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 edge.deletable = *deletable;
-                report.applied += 1;
+                self.mark_applied();
             }
             EdgeChange::Reconnectable { id, reconnectable } => {
-                let Some(edge) = graph.edges.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(edge) = self.graph.edges.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 edge.reconnectable = *reconnectable;
-                report.applied += 1;
+                self.mark_applied();
             }
             EdgeChange::Endpoints { id, from, to } => {
-                let Some(edge) = graph.edges.get_mut(id) else {
-                    report.ignored += 1;
-                    continue;
+                let Some(edge) = self.graph.edges.get_mut(id) else {
+                    self.mark_ignored();
+                    return;
                 };
                 edge.from = *from;
                 edge.to = *to;
-                report.applied += 1;
+                self.mark_applied();
             }
         }
     }
 
-    report
+    fn mark_applied(&mut self) {
+        self.report.applied += 1;
+    }
+
+    fn mark_ignored(&mut self) {
+        self.report.ignored += 1;
+    }
 }
