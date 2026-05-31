@@ -1,6 +1,6 @@
 use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortDirection};
-use jellyflow_core::ops::{EdgeEndpoints, GraphMutationBatchPlanner, GraphOp};
+use jellyflow_core::ops::{EdgeEndpoints, GraphMutationBatchPlanner};
 
 use super::super::common::{
     edge_like, port_kind_for_edge_kind, reject_mutation_error, validate_insert_node_spec,
@@ -47,8 +47,6 @@ pub fn plan_split_edge_by_inserting_node(
         Err(plan) => return plan,
     };
 
-    let mut ops: Vec<GraphOp> = Vec::new();
-
     let mut batch = GraphMutationBatchPlanner::new(graph);
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
         return reject_mutation_error(error);
@@ -66,7 +64,6 @@ pub fn plan_split_edge_by_inserting_node(
     {
         return reject_mutation_error(error);
     }
-    ops.extend(batch.into_ops());
 
-    ConnectPlan::from_ops(ops)
+    ConnectPlan::from_ops(batch.into_ops())
 }
