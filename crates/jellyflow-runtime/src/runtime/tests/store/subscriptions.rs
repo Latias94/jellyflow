@@ -74,11 +74,22 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
         move |v| selection_counts2.borrow_mut().push(*v),
     );
 
+    #[derive(PartialEq)]
+    struct NonCloneSelectionCount(usize);
+
+    let non_clone_counts: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    let non_clone_counts2 = non_clone_counts.clone();
+    store.subscribe_selector(
+        |s| NonCloneSelectionCount(s.view_state.selected_nodes.len()),
+        move |v| non_clone_counts2.borrow_mut().push(v.0),
+    );
+
     // Same selection twice should dedupe (no extra callback).
     store.set_selection(vec![a], Vec::new(), Vec::new());
     store.set_selection(vec![a], Vec::new(), Vec::new());
 
     assert_eq!(selection_counts.borrow().as_slice(), &[1]);
+    assert_eq!(non_clone_counts.borrow().as_slice(), &[1]);
     assert!(node_counts.borrow().is_empty());
 
     // Adding a node should trigger only the node-count selector.
