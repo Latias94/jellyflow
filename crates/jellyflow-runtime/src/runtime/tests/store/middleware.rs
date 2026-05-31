@@ -17,7 +17,7 @@ fn store_middleware_can_rewrite_transactions() {
             _snapshot: crate::runtime::events::NodeGraphStoreSnapshot<'_>,
             tx: &mut GraphTransaction,
         ) -> Result<(), crate::profile::ApplyPipelineError> {
-            tx.ops.clear();
+            tx.clear_ops();
             Ok(())
         }
     }

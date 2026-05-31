@@ -70,6 +70,11 @@ impl GraphTransaction {
         self.ops.retain(f);
     }
 
+    /// Removes all ops while preserving transaction metadata.
+    pub fn clear_ops(&mut self) {
+        self.ops.clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }

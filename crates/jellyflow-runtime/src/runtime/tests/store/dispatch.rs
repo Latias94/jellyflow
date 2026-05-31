@@ -159,12 +159,13 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
             tx: &mut GraphTransaction,
         ) -> Result<(), crate::profile::ApplyPipelineError> {
             self.trace.borrow_mut().push("before");
-            tx.ops.push(GraphOp::SetNodeHidden {
-                id: tx
-                    .ops
-                    .first()
-                    .and_then(node_pos_id)
-                    .expect("node position op"),
+            let id = tx
+                .ops()
+                .first()
+                .and_then(node_pos_id)
+                .expect("node position op");
+            tx.push(GraphOp::SetNodeHidden {
+                id,
                 from: false,
                 to: true,
             });
