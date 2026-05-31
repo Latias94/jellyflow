@@ -27,16 +27,8 @@ impl NodeGraphStore {
 
     /// Sets the viewport (pan/zoom) and notifies subscribers.
     pub fn set_viewport(&mut self, pan: CanvasPoint, zoom: f32) {
-        let z = if zoom.is_finite() && zoom > 0.0 {
-            zoom
-        } else {
-            1.0
-        };
         self.update_view_state_if_changed(
-            |view_state| {
-                view_state.pan = pan;
-                view_state.zoom = z;
-            },
+            |view_state| view_state.set_viewport(pan, zoom),
             ViewStateMutationKind::Viewport,
         );
     }
@@ -44,11 +36,7 @@ impl NodeGraphStore {
     /// Sets selection state and notifies subscribers.
     pub fn set_selection(&mut self, nodes: Vec<NodeId>, edges: Vec<EdgeId>, groups: Vec<GroupId>) {
         self.update_view_state_if_changed(
-            |view_state| {
-                view_state.selected_nodes = nodes;
-                view_state.selected_edges = edges;
-                view_state.selected_groups = groups;
-            },
+            |view_state| view_state.set_selection(nodes, edges, groups),
             ViewStateMutationKind::Selection,
         );
     }
