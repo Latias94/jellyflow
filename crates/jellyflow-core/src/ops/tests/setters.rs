@@ -73,26 +73,24 @@ fn set_group_rect_and_child_positions_roundtrip_through_invert_transaction() {
         size: rect0.size,
     };
 
-    let tx = GraphTransaction {
-        label: Some("Move Group".to_string()),
-        ops: vec![
-            GraphOp::SetGroupRect {
-                id: group_id,
-                from: rect0,
-                to: rect1,
-            },
-            GraphOp::SetNodePos {
-                id: node_a,
-                from: CanvasPoint { x: 30.0, y: 40.0 },
-                to: CanvasPoint { x: 130.0, y: 140.0 },
-            },
-            GraphOp::SetNodePos {
-                id: node_b,
-                from: CanvasPoint { x: 50.0, y: 60.0 },
-                to: CanvasPoint { x: 150.0, y: 160.0 },
-            },
-        ],
-    };
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetGroupRect {
+            id: group_id,
+            from: rect0,
+            to: rect1,
+        },
+        GraphOp::SetNodePos {
+            id: node_a,
+            from: CanvasPoint { x: 30.0, y: 40.0 },
+            to: CanvasPoint { x: 130.0, y: 140.0 },
+        },
+        GraphOp::SetNodePos {
+            id: node_b,
+            from: CanvasPoint { x: 50.0, y: 60.0 },
+            to: CanvasPoint { x: 150.0, y: 160.0 },
+        },
+    ])
+    .with_label("Move Group");
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(graph.groups.get(&group_id).unwrap().rect, rect1);
@@ -124,17 +122,15 @@ fn set_node_size_roundtrips_through_invert_transaction() {
     let node_id = NodeId::new();
     graph.nodes.insert(node_id, make_node("core.a"));
 
-    let tx = GraphTransaction {
-        label: Some("Resize".to_string()),
-        ops: vec![GraphOp::SetNodeSize {
-            id: node_id,
-            from: None,
-            to: Some(crate::core::CanvasSize {
-                width: 333.0,
-                height: 222.0,
-            }),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeSize {
+        id: node_id,
+        from: None,
+        to: Some(crate::core::CanvasSize {
+            width: 333.0,
+            height: 222.0,
+        }),
+    }])
+    .with_label("Resize");
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(
@@ -169,14 +165,12 @@ fn set_group_title_roundtrips_through_invert_transaction() {
         },
     );
 
-    let tx = GraphTransaction {
-        label: Some("Rename Group".to_string()),
-        ops: vec![GraphOp::SetGroupTitle {
-            id: group_id,
-            from: "Group".to_string(),
-            to: "My Group".to_string(),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetGroupTitle {
+        id: group_id,
+        from: "Group".to_string(),
+        to: "My Group".to_string(),
+    }])
+    .with_label("Rename Group");
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(graph.groups.get(&group_id).unwrap().title, "My Group");
@@ -192,14 +186,12 @@ fn set_node_data_roundtrips_through_invert_transaction() {
     let node = NodeId::new();
     graph.nodes.insert(node, make_node("demo.const"));
 
-    let tx = GraphTransaction {
-        label: Some("Set value".to_string()),
-        ops: vec![GraphOp::SetNodeData {
-            id: node,
-            from: serde_json::Value::Null,
-            to: serde_json::json!({ "value": 1.25 }),
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeData {
+        id: node,
+        from: serde_json::Value::Null,
+        to: serde_json::json!({ "value": 1.25 }),
+    }])
+    .with_label("Set value");
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(
@@ -255,20 +247,17 @@ fn set_edge_endpoints_updates_edge_in_place() {
         },
     );
 
-    let tx = GraphTransaction {
-        label: None,
-        ops: vec![GraphOp::SetEdgeEndpoints {
-            id: edge_id,
-            from: EdgeEndpoints {
-                from: out1,
-                to: inn,
-            },
-            to: EdgeEndpoints {
-                from: out2,
-                to: inn,
-            },
-        }],
-    };
+    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
+        id: edge_id,
+        from: EdgeEndpoints {
+            from: out1,
+            to: inn,
+        },
+        to: EdgeEndpoints {
+            from: out2,
+            to: inn,
+        },
+    }]);
     apply_transaction(&mut graph, &tx).expect("apply");
 
     let edge = graph.edges.get(&edge_id).expect("edge");
@@ -293,32 +282,29 @@ fn symbol_setters_roundtrip_through_normalize_and_invert() {
     let baseline = serde_json::to_value(&graph).unwrap();
 
     let mut tx = GraphTransaction::new();
-    tx.ops.push(GraphOp::SetSymbolName {
+    tx.push(GraphOp::SetSymbolName {
         id: symbol_id,
         from: "A".to_string(),
         to: "B".to_string(),
     });
-    tx.ops.push(GraphOp::SetSymbolName {
+    tx.push(GraphOp::SetSymbolName {
         id: symbol_id,
         from: "B".to_string(),
         to: "C".to_string(),
     });
-    tx.ops.push(GraphOp::SetSymbolType {
+    tx.push(GraphOp::SetSymbolType {
         id: symbol_id,
         from: None,
         to: Some(TypeDesc::Int),
     });
-    tx.ops.push(GraphOp::SetSymbolDefaultValue {
+    tx.push(GraphOp::SetSymbolDefaultValue {
         id: symbol_id,
         from: None,
         to: Some(serde_json::json!(123)),
     });
 
     let tx = crate::ops::normalize_transaction(tx);
-    assert!(
-        tx.ops.len() < 4,
-        "expected normalize to coalesce setter chain"
-    );
+    assert!(tx.len() < 4, "expected normalize to coalesce setter chain");
 
     apply_transaction(&mut graph, &tx).expect("apply forward");
     assert_eq!(graph.symbols.get(&symbol_id).unwrap().name, "C");
@@ -347,16 +333,16 @@ fn graph_import_ops_roundtrip_through_normalize_and_invert() {
     };
 
     let mut tx = GraphTransaction::new();
-    tx.ops.push(GraphOp::AddImport {
+    tx.push(GraphOp::AddImport {
         id: imported,
         import: import.clone(),
     });
-    tx.ops.push(GraphOp::SetImportAlias {
+    tx.push(GraphOp::SetImportAlias {
         id: imported,
         from: Some("math".to_string()),
         to: Some("stdlib".to_string()),
     });
-    tx.ops.push(GraphOp::SetImportAlias {
+    tx.push(GraphOp::SetImportAlias {
         id: imported,
         from: Some("stdlib".to_string()),
         to: None,
