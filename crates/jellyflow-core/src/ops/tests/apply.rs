@@ -71,3 +71,28 @@ fn graph_transaction_facade_diff_apply_and_inverse_roundtrip() {
         serde_json::to_value(&from).unwrap()
     );
 }
+
+#[test]
+fn graph_transaction_facade_consumes_ops_and_parts() {
+    let node_id = NodeId::new();
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeHidden {
+        id: node_id,
+        from: false,
+        to: true,
+    }])
+    .with_label("Hide node");
+
+    let (label, ops) = tx.clone().into_parts();
+    assert_eq!(label.as_deref(), Some("Hide node"));
+    assert!(matches!(
+        ops.as_slice(),
+        [GraphOp::SetNodeHidden {
+            id,
+            from: false,
+            to: true
+        }] if *id == node_id
+    ));
+
+    let ops = tx.into_ops();
+    assert_eq!(ops.len(), 1);
+}

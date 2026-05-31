@@ -89,6 +89,17 @@ impl GraphTransaction {
         &self.ops
     }
 
+    /// Consumes this transaction and returns its ops in order.
+    pub fn into_ops(self) -> Vec<GraphOp> {
+        self.ops
+    }
+
+    /// Consumes this transaction and returns its metadata and ops.
+    pub fn into_parts(self) -> (Option<String>, Vec<GraphOp>) {
+        let Self { label, ops } = self;
+        (label, ops)
+    }
+
     /// Returns the number of ops.
     pub fn len(&self) -> usize {
         self.ops.len()
