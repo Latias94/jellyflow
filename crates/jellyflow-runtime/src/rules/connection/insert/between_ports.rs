@@ -1,5 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use crate::rules::{ConnectDecision, ConnectPlan, InsertNodeSpec};
+use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphMutationBatchPlanner, GraphOp};
@@ -81,11 +81,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
     }
     ops.extend(batch.into_ops());
 
-    ConnectPlan {
-        decision: ConnectDecision::Accept,
-        diagnostics: Vec::new(),
-        ops,
-    }
+    ConnectPlan::from_ops(ops)
 }
 
 /// Plans connecting two ports by inserting a node with default interaction policy.

@@ -57,6 +57,15 @@ impl ConnectPlan {
         }
     }
 
+    /// Creates an accepted plan with planned connection ops.
+    pub fn from_ops(ops: Vec<GraphOp>) -> Self {
+        Self {
+            decision: ConnectDecision::Accept,
+            diagnostics: Vec::new(),
+            ops,
+        }
+    }
+
     /// Creates a rejected plan with a single error diagnostic.
     pub fn reject(message: impl Into<String>) -> Self {
         Self {

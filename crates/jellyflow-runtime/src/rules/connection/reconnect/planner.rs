@@ -1,5 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use crate::rules::{ConnectDecision, ConnectPlan, EdgeEndpoint};
+use crate::rules::{ConnectPlan, EdgeEndpoint};
 use crate::runtime::policy::resolve_edge_interaction_policy;
 use jellyflow_core::core::{Edge, EdgeId, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
@@ -89,11 +89,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         to: candidate,
     });
 
-    ConnectPlan {
-        decision: ConnectDecision::Accept,
-        diagnostics: Vec::new(),
-        ops,
-    }
+    ConnectPlan::from_ops(ops)
 }
 
 fn reconnect_endpoint_policy_rejection(

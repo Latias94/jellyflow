@@ -1,5 +1,5 @@
 use crate::io::NodeGraphInteractionState;
-use crate::rules::{ConnectDecision, ConnectPlan};
+use crate::rules::ConnectPlan;
 use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphOp;
@@ -60,11 +60,7 @@ pub fn plan_connect_with_mode_and_policy(
     };
     ops.push(add_edge);
 
-    ConnectPlan {
-        decision: ConnectDecision::Accept,
-        diagnostics: Vec::new(),
-        ops,
-    }
+    ConnectPlan::from_ops(ops)
 }
 
 /// Plans connecting two ports with default interaction policy.

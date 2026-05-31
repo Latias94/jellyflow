@@ -1,4 +1,4 @@
-use crate::rules::{ConnectDecision, ConnectPlan, InsertNodeSpec};
+use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortDirection};
 use jellyflow_core::ops::{EdgeEndpoints, GraphMutationBatchPlanner, GraphOp};
 
@@ -68,9 +68,5 @@ pub fn plan_split_edge_by_inserting_node(
     }
     ops.extend(batch.into_ops());
 
-    ConnectPlan {
-        decision: ConnectDecision::Accept,
-        diagnostics: Vec::new(),
-        ops,
-    }
+    ConnectPlan::from_ops(ops)
 }
