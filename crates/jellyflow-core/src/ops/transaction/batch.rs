@@ -37,6 +37,12 @@ impl GraphTransaction {
         self
     }
 
+    /// Sets or clears the optional label.
+    pub fn with_optional_label(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
     /// Adds ops in order and returns this transaction.
     pub fn with_ops(mut self, ops: impl IntoIterator<Item = GraphOp>) -> Self {
         self.extend(ops);
@@ -66,6 +72,11 @@ impl GraphTransaction {
 
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
+    }
+
+    /// Returns the optional human-readable label.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     /// Returns ops in order.

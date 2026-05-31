@@ -40,8 +40,7 @@ pub fn apply_transaction_with_profile(
     profile: &mut dyn GraphProfile,
     tx: &GraphTransaction,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
-    let mut committed = GraphTransaction::new();
-    committed.label = tx.label.clone();
+    let mut committed = GraphTransaction::new().with_optional_label(tx.label().map(str::to_owned));
     apply_original_transaction(graph, tx, &mut committed)?;
 
     concretize_to_fixed_point(graph, profile, committed)

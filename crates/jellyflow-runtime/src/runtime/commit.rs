@@ -31,7 +31,7 @@ impl NodeGraphPatch {
     }
 
     pub fn ops(&self) -> &[GraphOp] {
-        &self.transaction.ops
+        self.transaction.ops()
     }
 
     pub fn is_empty(&self) -> bool {
