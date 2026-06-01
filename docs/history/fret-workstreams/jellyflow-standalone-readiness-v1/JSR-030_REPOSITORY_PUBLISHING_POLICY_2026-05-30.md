@@ -14,7 +14,7 @@ standalone repository owns its package metadata, crate READMEs, CI, release conf
 
 ## Inputs
 
-- `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+- `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
 - `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
@@ -145,7 +145,7 @@ Carry or recreate in the standalone repo:
 - crate README for `jellyflow-runtime`,
 - package-level examples for graph construction, transaction apply, store dispatch, schema/rules,
   and fit-view,
-- boundary note derived from ADR 0331,
+- boundary note derived from ADR 0001,
 - migration note explaining that `fret-node` remains the Fret adapter.
 
 Keep Fret-specific UI docs in the Fret repo and link to Jellyflow docs where the headless model is

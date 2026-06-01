@@ -9,7 +9,7 @@ Exit criteria:
 
 - Problem and target state are explicit.
 - Non-goals are explicit.
-- ADR 0331 and closed extraction/readiness workstreams are linked.
+- ADR 0001 and closed extraction/readiness workstreams are linked.
 - First executable task is chosen.
 
 Primary evidence:

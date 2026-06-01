@@ -12,7 +12,7 @@ hardens for non-Fret consumers, the runtime should expose a smaller Rust-native 
 ## Relevant Authority
 
 - ADRs:
-  - `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+  - `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - Existing docs:
   - `README.md`
   - `crates/jellyflow-core/README.md`
@@ -73,7 +73,7 @@ standalone headless Rust package:
 | Public API breakage is acceptable before crates.io publish. | High | README says publishing is blocked until metadata, CI, package lists, and dry-runs are verified. | If compatibility is required, removals need deprecation aliases instead of direct deletion. |
 | `jellyflow_runtime::{core, interaction, ops, types}` are extraction leftovers, not intended long-term API. | Medium | They are direct `pub use jellyflow_core::*` wrappers in `crates/jellyflow-runtime/src/lib.rs`. | If downstream code relies on them, a migration note or prelude may be needed. |
 | XyFlow-style node/edge changes are adapter compatibility, not the canonical Rust write path. | High | `NodeGraphPatch` preserves all graph resources; `NodeGraphChanges` is documented as lossy. | If controlled-mode consumers require node/edge changes by default, the store facade may keep convenience projection methods. |
-| `.fret` path policy belongs outside standalone Jellyflow. | High | ADR 0331 says Fret conversions and integration belong in the Fret adapter. | If standalone Jellyflow intentionally owns a default project layout, it needs a Jellyflow-branded path and ADR. |
+| `.fret` path policy belongs outside standalone Jellyflow. | High | ADR 0001 says Fret conversions and integration belong in the Fret adapter. | If standalone Jellyflow intentionally owns a default project layout, it needs a Jellyflow-branded path and ADR. |
 | Store implementation can be split without changing public methods. | High | `NodeGraphStore` already keeps most fields private. | If borrow/lifetime constraints make a split noisy, the task can stop at private helper modules with no API churn. |
 
 ## Architecture Direction

@@ -7,7 +7,7 @@ Last updated: 2026-05-30
 
 - `docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - `docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md`
-- `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+- `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - `ecosystem/jellyflow-core/Cargo.toml`
 - `ecosystem/jellyflow-core/src/lib.rs`
 - `ecosystem/jellyflow-runtime/Cargo.toml`

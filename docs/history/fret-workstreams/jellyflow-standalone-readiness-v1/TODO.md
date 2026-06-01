@@ -119,7 +119,7 @@ Status: Closed
     - decide whether publishing should wait for API stabilization or can start with clear
       pre-1.0 compatibility notes
   - Validation:
-    - readiness note reviewed against `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+    - readiness note reviewed against `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
     - `cargo publish --dry-run` only if package metadata is intentionally prepared in this lane
   - Exit note: gives a concrete next execution lane instead of mixing policy with extraction.
   - Fresh evidence:

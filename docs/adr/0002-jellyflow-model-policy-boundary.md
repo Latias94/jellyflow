@@ -1,4 +1,4 @@
-# ADR 0332: Jellyflow Model Policy Boundary
+# ADR 0002: Jellyflow Model Policy Boundary
 
 Status: Accepted
 Date: 2026-05-30

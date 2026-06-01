@@ -4,7 +4,7 @@ Status: Closed
 
 ## M0 - Boundary Decision
 
-- ADR 0331 records Jellyflow as the reusable engine brand and `fret-node` as the Fret adapter.
+- ADR 0001 records Jellyflow as the reusable engine brand and `fret-node` as the Fret adapter.
 - Standalone repository extraction is deferred until in-workspace package seams stabilize.
 
 ## M1 - First Headless Crate

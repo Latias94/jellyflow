@@ -97,7 +97,7 @@ gates, and residual risks here or link to the review note.
 ## Review And Verification
 
 - 2026-05-30: `review-workstream` self-review found no blocking findings.
-  - Workstream compliance: JRP-020 through JRP-060 are complete; scope stayed within runtime public-surface cleanup; ADR 0331 dependency boundary is preserved.
+  - Workstream compliance: JRP-020 through JRP-060 are complete; scope stayed within runtime public-surface cleanup; ADR 0001 dependency boundary is preserved.
   - Code quality: compatibility code is explicit under `runtime::xyflow`; IO and store internals are private focused modules; no public store trait proliferation was introduced.
   - Missing gates: none after the JRP-060 final gate set.
   - Residual risk: public API breakage is intentional before crates.io publish; downstream callers must migrate to `jellyflow_core` imports and `runtime::xyflow` compatibility paths.

@@ -20,7 +20,7 @@ Completed boundaries:
 
 ## Evidence
 
-- ADR boundary: `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+- ADR boundary: `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - Core crate: `ecosystem/jellyflow-core/`
 - Runtime crate: `ecosystem/jellyflow-runtime/`
 - Adapter facade: `ecosystem/fret-node/`

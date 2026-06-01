@@ -18,8 +18,8 @@ contracts that multiple Rust adapters would otherwise reimplement differently.
 ## Relevant Authority
 
 - ADRs:
-  - `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
-  - `docs/adr/0332-jellyflow-model-policy-boundary.md`
+  - `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
+  - `docs/adr/0002-jellyflow-model-policy-boundary.md`
 - Existing workstreams:
   - `docs/workstreams/jellyflow-runtime-public-surface-v1/`
   - `docs/workstreams/jellyflow-model-policy-boundary-v1/`
@@ -86,7 +86,7 @@ Jellyflow currently has useful geometry pieces, but not a deep geometry module:
 
 | Assumption | Confidence | Evidence | Consequence if wrong |
 | --- | --- | --- | --- |
-| Geometry/spatial work is the next best fearless-refactor lane. | High | ADR 0331 names future `jellyflow-geometry`; previous workstreams defer geometry extraction. | If adapters do not share this behavior, keep it inside `jellyflow-runtime` and avoid a crate split. |
+| Geometry/spatial work is the next best fearless-refactor lane. | High | ADR 0001 names future `jellyflow-geometry`; previous workstreams defer geometry extraction. | If adapters do not share this behavior, keep it inside `jellyflow-runtime` and avoid a crate split. |
 | A module-first refactor is safer than immediately creating a third crate. | High | Only `jellyflow-core` and `jellyflow-runtime` exist today; publishing is blocked. | If external users need an independent crate now, add an ADR before splitting packages. |
 | Existing fit-view and bounds helpers are the smallest proof slice. | High | They already have tests and duplicate private bounds math. | If they cannot share primitives cleanly, stop after documenting the contract and split a narrower task. |
 | Interaction kernels should wait until geometry is stable. | High | XyFlow interaction helpers depend on node bounds, absolute positions, handles, and transforms. | If Fret/egui need gestures immediately, open a separate interaction workstream after JGS-020. |
@@ -96,8 +96,8 @@ Jellyflow currently has useful geometry pieces, but not a deep geometry module:
 | Source | State | Evidence path | Impact | Required action |
 | --- | --- | --- | --- | --- |
 | User goal and constraints | COVERED | Conversation plus this DESIGN.md | Confirms headless Rust adapters are the target. | None. |
-| ADR 0331 | COVERED | `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md` | Defines headless boundary and future geometry package direction. | None. |
-| ADR 0332 | COVERED | `docs/adr/0332-jellyflow-model-policy-boundary.md` | Prevents premature persisted schema movement. | None. |
+| ADR 0001 | COVERED | `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md` | Defines headless boundary and future geometry package direction. | None. |
+| ADR 0002 | COVERED | `docs/adr/0002-jellyflow-model-policy-boundary.md` | Prevents premature persisted schema movement. | None. |
 | Closed workstreams | COVERED | `docs/workstreams/jellyflow-runtime-public-surface-v1/`, `docs/workstreams/jellyflow-model-policy-boundary-v1/` | Shows public surface and policy facade are already handled. | None. |
 | Architecture lane maps | OUT_OF_SCOPE | `docs/architecture/` absent | This repo has no architecture lane map yet; this workstream is self-contained. | Add only if future multi-lane coordination starts. |
 | XyFlow reference | COVERED | `repo-ref/xyflow/packages/system/src/` | Gives source concepts for headless math without DOM bindings. | Use as behavior reference, not as a direct port mandate. |

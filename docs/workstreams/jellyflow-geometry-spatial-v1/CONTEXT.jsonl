@@ -1,8 +1,8 @@
 {"file":"docs/workstreams/jellyflow-geometry-spatial-v1/DESIGN.md","reason":"Target state, scope, non-goals, architecture direction, and source coverage audit for the geometry/spatial lane."}
 {"file":"docs/workstreams/jellyflow-geometry-spatial-v1/TODO.md","reason":"Task ledger with dependencies, scopes, validation commands, review expectations, and handoff rules."}
 {"file":"docs/workstreams/jellyflow-geometry-spatial-v1/EVIDENCE_AND_GATES.md","reason":"Validation commands, evidence anchors, and baseline gate evidence for implementation and closeout."}
-{"file":"docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md","reason":"Defines the headless Jellyflow boundary and future geometry/spatial package direction."}
-{"file":"docs/adr/0332-jellyflow-model-policy-boundary.md","reason":"Records that persisted layout and policy fields stay in Graph for v1; schema movement is not part of this lane."}
+{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","reason":"Defines the headless Jellyflow boundary and future geometry/spatial package direction."}
+{"file":"docs/adr/0002-jellyflow-model-policy-boundary.md","reason":"Records that persisted layout and policy fields stay in Graph for v1; schema movement is not part of this lane."}
 {"file":"docs/workstreams/jellyflow-runtime-public-surface-v1/HANDOFF.md","reason":"Shows prior public-surface cleanup is closed and geometry extraction was deferred as a follow-on."}
 {"file":"docs/workstreams/jellyflow-model-policy-boundary-v1/HANDOFF.md","reason":"Shows policy resolution is closed and schema migration remains deferred."}
 {"file":"repo-ref/xyflow/packages/system/src/index.ts","reason":"Reference map of XyFlow system modules to compare headless utilities, drag, handle, panzoom, and resizer responsibilities."}

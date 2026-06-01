@@ -4,7 +4,7 @@ Date: 2026-05-30
 
 ## Decision
 
-ADR 0332 accepts an additive v1 boundary:
+ADR 0002 accepts an additive v1 boundary:
 
 - keep existing persisted fields in `jellyflow_core::core::Graph`,
 - document their ownership/lifecycle explicitly,

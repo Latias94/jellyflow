@@ -1,4 +1,4 @@
-# ADR 0331: Jellyflow Headless Node Graph Engine Boundary
+# ADR 0001: Jellyflow Headless Node Graph Engine Boundary
 
 Status: Accepted
 Date: 2026-05-29

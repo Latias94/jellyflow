@@ -8,7 +8,7 @@ Closed. JPB-010 through JPB-060 are complete.
 
 ## Completed Outcomes
 
-- Added ADR 0332 to define the additive v1 model/policy boundary.
+- Added ADR 0002 to define the additive v1 model/policy boundary.
 - Classified graph/config fields by semantic model, layout model, persisted editor policy,
   persisted presentation, volatile view state, and compatibility vocabulary.
 - Added `jellyflow_runtime::runtime::policy` as the canonical effective interaction policy facade.
@@ -19,7 +19,7 @@ Closed. JPB-010 through JPB-060 are complete.
 
 `review-workstream` self-review found no blocking findings.
 
-- Workstream compliance: target state, task dependencies, docs, and ADR 0332 boundary are satisfied.
+- Workstream compliance: target state, task dependencies, docs, and ADR 0002 boundary are satisfied.
 - Code quality: policy helpers are pure/read-only; behavior wiring is limited to connect/reconnect;
   XyFlow naming remains isolated under `runtime::xyflow`.
 - Missing gates: none after closeout verification.

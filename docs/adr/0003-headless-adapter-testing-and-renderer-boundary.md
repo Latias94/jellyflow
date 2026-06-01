@@ -1,4 +1,4 @@
-# ADR 0333: Headless Adapter Testing and Renderer Boundary
+# ADR 0003: Headless Adapter Testing and Renderer Boundary
 
 Status: Accepted
 Date: 2026-06-01

@@ -77,7 +77,7 @@
   "evidence": [
     "docs/workstreams/jellyflow-package-split-v1/CLOSEOUT_AUDIT_2026-05-30.md",
     "docs/workstreams/jellyflow-package-split-v1/JF-030_GEOMETRY_SPATIAL_AUDIT_2026-05-30.md",
-    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
+    "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-010_EXTRACTION_INVENTORY_2026-05-30.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md",
     "docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md",
@@ -91,7 +91,7 @@
     "ecosystem/fret-node/Cargo.toml"
   ],
   "adr_refs": [
-    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md"
+    "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md"
   ],
   "continue_policy": {
     "default_action": "start_follow_on",

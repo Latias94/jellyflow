@@ -12,7 +12,7 @@ Initial inspection shows `jellyflow_core::core::{Node, Port, Edge}` stores a mix
 data, canvas layout, persisted editor policy overrides, and presentation flags. Runtime config owns
 global interaction defaults, but there is no single public policy-resolution facade yet.
 
-JPB-020 is complete: ADR 0332 accepts an additive v1 boundary. Existing persisted fields stay in
+JPB-020 is complete: ADR 0002 accepts an additive v1 boundary. Existing persisted fields stay in
 `Graph`; the next code slice adds runtime policy-resolution helpers before any schema migration.
 
 JPB-030 is complete: `runtime::policy` exposes pure node, port, and edge interaction policy
@@ -44,7 +44,7 @@ JPB-060 is complete: final gates passed and the lane is closed.
 - Kept persisted schema migration out of the first executable task.
 - Chose an additive policy-resolution facade as the likely first code slice after the taxonomy
   decision.
-- Added ADR 0332 and a field taxonomy note.
+- Added ADR 0002 and a field taxonomy note.
 - Decided v1 keeps existing persisted fields in `Graph`; schema migration is a follow-on after the
   runtime facade proves behavior.
 - Verified JPB-020 with `cargo fmt --check`, `git diff --check`, and `jq empty` for WORKSTREAM.json.

@@ -144,7 +144,7 @@ Initial path set for JSR-030:
   - `ecosystem/fret-node/src/schema/`
   - `ecosystem/fret-node/src/runtime/`
 - contract docs to consider carrying or copying:
-  - `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+  - `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
   - `docs/workstreams/jellyflow-package-split-v1/`
   - `docs/workstreams/jellyflow-standalone-readiness-v1/`
 

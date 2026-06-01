@@ -78,8 +78,8 @@ before marking the lane complete.
 
 ## Evidence Anchors
 
-- `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
-- `docs/adr/0332-jellyflow-model-policy-boundary.md`
+- `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
+- `docs/adr/0002-jellyflow-model-policy-boundary.md`
 - `docs/workstreams/jellyflow-runtime-public-surface-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - `docs/workstreams/jellyflow-model-policy-boundary-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - `repo-ref/xyflow/packages/system/src/utils/`

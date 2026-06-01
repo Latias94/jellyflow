@@ -13,7 +13,7 @@ the model/policy boundary needs a clearer contract.
 ## Relevant Authority
 
 - ADRs:
-  - `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+  - `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - Previous lane:
   - `docs/workstreams/jellyflow-runtime-public-surface-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - Primary code:

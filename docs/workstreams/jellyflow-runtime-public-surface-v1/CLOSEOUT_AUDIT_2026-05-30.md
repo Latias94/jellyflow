@@ -20,7 +20,7 @@ Closed. JRP-020 through JRP-060 are complete.
 
 `review-workstream` self-review found no blocking findings.
 
-- Workstream compliance: target state, task dependencies, docs, and ADR 0331 boundary are satisfied.
+- Workstream compliance: target state, task dependencies, docs, and ADR 0001 boundary are satisfied.
 - Code quality: new modules are private where intended, public compatibility vocabulary is explicit,
   and no public store trait proliferation was introduced.
 - Missing gates: none after closeout verification.

@@ -18,7 +18,7 @@ Last updated: 2026-05-30
   Validation: taxonomy note or ADR exists; `cargo fmt --check`; `git diff --check`.
   Review: review-workstream before accepting completion.
   Evidence: ADR/taxonomy document and field inventory.
-  Handoff: DONE 2026-05-30. ADR 0332 accepts an additive v1 boundary: keep persisted fields in `Graph`, add runtime policy-resolution helpers next, and defer schema migration to a later ADR-backed follow-on.
+  Handoff: DONE 2026-05-30. ADR 0002 accepts an additive v1 boundary: keep persisted fields in `Graph`, add runtime policy-resolution helpers next, and defer schema migration to a later ADR-backed follow-on.
 
 ## M2 - Policy Resolution Facade
 

@@ -34,7 +34,7 @@
     },
     {
       "role": "decision",
-      "path": "docs/adr/0332-jellyflow-model-policy-boundary.md"
+      "path": "docs/adr/0002-jellyflow-model-policy-boundary.md"
     },
     {
       "role": "evidence",
@@ -61,7 +61,7 @@
     {
       "date": "2026-05-30",
       "task": "JPB-020",
-      "summary": "Added ADR 0332 and a field taxonomy. Chose an additive v1 path: keep persisted fields in Graph, add runtime policy-resolution helpers, and defer schema migration."
+      "summary": "Added ADR 0002 and a field taxonomy. Chose an additive v1 path: keep persisted fields in Graph, add runtime policy-resolution helpers, and defer schema migration."
     },
     {
       "date": "2026-05-30",
@@ -85,8 +85,8 @@
     }
   ],
   "adr_refs": [
-    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
-    "docs/adr/0332-jellyflow-model-policy-boundary.md"
+    "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md",
+    "docs/adr/0002-jellyflow-model-policy-boundary.md"
   ],
   "continue_policy": {
     "default_action": "start_follow_on",

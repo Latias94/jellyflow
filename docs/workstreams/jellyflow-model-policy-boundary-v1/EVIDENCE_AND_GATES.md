@@ -49,7 +49,7 @@ before marking the lane complete.
 
 ## Evidence Anchors
 
-- `docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md`
+- `docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md`
 - `docs/workstreams/jellyflow-runtime-public-surface-v1/CLOSEOUT_AUDIT_2026-05-30.md`
 - `crates/jellyflow-core/src/core/model.rs`
 - `crates/jellyflow-core/src/ops/mod.rs`
@@ -61,7 +61,7 @@ before marking the lane complete.
 
 - 2026-05-30: JPB-010 opened the follow-on lane and froze the task ledger. No code gates run yet.
 - 2026-05-30: JPB-020 classified existing model/config fields and recorded the additive v1 decision.
-  - `docs/adr/0332-jellyflow-model-policy-boundary.md`: added.
+  - `docs/adr/0002-jellyflow-model-policy-boundary.md`: added.
   - `docs/workstreams/jellyflow-model-policy-boundary-v1/JPB-020_FIELD_TAXONOMY_2026-05-30.md`: added.
   - `cargo fmt --check`: passed.
   - `git diff --check`: passed.
