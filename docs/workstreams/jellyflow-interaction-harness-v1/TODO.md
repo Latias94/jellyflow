@@ -1,6 +1,6 @@
 # Jellyflow Interaction Harness v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Harness Contract
@@ -44,9 +44,10 @@ Last updated: 2026-06-01
 
 ## M4 - Closeout
 
-- [ ] JIH-050 [owner=codex] [deps=JIH-040] [scope=docs/workstreams/jellyflow-interaction-harness-v1,README.md,crates/jellyflow-runtime/README.md]
+- [x] JIH-050 [owner=codex] [deps=JIH-040] [scope=docs/workstreams/jellyflow-interaction-harness-v1,README.md,crates/jellyflow-runtime/README.md]
   Goal: Document the harness strategy, record fresh evidence, and either close the lane or split follow-ons for public fixture APIs and renderer adapter smoke tests.
   Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`; `git diff --check`.
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: EVIDENCE_AND_GATES.md and HANDOFF.md.
   Context: `docs/workstreams/jellyflow-interaction-harness-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Documented the headless interaction testing strategy, kept the first harness private, recorded closeout review/verification evidence, and split public fixture APIs plus richer drag/pan/resize/renderer smoke tests into follow-ons.

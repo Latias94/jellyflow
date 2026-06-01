@@ -1,11 +1,11 @@
 # Jellyflow Interaction Harness v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as the follow-on to geometry/spatial and ADR 0003 adapter testing.
+The workstream is closed as the follow-on to geometry/spatial and ADR 0003 adapter testing.
 
 JIH-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.
@@ -23,10 +23,14 @@ JIH-040 is complete: the harness now records XyFlow callback events, and adapter
 connect gesture fixture that proves gesture start, rules-derived transaction, graph commit trace,
 callback ordering, connection callback payload, and gesture end in one ordered trace.
 
+JIH-050 is complete: the root README and runtime README now document the headless interaction
+testing strategy, this workstream records closeout evidence, and follow-ons are split for public
+fixture APIs, richer gesture kernels, and renderer smoke tests.
+
 ## Next Task
 
-JIH-050: document the harness strategy, run closeout gates, and either close the lane or split
-follow-ons for public fixture formats, drag/pan/resize kernels, and renderer smoke tests.
+No in-lane task remains. Open a new workstream for the next interaction kernel or adapter smoke
+test layer.
 
 ## Decisions Since Last Update
 
@@ -43,6 +47,8 @@ follow-ons for public fixture formats, drag/pan/resize kernels, and renderer smo
   observe the same `ViewChange::Selection` path as adapters.
 - Callback tracing is intentionally test-only for now. It records XyFlow compatibility callbacks in
   the same trace as runtime events so future fixtures can catch ordering regressions.
+- The closeout decision is to keep the harness private while fixture language matures through more
+  gesture families.
 
 ## Blockers
 
@@ -51,5 +57,5 @@ follow-ons for public fixture formats, drag/pan/resize kernels, and renderer smo
 ## Follow-On Candidates
 
 - Public fixture format after several private harness scenarios settle.
-- Drag, connect/reconnect, resize, and pan/zoom gesture kernels.
-- Renderer adapter smoke tests in future adapter crates.
+- Drag, reconnect, resize, and pan/zoom gesture kernels.
+- Renderer adapter smoke tests in future wgpu, egui, Fret, or other adapter crates.

@@ -9,6 +9,7 @@
 - schema/profile pipeline hooks;
 - undo/redo store dispatch;
 - XyFlow-style node/edge change projections under `runtime::xyflow`;
+- renderer-neutral selection-box helpers under `runtime::selection`;
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
   commands, and numeric hit testing.
@@ -29,6 +30,22 @@ let store = NodeGraphStore::new(
 
 assert_eq!(store.graph().nodes.len(), 0);
 ```
+
+## Headless Interaction Contracts
+
+Renderer adapters should translate pointer and keyboard input into Jellyflow runtime calls, then
+validate behavior before rendering. The runtime crate supports that split with:
+
+- `NodeGraphStore::apply_selection_box` and `runtime::selection::compute_selection_box` for
+  deterministic canvas-space selection;
+- rules-derived connect/reconnect/delete planners for graph transactions;
+- `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
+- private adapter-conformance tests that record normalized graph commit, view, gesture, and
+  callback traces around a real `NodeGraphStore`.
+
+The conformance harness is intentionally test-private until more gesture families settle. GPU,
+windowing, screenshot, and pixel smoke tests should live in adapter crates such as future wgpu,
+egui, or Fret integrations.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

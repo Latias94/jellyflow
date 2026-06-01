@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-interaction-harness-v1",
   "title": "Jellyflow Interaction Harness v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-01",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-geometry-spatial-v1",
@@ -63,6 +63,11 @@
       "date": "2026-06-01",
       "task": "JIH-040",
       "summary": "Extended the harness with XyFlow callback tracing and added a connect gesture fixture covering gesture start/end, rules-derived add-edge transaction, callback order, connection payload, and graph commit trace."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JIH-050",
+      "summary": "Documented the headless interaction testing strategy, closed the workstream after runtime package gates, and split public fixture APIs, richer gesture kernels, and renderer smoke tests as follow-ons."
     }
   ],
   "adr_refs": [
@@ -80,8 +85,7 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "run_next_task",
-    "next_task": "JIH-050",
-    "notes": "Document the harness strategy and close or split follow-ons for public fixture formats, drag/pan/resize kernels, and renderer smoke tests."
+    "default_action": "closed",
+    "notes": "This lane is closed. Open separate follow-ons for a public fixture format, drag/reconnect/resize/pan-zoom kernels, or renderer adapter smoke tests."
   }
 }

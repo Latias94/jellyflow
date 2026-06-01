@@ -1,6 +1,6 @@
 # Jellyflow Interaction Harness v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Smallest Current Repro
@@ -9,8 +9,8 @@ Last updated: 2026-06-01
 cargo nextest run -p jellyflow-runtime adapter_conformance
 ```
 
-This exercises existing adapter conformance scenarios that are currently handwritten rather than
-driven by a shared harness.
+This exercises adapter conformance scenarios that now include shared harness-backed assertions
+instead of only local one-off checks.
 
 ## Gate Set
 
@@ -96,9 +96,22 @@ This proves formatting, runtime behavior, lint cleanliness, and diff hygiene.
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
   - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
   - `git diff --check`: passed.
+- 2026-06-01: JIH-050 documented and closed the interaction harness workstream.
+  - Updated the root README with the headless interaction testing strategy.
+  - Updated `crates/jellyflow-runtime/README.md` with runtime interaction contract guidance.
+  - Added a closeout audit and split public fixture APIs, richer gesture kernels, and renderer
+    smoke tests as follow-ons.
+  - `review-workstream` self-review: no blocking findings.
+  - `cargo fmt --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 142 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
 
 ## Notes
 
-- Fresh verification is required before marking a task, Codex goal, or lane complete.
+- The lane is closed.
 - Keep the first harness private to runtime tests until multiple interaction fixtures prove the
   fixture language.
+- Do not add wgpu, egui, Fret UI, windowing, screenshot, or pixel-test dependencies to
+  `jellyflow-core` or `jellyflow-runtime`; adapter crates own those smoke tests.

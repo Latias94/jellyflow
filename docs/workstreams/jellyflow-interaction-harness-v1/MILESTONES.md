@@ -1,6 +1,6 @@
 # Jellyflow Interaction Harness v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Harness Contract
@@ -42,3 +42,10 @@ Exit criteria:
 - Runtime package gates pass.
 - Workstream evidence is current.
 - Follow-ons are split for public fixture format, drag/pan/resize kernels, or renderer smoke tests.
+
+Completion:
+
+- JIH-050 closed the lane after README/runtime README documentation, closeout evidence, and fresh
+  runtime package gates.
+- Public fixture format, richer drag/pan/resize kernels, and renderer smoke tests remain separate
+  follow-ons.

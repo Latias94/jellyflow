@@ -1,6 +1,6 @@
 # Jellyflow Interaction Harness v1 - Design
 
-Status: Active
+Status: Closed
 Date: 2026-06-01
 
 ## Problem
@@ -59,6 +59,21 @@ fixture/intent -> NodeGraphStore public/runtime APIs -> normalized trace -> expe
 
 It should avoid testing private internals. A future public harness can be extracted only after the
 private test harness survives several interaction-kernel slices.
+
+## Closeout Result
+
+This lane delivered the first renderer-free interaction harness slice:
+
+- a private runtime test harness records graph commit, view, gesture, and XyFlow callback traces;
+- adapter conformance scenarios use scenario-aware ordered assertions around a real
+  `NodeGraphStore`;
+- `runtime::selection` exposes deterministic canvas-space selection-box helpers for runtime
+  consumers;
+- connect gesture conformance now proves pointer intent, rules-derived graph transactions, callback
+  ordering, and committed graph state in one trace.
+
+The public fixture format remains deferred. Follow-ons should add more gesture kernels before
+extracting a stable public conformance API.
 
 ## Source Coverage
 
