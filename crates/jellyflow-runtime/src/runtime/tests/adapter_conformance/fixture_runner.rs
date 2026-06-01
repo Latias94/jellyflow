@@ -1,6 +1,7 @@
 use super::super::fixtures::make_graph;
 use super::support::{assert_conformance_trace, insert_input_port};
 
+use crate::io::{NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};
 use crate::rules::plan_connect;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
@@ -11,6 +12,10 @@ use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
+};
+use crate::runtime::viewport::{
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton,
+    ViewportScrollInput,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeKind};
@@ -53,6 +58,90 @@ fn adapter_conformance_fixture_runner_records_auto_pan_frame() {
             1.0,
         ))])
         .with_expected_trace([ConformanceTraceEvent::viewport(pan, 1.0)]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
+fn adapter_conformance_fixture_runner_applies_viewport_scroll_gesture_policy() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.pan_on_scroll = true;
+    editor_config.interaction.pan_on_scroll_speed = 2.0;
+    editor_config.interaction.pan_on_scroll_mode = NodeGraphPanOnScrollMode::Horizontal;
+
+    let scenario = ConformanceScenario::new("viewport scroll gesture policy", graph)
+        .with_editor_config(editor_config)
+        .with_actions([ConformanceAction::apply_viewport_scroll_gesture(
+            ViewportGestureContext::idle(),
+            ViewportScrollInput::new(
+                CanvasPoint { x: 12.0, y: -8.0 },
+                CanvasPoint { x: 80.0, y: 20.0 },
+                false,
+                2.0,
+                0.25,
+                4.0,
+            ),
+        )])
+        .with_expected_trace([ConformanceTraceEvent::viewport(
+            CanvasPoint { x: -24.0, y: 0.0 },
+            1.0,
+        )]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
+fn adapter_conformance_fixture_runner_checks_viewport_gesture_rejections() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.pan_on_drag = NodeGraphPanOnDragButtons {
+        left: false,
+        middle: false,
+        right: true,
+    };
+
+    let scenario = ConformanceScenario::new("viewport gesture rejection policy", graph)
+        .with_editor_config(editor_config)
+        .with_actions([
+            ConformanceAction::apply_viewport_drag_pan_gesture(
+                ViewportGestureContext::idle(),
+                ViewportDragPanInput::new(
+                    ViewportPointerButton::Right,
+                    CanvasPoint { x: 10.0, y: 4.0 },
+                ),
+            ),
+            ConformanceAction::expect_viewport_drag_pan_gesture_rejected(
+                ViewportGestureContext {
+                    connection_in_progress: true,
+                    ..ViewportGestureContext::idle()
+                },
+                ViewportDragPanInput::new(
+                    ViewportPointerButton::Right,
+                    CanvasPoint { x: 10.0, y: 4.0 },
+                ),
+                ViewportGestureRejection::ConnectionInProgress,
+            ),
+            ConformanceAction::expect_viewport_scroll_gesture_rejected(
+                ViewportGestureContext {
+                    user_selection_active: true,
+                    ..ViewportGestureContext::idle()
+                },
+                ViewportScrollInput::new(
+                    CanvasPoint { x: 0.0, y: 32.0 },
+                    CanvasPoint { x: 20.0, y: 20.0 },
+                    false,
+                    2.0,
+                    0.25,
+                    4.0,
+                ),
+                ViewportGestureRejection::UserSelectionActive,
+            ),
+        ])
+        .with_expected_trace([ConformanceTraceEvent::viewport(
+            CanvasPoint { x: 10.0, y: 4.0 },
+            1.0,
+        )]);
 
     assert_conformance_trace(&scenario);
 }

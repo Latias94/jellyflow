@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::auto_pan::AutoPanRequest;
 use crate::runtime::events::NodeGraphGestureEvent;
-use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
+use crate::runtime::viewport::{
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPanRequest,
+    ViewportScrollInput, ViewportZoomRequest,
+};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
@@ -24,6 +27,18 @@ pub enum ConformanceAction {
     },
     ApplyViewportZoom {
         request: ViewportZoomRequest,
+    },
+    ApplyViewportScrollGesture {
+        context: ViewportGestureContext,
+        input: ViewportScrollInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_rejection: Option<ViewportGestureRejection>,
+    },
+    ApplyViewportDragPanGesture {
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_rejection: Option<ViewportGestureRejection>,
     },
     SetViewport {
         pan: CanvasPoint,
@@ -47,6 +62,8 @@ impl ConformanceAction {
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
+            Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
+            Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
             Self::SetViewport { .. } => "set_viewport",
             Self::SetSelection { .. } => "set_selection",
             Self::EmitGesture { .. } => "emit_gesture",
@@ -71,6 +88,52 @@ impl ConformanceAction {
 
     pub fn apply_viewport_zoom(request: ViewportZoomRequest) -> Self {
         Self::ApplyViewportZoom { request }
+    }
+
+    pub fn apply_viewport_scroll_gesture(
+        context: ViewportGestureContext,
+        input: ViewportScrollInput,
+    ) -> Self {
+        Self::ApplyViewportScrollGesture {
+            context,
+            input,
+            expect_rejection: None,
+        }
+    }
+
+    pub fn expect_viewport_scroll_gesture_rejected(
+        context: ViewportGestureContext,
+        input: ViewportScrollInput,
+        rejection: ViewportGestureRejection,
+    ) -> Self {
+        Self::ApplyViewportScrollGesture {
+            context,
+            input,
+            expect_rejection: Some(rejection),
+        }
+    }
+
+    pub fn apply_viewport_drag_pan_gesture(
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+    ) -> Self {
+        Self::ApplyViewportDragPanGesture {
+            context,
+            input,
+            expect_rejection: None,
+        }
+    }
+
+    pub fn expect_viewport_drag_pan_gesture_rejected(
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+        rejection: ViewportGestureRejection,
+    ) -> Self {
+        Self::ApplyViewportDragPanGesture {
+            context,
+            input,
+            expect_rejection: Some(rejection),
+        }
     }
 
     pub fn set_viewport(pan: CanvasPoint, zoom: f32) -> Self {

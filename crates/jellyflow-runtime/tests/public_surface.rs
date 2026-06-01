@@ -2,7 +2,7 @@ use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
     GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
-    NodeGraphViewState,
+    NodeGraphInteractionState, NodeGraphPanOnDragButtons, NodeGraphViewState,
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
@@ -95,6 +95,44 @@ fn explicit_modules_expose_their_owned_surfaces() {
         viewport::ViewportZoomRequest::new(CanvasPoint { x: 24.0, y: 12.0 }, 2.0, 0.5, 4.0),
     )
     .expect("zoom");
+    let interaction_state = NodeGraphInteractionState::default();
+    let scroll_intent = viewport::resolve_viewport_scroll_gesture(
+        &interaction_state.pan_interaction(),
+        &interaction_state.zoom_interaction(),
+        viewport::ViewportGestureContext::idle(),
+        viewport::ViewportScrollInput::new(
+            CanvasPoint { x: 3.0, y: 6.0 },
+            CanvasPoint { x: 24.0, y: 12.0 },
+            false,
+            2.0,
+            0.5,
+            4.0,
+        ),
+    )
+    .expect("scroll policy");
+    assert_eq!(
+        scroll_intent.move_kind(),
+        events::ViewportMoveKind::PanScroll
+    );
+    let drag_state = NodeGraphInteractionState {
+        pan_on_drag: NodeGraphPanOnDragButtons {
+            left: true,
+            middle: false,
+            right: false,
+        },
+        ..NodeGraphInteractionState::default()
+    };
+    let drag_intent = viewport::resolve_viewport_drag_pan_gesture(
+        &drag_state.pan_interaction(),
+        viewport::ViewportGestureContext::idle(),
+        viewport::ViewportDragPanInput::new(
+            viewport::ViewportPointerButton::Left,
+            CanvasPoint { x: 1.0, y: 0.0 },
+        ),
+    )
+    .expect("drag pan policy");
+    assert_eq!(drag_intent.move_kind(), events::ViewportMoveKind::PanDrag);
+    let _ = std::mem::size_of::<viewport::ViewportGestureRejection>();
     let auto_pan_request = auto_pan::AutoPanRequest::new(
         auto_pan::AutoPanActivation::Always,
         CanvasPoint { x: 99.0, y: 40.0 },
@@ -155,6 +193,33 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         nodes: vec![node_id],
         pointer: target,
     };
+    let viewport_scroll_action = conformance::ConformanceAction::apply_viewport_scroll_gesture(
+        viewport::ViewportGestureContext::idle(),
+        viewport::ViewportScrollInput::new(
+            CanvasPoint { x: 1.0, y: 2.0 },
+            CanvasPoint { x: 4.0, y: 5.0 },
+            false,
+            1.25,
+            0.5,
+            4.0,
+        ),
+    );
+    let viewport_reject_action =
+        conformance::ConformanceAction::expect_viewport_drag_pan_gesture_rejected(
+            viewport::ViewportGestureContext {
+                connection_in_progress: true,
+                ..viewport::ViewportGestureContext::idle()
+            },
+            viewport::ViewportDragPanInput::new(
+                viewport::ViewportPointerButton::Right,
+                CanvasPoint { x: 4.0, y: 5.0 },
+            ),
+            viewport::ViewportGestureRejection::ConnectionInProgress,
+        );
+    let encoded_viewport_actions =
+        serde_json::to_value([viewport_scroll_action, viewport_reject_action])
+            .expect("serialize viewport fixture actions");
+    assert!(encoded_viewport_actions.is_array());
 
     let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)
         .with_view_state(NodeGraphViewState::default())
