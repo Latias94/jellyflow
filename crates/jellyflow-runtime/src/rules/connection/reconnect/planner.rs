@@ -5,10 +5,10 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::common::{
-    ConnectionCapacity, ConnectionOpBuilder, connection_exists, connection_ports,
-    reject_duplicate_connection, reject_edge_kind_incompatible_with_ports,
-    reject_if_connection_policy_disallows, reject_incompatible_port_kinds, reject_missing_edge,
-    reject_reconnect_directions_required, reject_self_connection,
+    ConnectionOpBuilder, connection_exists, reject_duplicate_connection,
+    reject_edge_kind_incompatible_with_ports, reject_if_connection_policy_disallows,
+    reject_missing_edge, reject_reconnect_directions_required, reject_self_connection,
+    resolve_ordered_connection_endpoints,
 };
 
 /// Plans reconnecting one endpoint of an existing edge to a new port.
@@ -41,54 +41,44 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return ConnectPlan::accept();
     }
 
-    let (from, to) = match connection_ports(graph, candidate.from, candidate.to) {
-        Ok(ports) => ports,
+    let endpoints = match resolve_ordered_connection_endpoints(graph, candidate.from, candidate.to)
+    {
+        Ok(endpoints) => endpoints,
         Err(reject) => return reject,
     };
 
-    if let Some(reject) = strict_mode_rejection(mode, from, to) {
+    if let Some(reject) = strict_mode_rejection(mode, endpoints.from, endpoints.to) {
         return reject;
     }
 
     if let Some(reject) =
-        reject_if_connection_policy_disallows(graph, candidate.from, candidate.to, state)
+        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
     {
         return reject;
     }
 
-    if let Some(reject) = port_kind_rejection(from, to) {
-        return reject;
-    }
-
-    let expected_edge_kind = from.kind.edge_kind();
-
-    if edge.kind != expected_edge_kind {
-        return reject_edge_kind_incompatible_with_ports(edge.kind, expected_edge_kind);
+    if edge.kind != endpoints.edge_kind {
+        return reject_edge_kind_incompatible_with_ports(edge.kind, endpoints.edge_kind);
     }
 
     if connection_exists(
         graph,
         edge.kind,
-        candidate.from,
-        candidate.to,
+        endpoints.from_id,
+        endpoints.to_id,
         Some(edge_id),
     ) {
         return reject_duplicate_connection();
     }
 
-    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
-        graph,
-        ConnectionCapacity::new(
-            edge.kind,
-            candidate.from,
-            from.capacity,
-            candidate.to,
-            to.capacity,
-        ),
-        Some(edge_id),
-    );
+    let mut ops =
+        ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, Some(edge_id));
 
-    ops.push_set_edge_endpoints(edge_id, old, candidate);
+    ops.push_set_edge_endpoints(
+        edge_id,
+        old,
+        EdgeEndpoints::new(endpoints.from_id, endpoints.to_id),
+    );
 
     ConnectPlan::from_ops(ops.into_ops())
 }
@@ -125,8 +115,4 @@ fn strict_mode_rejection(
     (mode == NodeGraphConnectionMode::Strict
         && (from.dir != PortDirection::Out || to.dir != PortDirection::In))
         .then(reject_reconnect_directions_required)
-}
-
-fn port_kind_rejection(from: &Port, to: &Port) -> Option<ConnectPlan> {
-    (from.kind != to.kind).then(|| reject_incompatible_port_kinds(from.kind, to.kind))
 }

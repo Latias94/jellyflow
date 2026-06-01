@@ -46,6 +46,18 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         },
     };
 
+    resolve_ordered_connection_endpoints(graph, from_id, to_id)
+}
+
+pub(in crate::rules::connection) fn resolve_ordered_connection_endpoints(
+    graph: &Graph,
+    from_id: PortId,
+    to_id: PortId,
+) -> Result<ConnectionEndpoints<'_>, ConnectPlan> {
+    if from_id == to_id {
+        return Err(reject_self_connection());
+    }
+
     let (from, to) = connection_ports(graph, from_id, to_id)?;
 
     if from.kind != to.kind {
