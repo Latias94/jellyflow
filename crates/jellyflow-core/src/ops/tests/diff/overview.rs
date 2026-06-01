@@ -44,6 +44,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             hidden: false,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },
@@ -100,6 +101,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     }
     if let Some(edge) = to.edges.get_mut(&edge_id) {
         edge.hidden = true;
+        edge.interaction_width = Some(24.0);
         edge.deletable = Some(true);
         edge.reconnectable = Some(crate::core::EdgeReconnectable::Endpoint(
             crate::core::EdgeReconnectableEndpoint::Target,
@@ -211,6 +213,12 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             .iter()
             .any(|op| matches!(op, GraphOp::SetEdgeHidden { id, .. } if *id == edge_id)),
         "diff must use edge setter ops for hidden changes"
+    );
+    assert!(
+        tx1.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeInteractionWidth { id, .. } if *id == edge_id)),
+        "diff must use edge setter ops for interaction width changes"
     );
     assert!(
         tx1.ops()

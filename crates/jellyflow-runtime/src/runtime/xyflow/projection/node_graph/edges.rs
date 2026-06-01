@@ -29,6 +29,12 @@ pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
             id: *id,
             hidden: *to,
         }),
+        GraphOp::SetEdgeInteractionWidth { id, to, .. } => {
+            out.push_edge(EdgeChange::InteractionWidth {
+                id: *id,
+                interaction_width: *to,
+            })
+        }
         GraphOp::SetEdgeDeletable { id, to, .. } => out.push_edge(EdgeChange::Deletable {
             id: *id,
             deletable: *to,

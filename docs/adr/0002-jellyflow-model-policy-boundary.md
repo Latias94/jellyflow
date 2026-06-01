@@ -53,7 +53,7 @@ The summary taxonomy is:
   direction, kind, capacity, type/data, edge kind/endpoints;
 - layout model: node position/size, group bounds, sticky-note bounds, parent group relationship;
 - persisted editor policy: node selectable/focusable/draggable/connectable/deletable/extent/expand-parent,
-  port connectable/start/end, edge selectable/focusable/deletable/reconnectable;
+  port connectable/start/end, edge selectable/focusable/interaction-width/deletable/reconnectable;
 - persisted presentation: node/edge hidden, collapsed, port order, group/sticky color;
 - volatile or per-user view state: pan, zoom, selection, draw order, and editor/runtime config files.
 

@@ -11,7 +11,9 @@ mod port;
 use crate::io::NodeGraphInteractionState;
 use jellyflow_core::core::{Edge, Node, Port};
 
-pub use edge::{NodeGraphEdgeInteractionPolicy, resolve_edge_interaction_policy};
+pub use edge::{
+    NodeGraphEdgeInteractionPolicy, resolve_edge_hit_test_options, resolve_edge_interaction_policy,
+};
 pub use node::{NodeGraphNodeInteractionPolicy, resolve_node_interaction_policy};
 pub use port::{NodeGraphPortInteractionPolicy, resolve_port_interaction_policy};
 
@@ -30,6 +32,13 @@ impl NodeGraphInteractionState {
 
     pub fn edge_interaction_policy(&self, edge: &Edge) -> NodeGraphEdgeInteractionPolicy {
         resolve_edge_interaction_policy(edge, self)
+    }
+
+    pub fn edge_hit_test_options_for(
+        &self,
+        edge: &Edge,
+    ) -> crate::runtime::geometry::EdgeHitTestOptions {
+        resolve_edge_hit_test_options(edge, self)
     }
 }
 

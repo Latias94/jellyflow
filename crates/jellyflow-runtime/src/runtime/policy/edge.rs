@@ -1,4 +1,5 @@
 use crate::io::NodeGraphInteractionState;
+use crate::runtime::geometry::EdgeHitTestOptions;
 use jellyflow_core::core::{Edge, EdgeReconnectable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,4 +49,15 @@ pub fn resolve_edge_interaction_policy(
         reconnect_source,
         reconnect_target,
     }
+}
+
+pub fn resolve_edge_hit_test_options(
+    edge: &Edge,
+    state: &NodeGraphInteractionState,
+) -> EdgeHitTestOptions {
+    EdgeHitTestOptions::new(
+        edge.interaction_width
+            .unwrap_or(state.edge_interaction_width),
+        usize::from(state.bezier_hit_test_steps),
+    )
 }

@@ -25,6 +25,10 @@ fn changes_to_transaction_is_reversible_and_applicable() {
                 id: eid,
                 hidden: true,
             },
+            EdgeChange::InteractionWidth {
+                id: eid,
+                interaction_width: Some(30.0),
+            },
         ],
     );
 
@@ -39,6 +43,7 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     assert_eq!(g1.edges.get(&eid).unwrap().from, out_port);
     assert_eq!(g1.edges.get(&eid).unwrap().to, in_port);
     assert!(g1.edges.get(&eid).unwrap().hidden);
+    assert_eq!(g1.edges.get(&eid).unwrap().interaction_width, Some(30.0));
 }
 
 #[test]

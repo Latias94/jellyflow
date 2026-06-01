@@ -37,6 +37,10 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
                 id: eid,
                 hidden: true,
             },
+            EdgeChange::InteractionWidth {
+                id: eid,
+                interaction_width: Some(30.0),
+            },
             EdgeChange::Remove { id: missing },
         ],
     );
@@ -44,4 +48,5 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
     assert_eq!(report.ignored(), 1);
     assert_eq!(g0.edges.get(&eid).unwrap().kind, EdgeKind::Exec);
     assert!(g0.edges.get(&eid).unwrap().hidden);
+    assert_eq!(g0.edges.get(&eid).unwrap().interaction_width, Some(30.0));
 }

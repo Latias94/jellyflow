@@ -49,6 +49,7 @@ fn invert_op(op: &GraphOp) -> Vec<GraphOp> {
         | GraphOp::SetEdgeSelectable { .. }
         | GraphOp::SetEdgeFocusable { .. }
         | GraphOp::SetEdgeHidden { .. }
+        | GraphOp::SetEdgeInteractionWidth { .. }
         | GraphOp::SetEdgeDeletable { .. }
         | GraphOp::SetEdgeReconnectable { .. }
         | GraphOp::SetEdgeEndpoints { .. } => edge::invert_edge_op(op),

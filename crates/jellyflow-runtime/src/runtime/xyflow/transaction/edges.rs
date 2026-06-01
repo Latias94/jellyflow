@@ -47,6 +47,16 @@ impl<'a> ChangesTransactionPlanner<'a> {
                     to: *hidden,
                 })?;
             }
+            EdgeChange::InteractionWidth {
+                id,
+                interaction_width,
+            } => {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeInteractionWidth {
+                    id: *id,
+                    from: edge.interaction_width,
+                    to: *interaction_width,
+                })?;
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.push_edge_update(*id, |edge| GraphOp::SetEdgeDeletable {
                     id: *id,

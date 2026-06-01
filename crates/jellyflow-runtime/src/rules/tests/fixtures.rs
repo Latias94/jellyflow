@@ -145,6 +145,7 @@ pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortI
             hidden: false,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },

@@ -54,6 +54,12 @@ pub struct Edge {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focusable: Option<bool>,
 
+    /// Optional edge hit-test interaction width in logical pixels (XyFlow `edge.interactionWidth`).
+    ///
+    /// When omitted, the global `NodeGraphInteractionState.edge_interaction_width` decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction_width: Option<f32>,
+
     /// Whether the edge can be deleted via editor interactions (XyFlow `edge.deletable`).
     ///
     /// When omitted, the global `NodeGraphInteractionState.edges_deletable` decides.

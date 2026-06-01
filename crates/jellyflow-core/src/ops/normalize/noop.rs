@@ -29,6 +29,7 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
         GraphOp::SetEdgeSelectable { from, to, .. } => from == to,
         GraphOp::SetEdgeFocusable { from, to, .. } => from == to,
         GraphOp::SetEdgeHidden { from, to, .. } => from == to,
+        GraphOp::SetEdgeInteractionWidth { from, to, .. } => from == to,
         GraphOp::SetEdgeDeletable { from, to, .. } => from == to,
         GraphOp::SetEdgeReconnectable { from, to, .. } => from == to,
         GraphOp::SetEdgeEndpoints { from, to, .. } => from == to,

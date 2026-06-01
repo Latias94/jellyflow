@@ -157,6 +157,7 @@ impl<'a> FragmentPastePlanner<'a> {
             hidden: old_edge.hidden,
             selectable: old_edge.selectable,
             focusable: old_edge.focusable,
+            interaction_width: old_edge.interaction_width,
             deletable: old_edge.deletable,
             reconnectable: old_edge.reconnectable,
         }

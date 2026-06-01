@@ -51,6 +51,7 @@ fn edge(from: PortId, to: PortId) -> Edge {
         hidden: false,
         selectable: None,
         focusable: None,
+        interaction_width: None,
         deletable: None,
         reconnectable: None,
     }
@@ -228,6 +229,30 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
 }
 
 #[test]
+fn policy_edge_hit_test_options_use_edge_interaction_width_override() {
+    let from = PortId::new();
+    let to = PortId::new();
+    let mut state = NodeGraphInteractionState {
+        edge_interaction_width: 18.0,
+        bezier_hit_test_steps: 32,
+        ..NodeGraphInteractionState::default()
+    };
+    let mut e = edge(from, to);
+
+    let global = resolve_edge_hit_test_options(&e, &state);
+    assert!((global.interaction_width - 18.0).abs() <= 1.0e-6);
+    assert_eq!(global.curve_samples, 32);
+
+    e.interaction_width = Some(30.0);
+    state.edge_interaction_width = 12.0;
+
+    let override_options = resolve_edge_hit_test_options(&e, &state);
+    assert!((override_options.interaction_width - 30.0).abs() <= 1.0e-6);
+    assert_eq!(override_options.curve_samples, 32);
+    assert_eq!(state.edge_hit_test_options_for(&e), override_options);
+}
+
+#[test]
 fn interaction_state_exposes_policy_facades() {
     let node_id = NodeId::new();
     let from = PortId::new();
@@ -248,5 +273,9 @@ fn interaction_state_exposes_policy_facades() {
     assert_eq!(
         state.edge_interaction_policy(&e),
         resolve_edge_interaction_policy(&e, &state)
+    );
+    assert_eq!(
+        state.edge_hit_test_options_for(&e),
+        resolve_edge_hit_test_options(&e, &state)
     );
 }

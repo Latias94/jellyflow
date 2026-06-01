@@ -60,6 +60,7 @@ impl NodeGraphLookups {
             | GraphOp::SetEdgeSelectable { .. }
             | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeHidden { .. }
+            | GraphOp::SetEdgeInteractionWidth { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }

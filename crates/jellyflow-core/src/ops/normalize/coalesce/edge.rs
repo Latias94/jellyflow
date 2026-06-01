@@ -29,6 +29,12 @@ pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bo
             GraphOp::SetEdgeHidden { id: b, from, to },
         ) => coalesce_value(a, last_to, b, from, to),
         (
+            GraphOp::SetEdgeInteractionWidth {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeInteractionWidth { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
             GraphOp::SetEdgeDeletable {
                 id: a, to: last_to, ..
             },

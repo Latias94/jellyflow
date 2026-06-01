@@ -81,6 +81,7 @@ ADR 0002 accepts an additive v1 boundary:
 | `hidden` | Persisted presentation | Excluded from derived selection/rendering surfaces. |
 | `selectable` | Persisted editor policy | Override resolved against global `edges_selectable`. |
 | `focusable` | Persisted editor policy | Override resolved against global `edges_focusable`. |
+| `interaction_width` | Persisted editor policy | Override resolved against global `edge_interaction_width` for hit testing. |
 | `deletable` | Persisted editor policy | Override resolved against global `edges_deletable`. |
 | `reconnectable` | Persisted editor policy | Override resolved against global `edges_reconnectable`. |
 
@@ -106,6 +107,7 @@ The next task should implement these as pure runtime helpers:
 - Port start/end participation: combine port participation with
   `port.connectable_start.unwrap_or(true)` or `port.connectable_end.unwrap_or(true)`.
 - Edge selection: `edge.selectable.unwrap_or(state.edges_selectable)`.
+- Edge hit testing: `edge.interaction_width.unwrap_or(state.edge_interaction_width)`.
 - Edge deletion: `edge.deletable.unwrap_or(state.edges_deletable)`.
 - Edge reconnection: resolve `edge.reconnectable` against `state.edges_reconnectable`, preserving
   endpoint-specific variants.

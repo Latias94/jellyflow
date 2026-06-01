@@ -113,6 +113,7 @@ pub(super) fn make_graph() -> (
             hidden: false,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },

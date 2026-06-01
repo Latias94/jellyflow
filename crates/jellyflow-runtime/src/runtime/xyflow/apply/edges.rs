@@ -31,6 +31,12 @@ impl<'a> ApplyChangesPlanner<'a> {
             EdgeChange::Hidden { id, hidden } => {
                 self.mutate_existing_edge(*id, |edge| edge.hidden = *hidden);
             }
+            EdgeChange::InteractionWidth {
+                id,
+                interaction_width,
+            } => {
+                self.mutate_existing_edge(*id, |edge| edge.interaction_width = *interaction_width);
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.mutate_existing_edge(*id, |edge| edge.deletable = *deletable);
             }

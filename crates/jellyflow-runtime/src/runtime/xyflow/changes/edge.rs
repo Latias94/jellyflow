@@ -30,6 +30,10 @@ pub enum EdgeChange {
         id: EdgeId,
         hidden: bool,
     },
+    InteractionWidth {
+        id: EdgeId,
+        interaction_width: Option<f32>,
+    },
     Deletable {
         id: EdgeId,
         deletable: Option<bool>,

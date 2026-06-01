@@ -25,6 +25,7 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
         hidden: false,
         selectable: None,
         focusable: None,
+        interaction_width: None,
         deletable: None,
         reconnectable: None,
     };

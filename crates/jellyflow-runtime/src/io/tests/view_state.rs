@@ -73,6 +73,7 @@ fn view_state_sanitize_removes_stale_ids() {
             hidden: true,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },

@@ -79,6 +79,13 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: edge_to.hidden,
             });
         }
+        if edge_from.interaction_width != edge_to.interaction_width {
+            self.push_op(GraphOp::SetEdgeInteractionWidth {
+                id,
+                from: edge_from.interaction_width,
+                to: edge_to.interaction_width,
+            });
+        }
         if edge_from.deletable != edge_to.deletable {
             self.push_op(GraphOp::SetEdgeDeletable {
                 id,

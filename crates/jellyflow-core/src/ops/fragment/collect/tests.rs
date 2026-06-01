@@ -122,6 +122,7 @@ fn from_selection_keeps_parent_when_group_is_selected_and_includes_children() {
             hidden: false,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },

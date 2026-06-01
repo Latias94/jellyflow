@@ -184,6 +184,12 @@ pub enum GraphOp {
     },
     /// Sets an edge hidden flag.
     SetEdgeHidden { id: EdgeId, from: bool, to: bool },
+    /// Sets an edge hit-test interaction width override.
+    SetEdgeInteractionWidth {
+        id: EdgeId,
+        from: Option<f32>,
+        to: Option<f32>,
+    },
     /// Sets an edge deletable override.
     SetEdgeDeletable {
         id: EdgeId,

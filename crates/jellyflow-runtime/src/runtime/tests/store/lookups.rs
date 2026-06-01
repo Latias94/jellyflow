@@ -24,6 +24,7 @@ fn store_lookups_update_after_dispatch_transaction() {
             hidden: false,
             selectable: None,
             focusable: None,
+            interaction_width: None,
             deletable: None,
             reconnectable: None,
         },

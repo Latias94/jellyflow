@@ -41,6 +41,7 @@ pub(in crate::rules::connection) fn edge_between(kind: EdgeKind, from: PortId, t
         hidden: false,
         selectable: None,
         focusable: None,
+        interaction_width: None,
         deletable: None,
         reconnectable: None,
     }
@@ -54,6 +55,7 @@ pub(in crate::rules::connection) fn edge_like(edge: &Edge, from: PortId, to: Por
         hidden: edge.hidden,
         selectable: edge.selectable,
         focusable: edge.focusable,
+        interaction_width: edge.interaction_width,
         deletable: edge.deletable,
         reconnectable: edge.reconnectable,
     }

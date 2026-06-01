@@ -35,6 +35,7 @@ mod tests {
             hidden: false,
             selectable: Some(true),
             focusable: None,
+            interaction_width: None,
             deletable: Some(false),
             reconnectable: Some(EdgeReconnectable::Bool(true)),
         };

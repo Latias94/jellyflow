@@ -93,6 +93,7 @@ impl NonFiniteGeometry {
             | GraphOp::SetEdgeSelectable { .. }
             | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeHidden { .. }
+            | GraphOp::SetEdgeInteractionWidth { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::SetEdgeReconnectable { .. }
             | GraphOp::RemoveNode { .. }

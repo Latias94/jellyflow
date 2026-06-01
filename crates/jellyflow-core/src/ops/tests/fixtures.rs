@@ -56,6 +56,7 @@ pub(super) fn make_edge(from: PortId, to: PortId) -> Edge {
         hidden: false,
         selectable: None,
         focusable: None,
+        interaction_width: None,
         deletable: None,
         reconnectable: None,
     }

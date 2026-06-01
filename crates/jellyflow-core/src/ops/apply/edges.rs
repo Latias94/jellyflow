@@ -22,6 +22,9 @@ pub(super) fn apply_edge_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
         GraphOp::SetEdgeHidden { id, to, .. } => {
             edge_mut(graph, *id)?.hidden = *to;
         }
+        GraphOp::SetEdgeInteractionWidth { id, to, .. } => {
+            edge_mut(graph, *id)?.interaction_width = *to;
+        }
         GraphOp::SetEdgeDeletable { id, to, .. } => {
             edge_mut(graph, *id)?.deletable = *to;
         }
