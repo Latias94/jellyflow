@@ -3,11 +3,17 @@ use std::rc::Rc;
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::{
-    NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken, ViewChange,
+    ConnectEnd, ConnectStart, NodeGraphGestureEvent, NodeGraphStoreEvent, SubscriptionToken,
+    ViewChange,
 };
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
+use crate::runtime::xyflow::callbacks::{
+    ConnectionChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
+    NodeGraphViewCallbacks, install_callbacks,
+};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GroupId, NodeId};
-use jellyflow_core::ops::GraphTransaction;
+use jellyflow_core::ops::{EdgeEndpoints, GraphTransaction};
 
 use super::fixtures::default_editor_config;
 
@@ -25,6 +31,7 @@ pub(super) enum HarnessEvent {
         changes: Vec<HarnessViewChange>,
     },
     Gesture(NodeGraphGestureEvent),
+    Callback(HarnessCallbackEvent),
 }
 
 impl HarnessEvent {
@@ -55,6 +62,10 @@ impl HarnessEvent {
         Self::Gesture(event)
     }
 
+    pub(super) fn callback(event: HarnessCallbackEvent) -> Self {
+        Self::Callback(event)
+    }
+
     fn from_store_event(event: NodeGraphStoreEvent<'_>) -> Self {
         match event {
             NodeGraphStoreEvent::DocumentReplaced { before, after } => Self::DocumentReplaced {
@@ -78,6 +89,33 @@ impl HarnessEvent {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum HarnessCallbackEvent {
+    GraphCommit {
+        label: Option<String>,
+    },
+    NodeEdgeChanges {
+        nodes: usize,
+        edges: usize,
+    },
+    NodesChange {
+        count: usize,
+    },
+    EdgesChange {
+        count: usize,
+    },
+    ConnectionChange(ConnectionChange),
+    Connect(EdgeConnection),
+    Disconnect(EdgeConnection),
+    Reconnect {
+        edge: EdgeId,
+        from: EdgeEndpoints,
+        to: EdgeEndpoints,
+    },
+    ConnectStart(ConnectStart),
+    ConnectEnd(ConnectEnd),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +199,15 @@ impl InteractionHarness {
         &mut self.store
     }
 
+    pub(super) fn install_callback_trace(&mut self) -> SubscriptionToken {
+        install_callbacks(
+            &mut self.store,
+            CallbackTraceRecorder {
+                events: self.events.clone(),
+            },
+        )
+    }
+
     pub(super) fn dispatch_transaction(
         &mut self,
         tx: &GraphTransaction,
@@ -195,6 +242,72 @@ impl InteractionHarness {
             expected,
             actual.as_slice(),
         );
+    }
+}
+
+#[derive(Clone)]
+struct CallbackTraceRecorder {
+    events: Rc<RefCell<Vec<HarnessEvent>>>,
+}
+
+impl CallbackTraceRecorder {
+    fn push(&self, event: HarnessCallbackEvent) {
+        self.events.borrow_mut().push(HarnessEvent::Callback(event));
+    }
+}
+
+impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
+    fn on_graph_commit(&mut self, patch: &crate::runtime::commit::NodeGraphPatch) {
+        self.push(HarnessCallbackEvent::GraphCommit {
+            label: patch.transaction().label().map(str::to_owned),
+        });
+    }
+
+    fn on_node_edge_changes(&mut self, changes: &NodeGraphChanges) {
+        self.push(HarnessCallbackEvent::NodeEdgeChanges {
+            nodes: changes.nodes().len(),
+            edges: changes.edges().len(),
+        });
+    }
+
+    fn on_nodes_change(&mut self, changes: &[NodeChange]) {
+        self.push(HarnessCallbackEvent::NodesChange {
+            count: changes.len(),
+        });
+    }
+
+    fn on_edges_change(&mut self, changes: &[EdgeChange]) {
+        self.push(HarnessCallbackEvent::EdgesChange {
+            count: changes.len(),
+        });
+    }
+
+    fn on_connection_change(&mut self, change: ConnectionChange) {
+        self.push(HarnessCallbackEvent::ConnectionChange(change));
+    }
+
+    fn on_connect(&mut self, conn: EdgeConnection) {
+        self.push(HarnessCallbackEvent::Connect(conn));
+    }
+
+    fn on_disconnect(&mut self, conn: EdgeConnection) {
+        self.push(HarnessCallbackEvent::Disconnect(conn));
+    }
+
+    fn on_reconnect(&mut self, edge: EdgeId, from: EdgeEndpoints, to: EdgeEndpoints) {
+        self.push(HarnessCallbackEvent::Reconnect { edge, from, to });
+    }
+}
+
+impl NodeGraphViewCallbacks for CallbackTraceRecorder {}
+
+impl NodeGraphGestureCallbacks for CallbackTraceRecorder {
+    fn on_connect_start(&mut self, ev: ConnectStart) {
+        self.push(HarnessCallbackEvent::ConnectStart(ev));
+    }
+
+    fn on_connect_end(&mut self, ev: ConnectEnd) {
+        self.push(HarnessCallbackEvent::ConnectEnd(ev));
     }
 }
 

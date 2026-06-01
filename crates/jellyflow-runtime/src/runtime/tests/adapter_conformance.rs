@@ -1,6 +1,7 @@
 use super::fixtures::make_graph;
-use super::harness::{HarnessEvent, InteractionHarness};
+use super::harness::{HarnessCallbackEvent, HarnessEvent, InteractionHarness};
 
+use crate::rules::plan_connect;
 use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeGraphGestureEvent,
 };
@@ -9,7 +10,8 @@ use crate::runtime::geometry::{
     bezier_edge_path, edge_path_contains_point, edge_position,
 };
 use crate::runtime::xyflow::callbacks::{
-    ConnectionChange, connection_changes_from_transaction, delete_changes_from_transaction,
+    ConnectionChange, EdgeConnection, connection_changes_from_transaction,
+    delete_changes_from_transaction,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
@@ -182,6 +184,66 @@ fn adapter_conformance_harness_records_connect_gesture_lifecycle() {
     harness.emit_gesture(end.clone());
 
     harness.assert_events(&[HarnessEvent::gesture(start), HarnessEvent::gesture(end)]);
+}
+
+#[test]
+fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks() {
+    let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
+    let next_in = insert_input_port(&mut graph, b, "in2");
+    let mut harness = InteractionHarness::new("connect gesture transaction callbacks", graph);
+    let _callbacks = harness.install_callback_trace();
+    let kind = ConnectDragKind::New {
+        from: out_port,
+        bundle: vec![out_port],
+    };
+    let start = ConnectStart {
+        kind: kind.clone(),
+        mode: NodeGraphConnectionMode::Strict,
+    };
+    let start_event = NodeGraphGestureEvent::ConnectStart(start.clone());
+
+    harness.emit_gesture(start_event.clone());
+
+    let plan = plan_connect(harness.store().graph(), out_port, next_in);
+    assert!(plan.is_accept(), "connect gesture fixture should accept");
+    let tx = GraphTransaction::from_ops(plan.into_ops()).with_label("connect gesture commit");
+    let (edge_id, edge) = match tx.ops() {
+        [GraphOp::AddEdge { id, edge }] => (*id, edge.clone()),
+        other => panic!("expected single add-edge op, got {other:#?}"),
+    };
+    let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
+
+    let _outcome = harness
+        .dispatch_transaction(&tx)
+        .expect("dispatch connect gesture transaction");
+
+    let end = ConnectEnd {
+        kind,
+        mode: NodeGraphConnectionMode::Strict,
+        target: Some(next_in),
+        outcome: ConnectEndOutcome::Committed,
+    };
+    let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
+    harness.emit_gesture(end_event.clone());
+
+    assert_eq!(edge.from, out_port);
+    assert_eq!(edge.to, next_in);
+    harness.assert_events(&[
+        HarnessEvent::gesture(start_event),
+        HarnessEvent::callback(HarnessCallbackEvent::ConnectStart(start)),
+        HarnessEvent::graph_commit(Some("connect gesture commit"), &["add_edge"]),
+        HarnessEvent::callback(HarnessCallbackEvent::GraphCommit {
+            label: Some("connect gesture commit".to_owned()),
+        }),
+        HarnessEvent::callback(HarnessCallbackEvent::NodeEdgeChanges { nodes: 0, edges: 1 }),
+        HarnessEvent::callback(HarnessCallbackEvent::EdgesChange { count: 1 }),
+        HarnessEvent::callback(HarnessCallbackEvent::ConnectionChange(
+            ConnectionChange::Connected(connection),
+        )),
+        HarnessEvent::callback(HarnessCallbackEvent::Connect(connection)),
+        HarnessEvent::gesture(end_event),
+        HarnessEvent::callback(HarnessCallbackEvent::ConnectEnd(end)),
+    ]);
 }
 
 #[test]

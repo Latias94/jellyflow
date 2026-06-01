@@ -84,6 +84,18 @@ This proves formatting, runtime behavior, lint cleanliness, and diff hygiene.
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
   - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
   - `git diff --check`: passed.
+- 2026-06-01: JIH-040 added connect gesture transaction and callback conformance.
+  - Extended `crates/jellyflow-runtime/src/runtime/tests/harness.rs` with `HarnessCallbackEvent` and `install_callback_trace`.
+  - Added an adapter conformance scenario that records connect start, rules-derived add-edge transaction, XyFlow callback order, connection payload, connect end, and graph commit trace in one ordered harness trace.
+  - RED gate: `cargo nextest run -p jellyflow-runtime adapter_conformance` failed before callback trace support existed.
+  - `cargo fmt`: applied formatting after `cargo fmt --check` reported style-only differences.
+  - `cargo fmt --check`: passed after formatting.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 7 tests.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 142 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
 
 ## Notes
 

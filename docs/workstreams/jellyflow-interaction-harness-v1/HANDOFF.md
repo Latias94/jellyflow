@@ -19,10 +19,14 @@ JIH-030 is complete: `runtime::selection` now provides renderer-neutral `compute
 additive union, hidden-node exclusion, selectable policy filtering, connected edge selection,
 deterministic sorting, and emitted selection events.
 
+JIH-040 is complete: the harness now records XyFlow callback events, and adapter conformance has a
+connect gesture fixture that proves gesture start, rules-derived transaction, graph commit trace,
+callback ordering, connection callback payload, and gesture end in one ordered trace.
+
 ## Next Task
 
-JIH-040: extend the harness to cover at least one drag or connect/reconnect gesture fixture with
-expected transactions and callbacks.
+JIH-050: document the harness strategy, run closeout gates, and either close the lane or split
+follow-ons for public fixture formats, drag/pan/resize kernels, and renderer smoke tests.
 
 ## Decisions Since Last Update
 
@@ -37,6 +41,8 @@ expected transactions and callbacks.
   rather than introducing a renderer-specific path.
 - `NodeGraphStore::apply_selection_box` updates view state through `set_selection`, so subscribers
   observe the same `ViewChange::Selection` path as adapters.
+- Callback tracing is intentionally test-only for now. It records XyFlow compatibility callbacks in
+  the same trace as runtime events so future fixtures can catch ordering regressions.
 
 ## Blockers
 

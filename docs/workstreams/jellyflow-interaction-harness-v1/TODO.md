@@ -34,12 +34,13 @@ Last updated: 2026-06-01
 
 ## M3 - Gesture Kernel Fixtures
 
-- [ ] JIH-040 [owner=codex] [deps=JIH-030] [scope=crates/jellyflow-runtime/src/runtime/tests/**,crates/jellyflow-runtime/src/runtime/**]
+- [x] JIH-040 [owner=codex] [deps=JIH-030] [scope=crates/jellyflow-runtime/src/runtime/tests/**,crates/jellyflow-runtime/src/runtime/**]
   Goal: Extend the harness to cover at least one drag or connect/reconnect gesture fixture with expected transactions and callbacks.
   Validation: `cargo nextest run -p jellyflow-runtime adapter_conformance`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture trace proves pointer intent, graph transaction, view/gesture event order, and XyFlow projection where applicable.
   Context: `docs/workstreams/jellyflow-interaction-harness-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Extended the harness with XyFlow callback tracing and added a connect gesture fixture that records start/end gesture events, rules-derived add-edge transaction, callback ordering, connection callback payload, and committed graph state; targeted and runtime package gates passed.
 
 ## M4 - Closeout
 
