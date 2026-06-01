@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn pane_click_distance_matches_xyflow_suppression_policy() {
+    assert_eq!(
+        resolve_pane_click_distance(PaneClickDistanceInput::new(7.0, false)),
+        7.0
+    );
+    assert_eq!(
+        resolve_pane_click_distance(PaneClickDistanceInput::new(-1.0, false)),
+        0.0
+    );
+    assert_eq!(
+        resolve_pane_click_distance(PaneClickDistanceInput::new(f32::NAN, false)),
+        0.0
+    );
+    assert!(
+        resolve_pane_click_distance(PaneClickDistanceInput::new(7.0, true)).is_infinite(),
+        "selection-on-drag suppresses pane clicks"
+    );
+}
+
+#[test]
 fn viewport_scroll_policy_maps_pan_on_scroll_to_screen_delta() {
     let state = NodeGraphInteractionState {
         pan_on_scroll: true,

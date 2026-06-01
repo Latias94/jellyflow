@@ -8,8 +8,9 @@ mod gesture;
 mod transform;
 
 pub use gesture::{
-    ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection,
-    ViewportPointerButton, ViewportScrollInput, resolve_viewport_drag_pan_gesture,
+    PaneClickDistanceInput, ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent,
+    ViewportGestureRejection, ViewportPointerButton, ViewportScrollInput,
+    resolve_pane_click_distance, resolve_viewport_drag_pan_gesture,
     resolve_viewport_scroll_gesture,
 };
 pub use transform::{

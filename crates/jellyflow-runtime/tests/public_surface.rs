@@ -104,6 +104,10 @@ fn explicit_modules_expose_their_owned_surfaces() {
 
     let transform =
         viewport::ViewportTransform::new(CanvasPoint { x: 1.0, y: 2.0 }, 1.5).expect("viewport");
+    assert_eq!(
+        viewport::resolve_pane_click_distance(viewport::PaneClickDistanceInput::new(3.0, false)),
+        3.0
+    );
     let panned = viewport::pan_viewport(
         transform,
         viewport::ViewportPanRequest::new(CanvasPoint { x: 3.0, y: 6.0 }),
