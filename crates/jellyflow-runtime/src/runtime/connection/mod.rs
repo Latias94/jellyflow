@@ -5,10 +5,15 @@
 
 mod activation;
 mod handles;
+mod target;
 
 pub use activation::{ConnectionDragActivationInput, connection_drag_threshold_met};
 pub use handles::{
     ClosestConnectionHandle, ClosestConnectionHandleInput, ConnectionHandleCandidate,
     ConnectionHandleRef, ConnectionHandleValidity, closest_connection_handle,
     connection_handle_validity,
+};
+pub use target::{
+    ConnectionHandleConnection, ConnectionTargetHandle, ConnectionTargetInput,
+    ResolvedConnectionTarget, resolve_connection_target,
 };

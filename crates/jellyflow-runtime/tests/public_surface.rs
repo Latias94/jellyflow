@@ -1,4 +1,5 @@
 use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
     GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
@@ -106,6 +107,27 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert_eq!(
         connection::connection_handle_validity(true, false),
         connection::ConnectionHandleValidity::Invalid
+    );
+    let target_handle = connection::ConnectionTargetHandle::new(
+        connection::ConnectionHandleRef::new(
+            NodeId::new(),
+            jellyflow_core::core::PortId::new(),
+            jellyflow_core::core::PortDirection::In,
+        ),
+        true,
+        true,
+    );
+    let resolved_target =
+        connection::resolve_connection_target(connection::ConnectionTargetInput::new(
+            from_handle,
+            Some(target_handle),
+            NodeGraphConnectionMode::Strict,
+            true,
+        ));
+    let _: Option<connection::ConnectionHandleConnection> = resolved_target.connection;
+    assert_eq!(
+        resolved_target.feedback,
+        connection::ConnectionHandleValidity::Valid
     );
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
