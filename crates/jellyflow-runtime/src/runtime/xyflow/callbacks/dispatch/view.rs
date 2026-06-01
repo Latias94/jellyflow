@@ -11,7 +11,6 @@ pub(super) fn dispatch_view_callbacks(
         match change {
             ViewChange::Viewport { pan, zoom } => {
                 callbacks.on_viewport_change(*pan, *zoom);
-                callbacks.on_move(*pan, *zoom);
             }
             ViewChange::Selection {
                 nodes,

@@ -13,8 +13,7 @@ pub(super) fn dispatch_connection_callbacks(
             ConnectionChange::Connected(conn) => callbacks.on_connect(conn),
             ConnectionChange::Disconnected(conn) => callbacks.on_disconnect(conn),
             ConnectionChange::Reconnected { edge, from, to } => {
-                callbacks.on_reconnect(edge, from, to);
-                callbacks.on_edge_update(edge, from, to);
+                callbacks.on_reconnect(edge, from, to)
             }
         }
     }

@@ -35,11 +35,6 @@ pub trait NodeGraphCommitCallbacks: 'static {
     fn on_disconnect(&mut self, _conn: EdgeConnection) {}
     fn on_reconnect(&mut self, _edge: EdgeId, _from: EdgeEndpoints, _to: EdgeEndpoints) {}
 
-    /// ReactFlow-style alias for reconnect (`onEdgeUpdate`).
-    ///
-    /// This hook is derived from committed ops (headless-safe), just like `on_reconnect`.
-    fn on_edge_update(&mut self, _edge: EdgeId, _from: EdgeEndpoints, _to: EdgeEndpoints) {}
-
     /// ReactFlow-style delete hook (`onNodesDelete`).
     fn on_nodes_delete(&mut self, _nodes: &[NodeId]) {}
     /// ReactFlow-style delete hook (`onEdgesDelete`).
@@ -66,11 +61,6 @@ pub trait NodeGraphViewCallbacks: 'static {
 
     fn on_viewport_change(&mut self, _pan: CanvasPoint, _zoom: f32) {}
     fn on_selection_change(&mut self, _sel: SelectionChange) {}
-
-    /// ReactFlow-style alias for viewport updates (`onMove`).
-    ///
-    /// This hook is derived from view-state changes (headless-safe), just like `on_viewport_change`.
-    fn on_move(&mut self, _pan: CanvasPoint, _zoom: f32) {}
 }
 
 /// UI gesture lifecycle callbacks for retained/editor shells.
@@ -95,30 +85,6 @@ pub trait NodeGraphGestureCallbacks: 'static {
     fn on_connect_start(&mut self, _ev: crate::runtime::events::ConnectStart) {}
     /// UI-driven hook: called when a connection gesture ends (commit/reject/cancel/picker).
     fn on_connect_end(&mut self, _ev: crate::runtime::events::ConnectEnd) {}
-
-    /// UI-driven hook: called when a reconnect gesture starts.
-    ///
-    /// This is a reconnect-only alias that mirrors ReactFlow's `onReconnectStart`.
-    /// Note that `on_connect_start` is still emitted (with `ConnectDragKind::Reconnect*`).
-    fn on_reconnect_start(&mut self, _ev: crate::runtime::events::ConnectStart) {}
-
-    /// UI-driven hook: called when a reconnect gesture ends.
-    ///
-    /// This is a reconnect-only alias that mirrors ReactFlow's `onReconnectEnd`.
-    /// Note that `on_connect_end` is still emitted (with `ConnectDragKind::Reconnect*`).
-    fn on_reconnect_end(&mut self, _ev: crate::runtime::events::ConnectEnd) {}
-
-    /// UI-driven hook: called when an edge update (reconnect) gesture starts.
-    ///
-    /// This is a reconnect-only alias that mirrors ReactFlow's `onEdgeUpdateStart`.
-    /// Note that `on_connect_start` is still emitted (with `ConnectDragKind::Reconnect*`).
-    fn on_edge_update_start(&mut self, _ev: crate::runtime::events::ConnectStart) {}
-
-    /// UI-driven hook: called when an edge update (reconnect) gesture ends.
-    ///
-    /// This is a reconnect-only alias that mirrors ReactFlow's `onEdgeUpdateEnd`.
-    /// Note that `on_connect_end` is still emitted (with `ConnectDragKind::Reconnect*`).
-    fn on_edge_update_end(&mut self, _ev: crate::runtime::events::ConnectEnd) {}
 }
 
 /// Composite callback surface consumed by store/canvas adapters.
