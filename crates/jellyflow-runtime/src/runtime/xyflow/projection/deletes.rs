@@ -1,6 +1,7 @@
 use crate::runtime::xyflow::callbacks::DeleteChange;
-use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
+
+use super::removed_edges::visit_removed_edges;
 
 pub(super) fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
     let mut accumulator = DeleteChangeAccumulator::default();
@@ -18,23 +19,23 @@ struct DeleteChangeAccumulator {
 impl DeleteChangeAccumulator {
     fn push_op(&mut self, op: &GraphOp) {
         match op {
-            GraphOp::RemoveNode { id, edges, .. } => {
+            GraphOp::RemoveNode { id, .. } => {
                 self.change.push_node(*id);
-                self.push_deleted_edge_ids(edges);
+                self.push_deleted_edges(op);
             }
-            GraphOp::RemoveEdge { id, .. } => self.change.push_edge(*id),
+            GraphOp::RemoveEdge { .. } | GraphOp::RemovePort { .. } => {
+                self.push_deleted_edges(op);
+            }
             GraphOp::RemoveGroup { id, .. } => self.change.push_group(*id),
             GraphOp::RemoveStickyNote { id, .. } => self.change.push_sticky_note(*id),
-            GraphOp::RemovePort { edges, .. } => {
-                self.push_deleted_edge_ids(edges);
-            }
             _ => {}
         }
     }
 
-    fn push_deleted_edge_ids(&mut self, edges: &[(EdgeId, Edge)]) {
-        self.change
-            .extend_edges(edges.iter().map(|(id, _edge)| *id));
+    fn push_deleted_edges(&mut self, op: &GraphOp) {
+        visit_removed_edges(op, |id, _edge| {
+            self.change.push_edge(id);
+        });
     }
 
     fn finish(mut self) -> DeleteChange {

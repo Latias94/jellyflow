@@ -4,6 +4,8 @@ use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
+use super::removed_edges::visit_removed_edges;
+
 pub(super) fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
     let mut accumulator = ConnectionChangeAccumulator::new(tx.len());
     for op in tx.ops() {
@@ -28,12 +30,12 @@ impl ConnectionChangeAccumulator {
     }
 
     fn push_op(&mut self, op: &GraphOp) {
+        if visit_removed_edges(op, |id, edge| self.push_disconnected_edge(id, edge)) {
+            return;
+        }
+
         match op {
             GraphOp::AddEdge { id, edge } => self.push_connected(*id, edge),
-            GraphOp::RemoveNode { edges, .. } | GraphOp::RemovePort { edges, .. } => {
-                self.push_disconnected_edges(edges);
-            }
-            GraphOp::RemoveEdge { id, edge } => self.push_disconnected_edge(*id, edge),
             GraphOp::SetEdgeEndpoints { id, from, to } => {
                 self.out.push(ConnectionChange::Reconnected {
                     edge: *id,
@@ -50,12 +52,6 @@ impl ConnectionChangeAccumulator {
             .push(ConnectionChange::Connected(EdgeConnection::from_edge(
                 id, edge,
             )));
-    }
-
-    fn push_disconnected_edges(&mut self, edges: &[(EdgeId, Edge)]) {
-        for (id, edge) in edges {
-            self.push_disconnected_edge(*id, edge);
-        }
     }
 
     fn push_disconnected_edge(&mut self, id: EdgeId, edge: &Edge) {

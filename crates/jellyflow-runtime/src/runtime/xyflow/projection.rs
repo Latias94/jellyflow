@@ -3,6 +3,7 @@
 mod connections;
 mod deletes;
 mod node_graph;
+mod removed_edges;
 
 use crate::runtime::xyflow::callbacks::{ConnectionChange, DeleteChange};
 use crate::runtime::xyflow::changes::NodeGraphChanges;

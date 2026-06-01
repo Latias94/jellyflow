@@ -66,13 +66,6 @@ impl DeleteChange {
         self.sticky_notes.push(sticky_note);
     }
 
-    pub(in crate::runtime::xyflow) fn extend_edges(
-        &mut self,
-        edges: impl IntoIterator<Item = EdgeId>,
-    ) {
-        self.edges.extend(edges);
-    }
-
     pub(in crate::runtime::xyflow) fn sort_dedup(&mut self) {
         sort_dedup_items(&mut self.nodes);
         sort_dedup_items(&mut self.edges);
