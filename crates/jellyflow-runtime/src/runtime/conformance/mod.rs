@@ -86,6 +86,41 @@ impl ConformanceScenario {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConformanceSuite {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenarios: Vec<ConformanceScenario>,
+}
+
+impl ConformanceSuite {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            schema_version: CONFORMANCE_FIXTURE_SCHEMA_VERSION,
+            name: name.into(),
+            scenarios: Vec::new(),
+        }
+    }
+
+    pub fn with_scenarios(
+        mut self,
+        scenarios: impl IntoIterator<Item = ConformanceScenario>,
+    ) -> Self {
+        self.scenarios = scenarios.into_iter().collect();
+        self
+    }
+
+    pub fn push_scenario(&mut self, scenario: ConformanceScenario) {
+        self.scenarios.push(scenario);
+    }
+
+    pub fn run(&self) -> ConformanceSuiteReport {
+        run_conformance_suite(self)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConformanceSetup {
     #[serde(default)]
     pub graph: Graph,
@@ -418,6 +453,79 @@ impl fmt::Display for ConformanceRunReport {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConformanceSuiteReport {
+    pub suite: String,
+    pub scenario_reports: Vec<ConformanceRunReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<ConformanceRunError>,
+}
+
+impl ConformanceSuiteReport {
+    pub fn is_match(&self) -> bool {
+        self.errors.is_empty()
+            && self
+                .scenario_reports
+                .iter()
+                .all(ConformanceRunReport::is_match)
+    }
+
+    pub fn failed_scenarios(&self) -> usize {
+        self.errors.len()
+            + self
+                .scenario_reports
+                .iter()
+                .filter(|report| !report.is_match())
+                .count()
+    }
+
+    pub fn scenario_count(&self) -> usize {
+        self.scenario_reports.len() + self.errors.len()
+    }
+}
+
+impl fmt::Display for ConformanceSuiteReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_match() {
+            return write!(
+                f,
+                "conformance suite `{}` matched {} scenario(s)",
+                self.suite,
+                self.scenario_count()
+            );
+        }
+
+        writeln!(
+            f,
+            "conformance suite `{}` failed: {} scenario(s), {} execution error(s)",
+            self.suite,
+            self.failed_scenarios(),
+            self.errors.len()
+        )?;
+        for report in self
+            .scenario_reports
+            .iter()
+            .filter(|report| !report.is_match())
+            .take(8)
+        {
+            writeln!(
+                f,
+                "  scenario `{}` mismatched {} trace event(s)",
+                report.scenario,
+                report.mismatches.len()
+            )?;
+        }
+        for error in self.errors.iter().take(8) {
+            writeln!(
+                f,
+                "  scenario `{}` errored at action {} ({}): {}",
+                error.scenario, error.action_index, error.action_kind, error.message
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceTraceMismatch {
     pub index: usize,
@@ -440,6 +548,24 @@ pub fn run_conformance_scenario(
     scenario: &ConformanceScenario,
 ) -> Result<ConformanceRunReport, ConformanceRunError> {
     ConformanceRunner::new(scenario).run()
+}
+
+pub fn run_conformance_suite(suite: &ConformanceSuite) -> ConformanceSuiteReport {
+    let mut scenario_reports = Vec::new();
+    let mut errors = Vec::new();
+
+    for scenario in &suite.scenarios {
+        match run_conformance_scenario(scenario) {
+            Ok(report) => scenario_reports.push(report),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    ConformanceSuiteReport {
+        suite: suite.name.clone(),
+        scenario_reports,
+        errors,
+    }
 }
 
 #[derive(Debug)]

@@ -197,4 +197,22 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         serde_json::to_value(decoded).expect("reserialize fixture"),
         encoded,
     );
+
+    let empty_scenario =
+        conformance::ConformanceScenario::new("public empty fixture", Graph::new(GraphId::new()));
+    let mut suite = conformance::ConformanceSuite::new("public adapter suite");
+    suite.push_scenario(empty_scenario.clone());
+    let suite = suite.with_scenarios([empty_scenario]);
+    let suite_report = conformance::run_conformance_suite(&suite);
+    assert!(suite_report.is_match(), "{suite_report}");
+    assert_eq!(suite_report.scenario_count(), 1);
+    assert_eq!(suite_report.failed_scenarios(), 0);
+
+    let suite_encoded = serde_json::to_value(&suite).expect("serialize suite");
+    let suite_decoded: conformance::ConformanceSuite =
+        serde_json::from_value(suite_encoded.clone()).expect("deserialize suite");
+    assert_eq!(
+        serde_json::to_value(suite_decoded).expect("reserialize suite"),
+        suite_encoded,
+    );
 }

@@ -58,12 +58,14 @@ validate behavior before rendering. The runtime crate supports that split with:
   gestures;
 - rules-derived connect/reconnect/delete planners for graph transactions;
 - `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
-- `runtime::conformance::{ConformanceScenario, ConformanceAction, ConformanceTraceEvent,
-  run_conformance_scenario}` for reusable fixture checks that record normalized graph commit, view,
-  gesture, and callback traces around a real `NodeGraphStore`.
+- `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceAction,
+  ConformanceTraceEvent, run_conformance_scenario, run_conformance_suite}` for reusable fixture
+  checks that record normalized graph commit, view, gesture, and callback traces around a real
+  `NodeGraphStore`.
 
-Run conformance fixtures before renderer smoke tests. They prove the adapter is translating intent
-into the same runtime actions and callback ordering that Jellyflow expects. GPU, windowing,
+Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
+intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
+aggregate reports that separate trace mismatches from scenario execution errors. GPU, windowing,
 screenshot, and pixel smoke tests should live in adapter crates such as future wgpu, egui, or Fret
 integrations, where they can verify input capture, platform wiring, and rendered pixels.
 
