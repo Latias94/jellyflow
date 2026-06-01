@@ -81,6 +81,56 @@ fn mutation_planner_add_port_updates_node_ports_at_requested_index() {
 }
 
 #[test]
+fn mutation_planner_remove_port_tx_roundtrips_through_inverse() {
+    let mut graph = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    graph.nodes.insert(a, make_node("core.a"));
+    graph.nodes.insert(b, make_node("core.b"));
+
+    let out = PortId::new();
+    let inn = PortId::new();
+    graph
+        .ports
+        .insert(out, make_port(a, "out", PortDirection::Out));
+    graph
+        .ports
+        .insert(inn, make_port(b, "in", PortDirection::In));
+    graph.nodes.get_mut(&a).unwrap().ports.push(out);
+    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
+
+    let edge_id = EdgeId::new();
+    graph.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out,
+            to: inn,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let before = graph.clone();
+    let tx = GraphMutationPlanner::new(&graph)
+        .remove_port_tx(out, "Remove Port")
+        .expect("tx");
+
+    apply_transaction(&mut graph, &tx).expect("apply");
+    assert!(!graph.ports.contains_key(&out));
+    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.nodes.get(&a).unwrap().ports.contains(&out));
+
+    let undo = invert_transaction(&tx);
+    apply_transaction(&mut graph, &undo).expect("undo");
+    assert_eq!(
+        serde_json::to_value(&graph).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+}
+
+#[test]
 fn mutation_planner_rejects_port_owner_mismatch_before_emitting_ops() {
     let graph = Graph::default();
     let node_id = NodeId::new();

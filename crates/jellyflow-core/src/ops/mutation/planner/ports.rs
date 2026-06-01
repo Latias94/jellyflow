@@ -67,6 +67,27 @@ impl GraphMutationPlanner<'_> {
         })
     }
 
+    pub fn remove_port_ops(&self, id: PortId) -> Result<Vec<GraphOp>, GraphMutationError> {
+        let remove_op = self.remove_port_op(id)?;
+        let mut ops = Vec::new();
+
+        if let GraphOp::RemovePort { port, .. } = &remove_op
+            && let Some(node) = self.graph.nodes.get(&port.node)
+        {
+            let order = NodePortOrderEdit::remove(&node.ports, id);
+            if order.from != order.to {
+                ops.push(GraphOp::SetNodePorts {
+                    id: port.node,
+                    from: order.from,
+                    to: order.to,
+                });
+            }
+        }
+
+        ops.push(remove_op);
+        Ok(ops)
+    }
+
     pub fn disconnect_port_ops(&self, id: PortId) -> Result<Vec<GraphOp>, GraphMutationError> {
         self.graph
             .ports
@@ -83,7 +104,7 @@ impl GraphMutationPlanner<'_> {
     ) -> Result<GraphTransaction, GraphMutationError> {
         Ok(GraphTransaction::new()
             .with_label(label)
-            .with_ops([self.remove_port_op(id)?]))
+            .with_ops(self.remove_port_ops(id)?))
     }
 }
 
@@ -116,5 +137,13 @@ impl NodePortOrderEdit {
         }
 
         Ok(Self { from, to })
+    }
+
+    fn remove(existing: &[PortId], removed: PortId) -> Self {
+        let from = existing.to_vec();
+        let mut to = from.clone();
+        to.retain(|id| *id != removed);
+
+        Self { from, to }
     }
 }
