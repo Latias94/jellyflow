@@ -167,10 +167,12 @@ impl PersistedNodeGraphEditorStateFile {
     }
 
     fn into_editor_state_file(self) -> NodeGraphEditorStateFile {
+        let mut view_state = NodeGraphViewState::from(self.view_state);
+        view_state.sanitize_viewport();
         NodeGraphEditorStateFile {
             graph_id: self.graph_id,
             editor_state_version: self.editor_state_version,
-            view_state: NodeGraphViewState::from(self.view_state),
+            view_state,
             editor_config: self.editor_config,
         }
     }

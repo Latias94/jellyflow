@@ -160,6 +160,29 @@ fn editor_state_file_rejects_wrong_graph_id() {
 }
 
 #[test]
+fn editor_state_file_load_sanitizes_invalid_viewport() {
+    let graph_id = GraphId::new();
+    let path = temp_path("editor_state_invalid_viewport", graph_id);
+
+    let file = NodeGraphEditorStateFile::new(
+        graph_id,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    file.save_json(&path).unwrap();
+
+    let mut root: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    root["view_state"]["zoom"] = serde_json::json!(-1.0);
+    std::fs::write(&path, serde_json::to_vec_pretty(&root).unwrap()).unwrap();
+
+    let loaded = NodeGraphEditorStateFile::load_json(&path, graph_id).unwrap();
+    assert_eq!(loaded.view_state.zoom, NodeGraphViewState::default().zoom);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn view_state_sanitize_removes_stale_ids() {
     let graph_id = GraphId::new();
     let mut graph = Graph::new(graph_id);

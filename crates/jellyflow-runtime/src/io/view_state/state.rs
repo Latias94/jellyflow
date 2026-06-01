@@ -85,7 +85,7 @@ impl NodeGraphViewState {
             .retain(|id| graph.groups.contains_key(id));
     }
 
-    fn sanitize_viewport(&mut self) {
+    pub fn sanitize_viewport(&mut self) {
         self.pan = sanitize_pan(self.pan);
         self.zoom = sanitize_zoom(self.zoom);
     }
