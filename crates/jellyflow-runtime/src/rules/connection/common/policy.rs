@@ -2,8 +2,28 @@ use crate::io::NodeGraphInteractionState;
 use crate::rules::ConnectPlan;
 use crate::runtime::policy::NodeGraphPortInteractionPolicy;
 use jellyflow_core::core::{Graph, PortId};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 
+use super::endpoints::{ConnectionEndpoints, resolve_connection_endpoints};
 use super::rejections::{reject_missing_port, reject_missing_port_owner_node};
+
+pub(in crate::rules::connection) fn resolve_policy_checked_connection<'a>(
+    graph: &'a Graph,
+    a: PortId,
+    b: PortId,
+    mode: NodeGraphConnectionMode,
+    state: &NodeGraphInteractionState,
+) -> Result<ConnectionEndpoints<'a>, ConnectPlan> {
+    let endpoints = resolve_connection_endpoints(graph, a, b, mode)?;
+
+    if let Some(reject) =
+        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
+    {
+        return Err(reject);
+    }
+
+    Ok(endpoints)
+}
 
 pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
     graph: &Graph,

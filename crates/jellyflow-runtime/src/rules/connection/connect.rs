@@ -4,9 +4,8 @@ use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::common::{
-    ConnectionCapacity, ConnectionEndpoints, ConnectionOpBuilder, add_existing_ports_edge_op,
-    connection_exists, edge_between, reject_if_connection_policy_disallows,
-    resolve_connection_endpoints,
+    ConnectionEndpoints, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
+    edge_between, resolve_policy_checked_connection,
 };
 
 /// Plans connecting two ports.
@@ -48,16 +47,10 @@ pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
     mode: NodeGraphConnectionMode,
     state: &NodeGraphInteractionState,
 ) -> Result<ResolvedConnectPlan<'a>, ConnectPlan> {
-    let endpoints = match resolve_connection_endpoints(graph, a, b, mode) {
+    let endpoints = match resolve_policy_checked_connection(graph, a, b, mode, state) {
         Ok(endpoints) => endpoints,
         Err(plan) => return Err(plan),
     };
-
-    if let Some(reject) =
-        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
-    {
-        return Err(reject);
-    }
 
     if connection_exists(
         graph,
@@ -72,11 +65,7 @@ pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
         });
     }
 
-    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
-        graph,
-        ConnectionCapacity::from_endpoints(&endpoints),
-        None,
-    );
+    let mut ops = ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, None);
 
     let add_edge = match add_existing_ports_edge_op(
         graph,

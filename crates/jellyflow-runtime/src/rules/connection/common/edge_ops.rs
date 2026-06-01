@@ -88,6 +88,18 @@ impl ConnectionOpBuilder {
         }
     }
 
+    pub(in crate::rules::connection) fn with_endpoint_capacity_disconnects(
+        graph: &Graph,
+        endpoints: &ConnectionEndpoints<'_>,
+        skip_edge: Option<EdgeId>,
+    ) -> Self {
+        Self::with_capacity_disconnects(
+            graph,
+            ConnectionCapacity::from_endpoints(endpoints),
+            skip_edge,
+        )
+    }
+
     pub(in crate::rules::connection) fn push(&mut self, op: GraphOp) {
         self.ops.push(op);
     }

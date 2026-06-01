@@ -5,9 +5,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphMutationBatchPlanner;
 
 use super::super::common::{
-    ConnectionCapacity, ConnectionOpBuilder, edge_between, ensure_edge_id_available,
-    reject_if_connection_policy_disallows, reject_mutation_error, resolve_connection_endpoints,
-    validate_insert_node_spec,
+    ConnectionOpBuilder, edge_between, ensure_edge_id_available, reject_mutation_error,
+    resolve_policy_checked_connection, validate_insert_node_spec,
 };
 
 /// Plans connecting two ports by inserting a node between them.
@@ -22,16 +21,15 @@ pub fn plan_connect_by_inserting_node_with_policy(
     inserted: InsertNodeSpec,
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
-    let endpoints = match resolve_connection_endpoints(graph, a, b, NodeGraphConnectionMode::Strict)
-    {
+    let endpoints = match resolve_policy_checked_connection(
+        graph,
+        a,
+        b,
+        NodeGraphConnectionMode::Strict,
+        state,
+    ) {
         Ok(endpoints) => endpoints,
         Err(plan) => return plan,
-    };
-
-    if let Some(reject) =
-        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
-    {
-        return reject;
     };
 
     if let Err(reject) = ensure_edge_id_available(graph, first_edge_id) {
@@ -53,11 +51,7 @@ pub fn plan_connect_by_inserting_node_with_policy(
         Err(plan) => return plan,
     };
 
-    let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
-        graph,
-        ConnectionCapacity::from_endpoints(&endpoints),
-        None,
-    );
+    let mut ops = ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, None);
 
     let mut batch = GraphMutationBatchPlanner::new(graph);
     if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
