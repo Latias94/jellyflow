@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-interaction-harness-v1",
+  "title": "Jellyflow Interaction Harness v1",
+  "status": "active",
+  "updated": "2026-06-01",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-geometry-spatial-v1",
+  "problem": "Jellyflow needs a reusable renderer-free interaction test harness so humans and agents can catch XyFlow-feel regressions through fixture-like observable traces instead of local handwritten assertions.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/TODO.md"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-interaction-harness-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-interaction-harness-v1/CONTEXT.jsonl",
+  "gates": [
+    "cargo nextest run -p jellyflow-runtime adapter_conformance",
+    "cargo check -p jellyflow-runtime",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo clippy -p jellyflow-runtime --all-targets -- -D warnings",
+    "jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-01",
+      "task": "JIH-010",
+      "summary": "Opened the interaction harness workstream from ADR 0003 and the user's request for a mature automated harness for humans and agents."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JIH-020",
+      "summary": "Added a private runtime test harness that records normalized graph commit, view, and gesture traces with scenario-aware assertions. Adapter conformance targeted gates passed."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md",
+    "docs/adr/0002-jellyflow-model-policy-boundary.md",
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "interaction-harness",
+    "adapter-conformance",
+    "headless-runtime",
+    "node-graph",
+    "xyflow-reference"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "run_next_task",
+    "next_task": "JIH-030",
+    "notes": "Use the private harness to express the first selection-box fixture before adding public fixture formats or renderer smoke tests."
+  }
+}

@@ -1,9 +1,9 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use super::fixtures::make_graph;
+use super::harness::{HarnessEvent, InteractionHarness};
 
-use super::fixtures::{make_graph, make_store};
-
-use crate::runtime::events::{NodeGraphStoreEvent, ViewChange};
+use crate::runtime::events::{
+    ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeGraphGestureEvent,
+};
 use crate::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, HandleBounds, HandlePosition,
     bezier_edge_path, edge_path_contains_point, edge_position,
@@ -16,12 +16,13 @@ use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, NodeId, Port, PortCapacity,
     PortDirection, PortId, PortKey, PortKind,
 };
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 #[test]
 fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
     let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
-    let mut store = make_store(graph);
+    let mut harness = InteractionHarness::new("connect dispatches patch and projection", graph);
     let edge_id = EdgeId::new();
     let edge = Edge {
         kind: EdgeKind::Data,
@@ -34,12 +35,12 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
 
     let tx = GraphTransaction::from_ops([GraphOp::AddEdge { id: edge_id, edge }])
         .with_label("adapter connect");
-    let outcome = store.dispatch_transaction(&tx).expect("dispatch connect");
+    let outcome = harness.dispatch_transaction(&tx).expect("dispatch connect");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
     let connection_changes = connection_changes_from_transaction(outcome.committed());
 
     assert_eq!(outcome.committed().label(), Some("adapter connect"));
-    assert!(store.graph().edges.contains_key(&edge_id));
+    assert!(harness.store().graph().edges.contains_key(&edge_id));
     assert!(
         matches!(changes.edges(), [EdgeChange::Add { id, .. }] if *id == edge_id),
         "connect should project to one edge add",
@@ -49,13 +50,17 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
             if conn.edge == edge_id && conn.from == out_port && conn.to == in_port),
         "connect should project to one connection event",
     );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some("adapter connect"),
+        &["add_edge"],
+    )]);
 }
 
 #[test]
 fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change() {
     let (mut graph, _a, b, out_port, in_port, edge_id) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");
-    let mut store = make_store(graph);
+    let mut harness = InteractionHarness::new("reconnect preserves edge id", graph);
     let from = EdgeEndpoints {
         from: out_port,
         to: in_port,
@@ -71,11 +76,18 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
         to,
     }])
     .with_label("adapter reconnect");
-    let outcome = store.dispatch_transaction(&tx).expect("dispatch reconnect");
+    let outcome = harness
+        .dispatch_transaction(&tx)
+        .expect("dispatch reconnect");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
     let connection_changes = connection_changes_from_transaction(outcome.committed());
 
-    let edge = store.graph().edges.get(&edge_id).expect("edge remains");
+    let edge = harness
+        .store()
+        .graph()
+        .edges
+        .get(&edge_id)
+        .expect("edge remains");
     assert_eq!(edge.from, out_port);
     assert_eq!(edge.to, next_in);
     assert!(
@@ -88,6 +100,10 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
             if *edge == edge_id && *old == from && *new == to),
         "reconnect should preserve edge id and expose old/new endpoints",
     );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some("adapter reconnect"),
+        &["set_edge_endpoints"],
+    )]);
 }
 
 #[test]
@@ -96,7 +112,7 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
     let node = graph.nodes.get(&node_id).expect("node").clone();
     let port = graph.ports.get(&out_port).expect("port").clone();
     let edge = graph.edges.get(&edge_id).expect("edge").clone();
-    let mut store = make_store(graph);
+    let mut harness = InteractionHarness::new("delete node cascades edges", graph);
 
     let tx = GraphTransaction::from_ops([GraphOp::RemoveNode {
         id: node_id,
@@ -105,14 +121,14 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
         edges: vec![(edge_id, edge)],
     }])
     .with_label("adapter delete node");
-    let outcome = store
+    let outcome = harness
         .dispatch_transaction(&tx)
         .expect("dispatch delete node");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
     let deleted = delete_changes_from_transaction(outcome.committed());
 
-    assert!(!store.graph().nodes.contains_key(&node_id));
-    assert!(!store.graph().edges.contains_key(&edge_id));
+    assert!(!harness.store().graph().nodes.contains_key(&node_id));
+    assert!(!harness.store().graph().edges.contains_key(&edge_id));
     assert!(
         matches!(changes.nodes(), [NodeChange::Remove { id }] if *id == node_id),
         "delete should project to one node remove",
@@ -123,44 +139,49 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
     );
     assert_eq!(deleted.nodes(), &[node_id]);
     assert_eq!(deleted.edges(), &[edge_id]);
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some("adapter delete node"),
+        &["remove_node"],
+    )]);
 }
 
 #[test]
 fn adapter_conformance_viewport_and_selection_emit_ordered_view_changes() {
     let (graph, node_id, _b, _out_port, _in_port, edge_id) = make_graph();
-    let mut store = make_store(graph);
-    let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-    let events2 = events.clone();
+    let mut harness = InteractionHarness::new("viewport and selection ordering", graph);
 
-    store.subscribe(move |event| {
-        if let NodeGraphStoreEvent::ViewChanged { changes, .. } = event {
-            match changes {
-                [ViewChange::Viewport { pan, zoom }] => {
-                    assert_eq!(*pan, CanvasPoint { x: 10.0, y: 20.0 });
-                    assert_eq!(*zoom, 1.25);
-                    events2.borrow_mut().push("viewport");
-                }
-                [
-                    ViewChange::Selection {
-                        nodes,
-                        edges,
-                        groups,
-                    },
-                ] => {
-                    assert_eq!(nodes, &[node_id]);
-                    assert_eq!(edges, &[edge_id]);
-                    assert!(groups.is_empty());
-                    events2.borrow_mut().push("selection");
-                }
-                _ => events2.borrow_mut().push("unexpected"),
-            }
-        }
+    harness.set_viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25);
+    harness.set_selection(vec![node_id], vec![edge_id], Vec::new());
+
+    harness.assert_events(&[
+        HarnessEvent::viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25),
+        HarnessEvent::selection(vec![node_id], vec![edge_id], Vec::new()),
+    ]);
+}
+
+#[test]
+fn adapter_conformance_harness_records_connect_gesture_lifecycle() {
+    let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
+    let mut harness = InteractionHarness::new("connect gesture lifecycle", graph);
+    let kind = ConnectDragKind::New {
+        from: out_port,
+        bundle: vec![out_port],
+    };
+    let start = NodeGraphGestureEvent::ConnectStart(ConnectStart {
+        kind: kind.clone(),
+        mode: NodeGraphConnectionMode::Strict,
+    });
+    let end = NodeGraphGestureEvent::ConnectEnd(ConnectEnd {
+        kind,
+        mode: NodeGraphConnectionMode::Strict,
+        target: Some(in_port),
+        outcome: ConnectEndOutcome::Committed,
     });
 
-    store.set_viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25);
-    store.set_selection(vec![node_id], vec![edge_id], Vec::new());
+    harness.emit_gesture(start.clone());
+    harness.emit_gesture(end.clone());
 
-    assert_eq!(events.borrow().as_slice(), &["viewport", "selection"]);
+    harness.assert_events(&[HarnessEvent::gesture(start), HarnessEvent::gesture(end)]);
 }
 
 #[test]

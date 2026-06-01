@@ -1,5 +1,6 @@
 mod adapter_conformance;
 mod fixtures;
+mod harness;
 mod lookups;
 mod store;
 mod utils;
