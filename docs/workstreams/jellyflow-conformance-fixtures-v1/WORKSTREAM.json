@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-conformance-fixtures-v1",
+  "title": "Jellyflow Conformance Fixtures v1",
+  "status": "active",
+  "updated": "2026-06-01",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-node-drag-kernel-v1",
+  "problem": "Jellyflow needs a stable headless conformance fixture format and runner so adapters and agents can reuse the same XyFlow-feel behavior checks instead of duplicating private harness logic.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/TODO.md"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-conformance-fixtures-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl",
+  "gates": [
+    "cargo nextest run -p jellyflow-runtime --test public_surface",
+    "cargo check -p jellyflow-runtime",
+    "cargo nextest run -p jellyflow-runtime conformance",
+    "cargo nextest run -p jellyflow-runtime adapter_conformance",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo clippy -p jellyflow-runtime --all-targets -- -D warnings",
+    "jq empty docs/workstreams/jellyflow-conformance-fixtures-v1/WORKSTREAM.json",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-01",
+      "task": "JCF-010",
+      "summary": "Opened the conformance fixtures workstream from interaction harness and node drag closeout follow-ons, with ADR 0003 renderer-free testing constraints."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "conformance",
+    "fixtures",
+    "adapter-conformance",
+    "headless-runtime",
+    "agent-debugging"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "run_next_task",
+    "next_task": "JCF-020",
+    "notes": "Define the public headless fixture vocabulary before adding a runner."
+  }
+}
