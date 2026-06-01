@@ -9,5 +9,6 @@ mod handles;
 pub use activation::{ConnectionDragActivationInput, connection_drag_threshold_met};
 pub use handles::{
     ClosestConnectionHandle, ClosestConnectionHandleInput, ConnectionHandleCandidate,
-    ConnectionHandleRef, closest_connection_handle,
+    ConnectionHandleRef, ConnectionHandleValidity, closest_connection_handle,
+    connection_handle_validity,
 };

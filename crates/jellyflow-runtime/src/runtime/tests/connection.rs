@@ -1,6 +1,7 @@
 use crate::runtime::connection::{
     ClosestConnectionHandleInput, ConnectionDragActivationInput, ConnectionHandleCandidate,
-    ConnectionHandleRef, closest_connection_handle, connection_drag_threshold_met,
+    ConnectionHandleRef, ConnectionHandleValidity, closest_connection_handle,
+    connection_drag_threshold_met, connection_handle_validity,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
@@ -114,6 +115,22 @@ fn closest_connection_handle_skips_starting_handle_and_rejects_invalid_inputs() 
             &candidates,
         ))
         .is_none()
+    );
+}
+
+#[test]
+fn connection_handle_validity_matches_xyflow_true_false_null_shape() {
+    assert_eq!(
+        connection_handle_validity(false, true),
+        ConnectionHandleValidity::Valid
+    );
+    assert_eq!(
+        connection_handle_validity(true, false),
+        ConnectionHandleValidity::Invalid
+    );
+    assert_eq!(
+        connection_handle_validity(false, false),
+        ConnectionHandleValidity::NoHandle
     );
 }
 

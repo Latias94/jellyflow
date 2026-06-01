@@ -72,6 +72,17 @@ pub struct ClosestConnectionHandle {
     pub distance: f32,
 }
 
+/// XyFlow-compatible validity state for a connection target candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectionHandleValidity {
+    /// A candidate handle is present and can accept the connection.
+    Valid,
+    /// A candidate handle is present or inside the connection radius, but cannot accept it.
+    Invalid,
+    /// No handle is close enough to report valid or invalid feedback.
+    NoHandle,
+}
+
 /// Returns the nearest handle inside `connection_radius`, matching XyFlow tie semantics.
 ///
 /// XyFlow skips the starting handle, measures distance to handle centers, keeps all equal-distance
@@ -130,5 +141,22 @@ fn opposite_direction(direction: PortDirection) -> PortDirection {
     match direction {
         PortDirection::In => PortDirection::Out,
         PortDirection::Out => PortDirection::In,
+    }
+}
+
+/// Resolves XyFlow's `true | false | null` connection feedback into a Rust enum.
+///
+/// A valid handle wins even if the adapter did not separately mark it inside the radius. Otherwise,
+/// an inside-radius candidate is invalid, and no candidate remains neutral.
+pub fn connection_handle_validity(
+    is_inside_connection_radius: bool,
+    is_handle_valid: bool,
+) -> ConnectionHandleValidity {
+    if is_handle_valid {
+        ConnectionHandleValidity::Valid
+    } else if is_inside_connection_radius {
+        ConnectionHandleValidity::Invalid
+    } else {
+        ConnectionHandleValidity::NoHandle
     }
 }

@@ -103,6 +103,10 @@ fn explicit_modules_expose_their_owned_surfaces() {
             from_handle,
             &[],
         ));
+    assert_eq!(
+        connection::connection_handle_validity(true, false),
+        connection::ConnectionHandleValidity::Invalid
+    );
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
