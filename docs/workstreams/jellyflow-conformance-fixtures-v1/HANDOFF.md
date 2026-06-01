@@ -1,11 +1,12 @@
 # Jellyflow Conformance Fixtures v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is active as a follow-on to the closed interaction harness and node drag kernel lanes.
+The workstream is closed as a follow-on to the closed interaction harness and node drag kernel
+lanes.
 
 JCF-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.
@@ -20,10 +21,12 @@ records normalized store/gesture/callback traces, and returns compact per-index 
 JCF-040 is complete: connect dispatch, connect gesture lifecycle, connect gesture transaction
 callbacks, and node drag gesture callbacks now run through `run_conformance_scenario`.
 
+JCF-050 is complete: README material explains fixture conformance before renderer smoke tests,
+closeout gates passed, and the lane is closed.
+
 ## Next Task
 
-JCF-050: document the fixture strategy, record fresh closeout evidence, and close the lane or split
-follow-ons.
+No remaining task in this workstream.
 
 ## Decisions Since Opening
 
@@ -44,6 +47,12 @@ follow-ons.
 ## Blockers
 
 - None known.
+
+## Residual Risks
+
+- Fixture v1 covers connect and node drag traces first; broader gesture families remain follow-ons.
+- Renderer input capture, screenshots, pixels, and platform quirks are intentionally outside the
+  runtime crate.
 
 ## Follow-On Candidates
 

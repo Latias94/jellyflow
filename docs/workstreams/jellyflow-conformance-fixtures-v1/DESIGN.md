@@ -1,6 +1,6 @@
 # Jellyflow Conformance Fixtures v1 - Design
 
-Status: Active
+Status: Closed
 Date: 2026-06-01
 
 ## Problem
@@ -25,6 +25,9 @@ scenarios without renderer dependencies:
 - compact failure output suitable for humans and agents;
 - documentation that tells adapter authors how to use the fixtures before writing renderer smoke
   tests.
+
+Closeout result: delivered in `jellyflow_runtime::runtime::conformance` with v1 coverage for
+connect and node drag traces. Renderer smoke tests remain adapter-crate follow-ons.
 
 ## Scope
 

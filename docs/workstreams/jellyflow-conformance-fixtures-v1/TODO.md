@@ -1,6 +1,6 @@
 # Jellyflow Conformance Fixtures v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Contract
@@ -61,7 +61,7 @@ Last updated: 2026-06-01
 
 ## M4 - Documentation And Closeout
 
-- [ ] JCF-050 [owner=codex] [deps=JCF-040] [scope=docs/workstreams/jellyflow-conformance-fixtures-v1,README.md,crates/jellyflow-runtime/README.md]
+- [x] JCF-050 [owner=codex] [deps=JCF-040] [scope=docs/workstreams/jellyflow-conformance-fixtures-v1,README.md,crates/jellyflow-runtime/README.md]
   Goal: Document the fixture strategy, record fresh evidence, and close the lane or split follow-ons.
   Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p
   jellyflow-runtime --all-targets -- -D warnings`; `jq empty
@@ -69,3 +69,5 @@ Last updated: 2026-06-01
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: README/runtime README explain how fixture conformance fits before renderer smoke tests.
   Context: `docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Updated README material, ran closeout gates, recorded closeout audit,
+  and closed the workstream.

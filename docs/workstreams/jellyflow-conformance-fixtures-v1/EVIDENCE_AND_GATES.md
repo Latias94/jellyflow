@@ -1,6 +1,6 @@
 # Jellyflow Conformance Fixtures v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Smallest Current Repro
@@ -11,6 +11,8 @@ cargo nextest run -p jellyflow-runtime adapter_conformance
 
 This currently exercises the private interaction harness and normalized traces. JCF-030 should add
 a dedicated `conformance` test filter.
+Closeout update: the dedicated `conformance` filter now exists and adapter connect/node-drag traces
+use the public fixture runner.
 
 ## Gate Set
 
@@ -95,6 +97,15 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo check -p jellyflow-runtime`: PASS.
   - Evidence: connect dispatch, connect gesture lifecycle, connect gesture transaction callbacks,
     and node drag gesture callbacks now assert through `run_conformance_scenario`.
+- 2026-06-01: JCF-050 documented and closed the conformance fixture lane.
+  - `cargo fmt --check`: PASS.
+  - `cargo nextest run -p jellyflow-runtime`: PASS, 153 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: PASS.
+  - `jq empty docs/workstreams/jellyflow-conformance-fixtures-v1/WORKSTREAM.json`: PASS.
+  - `git diff --check`: PASS.
+  - Review: no blocking workstream-compliance or code-quality findings.
+  - Verification claim: runtime fixture vocabulary, runner, adapter conversion, and README docs
+    are complete; renderer smoke tests remain follow-ons outside `jellyflow-runtime`.
 
 ## Notes
 

@@ -1,6 +1,6 @@
 # Jellyflow Conformance Fixtures v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Contract
@@ -46,3 +46,5 @@ Exit criteria:
 - README material explains when to use fixture conformance versus renderer smoke tests.
 - Follow-ons are split for file-backed golden fixtures, adapter crate runners, or broader gesture
   families if they remain out of scope.
+
+Closeout: complete. Follow-ons remain documented candidates rather than unfinished lane scope.

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-conformance-fixtures-v1",
   "title": "Jellyflow Conformance Fixtures v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-01",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-node-drag-kernel-v1",
@@ -65,6 +65,11 @@
       "date": "2026-06-01",
       "task": "JCF-040",
       "summary": "Converted connect dispatch, connect gesture, and node drag adapter-conformance trace scenarios to run through the conformance fixture runner."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCF-050",
+      "summary": "Documented fixture conformance before renderer smoke tests, recorded closeout evidence, and closed the workstream."
     }
   ],
   "adr_refs": [
@@ -80,8 +85,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "run_next_task",
-    "next_task": "JCF-050",
-    "notes": "Document the fixture strategy, record closeout evidence, and close or split follow-ons."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Workstream closed. Follow-ons: file-backed golden fixtures, adapter runner helpers, broader gesture families, and renderer smoke tests outside jellyflow-runtime."
   }
 }

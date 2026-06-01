@@ -14,6 +14,7 @@
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
   commands, and numeric hit testing.
+- reusable headless conformance fixtures and a runner under `runtime::conformance`.
 
 The crate stays UI-agnostic. Fret-specific conversions, widgets, rendering, and event binding remain
 adapter responsibilities.
@@ -46,12 +47,14 @@ validate behavior before rendering. The runtime crate supports that split with:
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - rules-derived connect/reconnect/delete planners for graph transactions;
 - `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
-- private adapter-conformance tests that record normalized graph commit, view, gesture, and
-  callback traces around a real `NodeGraphStore`.
+- `runtime::conformance::{ConformanceScenario, ConformanceAction, ConformanceTraceEvent,
+  run_conformance_scenario}` for reusable fixture checks that record normalized graph commit, view,
+  gesture, and callback traces around a real `NodeGraphStore`.
 
-The conformance harness is intentionally test-private until more gesture families settle. GPU,
-windowing, screenshot, and pixel smoke tests should live in adapter crates such as future wgpu,
-egui, or Fret integrations.
+Run conformance fixtures before renderer smoke tests. They prove the adapter is translating intent
+into the same runtime actions and callback ordering that Jellyflow expects. GPU, windowing,
+screenshot, and pixel smoke tests should live in adapter crates such as future wgpu, egui, or Fret
+integrations, where they can verify input capture, platform wiring, and rendered pixels.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
