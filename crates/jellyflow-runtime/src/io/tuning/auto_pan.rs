@@ -24,7 +24,7 @@ fn default_auto_pan_speed() -> f32 {
 }
 
 fn default_auto_pan_margin() -> f32 {
-    24.0
+    40.0
 }
 
 impl Default for NodeGraphAutoPanTuning {
@@ -32,7 +32,7 @@ impl Default for NodeGraphAutoPanTuning {
         Self {
             on_node_drag: true,
             on_connect: true,
-            on_node_focus: false,
+            on_node_focus: true,
             speed: default_auto_pan_speed(),
             margin: default_auto_pan_margin(),
         }

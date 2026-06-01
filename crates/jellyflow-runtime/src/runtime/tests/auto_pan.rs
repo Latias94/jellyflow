@@ -139,7 +139,7 @@ fn store_auto_pan_publishes_viewport_changes() {
         ))
         .expect("auto-pan frame");
 
-    assert!((outcome.plan.screen_delta.x - (-7.5)).abs() <= 1.0e-5);
+    assert!((outcome.plan.screen_delta.x - (-10.5)).abs() <= 1.0e-5);
     assert_eq!(outcome.plan.screen_delta.y, 0.0);
     assert_eq!(outcome.transform.zoom, 1.0);
     assert_eq!(outcome.transform.pan, outcome.plan.screen_delta);

@@ -54,6 +54,10 @@ fn interaction_config_defaults_match_xyflow_connection_and_drag_feel() {
     assert_eq!(config.snap_grid.height, 15.0);
     assert!(config.elevate_nodes_on_select);
     assert!(!config.elevate_edges_on_select);
+    assert!(config.auto_pan.on_node_drag);
+    assert!(config.auto_pan.on_connect);
+    assert!(config.auto_pan.on_node_focus);
+    assert_eq!(config.auto_pan.margin, 40.0);
     assert!(NodeGraphInteractionConfig::default().select_nodes_on_drag);
     assert!(NodeGraphInteractionConfig::default().connect_on_click);
     assert!(NodeGraphInteractionState::default().select_nodes_on_drag);
@@ -68,6 +72,12 @@ fn interaction_config_defaults_match_xyflow_connection_and_drag_feel() {
         NodeGraphInteractionState::default()
             .connection_interaction()
             .connect_on_click
+    );
+    assert!(
+        NodeGraphInteractionState::default()
+            .connection_interaction()
+            .auto_pan
+            .on_node_focus
     );
     assert_eq!(
         NodeGraphInteractionState::default()
