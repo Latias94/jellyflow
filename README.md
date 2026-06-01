@@ -66,7 +66,8 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
 - `runtime::conformance` defines reusable fixture scenarios and a runner that drive a real
   `NodeGraphStore` and compare normalized traces for graph transactions, view changes, gesture
   lifecycle events, and XyFlow compatibility callbacks; adapter crates can group scenarios into
-  suites and save them as JSON golden fixtures for aggregate pre-render conformance reports;
+  suites, save them as JSON golden fixtures, and discover fixture directories for aggregate
+  pre-render conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, node drag, viewport, and
   auto-pan behavior before any renderer-specific smoke tests are written;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the

@@ -58,19 +58,20 @@ validate behavior before rendering. The runtime crate supports that split with:
   gestures;
 - rules-derived connect/reconnect/delete planners for graph transactions;
 - `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
-- `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceAction,
-  ConformanceTraceEvent, run_conformance_scenario, run_conformance_suite}` for reusable fixture
-  checks that record normalized graph commit, view, gesture, and callback traces around a real
-  `NodeGraphStore`.
+- `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceFixtureDirectory,
+  ConformanceAction, ConformanceTraceEvent, run_conformance_scenario, run_conformance_suite}` for
+  reusable fixture checks that record normalized graph commit, view, gesture, and callback traces
+  around a real `NodeGraphStore`.
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
 aggregate reports that separate trace mismatches from scenario execution errors. Suites can be saved
 and loaded as pretty JSON files through `ConformanceSuite::save_json`, `load_json`, and
-`load_json_if_exists`, so adapters and agents can keep durable golden fixture assets in their own
-repos. GPU, windowing, screenshot, and pixel smoke tests should live in adapter crates such as
-future wgpu, egui, or Fret integrations, where they can verify input capture, platform wiring, and
-rendered pixels.
+`load_json_if_exists`; directories can be discovered recursively through
+`ConformanceFixtureDirectory::load_json` and `load_json_if_exists`, so adapters and agents can keep
+durable golden fixture assets in their own repos. GPU, windowing, screenshot, and pixel smoke tests
+should live in adapter crates such as future wgpu, egui, or Fret integrations, where they can verify
+input capture, platform wiring, and rendered pixels.
 
 Viewport conformance is also headless. Runtime tests cover:
 

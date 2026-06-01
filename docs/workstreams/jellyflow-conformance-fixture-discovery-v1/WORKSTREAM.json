@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-conformance-fixture-discovery-v1",
+  "title": "Jellyflow Conformance Fixture Discovery v1",
+  "status": "closed",
+  "updated": "2026-06-01",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-conformance-file-fixtures-v1",
+  "problem": "Jellyflow needs deterministic directory discovery for JSON conformance suite fixture files so adapter crates and agents can run durable fixture sets before approval or renderer tests.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/TODO.md"
+    },
+    {
+      "role": "tasks",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/TASKS.jsonl"
+    },
+    {
+      "role": "campaigns",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CAMPAIGNS.jsonl"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CONTEXT.jsonl",
+  "gates": [
+    "cargo nextest run -p jellyflow-runtime conformance_fixture_directory",
+    "cargo nextest run -p jellyflow-runtime --test public_surface",
+    "cargo check -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo clippy -p jellyflow-runtime --all-targets -- -D warnings",
+    "jq empty docs/workstreams/jellyflow-conformance-fixture-discovery-v1/WORKSTREAM.json docs/workstreams/jellyflow-conformance-fixture-discovery-v1/TASKS.jsonl docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CAMPAIGNS.jsonl",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-01",
+      "task": "JCFD-010",
+      "summary": "Opened the fixture discovery workstream with ADR 0003 renderer-free constraints."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCFD-020",
+      "summary": "Added deterministic recursive JSON fixture suite discovery, path-aware suite files, aggregate reports, focused tests, and public-surface coverage."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCFD-030",
+      "summary": "Documented directory-backed fixture discovery, recorded closeout evidence, and closed the workstream with follow-ons split."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "conformance",
+    "fixtures",
+    "fixture-discovery",
+    "adapter-testing",
+    "headless-runtime"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Conformance fixture discovery v1 is closed. Follow-ons: golden approval/update workflow and renderer screenshot/pixel assets outside jellyflow-runtime."
+  }
+}

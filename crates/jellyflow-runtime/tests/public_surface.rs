@@ -236,4 +236,39 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             .is_none()
     );
     let _ = std::mem::size_of::<conformance::ConformanceFixtureFileError>();
+
+    let fixture_root = std::env::temp_dir().join(format!(
+        "jellyflow-public-fixtures-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&fixture_root).expect("create fixture root");
+    suite
+        .save_json(fixture_root.join("suite.json"))
+        .expect("save directory suite json");
+    let fixture_directory = conformance::ConformanceFixtureDirectory::load_json(&fixture_root)
+        .expect("load fixture directory");
+    assert_eq!(fixture_directory.file_count(), 1);
+    let fixture_report = fixture_directory.run();
+    assert!(fixture_report.is_match());
+    assert_eq!(fixture_report.failed_files(), 0);
+    let fixture_report_encoded =
+        serde_json::to_value(&fixture_report).expect("serialize fixture directory report");
+    let fixture_report_decoded: conformance::ConformanceFixtureDirectoryReport =
+        serde_json::from_value(fixture_report_encoded)
+            .expect("deserialize fixture directory report");
+    assert!(fixture_report_decoded.is_match());
+    assert!(
+        conformance::ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
+            .expect("optional fixture directory")
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(&fixture_root);
+    assert!(
+        conformance::ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
+            .expect("missing optional fixture directory")
+            .is_none()
+    );
+    let _ = std::mem::size_of::<conformance::ConformanceSuiteFile>();
+    let _ = std::mem::size_of::<conformance::ConformanceSuiteFileReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceFixtureDirectoryReport>();
 }

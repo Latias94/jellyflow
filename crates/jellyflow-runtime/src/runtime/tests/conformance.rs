@@ -2,9 +2,9 @@ use super::fixtures::make_graph;
 
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureFileError, ConformanceScenario,
-    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
-    run_conformance_scenario, run_conformance_suite,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
+    ConformanceFixtureFileError, ConformanceScenario, ConformanceSuite, ConformanceTraceConfig,
+    ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario, run_conformance_suite,
 };
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
@@ -337,9 +337,95 @@ fn conformance_file_suite_load_reports_parse_errors_with_path_context() {
     assert!(err.to_string().contains("suite-parse-error"));
 }
 
+#[test]
+fn conformance_fixture_directory_discovers_json_suites_recursively_in_sorted_order() {
+    let root = conformance_temp_dir("fixture-directory");
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).expect("create nested fixture dir");
+
+    ConformanceSuite::new("suite b")
+        .with_scenarios([ConformanceScenario::new(
+            "empty b",
+            Graph::new(GraphId::new()),
+        )])
+        .save_json(root.join("b.json"))
+        .expect("save b suite");
+    ConformanceSuite::new("suite a")
+        .with_scenarios([ConformanceScenario::new(
+            "empty a",
+            Graph::new(GraphId::new()),
+        )])
+        .save_json(root.join("a.json"))
+        .expect("save a suite");
+    ConformanceSuite::new("suite c")
+        .with_scenarios([ConformanceScenario::new(
+            "empty c",
+            Graph::new(GraphId::new()),
+        )])
+        .save_json(nested.join("c.json"))
+        .expect("save c suite");
+    std::fs::write(root.join("ignore.txt"), b"not a suite").expect("write ignored file");
+
+    let directory = ConformanceFixtureDirectory::load_json(root.clone()).expect("load directory");
+    let names = directory
+        .files
+        .iter()
+        .map(|file| file.suite.name.as_str())
+        .collect::<Vec<_>>();
+    let relative_paths = directory
+        .files
+        .iter()
+        .map(|file| {
+            file.path
+                .strip_prefix(&root)
+                .expect("relative path")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .collect::<Vec<_>>();
+    let report = directory.run();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(names, ["suite a", "suite b", "suite c"]);
+    assert_eq!(relative_paths, ["a.json", "b.json", "nested/c.json"]);
+    assert_eq!(report.file_count(), 3);
+    assert_eq!(report.scenario_count(), 3);
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
+fn conformance_fixture_directory_load_if_exists_returns_none_for_missing_directories() {
+    let root = conformance_temp_dir("fixture-directory-missing");
+
+    let directory = ConformanceFixtureDirectory::load_json_if_exists(&root)
+        .expect("optional fixture directory");
+
+    assert!(directory.is_none());
+}
+
+#[test]
+fn conformance_fixture_directory_reports_invalid_json_path_context() {
+    let root = conformance_temp_dir("fixture-directory-invalid");
+    std::fs::create_dir_all(&root).expect("create fixture dir");
+    std::fs::write(root.join("bad.json"), b"{not json").expect("write invalid fixture");
+
+    let err = ConformanceFixtureDirectory::load_json(&root).expect_err("invalid fixture");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(matches!(err, ConformanceFixtureFileError::Parse { .. }));
+    assert!(err.to_string().contains("bad.json"));
+}
+
 fn conformance_temp_path(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "jellyflow-conformance-{name}-{}.json",
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn conformance_temp_dir(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "jellyflow-conformance-{name}-{}",
         uuid::Uuid::new_v4()
     ))
 }
