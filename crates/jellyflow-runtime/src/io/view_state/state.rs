@@ -49,7 +49,7 @@ impl Default for NodeGraphViewState {
 
 impl NodeGraphViewState {
     pub fn set_viewport(&mut self, pan: CanvasPoint, zoom: f32) {
-        self.pan = pan;
+        self.pan = sanitize_pan(pan);
         self.zoom = sanitize_zoom(zoom);
     }
 
@@ -61,6 +61,8 @@ impl NodeGraphViewState {
 
     /// Removes stale IDs (selection / draw order) that no longer exist in the target graph.
     pub fn sanitize_for_graph(&mut self, graph: &Graph) {
+        self.sanitize_viewport();
+
         let visible_node = |id: &NodeId| graph.nodes.get(id).is_some_and(|node| !node.hidden);
 
         self.selected_nodes.retain(visible_node);
@@ -81,6 +83,19 @@ impl NodeGraphViewState {
         self.draw_order.retain(visible_node);
         self.group_draw_order
             .retain(|id| graph.groups.contains_key(id));
+    }
+
+    fn sanitize_viewport(&mut self) {
+        self.pan = sanitize_pan(self.pan);
+        self.zoom = sanitize_zoom(self.zoom);
+    }
+}
+
+fn sanitize_pan(pan: CanvasPoint) -> CanvasPoint {
+    if pan.is_finite() {
+        pan
+    } else {
+        CanvasPoint::default()
     }
 }
 

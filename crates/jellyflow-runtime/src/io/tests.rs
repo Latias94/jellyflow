@@ -196,3 +196,32 @@ fn view_state_sanitize_removes_stale_ids() {
     assert_eq!(state.selected_nodes, vec![keep_node]);
     assert_eq!(state.draw_order, vec![keep_node]);
 }
+
+#[test]
+fn view_state_sanitize_normalizes_invalid_viewport() {
+    let graph = Graph::new(GraphId::new());
+    let mut state = NodeGraphViewState {
+        pan: jellyflow_core::core::CanvasPoint {
+            x: f32::INFINITY,
+            y: 10.0,
+        },
+        zoom: -1.0,
+        ..NodeGraphViewState::default()
+    };
+
+    state.sanitize_for_graph(&graph);
+
+    assert_eq!(state.pan, jellyflow_core::core::CanvasPoint::default());
+    assert_eq!(state.zoom, NodeGraphViewState::default().zoom);
+
+    state.set_viewport(
+        jellyflow_core::core::CanvasPoint {
+            x: 1.0,
+            y: f32::NAN,
+        },
+        f32::NAN,
+    );
+
+    assert_eq!(state.pan, jellyflow_core::core::CanvasPoint::default());
+    assert_eq!(state.zoom, NodeGraphViewState::default().zoom);
+}
