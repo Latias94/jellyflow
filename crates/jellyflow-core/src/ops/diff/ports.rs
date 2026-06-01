@@ -31,6 +31,7 @@ impl<'a> GraphDiffPlanner<'a> {
     }
 
     fn replace_structural_port(&mut self, id: PortId, port_to: &Port) {
+        self.detach_replaced_port_order(id);
         let removed_edge_ids = self.push_remove_port_for_replacement(id);
 
         self.push_op(GraphOp::AddPort {
@@ -40,6 +41,25 @@ impl<'a> GraphDiffPlanner<'a> {
 
         self.restore_replaced_port_order(id, port_to);
         self.restore_edges_removed_with_port(removed_edge_ids);
+    }
+
+    fn detach_replaced_port_order(&mut self, id: PortId) {
+        let Some(port_from) = self.from.ports.get(&id) else {
+            return;
+        };
+        let Some(node_from) = self.from.nodes.get(&port_from.node) else {
+            return;
+        };
+
+        let mut detached_ports = node_from.ports.clone();
+        detached_ports.retain(|port_id| *port_id != id);
+        if detached_ports != node_from.ports {
+            self.push_op(GraphOp::SetNodePorts {
+                id: port_from.node,
+                from: node_from.ports.clone(),
+                to: detached_ports,
+            });
+        }
     }
 
     fn push_remove_port_for_replacement(&mut self, id: PortId) -> Vec<EdgeId> {
@@ -81,6 +101,7 @@ impl<'a> GraphDiffPlanner<'a> {
                     id: edge_id,
                     edge: edge_to.clone(),
                 });
+                self.restored_edges_by_cascade.insert(edge_id);
             }
         }
     }

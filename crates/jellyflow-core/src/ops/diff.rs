@@ -22,6 +22,7 @@ struct GraphDiffPlanner<'a> {
     tx: GraphTransaction,
     removed_ports_by_cascade: BTreeSet<PortId>,
     removed_edges_by_cascade: BTreeSet<EdgeId>,
+    restored_edges_by_cascade: BTreeSet<EdgeId>,
 }
 
 impl<'a> GraphDiffPlanner<'a> {
@@ -32,6 +33,7 @@ impl<'a> GraphDiffPlanner<'a> {
             tx: GraphTransaction::new(),
             removed_ports_by_cascade: BTreeSet::new(),
             removed_edges_by_cascade: BTreeSet::new(),
+            restored_edges_by_cascade: BTreeSet::new(),
         }
     }
 

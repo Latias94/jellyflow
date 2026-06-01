@@ -361,6 +361,75 @@ fn graph_diff_roundtrips_when_deleting_a_port_with_incident_edges() {
 }
 
 #[test]
+fn graph_diff_roundtrips_when_port_deletion_moves_incident_edge() {
+    let mut from = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    from.nodes.insert(a, make_node("core.a"));
+    from.nodes.insert(b, make_node("core.b"));
+
+    let out1 = PortId::from_u128(32);
+    let out2 = PortId::from_u128(33);
+    let inn = PortId::from_u128(34);
+    from.ports
+        .insert(out1, make_port(a, "out1", PortDirection::Out));
+    from.ports
+        .insert(out2, make_port(a, "out2", PortDirection::Out));
+    from.ports
+        .insert(inn, make_port(b, "in", PortDirection::In));
+    from.nodes.get_mut(&a).unwrap().ports.extend([out1, out2]);
+    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+
+    let edge_id = EdgeId::from_u128(790);
+    from.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out1,
+            to: inn,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let mut to = from.clone();
+    to.nodes.get_mut(&a).unwrap().ports.retain(|p| *p != out1);
+    to.ports.remove(&out1);
+    to.edges.get_mut(&edge_id).unwrap().from = out2;
+
+    let tx = graph_diff(&from, &to);
+    assert!(
+        tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)),
+        "diff must re-add a moved edge after its old endpoint is deleted"
+    );
+    assert!(
+        !tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeEndpoints { id, .. } if *id == edge_id)),
+        "diff must not patch endpoints on an edge removed by a prior cascade"
+    );
+
+    let mut patched = from.clone();
+    apply_transaction(&mut patched, &tx).expect("apply diff");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&to).unwrap(),
+        "diff must roundtrip"
+    );
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut patched, &inverse).expect("apply inverse");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&from).unwrap(),
+        "diff inverse must restore the source graph"
+    );
+}
+
+#[test]
 fn graph_diff_roundtrips_when_a_port_changes_structurally() {
     let mut from = Graph::default();
     let a = NodeId::new();
@@ -555,5 +624,73 @@ fn graph_diff_roundtrips_when_edge_endpoints_change() {
         serde_json::to_value(&patched).unwrap(),
         serde_json::to_value(&to).unwrap(),
         "diff must roundtrip"
+    );
+}
+
+#[test]
+fn graph_diff_inverse_roundtrips_when_structural_port_replacement_moves_edge() {
+    let mut from = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    from.nodes.insert(a, make_node("core.a"));
+    from.nodes.insert(b, make_node("core.b"));
+
+    let out1 = PortId::from_u128(60);
+    let out2 = PortId::from_u128(61);
+    let inn = PortId::from_u128(62);
+    from.ports
+        .insert(out1, make_port(a, "out1", PortDirection::Out));
+    from.ports
+        .insert(out2, make_port(a, "out2", PortDirection::Out));
+    from.ports
+        .insert(inn, make_port(b, "in", PortDirection::In));
+    from.nodes.get_mut(&a).unwrap().ports.extend([out1, out2]);
+    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+
+    let edge_id = EdgeId::from_u128(3030);
+    from.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out1,
+            to: inn,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let mut to = from.clone();
+    to.ports.get_mut(&out1).unwrap().key = PortKey::new("out1-renamed");
+    to.edges.get_mut(&edge_id).unwrap().from = out2;
+
+    let tx = graph_diff(&from, &to);
+    assert!(
+        tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)),
+        "diff must re-add the cascaded edge from the target graph"
+    );
+    assert!(
+        !tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeEndpoints { id, .. } if *id == edge_id)),
+        "diff must not emit endpoint setters for an edge already restored from the target graph"
+    );
+
+    let mut patched = from.clone();
+    apply_transaction(&mut patched, &tx).expect("apply diff");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&to).unwrap(),
+        "diff must roundtrip"
+    );
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut patched, &inverse).expect("apply inverse");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&from).unwrap(),
+        "diff inverse must restore the source graph"
     );
 }

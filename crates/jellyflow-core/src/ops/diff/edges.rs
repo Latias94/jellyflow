@@ -9,6 +9,18 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, edge_to) in &to.edges {
             if let Some(edge_from) = from.edges.get(id) {
+                if self.removed_edges_by_cascade.contains(id) {
+                    // Prior node/port ops already removed the original edge. Restore the target
+                    // edge shape instead of patching a missing intermediate edge with setters.
+                    if !self.restored_edges_by_cascade.contains(id) {
+                        self.push_op(GraphOp::AddEdge {
+                            id: *id,
+                            edge: edge_to.clone(),
+                        });
+                        self.restored_edges_by_cascade.insert(*id);
+                    }
+                    continue;
+                }
                 self.diff_existing_edge(*id, edge_from, edge_to);
             } else {
                 self.push_op(GraphOp::AddEdge {
