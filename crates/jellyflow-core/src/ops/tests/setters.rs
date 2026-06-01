@@ -120,7 +120,7 @@ fn set_group_rect_and_child_positions_roundtrip_through_invert_transaction() {
 fn set_node_size_roundtrips_through_invert_transaction() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.a"));
+    insert_node(&mut graph, node_id, "core.a");
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodeSize {
         id: node_id,
@@ -184,7 +184,7 @@ fn set_group_title_roundtrips_through_invert_transaction() {
 fn set_node_data_roundtrips_through_invert_transaction() {
     let mut graph = Graph::default();
     let node = NodeId::new();
-    graph.nodes.insert(node, make_node("demo.const"));
+    insert_node(&mut graph, node, "demo.const");
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodeData {
         id: node,
@@ -213,39 +213,19 @@ fn set_edge_endpoints_updates_edge_in_place() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let inn = PortId::new();
-    graph
-        .ports
-        .insert(out1, make_port(a, "out1", PortDirection::Out));
-    graph
-        .ports
-        .insert(out2, make_port(c, "out2", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-
-    graph.nodes.get_mut(&a).unwrap().ports.push(out1);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-    graph.nodes.get_mut(&c).unwrap().ports.push(out2);
+    insert_port(&mut graph, out1, a, "out1", PortDirection::Out);
+    insert_port(&mut graph, out2, c, "out2", PortDirection::Out);
+    insert_port(&mut graph, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out1,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.edges.insert(edge_id, make_edge(out1, inn));
 
     let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
         id: edge_id,

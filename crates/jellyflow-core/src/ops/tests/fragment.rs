@@ -18,40 +18,11 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
             color: None,
         },
     );
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let mut na = make_node("core.a");
-    na.parent = Some(group_id);
-    let mut nb = make_node("core.b");
-    nb.parent = Some(group_id);
-    graph.nodes.insert(a, na);
-    graph.nodes.insert(b, nb);
+    let ids = insert_connected_pair(&mut graph);
+    graph.nodes.get_mut(&ids.a).unwrap().parent = Some(group_id);
+    graph.nodes.get_mut(&ids.b).unwrap().parent = Some(group_id);
 
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
-
-    let fragment = GraphFragment::from_selection(&graph, [a, b], [group_id]);
+    let fragment = GraphFragment::from_selection(&graph, [ids.a, ids.b], [group_id]);
     let remapper = IdRemapper::new(IdRemapSeed(Uuid::nil()));
     let tuning = PasteTuning {
         offset: CanvasPoint { x: 10.0, y: 20.0 },
@@ -75,11 +46,11 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
     assert_eq!(dst.groups.len(), 1);
 
     let pasted_group = remapper.remap_group(group_id);
-    let pasted_a = remapper.remap_node(a);
-    let pasted_b = remapper.remap_node(b);
-    let pasted_out = remapper.remap_port(out);
-    let pasted_in = remapper.remap_port(inn);
-    let pasted_edge = remapper.remap_edge(edge_id);
+    let pasted_a = remapper.remap_node(ids.a);
+    let pasted_b = remapper.remap_node(ids.b);
+    let pasted_out = remapper.remap_port(ids.out);
+    let pasted_in = remapper.remap_port(ids.inn);
+    let pasted_edge = remapper.remap_edge(ids.edge);
 
     assert_eq!(dst.nodes[&pasted_a].parent, Some(pasted_group));
     assert_eq!(dst.nodes[&pasted_b].parent, Some(pasted_group));
