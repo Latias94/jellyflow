@@ -2,6 +2,7 @@ use jellyflow_core::core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity,
     PortDirection, PortId, PortKey, PortKind,
 };
+use jellyflow_core::types::TypeDesc;
 
 pub(super) fn make_node(kind: &str) -> Node {
     Node {
@@ -57,6 +58,14 @@ pub(super) fn make_data_port(
     make_port(node, key, dir, PortKind::Data, capacity)
 }
 
+pub(super) fn make_data_output(node: NodeId, key: &str, capacity: PortCapacity) -> Port {
+    make_data_port(node, key, PortDirection::Out, capacity)
+}
+
+pub(super) fn make_data_input(node: NodeId, key: &str, capacity: PortCapacity) -> Port {
+    make_data_port(node, key, PortDirection::In, capacity)
+}
+
 pub(super) fn insert_port(graph: &mut Graph, id: PortId, port: Port) {
     let node = port.node;
     graph.ports.insert(id, port);
@@ -97,6 +106,32 @@ pub(super) fn insert_data_input(
     capacity: PortCapacity,
 ) {
     insert_data_port(graph, id, node, key, PortDirection::In, capacity);
+}
+
+pub(super) fn insert_typed_data_output(
+    graph: &mut Graph,
+    id: PortId,
+    node: NodeId,
+    key: &str,
+    capacity: PortCapacity,
+    ty: TypeDesc,
+) {
+    let mut port = make_data_output(node, key, capacity);
+    port.ty = Some(ty);
+    insert_port(graph, id, port);
+}
+
+pub(super) fn insert_typed_data_input(
+    graph: &mut Graph,
+    id: PortId,
+    node: NodeId,
+    key: &str,
+    capacity: PortCapacity,
+    ty: TypeDesc,
+) {
+    let mut port = make_data_input(node, key, capacity);
+    port.ty = Some(ty);
+    insert_port(graph, id, port);
 }
 
 pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortId) {

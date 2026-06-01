@@ -1,9 +1,12 @@
-use super::fixtures::{insert_edge, insert_port, make_node, make_port};
+use super::fixtures::{
+    insert_data_input, insert_data_output, insert_edge, insert_node, make_data_input,
+    make_data_output, make_node,
+};
 
 use crate::rules::{
     InsertNodeSpec, plan_connect, plan_connect_by_inserting_node, plan_split_edge_by_inserting_node,
 };
-use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
+use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortId};
 use jellyflow_core::ops::GraphTransaction;
 
 #[test]
@@ -13,46 +16,16 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out1",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out2",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out1", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out2", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
@@ -69,23 +42,11 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
         ports: vec![
             (
                 inserted_in,
-                make_port(
-                    inserted_node_id,
-                    "in",
-                    PortDirection::In,
-                    PortKind::Data,
-                    PortCapacity::Single,
-                ),
+                make_data_input(inserted_node_id, "in", PortCapacity::Single),
             ),
             (
                 inserted_out,
-                make_port(
-                    inserted_node_id,
-                    "out",
-                    PortDirection::Out,
-                    PortKind::Data,
-                    PortCapacity::Multi,
-                ),
+                make_data_output(inserted_node_id, "out", PortCapacity::Multi),
             ),
         ],
         input: inserted_in,
@@ -110,33 +71,13 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out, inn);
@@ -150,23 +91,11 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
         ports: vec![
             (
                 inserted_in,
-                make_port(
-                    inserted_node_id,
-                    "in",
-                    PortDirection::In,
-                    PortKind::Data,
-                    PortCapacity::Single,
-                ),
+                make_data_input(inserted_node_id, "in", PortCapacity::Single),
             ),
             (
                 inserted_out,
-                make_port(
-                    inserted_node_id,
-                    "out",
-                    PortDirection::Out,
-                    PortKind::Data,
-                    PortCapacity::Multi,
-                ),
+                make_data_output(inserted_node_id, "out", PortCapacity::Multi),
             ),
         ],
         input: inserted_in,
@@ -193,33 +122,13 @@ fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out, inn);
@@ -231,13 +140,7 @@ fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
         node: make_node("demo.invalid"),
         ports: vec![(
             inserted_port,
-            make_port(
-                inserted_node_id,
-                "io",
-                PortDirection::In,
-                PortKind::Data,
-                PortCapacity::Single,
-            ),
+            make_data_input(inserted_node_id, "io", PortCapacity::Single),
         )],
         input: inserted_port,
         output: inserted_port,

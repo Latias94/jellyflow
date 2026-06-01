@@ -1,7 +1,7 @@
-use super::fixtures::{insert_port, make_node, make_port};
+use super::fixtures::{insert_node, insert_typed_data_input, insert_typed_data_output};
 
 use crate::rules::plan_connect_typed;
-use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
+use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortId};
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 
 #[test]
@@ -10,30 +10,27 @@ fn plan_connect_typed_rejects_incompatible_data_types() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    let mut out_port = make_port(
+    insert_typed_data_output(
+        &mut graph,
+        out,
         a,
         "out",
-        PortDirection::Out,
-        PortKind::Data,
         PortCapacity::Multi,
+        TypeDesc::Int,
     );
-    out_port.ty = Some(TypeDesc::Int);
-    insert_port(&mut graph, out, out_port);
-
-    let mut in_port = make_port(
+    insert_typed_data_input(
+        &mut graph,
+        inn,
         b,
         "in",
-        PortDirection::In,
-        PortKind::Data,
         PortCapacity::Single,
+        TypeDesc::String,
     );
-    in_port.ty = Some(TypeDesc::String);
-    insert_port(&mut graph, inn, in_port);
 
     let mut compat = DefaultTypeCompatibility::default();
     let plan = plan_connect_typed(
@@ -53,30 +50,27 @@ fn plan_connect_typed_accepts_int_to_float() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    let mut out_port = make_port(
+    insert_typed_data_output(
+        &mut graph,
+        out,
         a,
         "out",
-        PortDirection::Out,
-        PortKind::Data,
         PortCapacity::Multi,
+        TypeDesc::Int,
     );
-    out_port.ty = Some(TypeDesc::Int);
-    insert_port(&mut graph, out, out_port);
-
-    let mut in_port = make_port(
+    insert_typed_data_input(
+        &mut graph,
+        inn,
         b,
         "in",
-        PortDirection::In,
-        PortKind::Data,
         PortCapacity::Single,
+        TypeDesc::Float,
     );
-    in_port.ty = Some(TypeDesc::Float);
-    insert_port(&mut graph, inn, in_port);
 
     let mut compat = DefaultTypeCompatibility::default();
     let plan = plan_connect_typed(
