@@ -76,8 +76,10 @@ impl GraphHistory {
         let inverse = tx.inverse();
         match apply(&inverse) {
             Ok(committed) => {
-                let redo_tx = committed.inverse();
-                self.redo.push(redo_tx);
+                let redo_tx = normalize_transaction(committed.inverse());
+                if !redo_tx.is_empty() {
+                    self.redo.push(redo_tx);
+                }
                 Ok(true)
             }
             Err(err) => {
@@ -98,7 +100,10 @@ impl GraphHistory {
 
         match apply(&tx) {
             Ok(committed) => {
-                self.undo.push(committed);
+                let committed = normalize_transaction(committed);
+                if !committed.is_empty() {
+                    self.undo.push(committed);
+                }
                 Ok(true)
             }
             Err(err) => {

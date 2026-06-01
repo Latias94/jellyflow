@@ -101,3 +101,38 @@ fn history_undo_redo_roundtrip() {
         .unwrap();
     assert_eq!(serde_json::to_value(&graph).unwrap(), forward_state);
 }
+
+#[test]
+fn history_replay_skips_empty_committed_transactions() {
+    let node = NodeId::new();
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeHidden {
+        id: node,
+        from: false,
+        to: true,
+    }]);
+
+    let mut history = GraphHistory::default();
+    history.record(tx.clone());
+
+    let did_undo = history
+        .undo(|_undo_tx| Ok::<GraphTransaction, ()>(GraphTransaction::new()))
+        .unwrap();
+
+    assert!(did_undo);
+    assert_eq!(history.undo_len(), 0);
+    assert_eq!(history.redo_len(), 0);
+
+    history.record(tx);
+    history
+        .undo(|undo_tx| Ok::<GraphTransaction, ()>(undo_tx.clone()))
+        .unwrap();
+    assert!(history.can_redo());
+
+    let did_redo = history
+        .redo(|_redo_tx| Ok::<GraphTransaction, ()>(GraphTransaction::new()))
+        .unwrap();
+
+    assert!(did_redo);
+    assert_eq!(history.undo_len(), 0);
+    assert_eq!(history.redo_len(), 0);
+}
