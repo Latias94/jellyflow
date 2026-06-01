@@ -70,6 +70,10 @@ def main() -> int:
                 use jellyflow_runtime::runtime::fit_view::{
                     compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
                 };
+                use jellyflow_runtime::runtime::geometry::{
+                    bezier_edge_path, edge_path_contains_point, edge_position, BezierEdgeOptions,
+                    EdgeEndpointInput, EdgeHitTestOptions, HandleBounds, HandlePosition,
+                };
                 use jellyflow_runtime::NodeGraphStore;
 
                 fn make_node(kind: &str, x: f32, y: f32) -> Node {
@@ -143,6 +147,61 @@ def main() -> int:
                     .expect("fit-view target");
                     assert!(pan.x.is_finite() && pan.y.is_finite());
                     assert!(zoom.is_finite() && zoom > 0.0);
+
+                    let endpoints = edge_position(
+                        EdgeEndpointInput {
+                            node_rect: CanvasRect {
+                                origin: CanvasPoint { x: 32.0, y: 48.0 },
+                                size: CanvasSize {
+                                    width: 160.0,
+                                    height: 80.0,
+                                },
+                            },
+                            handle: Some(HandleBounds {
+                                rect: CanvasRect {
+                                    origin: CanvasPoint { x: 152.0, y: 32.0 },
+                                    size: CanvasSize {
+                                        width: 8.0,
+                                        height: 16.0,
+                                    },
+                                },
+                                position: HandlePosition::Right,
+                            }),
+                            fallback_position: HandlePosition::Right,
+                        },
+                        EdgeEndpointInput {
+                            node_rect: CanvasRect {
+                                origin: CanvasPoint { x: 320.0, y: 96.0 },
+                                size: CanvasSize {
+                                    width: 160.0,
+                                    height: 80.0,
+                                },
+                            },
+                            handle: Some(HandleBounds {
+                                rect: CanvasRect {
+                                    origin: CanvasPoint { x: 0.0, y: 32.0 },
+                                    size: CanvasSize {
+                                        width: 8.0,
+                                        height: 16.0,
+                                    },
+                                },
+                                position: HandlePosition::Left,
+                            }),
+                            fallback_position: HandlePosition::Left,
+                        },
+                    )
+                    .expect("edge endpoints");
+                    let edge_path = bezier_edge_path(
+                        endpoints.source,
+                        endpoints.target,
+                        BezierEdgeOptions::default(),
+                    )
+                    .expect("edge path");
+                    assert!(edge_path_contains_point(
+                        &edge_path,
+                        edge_path.label.point,
+                        EdgeHitTestOptions::default(),
+                    ));
 
                     assert!(NodeGraphModifierKey::CtrlOrMeta.is_pressed(NodeGraphModifiers {
                         ctrl: true,
