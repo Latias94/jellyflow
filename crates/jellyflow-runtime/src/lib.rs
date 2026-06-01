@@ -3,6 +3,11 @@
 //! This crate owns the portable B-layer store and change pipeline built on top of
 //! `jellyflow-core` graph transactions. It must stay free of Fret UI, renderer, platform, and
 //! windowing dependencies.
+//!
+//! Public API shape:
+//! - crate-root re-exports are the canonical runtime entry points,
+//! - [`io`] owns persisted files and editor configuration,
+//! - [`runtime::xyflow`] is an explicit compatibility adapter, not the primary store contract.
 
 #![deny(unsafe_code)]
 
