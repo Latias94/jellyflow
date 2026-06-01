@@ -236,6 +236,13 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             .is_none()
     );
     let _ = std::mem::size_of::<conformance::ConformanceFixtureFileError>();
+    let suite_approval = suite.approve_actual_traces();
+    assert!(suite_approval.is_approvable());
+    let suite_approval_encoded =
+        serde_json::to_value(&suite_approval.report).expect("serialize suite approval report");
+    let suite_approval_decoded: conformance::ConformanceSuiteApprovalReport =
+        serde_json::from_value(suite_approval_encoded).expect("deserialize suite approval report");
+    assert!(suite_approval_decoded.is_approvable());
 
     let fixture_root = std::env::temp_dir().join(format!(
         "jellyflow-public-fixtures-{}",
@@ -248,6 +255,16 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let fixture_directory = conformance::ConformanceFixtureDirectory::load_json(&fixture_root)
         .expect("load fixture directory");
     assert_eq!(fixture_directory.file_count(), 1);
+    let file_approval =
+        conformance::ConformanceSuiteFile::load_json(fixture_root.join("suite.json"))
+            .expect("load suite file")
+            .approve_actual_traces_to_json()
+            .expect("approve suite file");
+    assert!(file_approval.is_approvable());
+    let directory_approval = fixture_directory
+        .approve_actual_traces_to_json()
+        .expect("approve fixture directory");
+    assert!(directory_approval.is_approvable());
     let fixture_report = fixture_directory.run();
     assert!(fixture_report.is_match());
     assert_eq!(fixture_report.failed_files(), 0);
@@ -271,4 +288,10 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let _ = std::mem::size_of::<conformance::ConformanceSuiteFile>();
     let _ = std::mem::size_of::<conformance::ConformanceSuiteFileReport>();
     let _ = std::mem::size_of::<conformance::ConformanceFixtureDirectoryReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceSuiteApproval>();
+    let _ = std::mem::size_of::<conformance::ConformanceSuiteApprovalReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceScenarioApprovalReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceSuiteFileApprovalReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceFixtureDirectoryApprovalReport>();
+    let _ = std::mem::size_of::<conformance::ConformanceApprovalError>();
 }
