@@ -18,17 +18,19 @@ mod tests {
         FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
         compute_fit_view_target_for_canvas_rect,
     };
-    use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+    use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeOrigin};
 
     #[test]
     fn compute_fit_view_target_returns_valid_viewport() {
         let nodes = [
             FitViewNodeInfo {
                 pos: CanvasPoint { x: 0.0, y: 0.0 },
+                origin: None,
                 size_px: (200.0, 100.0),
             },
             FitViewNodeInfo {
                 pos: CanvasPoint { x: 1000.0, y: 0.0 },
+                origin: None,
                 size_px: (200.0, 100.0),
             },
         ];
@@ -55,6 +57,7 @@ mod tests {
     fn compute_fit_view_target_handles_center_node_origin() {
         let nodes = [FitViewNodeInfo {
             pos: CanvasPoint { x: 100.0, y: 50.0 },
+            origin: None,
             size_px: (200.0, 100.0),
         }];
 
@@ -78,6 +81,33 @@ mod tests {
     }
 
     #[test]
+    fn compute_fit_view_target_uses_node_origin_override() {
+        let nodes = [FitViewNodeInfo {
+            pos: CanvasPoint { x: 100.0, y: 50.0 },
+            origin: Some(NodeOrigin { x: 0.5, y: 0.5 }),
+            size_px: (200.0, 100.0),
+        }];
+
+        let (pan, zoom) = compute_fit_view_target(
+            &nodes,
+            FitViewComputeOptions {
+                viewport_width_px: 800.0,
+                viewport_height_px: 600.0,
+                node_origin: (0.0, 0.0),
+                padding: 0.0,
+                margin_px_fallback: 0.0,
+                min_zoom: 0.1,
+                max_zoom: 4.0,
+            },
+        )
+        .expect("target");
+
+        assert!((zoom - 4.0).abs() <= 1.0e-6);
+        assert!((pan.x - 0.0).abs() <= 1.0e-6);
+        assert!((pan.y - 25.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
     fn compute_fit_view_target_ignores_nodes_with_non_finite_positions() {
         let nodes = [
             FitViewNodeInfo {
@@ -85,10 +115,12 @@ mod tests {
                     x: f32::INFINITY,
                     y: 0.0,
                 },
+                origin: None,
                 size_px: (100.0, 100.0),
             },
             FitViewNodeInfo {
                 pos: CanvasPoint { x: 0.0, y: 0.0 },
+                origin: None,
                 size_px: (100.0, 100.0),
             },
         ];

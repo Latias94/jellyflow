@@ -14,6 +14,7 @@ pub(super) fn project_nodes_to_top_left(
 
         projected.push(FitViewNodeInfo {
             pos,
+            origin: None,
             size_px: node.size_px,
         });
     }
