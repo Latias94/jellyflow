@@ -46,6 +46,8 @@ Runnable examples live under the crate example directories:
 cargo run -p jellyflow-core --example build_graph
 cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example geometry_edge
+cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
+cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
 ```
 
 ## Interaction Testing Strategy
@@ -67,7 +69,8 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   `NodeGraphStore` and compare normalized traces for graph transactions, view changes, gesture
   lifecycle events, and XyFlow compatibility callbacks; adapter crates can group scenarios into
   suites, save them as JSON golden fixtures, discover fixture directories, and explicitly approve
-  actual headless traces back into golden files for aggregate pre-render conformance reports;
+  actual headless traces back into golden files through the `conformance_harness` example for
+  aggregate pre-render conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, node drag, viewport, and
   auto-pan behavior before any renderer-specific smoke tests are written;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the

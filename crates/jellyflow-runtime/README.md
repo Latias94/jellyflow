@@ -75,6 +75,13 @@ write back only when every scenario executes without errors. GPU, windowing, scr
 smoke tests should live in adapter crates such as future wgpu, egui, or Fret integrations, where
 they can verify input capture, platform wiring, and rendered pixels.
 
+The runtime crate also includes a thin renderer-free example harness for agents and CI:
+
+```text
+cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
+cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
+```
+
 Viewport conformance is also headless. Runtime tests cover:
 
 - screen-delta pan conversion at the current zoom;
