@@ -7,7 +7,7 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, drag, events, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, drag, events, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -88,6 +88,9 @@ fn explicit_modules_expose_their_owned_surfaces() {
         node: NodeId::new(),
         to: CanvasPoint::default(),
     };
+    assert!(connection::connection_drag_threshold_met(
+        connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
+    ));
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
