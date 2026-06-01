@@ -6,7 +6,7 @@ use jellyflow_runtime::io::{
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
-use jellyflow_runtime::runtime::{commit, store, xyflow};
+use jellyflow_runtime::runtime::{commit, selection, store, xyflow};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -64,6 +64,10 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let module_patch = commit::NodeGraphPatch::default();
     assert!(root_patch.is_empty());
     assert!(module_patch.is_empty());
+
+    let selection_result = selection::SelectionBoxResult::default();
+    assert!(selection_result.is_empty());
+    let _selection_options = selection::SelectionBoxOptions::default();
 
     let _module_store = store::NodeGraphStore::new(
         graph,

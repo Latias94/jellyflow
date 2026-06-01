@@ -157,6 +157,10 @@ impl InteractionHarness {
         &self.store
     }
 
+    pub(super) fn store_mut(&mut self) -> &mut NodeGraphStore {
+        &mut self.store
+    }
+
     pub(super) fn dispatch_transaction(
         &mut self,
         tx: &GraphTransaction,

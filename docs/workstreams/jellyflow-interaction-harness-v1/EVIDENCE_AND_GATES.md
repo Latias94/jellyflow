@@ -69,6 +69,21 @@ This proves formatting, runtime behavior, lint cleanliness, and diff hygiene.
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
   - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
   - `git diff --check`: passed.
+- 2026-06-01: JIH-030 added the renderer-neutral selection-box fixture and helper.
+  - Added `crates/jellyflow-runtime/src/runtime/selection.rs`.
+  - Exposed `runtime::selection` from `crates/jellyflow-runtime/src/runtime/mod.rs`.
+  - Added harness-backed selection tests for replacement and additive selection.
+  - Fixture coverage: hidden nodes are skipped; `selectable=false` nodes are skipped; non-selectable edges are skipped; default connected-edge selection includes edges connected to selected nodes; result nodes/edges are sorted; selection events are asserted through the harness.
+  - RED gate: `cargo nextest run -p jellyflow-runtime selection` failed before `runtime::selection` and `InteractionHarness::store_mut` existed.
+  - `cargo fmt`: applied formatting after `cargo fmt --check` reported style-only differences.
+  - `cargo fmt --check`: passed after formatting.
+  - `cargo nextest run -p jellyflow-runtime selection`: passed, 6 tests.
+  - `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 2 tests.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 141 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `jq empty docs/workstreams/jellyflow-interaction-harness-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
 
 ## Notes
 

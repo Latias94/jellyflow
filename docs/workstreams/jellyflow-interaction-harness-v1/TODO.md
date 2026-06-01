@@ -24,12 +24,13 @@ Last updated: 2026-06-01
 
 ## M2 - Fixture-Driven Selection Kernel
 
-- [ ] JIH-030 [owner=codex] [deps=JIH-020] [scope=crates/jellyflow-runtime/src/runtime/tests/**,crates/jellyflow-runtime/src/runtime/**]
+- [x] JIH-030 [owner=codex] [deps=JIH-020] [scope=crates/jellyflow-runtime/src/runtime/tests/**,crates/jellyflow-runtime/src/runtime/**]
   Goal: Add the first renderer-neutral selection-box fixture and, if needed, a minimal headless selection helper that turns a canvas box into ordered selection state.
   Validation: `cargo nextest run -p jellyflow-runtime selection`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture covers selectable policy, hidden nodes, sorted output, additive replacement semantics, and emitted selection events.
   Context: `docs/workstreams/jellyflow-interaction-harness-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added `runtime::selection` with `apply_selection_box`/`compute_selection_box`, replacement/additive options, policy-aware node/edge filtering, connected-edge selection, and harness-backed selection event fixtures; targeted and runtime package gates passed.
 
 ## M3 - Gesture Kernel Fixtures
 

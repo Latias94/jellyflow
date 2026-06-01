@@ -53,6 +53,11 @@
       "date": "2026-06-01",
       "task": "JIH-020",
       "summary": "Added a private runtime test harness that records normalized graph commit, view, and gesture traces with scenario-aware assertions. Adapter conformance targeted gates passed."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JIH-030",
+      "summary": "Added renderer-neutral selection-box helpers and harness-backed fixtures covering replacement, additive union, hidden/selectable policy, connected-edge selection, sorted output, and emitted selection events."
     }
   ],
   "adr_refs": [
@@ -71,7 +76,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JIH-030",
-    "notes": "Use the private harness to express the first selection-box fixture before adding public fixture formats or renderer smoke tests."
+    "next_task": "JIH-040",
+    "notes": "Extend the private harness to cover a drag or connect/reconnect gesture fixture with expected transactions and callbacks before adding public fixture formats or renderer smoke tests."
   }
 }

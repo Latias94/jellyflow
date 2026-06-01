@@ -14,10 +14,15 @@ JIH-020 is complete: `crates/jellyflow-runtime/src/runtime/tests/harness.rs` now
 runtime test harness around a real `NodeGraphStore`. It records normalized graph commit, view, and
 gesture traces and adapter conformance scenarios use scenario-aware trace assertions.
 
+JIH-030 is complete: `runtime::selection` now provides renderer-neutral `compute_selection_box` and
+`NodeGraphStore::apply_selection_box`. The harness-backed fixtures cover replacement selection,
+additive union, hidden-node exclusion, selectable policy filtering, connected edge selection,
+deterministic sorting, and emitted selection events.
+
 ## Next Task
 
-JIH-030: add the first renderer-neutral selection-box fixture and, if needed, a minimal headless
-selection helper that turns a canvas box into ordered selection state.
+JIH-040: extend the harness to cover at least one drag or connect/reconnect gesture fixture with
+expected transactions and callbacks.
 
 ## Decisions Since Last Update
 
@@ -28,6 +33,10 @@ selection helper that turns a canvas box into ordered selection state.
 - The first harness trace covers graph commits, view changes, and connect gesture lifecycle events.
 - The next task should test selection-box behavior through the harness before extracting public
   fixture APIs.
+- Selection-box behavior now uses existing lookups, policy resolution, and `get_nodes_inside`
+  rather than introducing a renderer-specific path.
+- `NodeGraphStore::apply_selection_box` updates view state through `set_selection`, so subscribers
+  observe the same `ViewChange::Selection` path as adapters.
 
 ## Blockers
 
@@ -36,6 +45,5 @@ selection helper that turns a canvas box into ordered selection state.
 ## Follow-On Candidates
 
 - Public fixture format after several private harness scenarios settle.
-- Selection-box kernel fixtures.
 - Drag, connect/reconnect, resize, and pan/zoom gesture kernels.
 - Renderer adapter smoke tests in future adapter crates.

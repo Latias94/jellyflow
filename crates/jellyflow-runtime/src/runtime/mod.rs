@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod lookups;
 pub mod middleware;
 pub mod policy;
+pub mod selection;
 pub mod store;
 pub mod utils;
 pub mod xyflow;
