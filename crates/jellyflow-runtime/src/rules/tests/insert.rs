@@ -133,35 +133,94 @@ fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out, inn);
 
-    let inserted_node_id = NodeId::new();
-    let inserted_port = PortId::new();
-    let spec = InsertNodeSpec {
-        node_id: inserted_node_id,
-        node: make_node("demo.invalid"),
-        ports: vec![(
-            inserted_port,
-            make_data_input(inserted_node_id, "io", PortCapacity::Single),
-        )],
-        input: inserted_port,
-        output: inserted_port,
-    };
+    let same_role_node_id = NodeId::new();
+    let same_role_port = PortId::new();
+    let missing_input_node_id = NodeId::new();
+    let missing_input = PortId::new();
+    let missing_input_output = PortId::new();
+    let missing_output_node_id = NodeId::new();
+    let missing_output_input = PortId::new();
+    let missing_output = PortId::new();
+    let wrong_direction_node_id = NodeId::new();
+    let wrong_direction_input = PortId::new();
+    let wrong_direction_output = PortId::new();
 
-    let connect_plan = plan_connect_by_inserting_node(
-        &graph,
-        out,
-        inn,
-        EdgeId::new(),
-        EdgeId::new(),
-        spec.clone(),
-    );
-    let split_plan = plan_split_edge_by_inserting_node(&graph, edge_id, EdgeId::new(), spec);
+    let invalid_specs = vec![
+        (
+            "inserted input/output ports must be distinct",
+            InsertNodeSpec {
+                node_id: same_role_node_id,
+                node: make_node("demo.invalid"),
+                ports: vec![(
+                    same_role_port,
+                    make_data_input(same_role_node_id, "io", PortCapacity::Single),
+                )],
+                input: same_role_port,
+                output: same_role_port,
+            },
+        ),
+        (
+            "inserted input port is missing from spec",
+            InsertNodeSpec {
+                node_id: missing_input_node_id,
+                node: make_node("demo.invalid"),
+                ports: vec![(
+                    missing_input_output,
+                    make_data_output(missing_input_node_id, "out", PortCapacity::Multi),
+                )],
+                input: missing_input,
+                output: missing_input_output,
+            },
+        ),
+        (
+            "inserted output port is missing from spec",
+            InsertNodeSpec {
+                node_id: missing_output_node_id,
+                node: make_node("demo.invalid"),
+                ports: vec![(
+                    missing_output_input,
+                    make_data_input(missing_output_node_id, "in", PortCapacity::Single),
+                )],
+                input: missing_output_input,
+                output: missing_output,
+            },
+        ),
+        (
+            "inserted ports must be in -> out",
+            InsertNodeSpec {
+                node_id: wrong_direction_node_id,
+                node: make_node("demo.invalid"),
+                ports: vec![
+                    (
+                        wrong_direction_input,
+                        make_data_output(wrong_direction_node_id, "in", PortCapacity::Single),
+                    ),
+                    (
+                        wrong_direction_output,
+                        make_data_input(wrong_direction_node_id, "out", PortCapacity::Multi),
+                    ),
+                ],
+                input: wrong_direction_input,
+                output: wrong_direction_output,
+            },
+        ),
+    ];
 
-    for plan in [connect_plan, split_plan] {
-        assert!(plan.is_reject());
-        assert_eq!(
-            plan.diagnostics()[0].message,
-            "inserted input/output ports must be distinct"
+    for (expected_message, spec) in invalid_specs {
+        let connect_plan = plan_connect_by_inserting_node(
+            &graph,
+            out,
+            inn,
+            EdgeId::new(),
+            EdgeId::new(),
+            spec.clone(),
         );
-        assert!(plan.ops().is_empty());
+        let split_plan = plan_split_edge_by_inserting_node(&graph, edge_id, EdgeId::new(), spec);
+
+        for plan in [connect_plan, split_plan] {
+            assert!(plan.is_reject());
+            assert_eq!(plan.diagnostics()[0].message, expected_message);
+            assert!(plan.ops().is_empty());
+        }
     }
 }
