@@ -406,6 +406,53 @@ fn graph_diff_roundtrips_when_adding_a_port_to_existing_node() {
 }
 
 #[test]
+fn graph_diff_inverse_roundtrips_when_adding_ports_and_edge() {
+    let mut from = Graph::default();
+    let a = NodeId::new();
+    let b = NodeId::new();
+    from.nodes.insert(a, make_node("core.a"));
+    from.nodes.insert(b, make_node("core.b"));
+
+    let out = PortId::from_u128(41);
+    let inn = PortId::from_u128(42);
+    let edge_id = EdgeId::from_u128(43);
+    let mut to = from.clone();
+    to.ports
+        .insert(out, make_port(a, "out", PortDirection::Out));
+    to.ports.insert(inn, make_port(b, "in", PortDirection::In));
+    to.nodes.get_mut(&a).unwrap().ports.push(out);
+    to.nodes.get_mut(&b).unwrap().ports.push(inn);
+    to.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out,
+            to: inn,
+            selectable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
+
+    let tx = graph_diff(&from, &to);
+    let mut patched = from.clone();
+    apply_transaction(&mut patched, &tx).expect("apply diff");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&to).unwrap(),
+        "diff must roundtrip"
+    );
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut patched, &inverse).expect("apply inverse");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&from).unwrap(),
+        "diff inverse must restore the source graph"
+    );
+}
+
+#[test]
 fn graph_diff_inverse_roundtrips_when_node_port_membership_is_replaced() {
     let mut from = Graph::default();
     let a = NodeId::new();
