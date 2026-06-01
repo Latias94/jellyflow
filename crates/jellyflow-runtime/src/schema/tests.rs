@@ -1,10 +1,11 @@
-use std::sync::Arc;
-
 use serde_json::json;
 
-use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeRegistry, NodeSchema};
-use jellyflow_core::core::{Graph, GraphId, Node, NodeId, NodeKindKey};
-use jellyflow_core::ops::GraphOp;
+use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeSchema};
+use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
+
+mod canonicalize;
+mod facades;
+mod migration;
 
 struct DummyMigrator;
 
@@ -37,245 +38,35 @@ impl NodeKindMigrator for IdentityMigrator {
     }
 }
 
-#[test]
-fn canonicalize_kinds_rewrites_aliases_to_canonical() {
-    let mut registry = NodeRegistry::new();
-    registry.register(NodeSchema {
+fn demo_add_schema(latest_kind_version: u32, kind_aliases: Vec<&str>) -> NodeSchema {
+    NodeSchema {
         kind: NodeKindKey::new("demo.add"),
-        latest_kind_version: 1,
-        kind_aliases: vec![NodeKindKey::new("demo.add.v0")],
+        latest_kind_version,
+        kind_aliases: kind_aliases.into_iter().map(NodeKindKey::new).collect(),
         title: "Add".into(),
         category: Vec::new(),
         keywords: Vec::new(),
         ports: Vec::new(),
         default_data: serde_json::Value::Null,
-    });
-
-    let id = NodeId::new();
-    let mut graph = Graph::new(GraphId::new());
-    graph.nodes.insert(
-        id,
-        Node {
-            kind: NodeKindKey::new("demo.add.v0"),
-            kind_version: 0,
-            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: serde_json::Value::Null,
-        },
-    );
-
-    let plan = registry.plan_canonicalize_kinds(&graph);
-    assert_eq!(plan.rewrites().len(), 1);
-    assert_eq!(plan.rewrites()[0].node(), id);
-
-    plan.transaction().apply_to(&mut graph).unwrap();
-    assert_eq!(
-        graph.nodes.get(&id).unwrap().kind,
-        NodeKindKey::new("demo.add")
-    );
+    }
 }
 
-#[test]
-fn schema_plan_facades_consume_parts() {
-    let mut registry = NodeRegistry::new();
-    registry.register(NodeSchema {
-        kind: NodeKindKey::new("demo.add"),
-        latest_kind_version: 2,
-        kind_aliases: vec![NodeKindKey::new("demo.add.v1")],
-        title: "Add".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
+fn demo_add_node(kind: &str, kind_version: u32, data: serde_json::Value) -> Node {
+    Node {
+        kind: NodeKindKey::new(kind),
+        kind_version,
+        pos: CanvasPoint { x: 0.0, y: 0.0 },
+        selectable: None,
+        draggable: None,
+        connectable: None,
+        deletable: None,
+        parent: None,
+        extent: None,
+        expand_parent: None,
+        size: None,
+        hidden: false,
+        collapsed: false,
         ports: Vec::new(),
-        default_data: serde_json::Value::Null,
-    });
-    registry.register_migrator(NodeKindKey::new("demo.add"), Arc::new(IdentityMigrator));
-
-    let id = NodeId::new();
-    let mut graph = Graph::new(GraphId::new());
-    graph.nodes.insert(
-        id,
-        Node {
-            kind: NodeKindKey::new("demo.add.v1"),
-            kind_version: 1,
-            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: json!({"x": 1}),
-        },
-    );
-
-    let (canonicalize_tx, rewrites) = registry.plan_canonicalize_kinds(&graph).into_parts();
-    assert_eq!(canonicalize_tx.label(), Some("Canonicalize node kinds"));
-    assert_eq!(rewrites.len(), 1);
-    assert_eq!(rewrites[0].node(), id);
-
-    let (migrate_tx, report) = registry.plan_migrate_nodes(&graph).into_parts();
-    assert_eq!(migrate_tx.label(), Some("Migrate node kinds"));
-    assert_eq!(report.upgraded().len(), 1);
-}
-
-#[test]
-fn migrate_nodes_emits_set_node_data_and_version_and_reports_upgraded() {
-    let mut registry = NodeRegistry::new();
-    registry.register(NodeSchema {
-        kind: NodeKindKey::new("demo.add"),
-        latest_kind_version: 2,
-        kind_aliases: Vec::new(),
-        title: "Add".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
-        ports: Vec::new(),
-        default_data: serde_json::Value::Null,
-    });
-    registry.register_migrator(NodeKindKey::new("demo.add"), Arc::new(DummyMigrator));
-
-    let id = NodeId::new();
-    let mut graph = Graph::new(GraphId::new());
-    graph.nodes.insert(
-        id,
-        Node {
-            kind: NodeKindKey::new("demo.add"),
-            kind_version: 0,
-            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: json!({"x": 1}),
-        },
-    );
-
-    let plan = registry.plan_migrate_nodes(&graph);
-    assert_eq!(plan.report().upgraded().len(), 1);
-    assert!(plan.report().missing_schema().is_empty());
-    assert!(plan.report().missing_migrator().is_empty());
-    assert!(plan.report().errors().is_empty());
-
-    plan.transaction().apply_to(&mut graph).unwrap();
-    let node = graph.nodes.get(&id).unwrap();
-    assert_eq!(node.kind_version, 2);
-    assert_eq!(node.data["migrated"], json!(true));
-}
-
-#[test]
-fn migrate_nodes_reports_missing_migrator_and_emits_no_tx() {
-    let mut registry = NodeRegistry::new();
-    registry.register(NodeSchema {
-        kind: NodeKindKey::new("demo.add"),
-        latest_kind_version: 2,
-        kind_aliases: Vec::new(),
-        title: "Add".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
-        ports: Vec::new(),
-        default_data: serde_json::Value::Null,
-    });
-
-    let id = NodeId::new();
-    let mut graph = Graph::new(GraphId::new());
-    graph.nodes.insert(
-        id,
-        Node {
-            kind: NodeKindKey::new("demo.add"),
-            kind_version: 0,
-            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: serde_json::Value::Null,
-        },
-    );
-
-    let plan = registry.plan_migrate_nodes(&graph);
-    assert_eq!(plan.report().missing_migrator().len(), 1);
-    assert!(plan.transaction().is_empty());
-}
-
-#[test]
-fn migrate_nodes_skips_noop_data_updates() {
-    let mut registry = NodeRegistry::new();
-    registry.register(NodeSchema {
-        kind: NodeKindKey::new("demo.add"),
-        latest_kind_version: 2,
-        kind_aliases: Vec::new(),
-        title: "Add".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
-        ports: Vec::new(),
-        default_data: serde_json::Value::Null,
-    });
-    registry.register_migrator(NodeKindKey::new("demo.add"), Arc::new(IdentityMigrator));
-
-    let id = NodeId::new();
-    let mut graph = Graph::new(GraphId::new());
-    graph.nodes.insert(
-        id,
-        Node {
-            kind: NodeKindKey::new("demo.add"),
-            kind_version: 1,
-            pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
-            selectable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
-            data: json!({"x": 1}),
-        },
-    );
-
-    let plan = registry.plan_migrate_nodes(&graph);
-    assert_eq!(plan.report().upgraded().len(), 1);
-    assert!(
-        plan.transaction()
-            .ops()
-            .iter()
-            .any(|op| matches!(op, GraphOp::SetNodeKindVersion { id: op_id, .. } if *op_id == id))
-    );
-    assert!(
-        !plan
-            .transaction()
-            .ops()
-            .iter()
-            .any(|op| matches!(op, GraphOp::SetNodeData { id: op_id, .. } if *op_id == id))
-    );
+        data,
+    }
 }
