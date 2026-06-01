@@ -1,3 +1,4 @@
+use crate::runtime::geometry::{CanvasBounds, ViewportFitFrame};
 use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
 use super::{FitViewComputeOptions, FitViewNodeInfo};
@@ -6,11 +7,11 @@ pub(super) fn compute_fit_view_target_top_left(
     nodes: &[FitViewNodeInfo],
     options: FitViewComputeOptions,
 ) -> Option<(CanvasPoint, f32)> {
-    let frame = ViewportFitFrame::from_options(options);
+    let frame = frame_from_options(options);
 
     let spread = NodePositionSpread::from_nodes(nodes)?;
     let zoom = spread.fit_zoom(options, frame);
-    let bounds = CanvasBounds::from_nodes(nodes, zoom)?;
+    let bounds = bounds_from_nodes(nodes, zoom)?;
     let center = bounds.center();
 
     Some((frame.pan_for_center(center, zoom), zoom))
@@ -20,80 +21,16 @@ pub(super) fn compute_target_for_canvas_rect(
     target_canvas: CanvasRect,
     options: FitViewComputeOptions,
 ) -> Option<(CanvasPoint, f32)> {
-    if !target_canvas.is_positive_finite() {
-        return None;
-    }
-
-    let frame = ViewportFitFrame::from_options(options);
-
-    let zoom_x = frame.available_width() / target_canvas.size.width;
-    let zoom_y = frame.available_height() / target_canvas.size.height;
-    if !zoom_x.is_finite() || !zoom_y.is_finite() {
-        return None;
-    }
-
-    let zoom = zoom_x.min(zoom_y).clamp(options.min_zoom, options.max_zoom);
-    if !zoom.is_finite() || zoom <= 0.0 {
-        return None;
-    }
-
-    let center_x = target_canvas.origin.x + 0.5 * target_canvas.size.width;
-    let center_y = target_canvas.origin.y + 0.5 * target_canvas.size.height;
-    let pan = frame.pan_for_center(
-        CanvasPoint {
-            x: center_x,
-            y: center_y,
-        },
-        zoom,
-    );
-    if !pan.is_finite() {
-        return None;
-    }
-
-    Some((pan, zoom))
+    frame_from_options(options).fit_rect(target_canvas, options.min_zoom, options.max_zoom)
 }
 
-#[derive(Clone, Copy)]
-struct ViewportFitFrame {
-    width_px: f32,
-    height_px: f32,
-    margin_x: f32,
-    margin_y: f32,
-}
-
-impl ViewportFitFrame {
-    fn from_options(options: FitViewComputeOptions) -> Self {
-        let (margin_x, margin_y) = if options.padding > 0.0 {
-            (
-                options.viewport_width_px * options.padding,
-                options.viewport_height_px * options.padding,
-            )
-        } else {
-            (options.margin_px_fallback, options.margin_px_fallback)
-        };
-
-        Self {
-            width_px: options.viewport_width_px,
-            height_px: options.viewport_height_px,
-            margin_x,
-            margin_y,
-        }
-    }
-
-    fn available_width(self) -> f32 {
-        self.width_px - 2.0 * self.margin_x
-    }
-
-    fn available_height(self) -> f32 {
-        self.height_px - 2.0 * self.margin_y
-    }
-
-    fn pan_for_center(self, center: CanvasPoint, zoom: f32) -> CanvasPoint {
-        CanvasPoint {
-            x: 0.5 * self.width_px / zoom - center.x,
-            y: 0.5 * self.height_px / zoom - center.y,
-        }
-    }
+fn frame_from_options(options: FitViewComputeOptions) -> ViewportFitFrame {
+    ViewportFitFrame::from_viewport_and_padding(
+        options.viewport_width_px,
+        options.viewport_height_px,
+        options.padding,
+        options.margin_px_fallback,
+    )
 }
 
 struct NodePositionSpread {
@@ -167,53 +104,17 @@ impl NodePositionSpread {
     }
 }
 
-struct CanvasBounds {
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-}
-
-impl CanvasBounds {
-    fn new() -> Self {
-        Self {
-            min_x: f32::INFINITY,
-            min_y: f32::INFINITY,
-            max_x: f32::NEG_INFINITY,
-            max_y: f32::NEG_INFINITY,
-        }
-    }
-
-    fn from_nodes(nodes: &[FitViewNodeInfo], zoom: f32) -> Option<Self> {
-        let mut bounds = Self::new();
-        for node in nodes {
-            bounds.include(node, zoom);
-        }
-        bounds.is_valid().then_some(bounds)
-    }
-
-    fn include(&mut self, node: &FitViewNodeInfo, zoom: f32) {
+fn bounds_from_nodes(nodes: &[FitViewNodeInfo], zoom: f32) -> Option<CanvasBounds> {
+    let mut bounds = CanvasBounds::empty();
+    for node in nodes {
         let Some(size_canvas) = node.canvas_size_at_zoom(zoom) else {
-            return;
+            continue;
+        };
+        let Some(node_bounds) = CanvasBounds::from_top_left_rect(node.pos, size_canvas) else {
+            continue;
         };
 
-        self.min_x = self.min_x.min(node.pos.x);
-        self.min_y = self.min_y.min(node.pos.y);
-        self.max_x = self.max_x.max(node.pos.x + size_canvas.width);
-        self.max_y = self.max_y.max(node.pos.y + size_canvas.height);
+        bounds.include(node_bounds);
     }
-
-    fn center(&self) -> CanvasPoint {
-        CanvasPoint {
-            x: 0.5 * (self.min_x + self.max_x),
-            y: 0.5 * (self.min_y + self.max_y),
-        }
-    }
-
-    fn is_valid(&self) -> bool {
-        self.min_x.is_finite()
-            && self.min_y.is_finite()
-            && self.max_x.is_finite()
-            && self.max_y.is_finite()
-    }
+    bounds.is_valid().then_some(bounds)
 }

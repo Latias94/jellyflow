@@ -1,8 +1,8 @@
 use crate::node_origin::normalize_node_origin;
+use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::lookups::{NodeGraphLookups, NodeLookupEntry};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 
-use super::geometry::CanvasBounds;
 use super::options::{GetNodesBoundsOptions, GetNodesInsideOptions, NodeInclusion};
 
 /// Returns the top-left position for a node, taking node origin into account.
@@ -66,7 +66,9 @@ pub fn get_nodes_inside(
         return Vec::new();
     }
 
-    let query = CanvasBounds::from_rect(rect);
+    let Some(query) = CanvasBounds::from_rect(rect) else {
+        return Vec::new();
+    };
 
     let mut out: Vec<NodeId> = Vec::new();
     for (node, entry) in &lookups.node_lookup {

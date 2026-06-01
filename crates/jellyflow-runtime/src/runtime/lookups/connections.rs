@@ -32,6 +32,11 @@ impl NodeGraphLookups {
         self.connections(ConnectionLookupKey::NodeSidePort { node, side, port })
     }
 
+    pub fn connection_for_edge(&self, edge: EdgeId) -> Option<HandleConnection> {
+        let entry = *self.edge_lookup.get(&edge)?;
+        Some(HandleConnection::from_edge_lookup(edge, entry))
+    }
+
     fn add_connection(&mut self, key: ConnectionLookupKey, conn: HandleConnection) {
         self.connection_lookup
             .entry(key)
@@ -75,7 +80,6 @@ impl NodeGraphLookups {
     }
 
     pub(super) fn connection_from_edge_lookup(&self, edge: EdgeId) -> Option<HandleConnection> {
-        let entry = *self.edge_lookup.get(&edge)?;
-        Some(HandleConnection::from_edge_lookup(edge, entry))
+        self.connection_for_edge(edge)
     }
 }

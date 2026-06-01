@@ -10,7 +10,7 @@ The initial package split is intentionally small:
   undoable graph transactions.
 - `jellyflow-runtime`: headless `NodeGraphStore`, view-state/config payloads, policy resolution,
   rules, schema/profile pipeline, explicit `runtime::xyflow` compatibility projections,
-  persistence file types without project-path policy, and fit-view math.
+  persistence file types without project-path policy, fit-view math, and renderer-neutral geometry.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -43,6 +43,7 @@ Runnable examples live under the crate example directories:
 ```text
 cargo run -p jellyflow-core --example build_graph
 cargo run -p jellyflow-runtime --example store_dispatch
+cargo run -p jellyflow-runtime --example geometry_edge
 ```
 
 ## Repository Status

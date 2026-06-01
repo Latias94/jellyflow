@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Tuning reserved for a future indexed spatial-query backend.
+///
+/// Current runtime node queries use a deterministic linear scan and sorted output. Keep this
+/// tuning serialized so saved editor config does not churn when an indexed backend lands.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeGraphSpatialIndexTuning {
     /// Preferred cell size in screen pixels (converted to canvas units by dividing by zoom).

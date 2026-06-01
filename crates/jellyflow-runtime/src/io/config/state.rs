@@ -10,6 +10,7 @@ use crate::io::tuning::{
     NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
     NodeGraphSpatialIndexTuning,
 };
+use crate::runtime::geometry::EdgeHitTestOptions;
 
 use super::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
 use super::types::{
@@ -86,4 +87,13 @@ pub struct NodeGraphInteractionState {
     pub translate_extent: Option<CanvasRect>,
     pub node_extent: Option<CanvasRect>,
     pub node_origin: NodeGraphNodeOrigin,
+}
+
+impl NodeGraphInteractionState {
+    pub fn edge_hit_test_options(&self) -> EdgeHitTestOptions {
+        EdgeHitTestOptions::new(
+            self.edge_interaction_width,
+            usize::from(self.bezier_hit_test_steps),
+        )
+    }
 }

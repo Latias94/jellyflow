@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-geometry-spatial-v1",
+  "title": "Jellyflow Geometry Spatial v1",
+  "status": "closed",
+  "updated": "2026-06-01",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-runtime-public-surface-v1",
+  "problem": "Jellyflow lacks a single headless geometry/spatial substrate; fit-view, bounds helpers, lookup-derived layout, and geometry-adjacent config are scattered or only partially backed by shared behavior.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/TODO.md"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-geometry-spatial-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-geometry-spatial-v1/CONTEXT.jsonl",
+  "gates": [
+    "cargo check -p jellyflow-runtime",
+    "cargo nextest run -p jellyflow-runtime runtime::fit_view",
+    "cargo nextest run -p jellyflow-runtime runtime::tests::utils",
+    "cargo nextest run -p jellyflow-runtime runtime::tests::lookups",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo nextest run --workspace",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "python3 tools/check_no_fret_dependencies.py",
+    "python3 tools/check_external_consumer_smoke.py",
+    "jq empty docs/workstreams/jellyflow-geometry-spatial-v1/WORKSTREAM.json",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-01",
+      "task": "JGS-010",
+      "summary": "Opened the geometry/spatial workstream from the fearless-refactor top recommendation. Workspace baseline nextest passed with 191 tests before code changes."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-020",
+      "summary": "Added a crate-private runtime::geometry module for shared canvas bounds, node-origin projection, rect relation math, and viewport fit framing. Routed fit-view and runtime bounds helpers through it without changing public behavior; targeted gates passed."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-030",
+      "summary": "Added sorted parent/child lookup helpers derived from node_lookup and strengthened deterministic node-inside linear fallback coverage for hidden nodes, missing sizes, and sorted output. Deferred a real spatial-index backend as a follow-on."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-040",
+      "summary": "Made runtime::geometry public for renderer-neutral endpoint geometry, added handle side anchors and edge source/target endpoint output, and exposed connection_for_edge on NodeGraphLookups. Targeted endpoint gates passed."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-050",
+      "summary": "Added renderer-neutral straight, bezier, and smoothstep-like edge path commands, numeric path-distance hit testing, and config-derived hit-test options. Targeted edge_path and hit_test gates passed."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-060",
+      "summary": "Updated root and runtime READMEs, added a geometry_edge runtime example, and passed runtime package gates."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JGS-070",
+      "summary": "Closed the workstream after full workspace nextest, clippy, dependency-boundary, external-consumer, JSON, and diff-hygiene gates passed. Split real spatial indexing and interaction kernels as follow-ons."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0331-jellyflow-headless-node-graph-engine-boundary.md",
+    "docs/adr/0332-jellyflow-model-policy-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "geometry",
+    "spatial-index",
+    "headless-runtime",
+    "node-graph",
+    "xyflow-reference"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "closed",
+    "notes": "This lane is closed. Open separate follow-ons for a real spatial-index backend, interaction kernels, schema migration, or crate publishing."
+  }
+}
