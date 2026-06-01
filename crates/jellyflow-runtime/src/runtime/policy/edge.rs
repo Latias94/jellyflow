@@ -4,6 +4,7 @@ use jellyflow_core::core::{Edge, EdgeReconnectable};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeGraphEdgeInteractionPolicy {
     pub selectable: bool,
+    pub focusable: bool,
     pub deletable: bool,
     pub reconnect_source: bool,
     pub reconnect_target: bool,
@@ -32,6 +33,7 @@ pub fn resolve_edge_interaction_policy(
     state: &NodeGraphInteractionState,
 ) -> NodeGraphEdgeInteractionPolicy {
     let connection = state.connection_interaction();
+    let keyboard = state.keyboard_interaction();
     let selection = state.selection_interaction();
     let delete = state.delete_interaction();
     let reconnectable = edge
@@ -41,6 +43,7 @@ pub fn resolve_edge_interaction_policy(
 
     NodeGraphEdgeInteractionPolicy {
         selectable: edge.selectable.unwrap_or(selection.edges_selectable),
+        focusable: keyboard.edges_focusable,
         deletable: edge.deletable.unwrap_or(delete.edges_deletable),
         reconnect_source,
         reconnect_target,

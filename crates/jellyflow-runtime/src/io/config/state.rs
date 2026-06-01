@@ -35,6 +35,7 @@ pub struct NodeGraphInteractionState {
     pub nodes_draggable: bool,
     pub nodes_connectable: bool,
     pub nodes_deletable: bool,
+    pub nodes_focusable: bool,
     pub edges_selectable: bool,
     pub edges_deletable: bool,
     pub edges_focusable: bool,

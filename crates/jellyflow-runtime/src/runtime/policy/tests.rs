@@ -60,6 +60,7 @@ fn policy_node_overrides_global_defaults() {
         nodes_draggable: false,
         nodes_connectable: false,
         nodes_deletable: false,
+        nodes_focusable: false,
         node_extent: Some(CanvasRect {
             origin: CanvasPoint { x: 1.0, y: 2.0 },
             size: CanvasSize {
@@ -79,6 +80,7 @@ fn policy_node_overrides_global_defaults() {
         default_policy,
         NodeGraphNodeInteractionPolicy {
             selectable: selection.elements_selectable,
+            focusable: false,
             draggable: node_drag.nodes_draggable,
             connectable: connection.nodes_connectable,
             deletable: delete.nodes_deletable,
@@ -101,6 +103,7 @@ fn policy_node_overrides_global_defaults() {
         resolve_node_interaction_policy(&n, &state),
         NodeGraphNodeInteractionPolicy {
             selectable: true,
+            focusable: false,
             draggable: true,
             connectable: true,
             deletable: true,
@@ -162,6 +165,7 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     let disabled_state = NodeGraphInteractionState {
         edges_selectable: false,
         edges_deletable: false,
+        edges_focusable: false,
         edges_reconnectable: false,
         ..NodeGraphInteractionState::default()
     };
@@ -174,12 +178,14 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
         default_policy,
         NodeGraphEdgeInteractionPolicy {
             selectable: selection.edges_selectable,
+            focusable: false,
             deletable: delete.edges_deletable,
             reconnect_source: connection.edges_reconnectable,
             reconnect_target: connection.edges_reconnectable,
         }
     );
     assert!(!default_policy.can_delete());
+    assert!(!default_policy.focusable);
     assert!(!default_policy.reconnectable());
     assert!(!default_policy.can_reconnect_source());
     assert!(!default_policy.can_reconnect_target());
@@ -190,6 +196,7 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
     e.reconnectable = Some(EdgeReconnectable::Bool(true));
     let enabled_policy = resolve_edge_interaction_policy(&e, &disabled_state);
     assert!(enabled_policy.selectable);
+    assert!(!enabled_policy.focusable);
     assert!(enabled_policy.deletable);
     assert!(enabled_policy.can_delete());
     assert!(enabled_policy.reconnect_source);

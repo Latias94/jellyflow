@@ -23,6 +23,7 @@ impl Default for NodeGraphInteractionState {
             nodes_draggable: default_nodes_draggable(),
             nodes_connectable: default_nodes_connectable(),
             nodes_deletable: default_nodes_deletable(),
+            nodes_focusable: default_nodes_focusable(),
             edges_selectable: default_edges_selectable(),
             edges_deletable: default_edges_deletable(),
             edges_focusable: default_edges_focusable(),

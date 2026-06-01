@@ -27,6 +27,8 @@ pub struct NodeGraphInteractionConfig {
     pub nodes_connectable: bool,
     #[serde(default = "default_nodes_deletable")]
     pub nodes_deletable: bool,
+    #[serde(default = "default_nodes_focusable")]
+    pub nodes_focusable: bool,
     #[serde(default = "default_edges_selectable")]
     pub edges_selectable: bool,
     #[serde(default = "default_edges_deletable")]

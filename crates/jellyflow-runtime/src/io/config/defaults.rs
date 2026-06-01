@@ -17,6 +17,10 @@ pub(super) fn default_nodes_deletable() -> bool {
     true
 }
 
+pub(super) fn default_nodes_focusable() -> bool {
+    true
+}
+
 pub(super) fn default_edges_deletable() -> bool {
     true
 }

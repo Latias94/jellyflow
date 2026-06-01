@@ -23,6 +23,7 @@ fn connection_and_selection_views_group_related_fields() {
         elements_selectable: false,
         nodes_connectable: false,
         nodes_deletable: false,
+        nodes_focusable: false,
         edges_selectable: false,
         edges_deletable: false,
         edges_reconnectable: false,
@@ -136,6 +137,8 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
         node_click_distance: 9.0,
         node_extent: Some(node_extent),
         node_origin: NodeGraphNodeOrigin { x: 0.5, y: 0.5 },
+        nodes_focusable: false,
+        edges_focusable: false,
         delete_key: NodeGraphDeleteKey::Delete,
         nudge_step_mode: NodeGraphNudgeStepMode::Grid,
         nudge_step_px: 12.0,
@@ -208,6 +211,8 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
     assert!(!node_drag.auto_pan.on_node_drag);
 
     let keyboard = state.keyboard_interaction();
+    assert!(!keyboard.nodes_focusable);
+    assert!(!keyboard.edges_focusable);
     assert_eq!(keyboard.delete_key, NodeGraphDeleteKey::Delete);
     assert_eq!(keyboard.nudge_step_mode, NodeGraphNudgeStepMode::Grid);
     assert_eq!(keyboard.nudge_step_px, 12.0);
