@@ -5,7 +5,7 @@ mod ports;
 
 use std::collections::BTreeSet;
 
-use crate::core::{EdgeId, Graph, PortId};
+use crate::core::{EdgeId, Graph, NodeId, PortId};
 use crate::ops::{GraphOp, GraphTransaction, normalize_transaction};
 
 /// Computes a deterministic patch transaction that transforms `from` into `to`.
@@ -23,6 +23,7 @@ struct GraphDiffPlanner<'a> {
     removed_ports_by_cascade: BTreeSet<PortId>,
     removed_edges_by_cascade: BTreeSet<EdgeId>,
     restored_edges_by_cascade: BTreeSet<EdgeId>,
+    nodes_requiring_port_order_restore: BTreeSet<NodeId>,
 }
 
 impl<'a> GraphDiffPlanner<'a> {
@@ -34,6 +35,7 @@ impl<'a> GraphDiffPlanner<'a> {
             removed_ports_by_cascade: BTreeSet::new(),
             removed_edges_by_cascade: BTreeSet::new(),
             restored_edges_by_cascade: BTreeSet::new(),
+            nodes_requiring_port_order_restore: BTreeSet::new(),
         }
     }
 
@@ -46,6 +48,7 @@ impl<'a> GraphDiffPlanner<'a> {
         // order apply-safe (edges last because they reference ports).
         self.diff_nodes();
         self.diff_ports();
+        self.restore_added_port_orders();
         self.diff_edges();
         self.diff_sticky_notes();
 

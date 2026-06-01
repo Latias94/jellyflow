@@ -15,6 +15,9 @@ impl<'a> GraphDiffPlanner<'a> {
                     id: *id,
                     port: port_to.clone(),
                 });
+                if from.nodes.contains_key(&port_to.node) {
+                    self.nodes_requiring_port_order_restore.insert(port_to.node);
+                }
             }
         }
 
@@ -102,6 +105,35 @@ impl<'a> GraphDiffPlanner<'a> {
                     edge: edge_to.clone(),
                 });
                 self.restored_edges_by_cascade.insert(edge_id);
+            }
+        }
+    }
+
+    pub(super) fn restore_added_port_orders(&mut self) {
+        let node_ids: Vec<_> = self
+            .nodes_requiring_port_order_restore
+            .iter()
+            .copied()
+            .collect();
+        for node_id in node_ids {
+            let Some(node_from) = self.from.nodes.get(&node_id) else {
+                continue;
+            };
+            let Some(node_to) = self.to.nodes.get(&node_id) else {
+                continue;
+            };
+            let stable_ports: Vec<_> = node_from
+                .ports
+                .iter()
+                .copied()
+                .filter(|port_id| self.to.ports.contains_key(port_id))
+                .collect();
+            if stable_ports != node_to.ports {
+                self.push_op(GraphOp::SetNodePorts {
+                    id: node_id,
+                    from: stable_ports,
+                    to: node_to.ports.clone(),
+                });
             }
         }
     }

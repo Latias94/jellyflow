@@ -1,5 +1,5 @@
 use super::GraphDiffPlanner;
-use crate::core::{Node, NodeId};
+use crate::core::{Node, NodeId, PortId};
 use crate::ops::{GraphMutationPlanner, GraphOp};
 
 impl<'a> GraphDiffPlanner<'a> {
@@ -128,13 +128,32 @@ impl<'a> GraphDiffPlanner<'a> {
     }
 
     fn diff_node_ports(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
-        if node_from.ports != node_to.ports {
-            self.push_op(GraphOp::SetNodePorts {
-                id,
-                from: node_from.ports.clone(),
-                to: node_to.ports.clone(),
-            });
+        if node_from.ports == node_to.ports {
+            return;
         }
+
+        if node_to
+            .ports
+            .iter()
+            .any(|port_id| !self.from.ports.contains_key(port_id))
+        {
+            let stable_ports = self.stable_existing_port_order(node_from);
+            if node_from.ports != stable_ports {
+                self.push_op(GraphOp::SetNodePorts {
+                    id,
+                    from: node_from.ports.clone(),
+                    to: stable_ports,
+                });
+            }
+            self.nodes_requiring_port_order_restore.insert(id);
+            return;
+        }
+
+        self.push_op(GraphOp::SetNodePorts {
+            id,
+            from: node_from.ports.clone(),
+            to: node_to.ports.clone(),
+        });
     }
 
     fn diff_node_data(&mut self, id: NodeId, node_from: &Node, node_to: &Node) {
@@ -176,6 +195,15 @@ impl<'a> GraphDiffPlanner<'a> {
         };
 
         self.from.groups.contains_key(&group_id) && !self.to.groups.contains_key(&group_id)
+    }
+
+    fn stable_existing_port_order(&self, node_from: &Node) -> Vec<PortId> {
+        node_from
+            .ports
+            .iter()
+            .copied()
+            .filter(|port_id| self.to.ports.contains_key(port_id))
+            .collect()
     }
 
     fn diff_removed_node(&mut self, id: NodeId, node_from: &Node) {
