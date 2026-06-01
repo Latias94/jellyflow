@@ -155,17 +155,19 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
 }
 
 #[test]
-fn adapter_conformance_viewport_and_selection_emit_ordered_view_changes() {
+fn adapter_conformance_fixture_runner_records_viewport_and_selection_ordering() {
     let (graph, node_id, _b, _out_port, _in_port, edge_id) = make_graph();
-    let mut harness = InteractionHarness::new("viewport and selection ordering", graph);
+    let scenario = ConformanceScenario::new("viewport and selection ordering", graph)
+        .with_actions([
+            ConformanceAction::set_viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25),
+            ConformanceAction::set_selection(vec![node_id], vec![edge_id], Vec::new()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25),
+            ConformanceTraceEvent::selection(vec![node_id], vec![edge_id], Vec::new()),
+        ]);
 
-    harness.set_viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25);
-    harness.set_selection(vec![node_id], vec![edge_id], Vec::new());
-
-    harness.assert_events(&[
-        HarnessEvent::viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25),
-        HarnessEvent::selection(vec![node_id], vec![edge_id], Vec::new()),
-    ]);
+    assert_conformance_trace(&scenario);
 }
 
 #[test]

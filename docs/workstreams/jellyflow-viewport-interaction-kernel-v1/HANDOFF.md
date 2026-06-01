@@ -20,10 +20,14 @@ JVI-030 is complete: `NodeGraphStore` applies normalized viewport pan/zoom inten
 view-state publication, viewport move gesture events are first-class runtime events, and the
 XyFlow-style callback surface now dispatches `on_move_start`, `on_move`, and `on_move_end`.
 
+JVI-040 is complete: the conformance fixture vocabulary can replay viewport pan/zoom intent,
+record viewport store/view callbacks, and record viewport move gesture callbacks. The old adapter
+viewport/selection ordering trace now runs through the fixture runner.
+
 ## Next Task
 
-JVI-040: add viewport pan/zoom conformance fixtures and convert the viewport adapter-conformance
-trace to the fixture runner where appropriate.
+JVI-050: document viewport conformance, record fresh evidence, and close the lane or split
+follow-ons.
 
 ## Decisions Since Opening
 
@@ -49,6 +53,11 @@ trace to the fixture runner where appropriate.
 - 2026-06-01: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 8 tests run
   after JVI-030.
 - 2026-06-01: `cargo check -p jellyflow-runtime` passed after JVI-030.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime conformance` passed, 12 tests run after
+  JVI-040.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 8 tests run
+  after JVI-040.
+- 2026-06-01: `cargo check -p jellyflow-runtime` passed after JVI-040.
 
 ## Follow-On Candidates
 

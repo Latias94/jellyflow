@@ -68,6 +68,11 @@
       "date": "2026-06-01",
       "task": "JVI-030",
       "summary": "Wired viewport pan/zoom intent through NodeGraphStore view-state publication and added viewport move gesture callbacks."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JVI-040",
+      "summary": "Added viewport pan/zoom conformance actions and fixture traces, and converted viewport adapter ordering to the fixture runner."
     }
   ],
   "adr_refs": [
@@ -84,7 +89,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JVI-040",
-    "notes": "Add viewport pan/zoom conformance fixtures and convert viewport adapter-conformance traces where appropriate."
+    "next_task": "JVI-050",
+    "notes": "Document viewport conformance, record fresh closeout evidence, and close or split follow-ons."
   }
 }

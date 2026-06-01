@@ -43,7 +43,7 @@ Last updated: 2026-06-01
 
 ## M3 - Conformance Fixtures
 
-- [ ] JVI-040 [owner=codex] [deps=JVI-030] [scope=crates/jellyflow-runtime/src/runtime/tests/conformance.rs,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/conformance]
+- [x] JVI-040 [owner=codex] [deps=JVI-030] [scope=crates/jellyflow-runtime/src/runtime/tests/conformance.rs,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/conformance]
   Goal: Add viewport pan/zoom conformance fixtures and convert the viewport adapter-conformance
   trace to the fixture runner where appropriate.
   Validation: `cargo nextest run -p jellyflow-runtime conformance`; `cargo nextest run -p
@@ -51,6 +51,9 @@ Last updated: 2026-06-01
   Review: review-workstream before accepting completion.
   Evidence: Fixture traces prove viewport state changes, gesture payloads, and callback ordering.
   Context: `docs/workstreams/jellyflow-viewport-interaction-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Conformance vocabulary now supports viewport pan/zoom intent,
+  viewport view callbacks, and viewport move callbacks; the adapter viewport/selection trace runs
+  through the fixture runner.
 
 ## M4 - Documentation And Closeout
 

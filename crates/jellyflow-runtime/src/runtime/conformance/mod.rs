@@ -12,12 +12,13 @@ use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
-    NodeGraphStoreEvent, ViewChange,
+    NodeGraphStoreEvent, ViewChange, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::store::NodeGraphStore;
+use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
 use crate::runtime::xyflow::callbacks::{
     ConnectionChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
-    NodeGraphViewCallbacks, install_callbacks,
+    NodeGraphViewCallbacks, SelectionChange, install_callbacks,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GroupId, NodeId};
@@ -151,6 +152,12 @@ pub enum ConformanceAction {
         node: NodeId,
         to: CanvasPoint,
     },
+    ApplyViewportPan {
+        request: ViewportPanRequest,
+    },
+    ApplyViewportZoom {
+        request: ViewportZoomRequest,
+    },
     SetViewport {
         pan: CanvasPoint,
         zoom: f32,
@@ -170,6 +177,8 @@ impl ConformanceAction {
         match self {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::ApplyViewportPan { .. } => "apply_viewport_pan",
+            Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
             Self::SetViewport { .. } => "set_viewport",
             Self::SetSelection { .. } => "set_selection",
             Self::EmitGesture { .. } => "emit_gesture",
@@ -182,6 +191,14 @@ impl ConformanceAction {
 
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn apply_viewport_pan(request: ViewportPanRequest) -> Self {
+        Self::ApplyViewportPan { request }
+    }
+
+    pub fn apply_viewport_zoom(request: ViewportZoomRequest) -> Self {
+        Self::ApplyViewportZoom { request }
     }
 
     pub fn set_viewport(pan: CanvasPoint, zoom: f32) -> Self {
@@ -283,6 +300,18 @@ pub enum ConformanceViewChange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConformanceCallbackEvent {
+    ViewChange {
+        changes: Vec<ConformanceViewChange>,
+    },
+    ViewportChange {
+        pan: CanvasPoint,
+        zoom: f32,
+    },
+    SelectionChange {
+        nodes: Vec<NodeId>,
+        edges: Vec<EdgeId>,
+        groups: Vec<GroupId>,
+    },
     GraphCommit {
         label: Option<String>,
     },
@@ -307,6 +336,9 @@ pub enum ConformanceCallbackEvent {
     NodeDragStart(NodeDragStart),
     NodeDrag(NodeDragUpdate),
     NodeDragEnd(NodeDragEnd),
+    ViewportMoveStart(ViewportMoveStart),
+    ViewportMove(ViewportMove),
+    ViewportMoveEnd(ViewportMoveEnd),
     ConnectStart(ConnectStart),
     ConnectEnd(ConnectEnd),
 }
@@ -480,6 +512,14 @@ fn execute_action(store: &mut NodeGraphStore, action: &ConformanceAction) -> Res
             })
             .map(|_| ())
             .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyViewportPan { request } => store
+            .apply_viewport_pan(*request)
+            .map(|_| ())
+            .ok_or_else(|| "viewport pan request was rejected".to_owned()),
+        ConformanceAction::ApplyViewportZoom { request } => store
+            .apply_viewport_zoom(*request)
+            .map(|_| ())
+            .ok_or_else(|| "viewport zoom request was rejected".to_owned()),
         ConformanceAction::SetViewport { pan, zoom } => {
             store.set_viewport(*pan, *zoom);
             Ok(())
@@ -619,9 +659,43 @@ impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
     }
 }
 
-impl NodeGraphViewCallbacks for CallbackTraceRecorder {}
+impl NodeGraphViewCallbacks for CallbackTraceRecorder {
+    fn on_view_change(&mut self, changes: &[ViewChange]) {
+        self.push(ConformanceCallbackEvent::ViewChange {
+            changes: changes
+                .iter()
+                .map(ConformanceViewChange::from_view_change)
+                .collect(),
+        });
+    }
+
+    fn on_viewport_change(&mut self, pan: CanvasPoint, zoom: f32) {
+        self.push(ConformanceCallbackEvent::ViewportChange { pan, zoom });
+    }
+
+    fn on_selection_change(&mut self, sel: SelectionChange) {
+        let (nodes, edges, groups) = sel.into_parts();
+        self.push(ConformanceCallbackEvent::SelectionChange {
+            nodes,
+            edges,
+            groups,
+        });
+    }
+}
 
 impl NodeGraphGestureCallbacks for CallbackTraceRecorder {
+    fn on_move_start(&mut self, ev: ViewportMoveStart) {
+        self.push(ConformanceCallbackEvent::ViewportMoveStart(ev));
+    }
+
+    fn on_move(&mut self, ev: ViewportMove) {
+        self.push(ConformanceCallbackEvent::ViewportMove(ev));
+    }
+
+    fn on_move_end(&mut self, ev: ViewportMoveEnd) {
+        self.push(ConformanceCallbackEvent::ViewportMoveEnd(ev));
+    }
+
     fn on_node_drag_start(&mut self, ev: NodeDragStart) {
         self.push(ConformanceCallbackEvent::NodeDragStart(ev));
     }

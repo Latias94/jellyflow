@@ -82,6 +82,14 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - Store API: `NodeGraphStore::apply_viewport_pan` and `apply_viewport_zoom`.
   - Gesture/callback API: `ViewportMoveStart`, `ViewportMove`, `ViewportMoveEnd`, and
     `NodeGraphGestureCallbacks::on_move`.
+- 2026-06-01: JVI-040 added viewport conformance fixture coverage.
+  - `cargo nextest run -p jellyflow-runtime conformance`: 12 passed, 147 skipped.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance`: 8 passed, 151 skipped.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - Fixture vocabulary: `ConformanceAction::apply_viewport_pan`,
+    `ConformanceAction::apply_viewport_zoom`, viewport view callback trace events, and viewport
+    move callback trace events.
+  - Adapter viewport/selection ordering now runs through `run_conformance_scenario`.
 
 ## Notes
 
