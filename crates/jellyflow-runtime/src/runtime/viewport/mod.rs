@@ -1,0 +1,17 @@
+//! Renderer-neutral viewport pan and zoom helpers.
+//!
+//! Adapters normalize platform input into these request types. The runtime owns deterministic
+//! canvas/screen transform math and gesture policy without depending on renderer, windowing, or
+//! gesture APIs.
+
+mod gesture;
+mod transform;
+
+pub use gesture::{
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection,
+    ViewportPointerButton, ViewportScrollInput, resolve_viewport_drag_pan_gesture,
+    resolve_viewport_scroll_gesture,
+};
+pub use transform::{
+    ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
+};
