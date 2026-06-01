@@ -23,6 +23,10 @@ pub(super) fn make_node(kind: &str) -> Node {
     }
 }
 
+pub(super) fn insert_node(graph: &mut Graph, id: NodeId, kind: &str) {
+    graph.nodes.insert(id, make_node(kind));
+}
+
 pub(super) fn make_port(
     node: NodeId,
     key: &str,
@@ -44,6 +48,15 @@ pub(super) fn make_port(
     }
 }
 
+pub(super) fn make_data_port(
+    node: NodeId,
+    key: &str,
+    dir: PortDirection,
+    capacity: PortCapacity,
+) -> Port {
+    make_port(node, key, dir, PortKind::Data, capacity)
+}
+
 pub(super) fn insert_port(graph: &mut Graph, id: PortId, port: Port) {
     let node = port.node;
     graph.ports.insert(id, port);
@@ -53,6 +66,37 @@ pub(super) fn insert_port(graph: &mut Graph, id: PortId, port: Port) {
         .expect("test port owner must exist")
         .ports
         .push(id);
+}
+
+pub(super) fn insert_data_port(
+    graph: &mut Graph,
+    id: PortId,
+    node: NodeId,
+    key: &str,
+    dir: PortDirection,
+    capacity: PortCapacity,
+) {
+    insert_port(graph, id, make_data_port(node, key, dir, capacity));
+}
+
+pub(super) fn insert_data_output(
+    graph: &mut Graph,
+    id: PortId,
+    node: NodeId,
+    key: &str,
+    capacity: PortCapacity,
+) {
+    insert_data_port(graph, id, node, key, PortDirection::Out, capacity);
+}
+
+pub(super) fn insert_data_input(
+    graph: &mut Graph,
+    id: PortId,
+    node: NodeId,
+    key: &str,
+    capacity: PortCapacity,
+) {
+    insert_data_port(graph, id, node, key, PortDirection::In, capacity);
 }
 
 pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortId) {

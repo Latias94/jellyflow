@@ -1,7 +1,7 @@
-use super::fixtures::{insert_port, make_node, make_port};
+use super::fixtures::{insert_data_input, insert_data_output, insert_node};
 
 use crate::rules::{plan_connect, plan_connect_with_mode};
-use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortDirection, PortId, PortKind};
+use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -11,33 +11,13 @@ fn plan_connect_swaps_in_out() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let plan = plan_connect(&graph, inn, out);
     assert_eq!(plan.ops().len(), 1);
@@ -48,32 +28,12 @@ fn plan_connect_strict_allows_same_node_out_to_in() {
     let mut graph = Graph::default();
 
     let a = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
+    insert_node(&mut graph, a, "core.a");
 
     let out = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            a,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, a, "in", PortCapacity::Single);
 
     let plan = plan_connect(&graph, out, inn);
     assert!(plan.is_accept());
@@ -86,33 +46,13 @@ fn plan_connect_loose_allows_out_to_out_and_preserves_order() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out_a = PortId::new();
     let out_b = PortId::new();
-    insert_port(
-        &mut graph,
-        out_a,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out_b,
-        make_port(
-            b,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
+    insert_data_output(&mut graph, out_a, a, "out", PortCapacity::Multi);
+    insert_data_output(&mut graph, out_b, b, "out", PortCapacity::Multi);
 
     let plan = plan_connect_with_mode(&graph, out_a, out_b, NodeGraphConnectionMode::Loose);
     assert!(plan.is_accept());
@@ -128,46 +68,16 @@ fn plan_connect_single_input_disconnects_existing() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
@@ -184,33 +94,13 @@ fn plan_connect_respects_node_and_port_connectability() {
 
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out,
-        make_port(
-            a,
-            "out",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     graph.nodes.get_mut(&a).unwrap().connectable = Some(false);
     let plan = plan_connect(&graph, out, inn);

@@ -1,9 +1,8 @@
-use super::fixtures::{insert_edge, insert_port, make_node, make_port};
+use super::fixtures::{insert_data_input, insert_data_output, insert_edge, insert_node};
 
 use crate::rules::{EdgeEndpoint, plan_reconnect_edge};
 use jellyflow_core::core::{
-    EdgeId, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, NodeId, PortCapacity,
-    PortDirection, PortId, PortKind,
+    EdgeId, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, NodeId, PortCapacity, PortId,
 };
 use jellyflow_core::ops::GraphTransaction;
 
@@ -14,46 +13,16 @@ fn plan_reconnect_preserves_edge_id() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out1",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out2",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out1", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out2", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Multi);
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out1, inn);
@@ -77,58 +46,18 @@ fn plan_reconnect_respects_edge_and_port_policy() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let in1 = PortId::new();
     let in2 = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out1",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out2",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        in1,
-        make_port(
-            b,
-            "in1",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        in2,
-        make_port(
-            c,
-            "in2",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out1", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out2", PortCapacity::Multi);
+    insert_data_input(&mut graph, in1, b, "in1", PortCapacity::Multi);
+    insert_data_input(&mut graph, in2, c, "in2", PortCapacity::Multi);
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out1, in1);
@@ -160,59 +89,19 @@ fn plan_reconnect_single_target_disconnects_other_edges() {
     let b = NodeId::new();
     let c = NodeId::new();
     let d = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
-    graph.nodes.insert(d, make_node("core.d"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
+    insert_node(&mut graph, d, "core.d");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let out3 = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out1",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out2",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out3,
-        make_port(
-            d,
-            "out3",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Single,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out1", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out2", PortCapacity::Multi);
+    insert_data_output(&mut graph, out3, d, "out3", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
     let edge_keep = EdgeId::new();
     let edge_drop = EdgeId::new();
@@ -242,46 +131,16 @@ fn plan_reconnect_rejects_duplicate_connection() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
+    insert_node(&mut graph, c, "core.c");
 
     let out1 = PortId::new();
     let out2 = PortId::new();
     let inn = PortId::new();
-    insert_port(
-        &mut graph,
-        out1,
-        make_port(
-            a,
-            "out1",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        out2,
-        make_port(
-            c,
-            "out2",
-            PortDirection::Out,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
-    insert_port(
-        &mut graph,
-        inn,
-        make_port(
-            b,
-            "in",
-            PortDirection::In,
-            PortKind::Data,
-            PortCapacity::Multi,
-        ),
-    );
+    insert_data_output(&mut graph, out1, a, "out1", PortCapacity::Multi);
+    insert_data_output(&mut graph, out2, c, "out2", PortCapacity::Multi);
+    insert_data_input(&mut graph, inn, b, "in", PortCapacity::Multi);
 
     let edge_a = EdgeId::new();
     let edge_b = EdgeId::new();
