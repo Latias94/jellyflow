@@ -29,7 +29,7 @@ Last updated: 2026-06-01
 
 ## M2 - Store Gesture And Callbacks
 
-- [ ] JVI-030 [owner=codex] [deps=JVI-020] [scope=crates/jellyflow-runtime/src/runtime/events,crates/jellyflow-runtime/src/runtime/store,crates/jellyflow-runtime/src/runtime/xyflow,crates/jellyflow-runtime/src/runtime/tests/viewport.rs]
+- [x] JVI-030 [owner=codex] [deps=JVI-020] [scope=crates/jellyflow-runtime/src/runtime/events,crates/jellyflow-runtime/src/runtime/store,crates/jellyflow-runtime/src/runtime/xyflow,crates/jellyflow-runtime/src/runtime/tests/viewport.rs]
   Goal: Wire viewport intent helpers through `NodeGraphStore` view-state publication and viewport
   gesture/callback lifecycle events.
   Validation: `cargo nextest run -p jellyflow-runtime viewport`; `cargo check -p
@@ -38,6 +38,8 @@ Last updated: 2026-06-01
   Evidence: Tests prove view change emission, gesture ordering, and XyFlow-compatible move
   callbacks without renderer dependencies.
   Context: `docs/workstreams/jellyflow-viewport-interaction-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Store helpers now apply viewport pan/zoom intent through
+  view-state publication, and viewport move gesture events dispatch XyFlow-style move callbacks.
 
 ## M3 - Conformance Fixtures
 

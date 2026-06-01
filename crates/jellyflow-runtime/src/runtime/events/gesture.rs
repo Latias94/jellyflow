@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate};
+use super::{
+    ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, ViewportMove,
+    ViewportMoveEnd, ViewportMoveStart,
+};
 
 /// Transient UI gesture event emitted to gesture subscribers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -11,4 +14,7 @@ pub enum NodeGraphGestureEvent {
     NodeDragStart(NodeDragStart),
     NodeDragUpdate(NodeDragUpdate),
     NodeDragEnd(NodeDragEnd),
+    ViewportMoveStart(ViewportMoveStart),
+    ViewportMove(ViewportMove),
+    ViewportMoveEnd(ViewportMoveEnd),
 }

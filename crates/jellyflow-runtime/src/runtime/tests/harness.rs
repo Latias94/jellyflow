@@ -4,7 +4,8 @@ use std::rc::Rc;
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
-    NodeGraphStoreEvent, SubscriptionToken, ViewChange,
+    NodeGraphStoreEvent, SubscriptionToken, ViewChange, ViewportMove, ViewportMoveEnd,
+    ViewportMoveStart,
 };
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 use crate::runtime::xyflow::callbacks::{
@@ -117,6 +118,9 @@ pub(super) enum HarnessCallbackEvent {
     NodeDragStart(NodeDragStart),
     NodeDrag(NodeDragUpdate),
     NodeDragEnd(NodeDragEnd),
+    ViewportMoveStart(ViewportMoveStart),
+    ViewportMove(ViewportMove),
+    ViewportMoveEnd(ViewportMoveEnd),
     ConnectStart(ConnectStart),
     ConnectEnd(ConnectEnd),
 }
@@ -305,6 +309,18 @@ impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
 impl NodeGraphViewCallbacks for CallbackTraceRecorder {}
 
 impl NodeGraphGestureCallbacks for CallbackTraceRecorder {
+    fn on_move_start(&mut self, ev: ViewportMoveStart) {
+        self.push(HarnessCallbackEvent::ViewportMoveStart(ev));
+    }
+
+    fn on_move(&mut self, ev: ViewportMove) {
+        self.push(HarnessCallbackEvent::ViewportMove(ev));
+    }
+
+    fn on_move_end(&mut self, ev: ViewportMoveEnd) {
+        self.push(HarnessCallbackEvent::ViewportMoveEnd(ev));
+    }
+
     fn on_node_drag_start(&mut self, ev: NodeDragStart) {
         self.push(HarnessCallbackEvent::NodeDragStart(ev));
     }

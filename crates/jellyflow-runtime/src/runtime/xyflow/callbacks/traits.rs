@@ -1,6 +1,6 @@
 use super::types::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragStart, NodeDragUpdate,
-    SelectionChange, ViewportMoveEnd, ViewportMoveStart,
+    SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
@@ -71,6 +71,8 @@ pub trait NodeGraphViewCallbacks: 'static {
 pub trait NodeGraphGestureCallbacks: 'static {
     /// UI-driven hook: viewport pan/zoom gesture start (ReactFlow `onMoveStart`).
     fn on_move_start(&mut self, _ev: ViewportMoveStart) {}
+    /// UI-driven hook: viewport pan/zoom gesture update (ReactFlow `onMove`).
+    fn on_move(&mut self, _ev: ViewportMove) {}
     /// UI-driven hook: viewport pan/zoom gesture end (ReactFlow `onMoveEnd`).
     fn on_move_end(&mut self, _ev: ViewportMoveEnd) {}
 

@@ -9,6 +9,7 @@ mod snapshot;
 mod store;
 mod token;
 mod view;
+mod viewport;
 
 pub use connection::{ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart};
 pub use gesture::NodeGraphGestureEvent;
@@ -17,3 +18,6 @@ pub use snapshot::{NodeGraphDocumentSnapshot, NodeGraphStoreSnapshot};
 pub use store::NodeGraphStoreEvent;
 pub use token::SubscriptionToken;
 pub use view::ViewChange;
+pub use viewport::{
+    ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
+};

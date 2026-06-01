@@ -63,6 +63,11 @@
       "date": "2026-06-01",
       "task": "JVI-020",
       "summary": "Added renderer-neutral viewport transform helpers for drag-pan and zoom-around-pointer, with focused tests and public surface coverage."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JVI-030",
+      "summary": "Wired viewport pan/zoom intent through NodeGraphStore view-state publication and added viewport move gesture callbacks."
     }
   ],
   "adr_refs": [
@@ -79,7 +84,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JVI-030",
-    "notes": "Wire viewport intent helpers through NodeGraphStore view-state publication and viewport gesture/callback lifecycle events."
+    "next_task": "JVI-040",
+    "notes": "Add viewport pan/zoom conformance fixtures and convert viewport adapter-conformance traces where appropriate."
   }
 }

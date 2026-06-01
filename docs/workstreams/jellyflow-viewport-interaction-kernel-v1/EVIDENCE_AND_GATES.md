@@ -69,6 +69,19 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo fmt --check`: passed.
   - Public API: `runtime::viewport::{ViewportTransform, ViewportPanRequest,
     ViewportZoomRequest, pan_viewport, zoom_viewport}`.
+- 2026-06-01: JVI-030 wired viewport intent through store publication and callback lifecycle.
+  - `cargo nextest run -p jellyflow-runtime viewport`: 14 passed, 144 skipped.
+  - `cargo nextest run -p jellyflow-runtime explicit_modules_expose_their_owned_surfaces`: 1
+    passed, 157 skipped.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance`: 8 passed, 150 skipped.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo fmt --check`: passed.
+  - `jq empty docs/workstreams/jellyflow-viewport-interaction-kernel-v1/WORKSTREAM.json
+    docs/workstreams/jellyflow-viewport-interaction-kernel-v1/TASKS.jsonl`: passed.
+  - `git diff --check`: passed.
+  - Store API: `NodeGraphStore::apply_viewport_pan` and `apply_viewport_zoom`.
+  - Gesture/callback API: `ViewportMoveStart`, `ViewportMove`, `ViewportMoveEnd`, and
+    `NodeGraphGestureCallbacks::on_move`.
 
 ## Notes
 

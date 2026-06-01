@@ -1,5 +1,8 @@
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::ViewChange;
+use crate::runtime::viewport::{
+    ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
+};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 
 use super::super::NodeGraphStore;
@@ -31,6 +34,25 @@ impl NodeGraphStore {
             |view_state| view_state.set_viewport(pan, zoom),
             ViewStateMutationKind::Viewport,
         );
+    }
+
+    /// Applies a normalized drag-pan request through normal view-state publication.
+    pub fn apply_viewport_pan(&mut self, request: ViewportPanRequest) -> Option<ViewportTransform> {
+        let current = ViewportTransform::from_view_state(&self.view_state)?;
+        let next = pan_viewport(current, request)?;
+        self.set_viewport(next.pan, next.zoom);
+        Some(next)
+    }
+
+    /// Applies a normalized anchored zoom request through normal view-state publication.
+    pub fn apply_viewport_zoom(
+        &mut self,
+        request: ViewportZoomRequest,
+    ) -> Option<ViewportTransform> {
+        let current = ViewportTransform::from_view_state(&self.view_state)?;
+        let next = zoom_viewport(current, request)?;
+        self.set_viewport(next.pan, next.zoom);
+        Some(next)
     }
 
     /// Sets selection state and notifies subscribers.

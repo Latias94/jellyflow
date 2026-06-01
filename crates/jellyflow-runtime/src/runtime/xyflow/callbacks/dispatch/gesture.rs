@@ -1,6 +1,7 @@
 use super::super::traits::NodeGraphCallbacks;
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
+    ViewportMove, ViewportMoveEnd, ViewportMoveStart,
 };
 
 pub(super) fn dispatch_gesture_callbacks(
@@ -15,6 +16,13 @@ pub(super) fn dispatch_gesture_callbacks(
         }
         NodeGraphGestureEvent::NodeDragUpdate(ev) => dispatch_node_drag_callbacks(callbacks, ev),
         NodeGraphGestureEvent::NodeDragEnd(ev) => dispatch_node_drag_end_callbacks(callbacks, ev),
+        NodeGraphGestureEvent::ViewportMoveStart(ev) => {
+            dispatch_viewport_move_start_callbacks(callbacks, ev);
+        }
+        NodeGraphGestureEvent::ViewportMove(ev) => dispatch_viewport_move_callbacks(callbacks, ev),
+        NodeGraphGestureEvent::ViewportMoveEnd(ev) => {
+            dispatch_viewport_move_end_callbacks(callbacks, ev);
+        }
     }
 }
 
@@ -36,4 +44,22 @@ fn dispatch_node_drag_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: Node
 
 fn dispatch_node_drag_end_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: NodeDragEnd) {
     callbacks.on_node_drag_end(ev);
+}
+
+fn dispatch_viewport_move_start_callbacks(
+    callbacks: &mut dyn NodeGraphCallbacks,
+    ev: ViewportMoveStart,
+) {
+    callbacks.on_move_start(ev);
+}
+
+fn dispatch_viewport_move_callbacks(callbacks: &mut dyn NodeGraphCallbacks, ev: ViewportMove) {
+    callbacks.on_move(ev);
+}
+
+fn dispatch_viewport_move_end_callbacks(
+    callbacks: &mut dyn NodeGraphCallbacks,
+    ev: ViewportMoveEnd,
+) {
+    callbacks.on_move_end(ev);
 }

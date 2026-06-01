@@ -16,10 +16,14 @@ deterministic transform helpers. Focused viewport tests cover drag-pan screen de
 zoom-around-pointer clamping/anchor stability, and invalid transform/input rejection. Public
 surface coverage imports and exercises the new module.
 
+JVI-030 is complete: `NodeGraphStore` applies normalized viewport pan/zoom intent through normal
+view-state publication, viewport move gesture events are first-class runtime events, and the
+XyFlow-style callback surface now dispatches `on_move_start`, `on_move`, and `on_move_end`.
+
 ## Next Task
 
-JVI-030: wire viewport intent helpers through `NodeGraphStore` view-state publication and viewport
-gesture/callback lifecycle events.
+JVI-040: add viewport pan/zoom conformance fixtures and convert the viewport adapter-conformance
+trace to the fixture runner where appropriate.
 
 ## Decisions Since Opening
 
@@ -39,6 +43,12 @@ gesture/callback lifecycle events.
   passed, 1 test run.
 - 2026-06-01: `cargo check -p jellyflow-runtime` passed.
 - 2026-06-01: `cargo fmt --check` passed.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime viewport` passed, 14 tests run after JVI-030.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime explicit_modules_expose_their_owned_surfaces`
+  passed, 1 test run after JVI-030.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 8 tests run
+  after JVI-030.
+- 2026-06-01: `cargo check -p jellyflow-runtime` passed after JVI-030.
 
 ## Follow-On Candidates
 
