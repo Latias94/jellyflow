@@ -13,7 +13,7 @@ pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
                 edge: edge.clone(),
             });
         }
-        GraphOp::RemoveEdge { id, .. } => out.push_edge(EdgeChange::Remove { id: *id }),
+        GraphOp::RemoveEdge { id, .. } => push_edge_remove(*id, out),
         GraphOp::SetEdgeKind { id, to, .. } => {
             out.push_edge(EdgeChange::Kind { id: *id, kind: *to })
         }
@@ -41,6 +41,25 @@ pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
 
 pub(super) fn push_removed_edge_changes(edges: &[(EdgeId, Edge)], out: &mut NodeGraphChanges) {
     for (id, _edge) in edges {
-        out.push_edge(EdgeChange::Remove { id: *id });
+        push_edge_remove(*id, out);
     }
+}
+
+fn push_edge_remove(id: EdgeId, out: &mut NodeGraphChanges) {
+    if has_pending_edge_remove_since_last_add(out.edges(), id) {
+        return;
+    }
+    out.push_edge(EdgeChange::Remove { id });
+}
+
+fn has_pending_edge_remove_since_last_add(changes: &[EdgeChange], id: EdgeId) -> bool {
+    let mut removed = false;
+    for change in changes {
+        match change {
+            EdgeChange::Add { id: added, .. } if *added == id => removed = false,
+            EdgeChange::Remove { id: removed_id } if *removed_id == id => removed = true,
+            _ => {}
+        }
+    }
+    removed
 }

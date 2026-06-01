@@ -48,24 +48,7 @@ impl NodeGraphChanges {
     }
 
     pub(in crate::runtime::xyflow) fn push_edge(&mut self, change: EdgeChange) {
-        if let EdgeChange::Remove { id } = change
-            && self.has_pending_edge_remove_since_last_add(id)
-        {
-            return;
-        }
         self.edges.push(change);
-    }
-
-    fn has_pending_edge_remove_since_last_add(&self, id: EdgeId) -> bool {
-        let mut removed = false;
-        for change in &self.edges {
-            match change {
-                EdgeChange::Add { id: added, .. } if *added == id => removed = false,
-                EdgeChange::Remove { id: removed_id } if *removed_id == id => removed = true,
-                _ => {}
-            }
-        }
-        removed
     }
 
     pub fn from_patch(patch: &NodeGraphPatch) -> Self {
