@@ -15,8 +15,8 @@ pub use core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
     EdgeReconnectableEndpoint, Graph, GraphId, GraphImport, GraphImportClosure, GraphImportError,
     GraphValidationError, GraphValidationReport, Group, GroupId, Node, NodeExtent, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, StickyNote,
-    StickyNoteId, Symbol, SymbolId,
+    NodeKindKey, NodeOrigin, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    StickyNote, StickyNoteId, Symbol, SymbolId,
 };
 pub use interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,

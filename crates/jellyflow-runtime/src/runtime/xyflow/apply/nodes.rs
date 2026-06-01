@@ -24,6 +24,9 @@ impl<'a> ApplyChangesPlanner<'a> {
             NodeChange::Position { id, position } => {
                 self.mutate_existing_node(*id, |node| node.pos = *position);
             }
+            NodeChange::Origin { id, origin } => {
+                self.mutate_existing_node(*id, |node| node.origin = *origin);
+            }
             NodeChange::Kind { id, kind } => {
                 self.mutate_existing_node(*id, |node| node.kind = kind.clone());
             }

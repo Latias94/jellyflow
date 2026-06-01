@@ -16,6 +16,7 @@ fn view_state_sanitize_removes_stale_ids() {
             kind: jellyflow_core::core::NodeKindKey::new("test"),
             kind_version: 1,
             pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
+            origin: None,
             selectable: None,
             focusable: None,
             draggable: None,

@@ -1,4 +1,4 @@
-use crate::node_origin::normalize_node_origin;
+use crate::node_origin::{normalize_node_origin, resolve_node_origin};
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::lookups::{NodeGraphLookups, NodeLookupEntry};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
@@ -134,10 +134,11 @@ impl NodeBoundsResolver {
         if !entry.is_visible_with_hidden_policy(self.include_hidden) {
             return None;
         }
+        let node_origin = resolve_node_origin(entry.origin, self.node_origin);
         CanvasBounds::from_node(
             entry.pos,
             entry.resolved_size(self.fallback_size)?,
-            self.node_origin,
+            node_origin,
         )
     }
 }

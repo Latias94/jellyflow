@@ -96,6 +96,7 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
         kind: NodeKindKey::new("demo.c"),
         kind_version: 1,
         pos: CanvasPoint { x: 0.0, y: 0.0 },
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

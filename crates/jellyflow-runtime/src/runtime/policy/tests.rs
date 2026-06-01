@@ -12,6 +12,7 @@ fn node() -> Node {
         kind: NodeKindKey::new("test"),
         kind_version: 1,
         pos: CanvasPoint::default(),
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

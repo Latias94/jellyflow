@@ -22,6 +22,7 @@ impl NodeGraphLookups {
             GraphOp::AddNode { id, node } => self.apply_add_node(*id, node),
             GraphOp::RemoveNode { id, edges, .. } => self.apply_remove_node(*id, edges),
             GraphOp::SetNodePos { id, to, .. } => self.apply_set_node_pos(graph, *id, *to),
+            GraphOp::SetNodeOrigin { id, to, .. } => self.apply_set_node_origin(*id, *to),
             GraphOp::SetNodeKind { id, to, .. } => self.apply_set_node_kind(graph, *id, to),
             GraphOp::SetNodeKindVersion { id, to, .. } => {
                 self.apply_set_node_kind_version(graph, *id, *to)

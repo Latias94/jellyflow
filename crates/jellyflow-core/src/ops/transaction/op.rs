@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::core::EdgeReconnectable;
 use crate::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphId, GraphImport, Group,
-    GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortId, StickyNote, StickyNoteId, Symbol,
-    SymbolId,
+    GroupId, Node, NodeExtent, NodeId, NodeKindKey, NodeOrigin, Port, PortId, StickyNote,
+    StickyNoteId, Symbol, SymbolId,
 };
 use crate::types::TypeDesc;
 
@@ -35,6 +35,12 @@ pub enum GraphOp {
         id: NodeId,
         from: CanvasPoint,
         to: CanvasPoint,
+    },
+    /// Sets a node origin override.
+    SetNodeOrigin {
+        id: NodeId,
+        from: Option<NodeOrigin>,
+        to: Option<NodeOrigin>,
     },
     /// Sets a node kind identifier.
     SetNodeKind {

@@ -174,6 +174,7 @@ fn node(
         kind: NodeKindKey::new("test.node"),
         kind_version: 1,
         pos,
+        origin: None,
         selectable,
         focusable: None,
         draggable: None,

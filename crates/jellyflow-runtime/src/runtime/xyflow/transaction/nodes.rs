@@ -26,6 +26,13 @@ impl<'a> ChangesTransactionPlanner<'a> {
                     to: *position,
                 })?;
             }
+            NodeChange::Origin { id, origin } => {
+                self.push_node_update(*id, |node| GraphOp::SetNodeOrigin {
+                    id: *id,
+                    from: node.origin,
+                    to: *origin,
+                })?;
+            }
             NodeChange::Kind { id, kind } => {
                 self.push_node_update(*id, |node| GraphOp::SetNodeKind {
                     id: *id,

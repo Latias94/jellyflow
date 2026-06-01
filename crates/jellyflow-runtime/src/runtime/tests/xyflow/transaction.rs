@@ -3,7 +3,7 @@ use super::super::fixtures::make_graph;
 use crate::runtime::xyflow::changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges,
 };
-use jellyflow_core::core::{CanvasPoint, EdgeId, NodeId, PortId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, NodeId, NodeOrigin, PortId};
 use jellyflow_core::ops::GraphOp;
 
 #[test]
@@ -11,10 +11,16 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     let (g0, a, _b, out_port, in_port, eid) = make_graph();
 
     let changes = NodeGraphChanges::from_parts(
-        vec![NodeChange::Position {
-            id: a,
-            position: CanvasPoint { x: 42.0, y: 7.0 },
-        }],
+        vec![
+            NodeChange::Position {
+                id: a,
+                position: CanvasPoint { x: 42.0, y: 7.0 },
+            },
+            NodeChange::Origin {
+                id: a,
+                origin: Some(NodeOrigin { x: 0.5, y: 0.25 }),
+            },
+        ],
         vec![
             EdgeChange::Endpoints {
                 id: eid,
@@ -39,6 +45,10 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     assert_eq!(
         g1.nodes.get(&a).unwrap().pos,
         CanvasPoint { x: 42.0, y: 7.0 }
+    );
+    assert_eq!(
+        g1.nodes.get(&a).unwrap().origin,
+        Some(NodeOrigin { x: 0.5, y: 0.25 })
     );
     assert_eq!(g1.edges.get(&eid).unwrap().from, out_port);
     assert_eq!(g1.edges.get(&eid).unwrap().to, in_port);

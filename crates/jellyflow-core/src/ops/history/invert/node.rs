@@ -20,6 +20,11 @@ pub(super) fn invert_node_op(op: &GraphOp) -> Vec<GraphOp> {
             from: *to,
             to: *from,
         }],
+        GraphOp::SetNodeOrigin { id, from, to } => vec![GraphOp::SetNodeOrigin {
+            id: *id,
+            from: *to,
+            to: *from,
+        }],
         GraphOp::SetNodeKind { id, from, to } => vec![GraphOp::SetNodeKind {
             id: *id,
             from: to.clone(),

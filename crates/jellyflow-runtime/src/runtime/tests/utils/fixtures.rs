@@ -8,6 +8,7 @@ pub(super) fn node_at(pos: CanvasPoint, size: Option<CanvasSize>) -> Node {
         kind: NodeKindKey::new("test.node"),
         kind_version: 1,
         pos,
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

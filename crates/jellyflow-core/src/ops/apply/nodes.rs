@@ -16,6 +16,9 @@ pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
         GraphOp::SetNodePos { id, to, .. } => {
             node_mut(graph, *id)?.pos = *to;
         }
+        GraphOp::SetNodeOrigin { id, to, .. } => {
+            node_mut(graph, *id)?.origin = *to;
+        }
         GraphOp::SetNodeKind { id, to, .. } => {
             node_mut(graph, *id)?.kind = to.clone();
         }

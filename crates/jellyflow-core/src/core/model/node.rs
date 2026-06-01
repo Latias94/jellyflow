@@ -19,6 +19,12 @@ pub struct Node {
     /// Top-left position in canvas space.
     pub pos: CanvasPoint,
 
+    /// Optional node origin override (XyFlow `node.origin`).
+    ///
+    /// When omitted, runtime uses the global `NodeGraphInteractionState.node_origin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<NodeOrigin>,
+
     /// Whether the node can be selected (XyFlow `node.selectable`).
     ///
     /// When omitted, the global `NodeGraphInteractionState.elements_selectable` decides.
@@ -98,6 +104,23 @@ pub struct Node {
     /// This must be preserved for unknown node kinds.
     #[serde(default)]
     pub data: Value,
+}
+
+/// Per-node origin override, expressed as a normalized fraction of the node rect.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NodeOrigin {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl NodeOrigin {
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
+
+    pub fn as_tuple(self) -> (f32, f32) {
+        (self.x, self.y)
+    }
 }
 
 /// Per-node movement/resize extent.

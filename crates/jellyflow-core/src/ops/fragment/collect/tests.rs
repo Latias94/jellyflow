@@ -10,6 +10,7 @@ fn node(kind: &str, pos: (f32, f32), parent: Option<GroupId>, ports: &[PortId]) 
         kind: NodeKindKey::new(kind),
         kind_version: 1,
         pos: CanvasPoint { x: pos.0, y: pos.1 },
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

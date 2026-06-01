@@ -118,6 +118,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
             kind: NodeKindKey::new("demo.c"),
             kind_version: 1,
             pos: CanvasPoint { x: 200.0, y: 0.0 },
+            origin: None,
             selectable: None,
             focusable: None,
             draggable: None,

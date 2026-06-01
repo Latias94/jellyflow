@@ -128,6 +128,7 @@ fn make_node() -> Node {
         kind: NodeKindKey::new("demo.node"),
         kind_version: 1,
         pos: CanvasPoint { x: 0.0, y: 0.0 },
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

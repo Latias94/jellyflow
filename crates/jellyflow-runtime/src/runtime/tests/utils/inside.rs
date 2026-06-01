@@ -2,7 +2,9 @@ use super::fixtures::node_at;
 
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::utils::{GetNodesInsideOptions, NodeInclusion, get_nodes_inside};
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId, NodeOrigin,
+};
 
 #[test]
 fn get_nodes_inside_supports_partial_vs_full_inclusion() {
@@ -67,6 +69,43 @@ fn get_nodes_inside_supports_partial_vs_full_inclusion() {
         },
     );
     assert_eq!(full, vec![a]);
+}
+
+#[test]
+fn get_nodes_inside_uses_node_origin_override() {
+    let mut g = Graph::new(GraphId::from_u128(1));
+    let a = NodeId::new();
+    let mut node = node_at(
+        CanvasPoint { x: 20.0, y: 10.0 },
+        Some(CanvasSize {
+            width: 10.0,
+            height: 6.0,
+        }),
+    );
+    node.origin = Some(NodeOrigin { x: 0.2, y: 1.0 });
+    g.nodes.insert(a, node);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.rebuild_from(&g);
+
+    let found = get_nodes_inside(
+        &lookups,
+        CanvasRect {
+            origin: CanvasPoint { x: 17.0, y: 3.0 },
+            size: CanvasSize {
+                width: 2.0,
+                height: 2.0,
+            },
+        },
+        GetNodesInsideOptions {
+            inclusion: NodeInclusion::Partial,
+            node_origin: (0.5, 0.5),
+            include_hidden: true,
+            fallback_size: None,
+        },
+    );
+
+    assert_eq!(found, vec![a]);
 }
 
 #[test]

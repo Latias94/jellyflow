@@ -28,6 +28,7 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         GraphOp::AddNode { .. }
         | GraphOp::RemoveNode { .. }
         | GraphOp::SetNodePos { .. }
+        | GraphOp::SetNodeOrigin { .. }
         | GraphOp::SetNodeKind { .. }
         | GraphOp::SetNodeKindVersion { .. }
         | GraphOp::SetNodeSelectable { .. }

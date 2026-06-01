@@ -7,7 +7,7 @@ use crate::runtime::drag::{
     NODE_DRAG_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest, plan_node_drag,
 };
 use crate::runtime::store::NodeGraphStore;
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeExtent};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeExtent, NodeOrigin};
 use jellyflow_core::ops::GraphOp;
 
 #[test]
@@ -169,6 +169,49 @@ fn single_node_drag_clamps_per_node_rect_with_node_origin() {
             node: fixture.enabled,
             from: CanvasPoint { x: 10.0, y: 20.0 },
             to: CanvasPoint { x: 90.0, y: 55.0 },
+        }],
+    );
+}
+
+#[test]
+fn single_node_drag_uses_node_origin_override_for_extent_clamping() {
+    let mut fixture = drag_fixture();
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.size = Some(CanvasSize {
+        width: 20.0,
+        height: 10.0,
+    });
+    node.origin = Some(NodeOrigin { x: 1.0, y: 1.0 });
+    node.extent = Some(NodeExtent::Rect {
+        rect: CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            },
+        },
+    });
+
+    let mut harness = InteractionHarness::new("single node per-node origin", fixture.graph);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.node_origin = NodeGraphNodeOrigin { x: 0.5, y: 0.5 };
+    });
+
+    let plan = harness
+        .store()
+        .plan_node_drag(NodeDragRequest {
+            node: fixture.enabled,
+            to: CanvasPoint { x: 95.0, y: 55.0 },
+        })
+        .expect("per-node origin drag plan");
+
+    assert_eq!(plan.to, CanvasPoint { x: 95.0, y: 55.0 });
+    assert_eq!(
+        plan.items(),
+        &[NodeDragItem {
+            node: fixture.enabled,
+            from: CanvasPoint { x: 10.0, y: 20.0 },
+            to: CanvasPoint { x: 95.0, y: 55.0 },
         }],
     );
 }

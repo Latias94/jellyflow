@@ -12,11 +12,9 @@ pub(in crate::runtime::drag) fn drag_items(
     delta: CanvasPoint,
 ) -> Vec<NodeDragItem> {
     let node_drag = interaction.node_drag_interaction();
-    let node_origin = node_drag.node_origin.normalized();
-    let node_origin = (node_origin.x, node_origin.y);
     let global_extent = node_drag.node_extent.and_then(normalized_rect);
     let group_bounds = (candidates.len() > 1)
-        .then(|| candidate_bounds(candidates, node_origin))
+        .then(|| candidate_bounds(candidates))
         .flatten()
         .map(CanvasBounds::to_rect);
 
@@ -27,10 +25,9 @@ pub(in crate::runtime::drag) fn drag_items(
                 x: candidate.from.x + delta.x,
                 y: candidate.from.y + delta.y,
             };
-            let extent =
-                adjusted_candidate_extent(*candidate, node_origin, global_extent, group_bounds);
+            let extent = adjusted_candidate_extent(*candidate, global_extent, group_bounds);
             let to = extent
-                .map(|extent| clamp_candidate_position(*candidate, desired, node_origin, extent))
+                .map(|extent| clamp_candidate_position(*candidate, desired, extent))
                 .unwrap_or(desired);
             to.is_finite().then_some(NodeDragItem {
                 node: candidate.node,
@@ -43,7 +40,6 @@ pub(in crate::runtime::drag) fn drag_items(
 
 fn adjusted_candidate_extent(
     candidate: DragCandidate,
-    node_origin: (f32, f32),
     global_extent: Option<CanvasRect>,
     group_bounds: Option<CanvasRect>,
 ) -> Option<CanvasRect> {
@@ -51,7 +47,7 @@ fn adjusted_candidate_extent(
         && let (Some(global_extent), Some(group_bounds), Some(candidate_bounds)) = (
             global_extent,
             group_bounds,
-            candidate_bounds_at(candidate, candidate.from, node_origin).map(CanvasBounds::to_rect),
+            candidate_bounds_at(candidate, candidate.from).map(CanvasBounds::to_rect),
         )
     {
         let group_max_x = group_bounds.origin.x + group_bounds.size.width;
@@ -85,12 +81,9 @@ fn adjusted_candidate_extent(
 fn clamp_candidate_position(
     candidate: DragCandidate,
     target: CanvasPoint,
-    node_origin: (f32, f32),
     extent: CanvasRect,
 ) -> CanvasPoint {
-    let Some(bounds) =
-        candidate_bounds_at(candidate, target, node_origin).map(CanvasBounds::to_rect)
-    else {
+    let Some(bounds) = candidate_bounds_at(candidate, target).map(CanvasBounds::to_rect) else {
         return target;
     };
 
@@ -101,8 +94,8 @@ fn clamp_candidate_position(
         y: clamp(bounds.origin.y, extent.origin.y, max_y),
     };
     CanvasPoint {
-        x: top_left.x + node_origin.0 * candidate.size.width,
-        y: top_left.y + node_origin.1 * candidate.size.height,
+        x: top_left.x + candidate.origin.0 * candidate.size.width,
+        y: top_left.y + candidate.origin.1 * candidate.size.height,
     }
 }
 

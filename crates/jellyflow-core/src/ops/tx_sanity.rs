@@ -45,6 +45,10 @@ impl NonFiniteGeometry {
             GraphOp::AddNode { node, .. } => node
                 .size
                 .and_then(|s| (!s.is_finite()).then_some("AddNode.node.size"))
+                .or_else(|| {
+                    node.origin
+                        .and_then(|origin| (!origin.is_finite()).then_some("AddNode.node.origin"))
+                })
                 .or_else(|| (!node.pos.is_finite()).then_some("AddNode.node.pos"))
                 .or_else(|| match node.extent {
                     Some(NodeExtent::Rect { rect }) => {
@@ -58,6 +62,9 @@ impl NonFiniteGeometry {
             }
 
             GraphOp::SetNodePos { to, .. } => (!to.is_finite()).then_some("SetNodePos.to"),
+            GraphOp::SetNodeOrigin { to, .. } => {
+                to.and_then(|origin| (!origin.is_finite()).then_some("SetNodeOrigin.to"))
+            }
             GraphOp::SetGroupRect { to, .. } => (!to.is_finite()).then_some("SetGroupRect.to"),
             GraphOp::SetStickyNoteRect { to, .. } => {
                 (!to.is_finite()).then_some("SetStickyNoteRect.to")

@@ -114,6 +114,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     }
     if let Some(node) = to.nodes.get_mut(&a) {
         node.pos.x = 42.0;
+        node.origin = Some(crate::core::NodeOrigin { x: 0.5, y: 0.25 });
         node.selectable = Some(false);
         node.draggable = Some(false);
         node.connectable = Some(false);
@@ -160,6 +161,12 @@ fn graph_diff_is_deterministic_and_roundtrips() {
         tx1.ops()
             .iter()
             .any(|op| matches!(op, GraphOp::SetNodeHidden { id, .. } if *id == a)),
+        "diff must include node setter ops for changed fields"
+    );
+    assert!(
+        tx1.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetNodeOrigin { id, .. } if *id == a)),
         "diff must include node setter ops for changed fields"
     );
     assert!(

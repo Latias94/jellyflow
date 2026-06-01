@@ -19,6 +19,10 @@ pub(super) fn try_push_node_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
             id: *id,
             position: *to,
         }),
+        GraphOp::SetNodeOrigin { id, to, .. } => out.push_node(NodeChange::Origin {
+            id: *id,
+            origin: *to,
+        }),
         GraphOp::SetNodeKind { id, to, .. } => out.push_node(NodeChange::Kind {
             id: *id,
             kind: to.clone(),

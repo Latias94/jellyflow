@@ -44,6 +44,7 @@ ADR 0002 accepts an additive v1 boundary:
 | `kind_version` | Semantic model | Per-kind migration/version anchor. |
 | `data` | Semantic model | Domain-owned opaque payload. |
 | `pos` | Layout model | Canvas placement. |
+| `origin` | Layout model | Per-node override resolved against global `node_origin` for bounds and drag math. |
 | `size` | Layout model | Explicit measured/logical size. |
 | `parent` | Layout model | Group/container relationship, not semantic subgraph. |
 | `ports` | Persisted presentation/layout | Stable UI ordering for semantic ports. |

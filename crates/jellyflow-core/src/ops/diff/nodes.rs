@@ -96,6 +96,13 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.pos,
             });
         }
+        if node_from.origin != node_to.origin {
+            self.push_op(GraphOp::SetNodeOrigin {
+                id,
+                from: node_from.origin,
+                to: node_to.origin,
+            });
+        }
         self.diff_node_parent(id, node_from, node_to);
         if node_from.extent != node_to.extent {
             self.push_op(GraphOp::SetNodeExtent {

@@ -2,7 +2,8 @@ use super::super::super::fixtures::make_graph;
 
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, EdgeReconnectable, GroupId, NodeExtent, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, EdgeReconnectable, GroupId, NodeExtent,
+    NodeOrigin, PortId,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 

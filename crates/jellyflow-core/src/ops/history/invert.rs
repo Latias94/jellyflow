@@ -19,6 +19,7 @@ fn invert_op(op: &GraphOp) -> Vec<GraphOp> {
         GraphOp::AddNode { .. }
         | GraphOp::RemoveNode { .. }
         | GraphOp::SetNodePos { .. }
+        | GraphOp::SetNodeOrigin { .. }
         | GraphOp::SetNodeKind { .. }
         | GraphOp::SetNodeKindVersion { .. }
         | GraphOp::SetNodeSelectable { .. }

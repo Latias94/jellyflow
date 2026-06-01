@@ -11,6 +11,12 @@ pub(super) fn try_coalesce_node_setter(last: &mut GraphOp, next: &GraphOp) -> bo
             GraphOp::SetNodePos { id: b, from, to },
         ) => coalesce_value(a, last_to, b, from, to),
         (
+            GraphOp::SetNodeOrigin {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetNodeOrigin { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
             GraphOp::SetNodeKind {
                 id: a, to: last_to, ..
             },

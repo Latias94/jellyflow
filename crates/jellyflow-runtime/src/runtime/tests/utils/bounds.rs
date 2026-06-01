@@ -4,7 +4,7 @@ use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::utils::{
     GetNodesBoundsOptions, get_node_position_with_origin, get_node_rect, get_nodes_bounds,
 };
-use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId, NodeId, NodeOrigin};
 
 #[test]
 fn get_node_position_with_origin_matches_bounds_top_left() {
@@ -27,6 +27,28 @@ fn get_node_position_with_origin_matches_bounds_top_left() {
     let p = get_node_position_with_origin(&lookups, a, (0.5, 0.5), None).expect("pos");
     assert!((p.x - 15.0).abs() <= 1.0e-6);
     assert!((p.y - 7.0).abs() <= 1.0e-6);
+}
+
+#[test]
+fn get_node_position_with_origin_uses_node_origin_override() {
+    let mut g = Graph::new(GraphId::from_u128(1));
+    let a = NodeId::new();
+    let mut node = node_at(
+        CanvasPoint { x: 20.0, y: 10.0 },
+        Some(CanvasSize {
+            width: 10.0,
+            height: 6.0,
+        }),
+    );
+    node.origin = Some(NodeOrigin { x: 0.2, y: 1.0 });
+    g.nodes.insert(a, node);
+
+    let mut lookups = NodeGraphLookups::default();
+    lookups.rebuild_from(&g);
+
+    let p = get_node_position_with_origin(&lookups, a, (0.5, 0.5), None).expect("pos");
+    assert!((p.x - 18.0).abs() <= 1.0e-6);
+    assert!((p.y - 4.0).abs() <= 1.0e-6);
 }
 
 #[test]

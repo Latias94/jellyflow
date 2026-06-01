@@ -12,6 +12,7 @@ fn node_with_parent(pos: CanvasPoint, parent: Option<GroupId>) -> Node {
         kind: NodeKindKey::new("test.node"),
         kind_version: 1,
         pos,
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

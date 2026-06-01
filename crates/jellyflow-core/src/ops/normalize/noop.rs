@@ -3,6 +3,7 @@ use crate::ops::GraphOp;
 pub(super) fn op_is_noop(op: &GraphOp) -> bool {
     match op {
         GraphOp::SetNodePos { from, to, .. } => from == to,
+        GraphOp::SetNodeOrigin { from, to, .. } => from == to,
         GraphOp::SetNodeKind { from, to, .. } => from == to,
         GraphOp::SetNodeKindVersion { from, to, .. } => from == to,
         GraphOp::SetNodeSelectable { from, to, .. } => from == to,

@@ -1,10 +1,13 @@
-use jellyflow_core::core::{CanvasPoint, CanvasSize, GroupId, Node, NodeKindKey, PortId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasSize, GroupId, Node, NodeKindKey, NodeOrigin, PortId,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLookupEntry {
     pub kind: NodeKindKey,
     pub kind_version: u32,
     pub pos: CanvasPoint,
+    pub origin: Option<NodeOrigin>,
     pub parent: Option<GroupId>,
     pub size: Option<CanvasSize>,
     pub hidden: bool,
@@ -18,6 +21,7 @@ impl NodeLookupEntry {
             kind: node.kind.clone(),
             kind_version: node.kind_version,
             pos: node.pos,
+            origin: node.origin,
             parent: node.parent,
             size: node.size,
             hidden: node.hidden,

@@ -51,7 +51,7 @@ The summary taxonomy is:
 
 - semantic model: graph identity/version, imports, symbols, node kind/version/data, port key,
   direction, kind, capacity, type/data, edge kind/endpoints;
-- layout model: node position/size, group bounds, sticky-note bounds, parent group relationship;
+- layout model: node position/origin/size, group bounds, sticky-note bounds, parent group relationship;
 - persisted editor policy: node selectable/focusable/draggable/connectable/deletable/extent/expand-parent,
   port connectable/start/end, edge selectable/focusable/interaction-width/deletable/reconnectable;
 - persisted presentation: node/edge hidden, collapsed, port order, group/sticky color;

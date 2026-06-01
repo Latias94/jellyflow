@@ -51,6 +51,7 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             },
         },
     };
+    let origin = NodeOrigin { x: 0.5, y: 0.25 };
 
     let tx = GraphTransaction::from_ops([
         GraphOp::SetNodeSelectable {
@@ -82,6 +83,11 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             id: a,
             from: None,
             to: Some(group),
+        },
+        GraphOp::SetNodeOrigin {
+            id: a,
+            from: None,
+            to: Some(origin),
         },
         GraphOp::SetNodeExtent {
             id: a,
@@ -126,7 +132,7 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
     ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
-    assert_eq!(changes.nodes().len(), 9);
+    assert_eq!(changes.nodes().len(), 10);
     assert_eq!(changes.edges().len(), 5);
 
     assert!(
@@ -155,6 +161,12 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             .nodes()
             .iter()
             .any(|change| matches!(change, NodeChange::Parent { id, parent: Some(found) } if *id == a && *found == group))
+    );
+    assert!(
+        changes
+            .nodes()
+            .iter()
+            .any(|change| matches!(change, NodeChange::Origin { id, origin: Some(found) } if *id == a && *found == origin))
     );
     assert!(
         changes

@@ -96,6 +96,7 @@ fn node(pos: CanvasPoint, draggable: Option<bool>, hidden: bool) -> Node {
         kind: NodeKindKey::new("test.node"),
         kind_version: 1,
         pos,
+        origin: None,
         selectable: None,
         focusable: None,
         draggable,

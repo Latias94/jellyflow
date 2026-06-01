@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use jellyflow_core::core::GroupId;
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, Node, NodeExtent, NodeId, NodeKindKey, PortId,
+    CanvasPoint, CanvasSize, Node, NodeExtent, NodeId, NodeKindKey, NodeOrigin, PortId,
 };
 
 /// Changes targeting nodes (graph-owned).
@@ -20,6 +20,10 @@ pub enum NodeChange {
     Position {
         id: NodeId,
         position: CanvasPoint,
+    },
+    Origin {
+        id: NodeId,
+        origin: Option<NodeOrigin>,
     },
     Kind {
         id: NodeId,

@@ -3,7 +3,7 @@ use super::super::fixtures::{make_graph, make_store};
 use crate::runtime::lookups::ConnectionSide;
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable, Group, GroupId,
-    PortKind,
+    NodeOrigin, PortKind,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -48,6 +48,26 @@ fn store_lookups_update_node_hidden_after_dispatch_transaction() {
 
     store.dispatch_transaction(&tx).expect("dispatch");
     assert!(store.lookups().node_lookup.get(&a).unwrap().hidden);
+}
+
+#[test]
+fn store_lookups_update_node_origin_after_dispatch_transaction() {
+    let (g, a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut store = make_store(g);
+    assert_eq!(store.lookups().node_lookup.get(&a).unwrap().origin, None);
+
+    let origin = NodeOrigin { x: 0.5, y: 0.25 };
+    let tx = GraphTransaction::from_ops([GraphOp::SetNodeOrigin {
+        id: a,
+        from: None,
+        to: Some(origin),
+    }]);
+
+    store.dispatch_transaction(&tx).expect("dispatch");
+    assert_eq!(
+        store.lookups().node_lookup.get(&a).unwrap().origin,
+        Some(origin)
+    );
 }
 
 #[test]

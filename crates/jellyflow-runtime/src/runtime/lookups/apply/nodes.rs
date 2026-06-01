@@ -1,6 +1,7 @@
 use super::super::{NodeGraphLookups, NodeLookupEntry};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, Graph, GroupId, Node, NodeId, NodeKindKey, PortId,
+    CanvasPoint, CanvasSize, Edge, EdgeId, Graph, GroupId, Node, NodeId, NodeKindKey, NodeOrigin,
+    PortId,
 };
 
 impl NodeGraphLookups {
@@ -23,6 +24,10 @@ impl NodeGraphLookups {
         pos: CanvasPoint,
     ) -> bool {
         self.update_node_lookup_or_insert(graph, id, |node| node.pos = pos)
+    }
+
+    pub(super) fn apply_set_node_origin(&mut self, id: NodeId, origin: Option<NodeOrigin>) -> bool {
+        self.update_existing_node_lookup(id, |node| node.origin = origin)
     }
 
     pub(super) fn apply_set_node_kind(

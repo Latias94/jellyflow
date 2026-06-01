@@ -15,6 +15,7 @@ fn node(kind: &str, hidden: bool) -> Node {
         kind: NodeKindKey::new(kind),
         kind_version: 1,
         pos: CanvasPoint::default(),
+        origin: None,
         selectable: None,
         focusable: None,
         draggable: None,

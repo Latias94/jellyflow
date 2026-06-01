@@ -3,24 +3,20 @@ use jellyflow_core::core::{CanvasPoint, CanvasRect};
 
 use super::super::candidates::DragCandidate;
 
-pub(super) fn candidate_bounds(
-    candidates: &[DragCandidate],
-    node_origin: (f32, f32),
-) -> Option<CanvasBounds> {
+pub(super) fn candidate_bounds(candidates: &[DragCandidate]) -> Option<CanvasBounds> {
     candidates
         .iter()
-        .filter_map(|candidate| candidate_bounds_at(*candidate, candidate.from, node_origin))
+        .filter_map(|candidate| candidate_bounds_at(*candidate, candidate.from))
         .reduce(CanvasBounds::union)
 }
 
 pub(super) fn candidate_bounds_at(
     candidate: DragCandidate,
     position: CanvasPoint,
-    node_origin: (f32, f32),
 ) -> Option<CanvasBounds> {
     let origin = CanvasPoint {
-        x: position.x - node_origin.0 * candidate.size.width,
-        y: position.y - node_origin.1 * candidate.size.height,
+        x: position.x - candidate.origin.0 * candidate.size.width,
+        y: position.y - candidate.origin.1 * candidate.size.height,
     };
     CanvasBounds::from_rect(CanvasRect {
         origin,
