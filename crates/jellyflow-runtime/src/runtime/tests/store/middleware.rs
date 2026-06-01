@@ -1,8 +1,6 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{make_graph, make_store};
 
-use crate::io::NodeGraphViewState;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
-use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::CanvasPoint;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -23,8 +21,7 @@ fn store_middleware_can_rewrite_transactions() {
     }
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config())
-        .with_middleware(DropOps);
+    let mut store = make_store(g0).with_middleware(DropOps);
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: a,
@@ -68,12 +65,7 @@ fn store_middleware_can_reject_transactions() {
     }
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(
-        g0.clone(),
-        NodeGraphViewState::default(),
-        default_editor_config(),
-    )
-    .with_middleware(RejectAll);
+    let mut store = make_store(g0.clone()).with_middleware(RejectAll);
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: a,
@@ -134,11 +126,10 @@ fn store_middleware_after_dispatch_observes_undo_and_redo() {
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
     let before_calls = Rc::new(Cell::new(0));
     let after_calls = Rc::new(RefCell::new(Vec::new()));
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config())
-        .with_middleware(TraceAfterDispatch {
-            before_calls: before_calls.clone(),
-            after_calls: after_calls.clone(),
-        });
+    let mut store = make_store(g0).with_middleware(TraceAfterDispatch {
+        before_calls: before_calls.clone(),
+        after_calls: after_calls.clone(),
+    });
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: a,
