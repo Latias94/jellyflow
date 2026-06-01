@@ -59,8 +59,7 @@ impl NodeGraphStore {
         let committed_for_history = committed.clone();
         let patch = self.prepare_committed_graph_patch(graph, committed);
         self.history.record(committed_for_history);
-        self.run_after_dispatch_middleware(&patch);
-        self.publish_dispatch_outcome(patch)
+        self.complete_committed_patch(patch)
     }
 
     fn run_before_dispatch_middleware(
@@ -126,7 +125,8 @@ impl NodeGraphStore {
         NodeGraphPatch::new(committed)
     }
 
-    pub(super) fn publish_dispatch_outcome(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
+    pub(super) fn complete_committed_patch(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
+        self.run_after_dispatch_middleware(&patch);
         self.publish_graph_commit(&patch);
         DispatchOutcome::new(patch)
     }

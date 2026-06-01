@@ -54,7 +54,6 @@ impl NodeGraphStore {
         };
 
         let patch = self.prepare_committed_graph_patch(replayed.graph, replayed.committed);
-        self.run_after_dispatch_middleware(&patch);
-        Ok(Some(self.publish_dispatch_outcome(patch)))
+        Ok(Some(self.complete_committed_patch(patch)))
     }
 }
