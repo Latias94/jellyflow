@@ -4,8 +4,7 @@ use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
 
-use super::common::resolve_connection_endpoints;
-use super::connect::plan_connect_with_mode_and_policy;
+use super::connect::plan_resolved_connect;
 
 /// Plans connecting two ports with optional type compatibility checks.
 ///
@@ -58,35 +57,32 @@ pub fn plan_connect_typed_with_mode_and_policy(
     mut type_of: impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
     compat: &mut dyn TypeCompatibility,
 ) -> ConnectPlan {
-    let base = plan_connect_with_mode_and_policy(graph, a, b, mode, state);
-    if !base.is_accept() {
-        return base;
-    }
-
-    let endpoints = match resolve_connection_endpoints(graph, a, b, mode) {
-        Ok(endpoints) => endpoints,
+    let planned = match plan_resolved_connect(graph, a, b, mode, state) {
+        Ok(planned) => planned,
         Err(plan) => return plan,
     };
+    let endpoints = planned.endpoints();
+    let edge_kind = endpoints.edge_kind;
+    let from_id = endpoints.from_id;
+    let to_id = endpoints.to_id;
 
-    if endpoints.edge_kind != EdgeKind::Data {
-        return base;
+    if edge_kind != EdgeKind::Data {
+        return planned.into_plan();
     }
 
-    let Some(from_ty) = type_of(graph, endpoints.from_id) else {
-        return base;
+    let Some(from_ty) = type_of(graph, from_id) else {
+        return planned.into_plan();
     };
-    let Some(to_ty) = type_of(graph, endpoints.to_id) else {
-        return base;
+    let Some(to_ty) = type_of(graph, to_id) else {
+        return planned.into_plan();
     };
 
     match compat.compatible(&from_ty, &to_ty) {
-        TypeCompatibilityResult::Compatible => base,
+        TypeCompatibilityResult::Compatible => planned.into_plan(),
         TypeCompatibilityResult::Incompatible { reason } => {
             ConnectPlan::reject_with_diagnostic(Diagnostic::error(
                 "connect.type_mismatch",
-                DiagnosticTarget::Port {
-                    id: endpoints.to_id,
-                },
+                DiagnosticTarget::Port { id: to_id },
                 format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
             ))
         }

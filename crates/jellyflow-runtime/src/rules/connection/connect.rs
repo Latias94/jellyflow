@@ -4,8 +4,9 @@ use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::common::{
-    ConnectionCapacity, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
-    edge_between, reject_if_connection_policy_disallows, resolve_connection_endpoints,
+    ConnectionCapacity, ConnectionEndpoints, ConnectionOpBuilder, add_existing_ports_edge_op,
+    connection_exists, edge_between, reject_if_connection_policy_disallows,
+    resolve_connection_endpoints,
 };
 
 /// Plans connecting two ports.
@@ -19,15 +20,43 @@ pub fn plan_connect_with_mode_and_policy(
     mode: NodeGraphConnectionMode,
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
+    match plan_resolved_connect(graph, a, b, mode, state) {
+        Ok(planned) => planned.into_plan(),
+        Err(plan) => plan,
+    }
+}
+
+pub(in crate::rules::connection) struct ResolvedConnectPlan<'a> {
+    endpoints: ConnectionEndpoints<'a>,
+    plan: ConnectPlan,
+}
+
+impl<'a> ResolvedConnectPlan<'a> {
+    pub(in crate::rules::connection) fn endpoints(&self) -> &ConnectionEndpoints<'a> {
+        &self.endpoints
+    }
+
+    pub(in crate::rules::connection) fn into_plan(self) -> ConnectPlan {
+        self.plan
+    }
+}
+
+pub(in crate::rules::connection) fn plan_resolved_connect<'a>(
+    graph: &'a Graph,
+    a: PortId,
+    b: PortId,
+    mode: NodeGraphConnectionMode,
+    state: &NodeGraphInteractionState,
+) -> Result<ResolvedConnectPlan<'a>, ConnectPlan> {
     let endpoints = match resolve_connection_endpoints(graph, a, b, mode) {
         Ok(endpoints) => endpoints,
-        Err(plan) => return plan,
+        Err(plan) => return Err(plan),
     };
 
     if let Some(reject) =
         reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
     {
-        return reject;
+        return Err(reject);
     }
 
     if connection_exists(
@@ -37,7 +66,10 @@ pub fn plan_connect_with_mode_and_policy(
         endpoints.to_id,
         None,
     ) {
-        return ConnectPlan::accept();
+        return Ok(ResolvedConnectPlan {
+            endpoints,
+            plan: ConnectPlan::accept(),
+        });
     }
 
     let mut ops = ConnectionOpBuilder::with_capacity_disconnects(
@@ -52,11 +84,14 @@ pub fn plan_connect_with_mode_and_policy(
         edge_between(endpoints.edge_kind, endpoints.from_id, endpoints.to_id),
     ) {
         Ok(op) => op,
-        Err(plan) => return plan,
+        Err(plan) => return Err(plan),
     };
     ops.push(add_edge);
 
-    ConnectPlan::from_ops(ops.into_ops())
+    Ok(ResolvedConnectPlan {
+        endpoints,
+        plan: ConnectPlan::from_ops(ops.into_ops()),
+    })
 }
 
 /// Plans connecting two ports with default interaction policy.

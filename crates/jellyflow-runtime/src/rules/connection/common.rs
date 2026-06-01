@@ -8,7 +8,7 @@ pub(super) use edge_ops::{
     ConnectionCapacity, ConnectionOpBuilder, add_existing_ports_edge_op, connection_exists,
     edge_between, edge_like, ensure_edge_id_available, reject_mutation_error,
 };
-pub(super) use endpoints::{connection_ports, resolve_connection_endpoints};
+pub(super) use endpoints::{ConnectionEndpoints, connection_ports, resolve_connection_endpoints};
 pub(super) use insert_spec::validate_insert_node_spec;
 pub(super) use policy::reject_if_connection_policy_disallows;
 pub(super) use rejections::{
