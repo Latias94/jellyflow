@@ -1,9 +1,8 @@
-use super::fixtures::make_graph;
+use super::super::fixtures::make_graph;
 
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
-    ConformanceFixtureFileError, ConformanceScenario, ConformanceSuite, ConformanceSuiteFile,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceSuite,
     ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
     run_conformance_suite,
 };
@@ -13,7 +12,7 @@ use crate::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId};
+use jellyflow_core::core::{CanvasPoint, CanvasSize};
 
 #[test]
 fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
@@ -158,9 +157,7 @@ fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMoveStart(pan_start)),
             ConformanceTraceEvent::viewport(pan, 1.0),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![
-                    crate::runtime::conformance::ConformanceViewChange::Viewport { pan, zoom: 1.0 },
-                ],
+                changes: vec![ConformanceViewChange::Viewport { pan, zoom: 1.0 }],
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
                 pan,
@@ -176,12 +173,10 @@ fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
             )),
             ConformanceTraceEvent::viewport(zoomed_pan, 2.0),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![
-                    crate::runtime::conformance::ConformanceViewChange::Viewport {
-                        pan: zoomed_pan,
-                        zoom: 2.0,
-                    },
-                ],
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: zoomed_pan,
+                    zoom: 2.0,
+                }],
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
                 pan: zoomed_pan,
@@ -295,264 +290,4 @@ fn conformance_suite_captures_action_errors_without_aborting_later_scenarios() {
     assert_eq!(report.errors.len(), 1);
     assert_eq!(report.errors[0].scenario, "rejected pan");
     assert!(report.to_string().contains("rejected pan"));
-}
-
-#[test]
-fn conformance_file_suite_load_save_roundtrips_and_runs() {
-    let path = conformance_temp_path("suite-roundtrip");
-    let suite =
-        ConformanceSuite::new("file-backed suite").with_scenarios([ConformanceScenario::new(
-            "empty fixture",
-            Graph::new(GraphId::new()),
-        )]);
-
-    suite.save_json(&path).expect("save suite");
-    let loaded = ConformanceSuite::load_json(&path).expect("load suite");
-    let _ = std::fs::remove_file(&path);
-
-    assert_eq!(
-        serde_json::to_value(&loaded).expect("loaded suite json"),
-        serde_json::to_value(&suite).expect("suite json"),
-    );
-    assert!(loaded.run().is_match());
-}
-
-#[test]
-fn conformance_file_suite_load_if_exists_returns_none_for_missing_files() {
-    let path = conformance_temp_path("suite-missing");
-
-    let loaded = ConformanceSuite::load_json_if_exists(&path).expect("optional load");
-
-    assert!(loaded.is_none());
-}
-
-#[test]
-fn conformance_file_suite_load_reports_parse_errors_with_path_context() {
-    let path = conformance_temp_path("suite-parse-error");
-    std::fs::write(&path, b"{not json").expect("write invalid fixture");
-
-    let err = ConformanceSuite::load_json(&path).expect_err("parse error");
-    let _ = std::fs::remove_file(&path);
-
-    assert!(matches!(err, ConformanceFixtureFileError::Parse { .. }));
-    assert!(err.to_string().contains("suite-parse-error"));
-}
-
-#[test]
-fn conformance_fixture_directory_discovers_json_suites_recursively_in_sorted_order() {
-    let root = conformance_temp_dir("fixture-directory");
-    let nested = root.join("nested");
-    std::fs::create_dir_all(&nested).expect("create nested fixture dir");
-
-    ConformanceSuite::new("suite b")
-        .with_scenarios([ConformanceScenario::new(
-            "empty b",
-            Graph::new(GraphId::new()),
-        )])
-        .save_json(root.join("b.json"))
-        .expect("save b suite");
-    ConformanceSuite::new("suite a")
-        .with_scenarios([ConformanceScenario::new(
-            "empty a",
-            Graph::new(GraphId::new()),
-        )])
-        .save_json(root.join("a.json"))
-        .expect("save a suite");
-    ConformanceSuite::new("suite c")
-        .with_scenarios([ConformanceScenario::new(
-            "empty c",
-            Graph::new(GraphId::new()),
-        )])
-        .save_json(nested.join("c.json"))
-        .expect("save c suite");
-    std::fs::write(root.join("ignore.txt"), b"not a suite").expect("write ignored file");
-
-    let directory = ConformanceFixtureDirectory::load_json(root.clone()).expect("load directory");
-    let names = directory
-        .files
-        .iter()
-        .map(|file| file.suite.name.as_str())
-        .collect::<Vec<_>>();
-    let relative_paths = directory
-        .files
-        .iter()
-        .map(|file| {
-            file.path
-                .strip_prefix(&root)
-                .expect("relative path")
-                .to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "/")
-        })
-        .collect::<Vec<_>>();
-    let report = directory.run();
-    let _ = std::fs::remove_dir_all(&root);
-
-    assert_eq!(names, ["suite a", "suite b", "suite c"]);
-    assert_eq!(relative_paths, ["a.json", "b.json", "nested/c.json"]);
-    assert_eq!(report.file_count(), 3);
-    assert_eq!(report.scenario_count(), 3);
-    assert!(report.is_match(), "{report}");
-}
-
-#[test]
-fn conformance_fixture_directory_load_if_exists_returns_none_for_missing_directories() {
-    let root = conformance_temp_dir("fixture-directory-missing");
-
-    let directory = ConformanceFixtureDirectory::load_json_if_exists(&root)
-        .expect("optional fixture directory");
-
-    assert!(directory.is_none());
-}
-
-#[test]
-fn conformance_fixture_directory_reports_invalid_json_path_context() {
-    let root = conformance_temp_dir("fixture-directory-invalid");
-    std::fs::create_dir_all(&root).expect("create fixture dir");
-    std::fs::write(root.join("bad.json"), b"{not json").expect("write invalid fixture");
-
-    let err = ConformanceFixtureDirectory::load_json(&root).expect_err("invalid fixture");
-    let _ = std::fs::remove_dir_all(&root);
-
-    assert!(matches!(err, ConformanceFixtureFileError::Parse { .. }));
-    assert!(err.to_string().contains("bad.json"));
-}
-
-#[test]
-fn conformance_approval_updates_expected_trace_from_actual_runtime_trace() {
-    let suite =
-        ConformanceSuite::new("approval suite").with_scenarios([approval_viewport_scenario(
-            "viewport approval",
-            CanvasPoint { x: 10.0, y: 20.0 },
-            1.5,
-        )]);
-
-    let approval = suite.approve_actual_traces();
-
-    assert!(approval.is_approvable(), "{:?}", approval.report.errors);
-    assert!(approval.has_changes());
-    assert_eq!(approval.changed_scenarios(), 1);
-    assert_eq!(approval.report.scenario_reports[0].expected_event_count, 0);
-    assert_eq!(approval.report.scenario_reports[0].actual_event_count, 1);
-    assert_eq!(approval.suite.scenarios[0].expected_trace.len(), 1);
-    assert!(approval.suite.run().is_match());
-}
-
-#[test]
-fn conformance_approval_file_write_back_saves_updated_expected_trace() {
-    let path = conformance_temp_path("approval-file");
-    let suite =
-        ConformanceSuite::new("file approval suite").with_scenarios([approval_viewport_scenario(
-            "file viewport approval",
-            CanvasPoint { x: 5.0, y: 7.0 },
-            1.25,
-        )]);
-    suite.save_json(&path).expect("save stale fixture");
-
-    let file = ConformanceSuiteFile::load_json(&path).expect("load stale fixture");
-    let approval = file
-        .approve_actual_traces_to_json()
-        .expect("approve fixture file");
-    let reloaded = ConformanceSuite::load_json(&path).expect("reload approved fixture");
-    let _ = std::fs::remove_file(&path);
-
-    assert!(approval.is_approvable(), "{:?}", approval.report.errors);
-    assert_eq!(approval.changed_scenarios(), 1);
-    assert!(reloaded.run().is_match());
-}
-
-#[test]
-fn conformance_approval_directory_write_back_saves_all_clean_fixture_files() {
-    let root = conformance_temp_dir("approval-directory");
-    std::fs::create_dir_all(&root).expect("create fixture dir");
-    ConformanceSuite::new("first approval suite")
-        .with_scenarios([approval_viewport_scenario(
-            "first viewport approval",
-            CanvasPoint { x: 1.0, y: 2.0 },
-            1.2,
-        )])
-        .save_json(root.join("first.json"))
-        .expect("save first stale fixture");
-    ConformanceSuite::new("second approval suite")
-        .with_scenarios([approval_viewport_scenario(
-            "second viewport approval",
-            CanvasPoint { x: 3.0, y: 4.0 },
-            1.4,
-        )])
-        .save_json(root.join("second.json"))
-        .expect("save second stale fixture");
-
-    let directory = ConformanceFixtureDirectory::load_json(&root).expect("load fixture directory");
-    let approval = directory
-        .approve_actual_traces_to_json()
-        .expect("approve fixture directory");
-    let first = ConformanceSuite::load_json(root.join("first.json")).expect("reload first file");
-    let second = ConformanceSuite::load_json(root.join("second.json")).expect("reload second file");
-    let _ = std::fs::remove_dir_all(&root);
-
-    assert!(approval.is_approvable());
-    assert_eq!(approval.file_count(), 2);
-    assert_eq!(approval.changed_files(), 2);
-    assert_eq!(approval.changed_scenarios(), 2);
-    assert!(first.run().is_match());
-    assert!(second.run().is_match());
-}
-
-#[test]
-fn conformance_approval_directory_write_back_refuses_execution_errors_without_partial_writes() {
-    let root = conformance_temp_dir("approval-directory-errors");
-    std::fs::create_dir_all(&root).expect("create fixture dir");
-    ConformanceSuite::new("good approval suite")
-        .with_scenarios([approval_viewport_scenario(
-            "good viewport approval",
-            CanvasPoint { x: 3.0, y: 4.0 },
-            1.1,
-        )])
-        .save_json(root.join("good.json"))
-        .expect("save good stale fixture");
-    ConformanceSuite::new("bad approval suite")
-        .with_scenarios([ConformanceScenario::new(
-            "rejected auto-pan approval",
-            Graph::new(GraphId::new()),
-        )
-        .with_actions([ConformanceAction::apply_auto_pan(AutoPanRequest::new(
-            AutoPanActivation::Always,
-            CanvasPoint { x: 190.0, y: 50.0 },
-            CanvasSize {
-                width: 200.0,
-                height: 100.0,
-            },
-            0.0,
-        ))])])
-        .save_json(root.join("bad.json"))
-        .expect("save bad fixture");
-
-    let directory = ConformanceFixtureDirectory::load_json(&root).expect("load fixture directory");
-    let err = directory
-        .approve_actual_traces_to_json()
-        .expect_err("execution errors reject directory approval");
-    let good_after = ConformanceSuite::load_json(root.join("good.json")).expect("reload good file");
-    let _ = std::fs::remove_dir_all(&root);
-
-    assert!(matches!(err, ConformanceFixtureFileError::Approve { .. }));
-    assert!(err.to_string().contains("bad.json"));
-    assert!(!good_after.run().is_match());
-}
-
-fn conformance_temp_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "jellyflow-conformance-{name}-{}.json",
-        uuid::Uuid::new_v4()
-    ))
-}
-
-fn conformance_temp_dir(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "jellyflow-conformance-{name}-{}",
-        uuid::Uuid::new_v4()
-    ))
-}
-
-fn approval_viewport_scenario(name: &str, pan: CanvasPoint, zoom: f32) -> ConformanceScenario {
-    ConformanceScenario::new(name, Graph::new(GraphId::new()))
-        .with_actions([ConformanceAction::set_viewport(pan, zoom)])
 }
