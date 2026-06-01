@@ -29,6 +29,12 @@ pub(super) fn try_coalesce_node_setter(last: &mut GraphOp, next: &GraphOp) -> bo
             GraphOp::SetNodeSelectable { id: b, from, to },
         ) => coalesce_value(a, last_to, b, from, to),
         (
+            GraphOp::SetNodeFocusable {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetNodeFocusable { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
             GraphOp::SetNodeDraggable {
                 id: a, to: last_to, ..
             },

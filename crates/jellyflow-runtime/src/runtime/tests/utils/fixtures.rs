@@ -9,6 +9,7 @@ pub(super) fn node_at(pos: CanvasPoint, size: Option<CanvasSize>) -> Node {
         kind_version: 1,
         pos,
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

@@ -57,6 +57,7 @@ fn demo_add_node(kind: &str, kind_version: u32, data: serde_json::Value) -> Node
         kind_version,
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

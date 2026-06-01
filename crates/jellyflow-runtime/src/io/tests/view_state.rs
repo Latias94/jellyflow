@@ -14,6 +14,7 @@ fn view_state_sanitize_removes_stale_ids() {
             kind_version: 1,
             pos: jellyflow_core::core::CanvasPoint { x: 0.0, y: 0.0 },
             selectable: None,
+            focusable: None,
             draggable: None,
             connectable: None,
             deletable: None,

@@ -97,6 +97,7 @@ fn node(pos: CanvasPoint, draggable: Option<bool>, hidden: bool) -> Node {
         kind_version: 1,
         pos,
         selectable: None,
+        focusable: None,
         draggable,
         connectable: None,
         deletable: None,

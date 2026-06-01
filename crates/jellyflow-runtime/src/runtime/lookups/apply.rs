@@ -44,6 +44,7 @@ impl NodeGraphLookups {
             GraphOp::RemoveGroup { detached, .. } => self.apply_remove_group(detached),
 
             GraphOp::SetNodeSelectable { .. }
+            | GraphOp::SetNodeFocusable { .. }
             | GraphOp::SetNodeDraggable { .. }
             | GraphOp::SetNodeConnectable { .. }
             | GraphOp::SetNodeDeletable { .. }
@@ -57,6 +58,7 @@ impl NodeGraphLookups {
             | GraphOp::SetPortType { .. }
             | GraphOp::SetPortData { .. }
             | GraphOp::SetEdgeSelectable { .. }
+            | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }

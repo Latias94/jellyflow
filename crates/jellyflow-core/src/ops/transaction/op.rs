@@ -50,6 +50,12 @@ pub enum GraphOp {
         from: Option<bool>,
         to: Option<bool>,
     },
+    /// Sets a node focusable override.
+    SetNodeFocusable {
+        id: NodeId,
+        from: Option<bool>,
+        to: Option<bool>,
+    },
     /// Sets a node draggable override.
     SetNodeDraggable {
         id: NodeId,
@@ -166,6 +172,12 @@ pub enum GraphOp {
     },
     /// Sets an edge selectable override.
     SetEdgeSelectable {
+        id: EdgeId,
+        from: Option<bool>,
+        to: Option<bool>,
+    },
+    /// Sets an edge focusable override.
+    SetEdgeFocusable {
         id: EdgeId,
         from: Option<bool>,
         to: Option<bool>,

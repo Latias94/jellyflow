@@ -31,6 +31,10 @@ pub(super) fn try_push_node_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
             id: *id,
             selectable: *to,
         }),
+        GraphOp::SetNodeFocusable { id, to, .. } => out.push_node(NodeChange::Focusable {
+            id: *id,
+            focusable: *to,
+        }),
         GraphOp::SetNodeDraggable { id, to, .. } => out.push_node(NodeChange::Draggable {
             id: *id,
             draggable: *to,

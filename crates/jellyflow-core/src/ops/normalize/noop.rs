@@ -6,6 +6,7 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
         GraphOp::SetNodeKind { from, to, .. } => from == to,
         GraphOp::SetNodeKindVersion { from, to, .. } => from == to,
         GraphOp::SetNodeSelectable { from, to, .. } => from == to,
+        GraphOp::SetNodeFocusable { from, to, .. } => from == to,
         GraphOp::SetNodeDraggable { from, to, .. } => from == to,
         GraphOp::SetNodeConnectable { from, to, .. } => from == to,
         GraphOp::SetNodeDeletable { from, to, .. } => from == to,
@@ -26,6 +27,7 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
 
         GraphOp::SetEdgeKind { from, to, .. } => from == to,
         GraphOp::SetEdgeSelectable { from, to, .. } => from == to,
+        GraphOp::SetEdgeFocusable { from, to, .. } => from == to,
         GraphOp::SetEdgeDeletable { from, to, .. } => from == to,
         GraphOp::SetEdgeReconnectable { from, to, .. } => from == to,
         GraphOp::SetEdgeEndpoints { from, to, .. } => from == to,

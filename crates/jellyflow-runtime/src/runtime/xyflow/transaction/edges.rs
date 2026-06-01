@@ -33,6 +33,13 @@ impl<'a> ChangesTransactionPlanner<'a> {
                     to: *selectable,
                 })?;
             }
+            EdgeChange::Focusable { id, focusable } => {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeFocusable {
+                    id: *id,
+                    from: edge.focusable,
+                    to: *focusable,
+                })?;
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.push_edge_update(*id, |edge| GraphOp::SetEdgeDeletable {
                     id: *id,

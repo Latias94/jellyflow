@@ -33,6 +33,10 @@ pub enum NodeChange {
         id: NodeId,
         selectable: Option<bool>,
     },
+    Focusable {
+        id: NodeId,
+        focusable: Option<bool>,
+    },
     Draggable {
         id: NodeId,
         draggable: Option<bool>,

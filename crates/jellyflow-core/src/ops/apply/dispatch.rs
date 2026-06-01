@@ -31,6 +31,7 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         | GraphOp::SetNodeKind { .. }
         | GraphOp::SetNodeKindVersion { .. }
         | GraphOp::SetNodeSelectable { .. }
+        | GraphOp::SetNodeFocusable { .. }
         | GraphOp::SetNodeDraggable { .. }
         | GraphOp::SetNodeConnectable { .. }
         | GraphOp::SetNodeDeletable { .. }
@@ -55,6 +56,7 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         | GraphOp::RemoveEdge { .. }
         | GraphOp::SetEdgeKind { .. }
         | GraphOp::SetEdgeSelectable { .. }
+        | GraphOp::SetEdgeFocusable { .. }
         | GraphOp::SetEdgeDeletable { .. }
         | GraphOp::SetEdgeReconnectable { .. }
         | GraphOp::SetEdgeEndpoints { .. } => super::edges::apply_edge_op(graph, op),

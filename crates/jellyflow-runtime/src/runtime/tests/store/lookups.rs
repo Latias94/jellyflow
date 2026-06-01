@@ -22,6 +22,7 @@ fn store_lookups_update_after_dispatch_transaction() {
             from: out_port,
             to: in_port,
             selectable: None,
+            focusable: None,
             deletable: None,
             reconnectable: None,
         },

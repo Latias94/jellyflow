@@ -33,6 +33,9 @@ impl<'a> ApplyChangesPlanner<'a> {
             NodeChange::Selectable { id, selectable } => {
                 self.mutate_existing_node(*id, |node| node.selectable = *selectable);
             }
+            NodeChange::Focusable { id, focusable } => {
+                self.mutate_existing_node(*id, |node| node.focusable = *focusable);
+            }
             NodeChange::Draggable { id, draggable } => {
                 self.mutate_existing_node(*id, |node| node.draggable = *draggable);
             }

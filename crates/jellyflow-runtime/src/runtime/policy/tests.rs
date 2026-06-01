@@ -13,6 +13,7 @@ fn node() -> Node {
         kind_version: 1,
         pos: CanvasPoint::default(),
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,
@@ -48,6 +49,7 @@ fn edge(from: PortId, to: PortId) -> Edge {
         from,
         to,
         selectable: None,
+        focusable: None,
         deletable: None,
         reconnectable: None,
     }
@@ -93,6 +95,7 @@ fn policy_node_overrides_global_defaults() {
     state.node_extent = None;
     let mut n = node();
     n.selectable = Some(true);
+    n.focusable = Some(true);
     n.draggable = Some(true);
     n.connectable = Some(true);
     n.deletable = Some(true);
@@ -103,7 +106,7 @@ fn policy_node_overrides_global_defaults() {
         resolve_node_interaction_policy(&n, &state),
         NodeGraphNodeInteractionPolicy {
             selectable: true,
-            focusable: false,
+            focusable: true,
             draggable: true,
             connectable: true,
             deletable: true,
@@ -192,11 +195,12 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
 
     let mut e = edge(from, to);
     e.selectable = Some(true);
+    e.focusable = Some(true);
     e.deletable = Some(true);
     e.reconnectable = Some(EdgeReconnectable::Bool(true));
     let enabled_policy = resolve_edge_interaction_policy(&e, &disabled_state);
     assert!(enabled_policy.selectable);
-    assert!(!enabled_policy.focusable);
+    assert!(enabled_policy.focusable);
     assert!(enabled_policy.deletable);
     assert!(enabled_policy.can_delete());
     assert!(enabled_policy.reconnect_source);

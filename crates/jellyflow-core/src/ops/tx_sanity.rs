@@ -79,6 +79,7 @@ impl NonFiniteGeometry {
             | GraphOp::SetSymbolType { .. }
             | GraphOp::SetSymbolDefaultValue { .. }
             | GraphOp::SetNodeSelectable { .. }
+            | GraphOp::SetNodeFocusable { .. }
             | GraphOp::SetNodeDraggable { .. }
             | GraphOp::SetNodeConnectable { .. }
             | GraphOp::SetNodeDeletable { .. }
@@ -90,6 +91,7 @@ impl NonFiniteGeometry {
             | GraphOp::SetPortType { .. }
             | GraphOp::SetPortData { .. }
             | GraphOp::SetEdgeSelectable { .. }
+            | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::SetEdgeReconnectable { .. }
             | GraphOp::RemoveNode { .. }

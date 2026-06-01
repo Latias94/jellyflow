@@ -97,6 +97,7 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
         kind_version: 1,
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

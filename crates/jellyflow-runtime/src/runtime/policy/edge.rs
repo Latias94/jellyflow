@@ -43,7 +43,7 @@ pub fn resolve_edge_interaction_policy(
 
     NodeGraphEdgeInteractionPolicy {
         selectable: edge.selectable.unwrap_or(selection.edges_selectable),
-        focusable: keyboard.edges_focusable,
+        focusable: edge.focusable.unwrap_or(keyboard.edges_focusable),
         deletable: edge.deletable.unwrap_or(delete.edges_deletable),
         reconnect_source,
         reconnect_target,

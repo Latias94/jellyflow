@@ -65,6 +65,13 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: edge_to.selectable,
             });
         }
+        if edge_from.focusable != edge_to.focusable {
+            self.push_op(GraphOp::SetEdgeFocusable {
+                id,
+                from: edge_from.focusable,
+                to: edge_to.focusable,
+            });
+        }
         if edge_from.deletable != edge_to.deletable {
             self.push_op(GraphOp::SetEdgeDeletable {
                 id,

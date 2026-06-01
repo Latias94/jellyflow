@@ -47,6 +47,13 @@ impl<'a> ChangesTransactionPlanner<'a> {
                     to: *selectable,
                 })?;
             }
+            NodeChange::Focusable { id, focusable } => {
+                self.push_node_update(*id, |node| GraphOp::SetNodeFocusable {
+                    id: *id,
+                    from: node.focusable,
+                    to: *focusable,
+                })?;
+            }
             NodeChange::Draggable { id, draggable } => {
                 self.push_node_update(*id, |node| GraphOp::SetNodeDraggable {
                     id: *id,

@@ -42,6 +42,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             from: out,
             to: inn,
             selectable: None,
+            focusable: None,
             deletable: None,
             reconnectable: None,
         },

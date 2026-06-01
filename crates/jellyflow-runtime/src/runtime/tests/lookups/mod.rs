@@ -13,6 +13,7 @@ fn node_with_parent(pos: CanvasPoint, parent: Option<GroupId>) -> Node {
         kind_version: 1,
         pos,
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

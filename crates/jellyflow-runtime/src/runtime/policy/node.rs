@@ -30,7 +30,7 @@ pub fn resolve_node_interaction_policy(
 
     NodeGraphNodeInteractionPolicy {
         selectable: node.selectable.unwrap_or(selection.elements_selectable),
-        focusable: keyboard.nodes_focusable,
+        focusable: node.focusable.unwrap_or(keyboard.nodes_focusable),
         draggable: node.draggable.unwrap_or(node_drag.nodes_draggable),
         connectable: node.connectable.unwrap_or(connection.nodes_connectable),
         deletable: node.deletable.unwrap_or(delete.nodes_deletable),

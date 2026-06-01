@@ -38,6 +38,12 @@ pub struct Edge {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selectable: Option<bool>,
 
+    /// Whether the edge can receive keyboard focus (XyFlow `edge.focusable`).
+    ///
+    /// When omitted, the global `NodeGraphInteractionState.edges_focusable` decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focusable: Option<bool>,
+
     /// Whether the edge can be deleted via editor interactions (XyFlow `edge.deletable`).
     ///
     /// When omitted, the global `NodeGraphInteractionState.edges_deletable` decides.

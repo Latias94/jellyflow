@@ -25,6 +25,9 @@ impl<'a> ApplyChangesPlanner<'a> {
             EdgeChange::Selectable { id, selectable } => {
                 self.mutate_existing_edge(*id, |edge| edge.selectable = *selectable);
             }
+            EdgeChange::Focusable { id, focusable } => {
+                self.mutate_existing_edge(*id, |edge| edge.focusable = *focusable);
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.mutate_existing_edge(*id, |edge| edge.deletable = *deletable);
             }

@@ -33,6 +33,7 @@ pub(super) fn make_node(kind: &str) -> Node {
         kind_version: 0,
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,
@@ -53,6 +54,7 @@ pub(super) fn make_edge(from: PortId, to: PortId) -> Edge {
         from,
         to,
         selectable: None,
+        focusable: None,
         deletable: None,
         reconnectable: None,
     }

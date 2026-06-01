@@ -58,6 +58,13 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: node_to.selectable,
             });
         }
+        if node_from.focusable != node_to.focusable {
+            self.push_op(GraphOp::SetNodeFocusable {
+                id,
+                from: node_from.focusable,
+                to: node_to.focusable,
+            });
+        }
         if node_from.draggable != node_to.draggable {
             self.push_op(GraphOp::SetNodeDraggable {
                 id,

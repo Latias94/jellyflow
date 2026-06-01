@@ -35,6 +35,11 @@ pub(super) fn invert_node_op(op: &GraphOp) -> Vec<GraphOp> {
             from: *to,
             to: *from,
         }],
+        GraphOp::SetNodeFocusable { id, from, to } => vec![GraphOp::SetNodeFocusable {
+            id: *id,
+            from: *to,
+            to: *from,
+        }],
         GraphOp::SetNodeDraggable { id, from, to } => vec![GraphOp::SetNodeDraggable {
             id: *id,
             from: *to,

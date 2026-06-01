@@ -155,6 +155,7 @@ impl<'a> FragmentPastePlanner<'a> {
             from: self.ids.port(old_edge.from),
             to: self.ids.port(old_edge.to),
             selectable: old_edge.selectable,
+            focusable: old_edge.focusable,
             deletable: old_edge.deletable,
             reconnectable: old_edge.reconnectable,
         }

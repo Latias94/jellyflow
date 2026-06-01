@@ -22,6 +22,10 @@ pub enum EdgeChange {
         id: EdgeId,
         selectable: Option<bool>,
     },
+    Focusable {
+        id: EdgeId,
+        focusable: Option<bool>,
+    },
     Deletable {
         id: EdgeId,
         deletable: Option<bool>,

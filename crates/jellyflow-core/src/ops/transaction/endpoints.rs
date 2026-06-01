@@ -33,6 +33,7 @@ mod tests {
             from,
             to,
             selectable: Some(true),
+            focusable: None,
             deletable: Some(false),
             reconnectable: Some(EdgeReconnectable::Bool(true)),
         };

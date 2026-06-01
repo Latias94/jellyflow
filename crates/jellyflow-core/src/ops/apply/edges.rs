@@ -16,6 +16,9 @@ pub(super) fn apply_edge_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
         GraphOp::SetEdgeSelectable { id, to, .. } => {
             edge_mut(graph, *id)?.selectable = *to;
         }
+        GraphOp::SetEdgeFocusable { id, to, .. } => {
+            edge_mut(graph, *id)?.focusable = *to;
+        }
         GraphOp::SetEdgeDeletable { id, to, .. } => {
             edge_mut(graph, *id)?.deletable = *to;
         }

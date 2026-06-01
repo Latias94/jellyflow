@@ -25,6 +25,9 @@ pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
         GraphOp::SetNodeSelectable { id, to, .. } => {
             node_mut(graph, *id)?.selectable = *to;
         }
+        GraphOp::SetNodeFocusable { id, to, .. } => {
+            node_mut(graph, *id)?.focusable = *to;
+        }
         GraphOp::SetNodeDraggable { id, to, .. } => {
             node_mut(graph, *id)?.draggable = *to;
         }

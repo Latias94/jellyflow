@@ -25,6 +25,12 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selectable: Option<bool>,
 
+    /// Whether the node can receive keyboard focus (XyFlow `node.focusable`).
+    ///
+    /// When omitted, the global `NodeGraphInteractionState.nodes_focusable` decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focusable: Option<bool>,
+
     /// Whether the node can be dragged with pointer interactions (XyFlow `node.draggable`).
     ///
     /// When omitted, the global `NodeGraphInteractionState.nodes_draggable` decides.

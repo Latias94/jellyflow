@@ -17,6 +17,12 @@ pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bo
             GraphOp::SetEdgeSelectable { id: b, from, to },
         ) => coalesce_value(a, last_to, b, from, to),
         (
+            GraphOp::SetEdgeFocusable {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeFocusable { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
             GraphOp::SetEdgeDeletable {
                 id: a, to: last_to, ..
             },

@@ -58,6 +58,11 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             from: None,
             to: Some(false),
         },
+        GraphOp::SetNodeFocusable {
+            id: a,
+            from: None,
+            to: Some(true),
+        },
         GraphOp::SetNodeDraggable {
             id: a,
             from: None,
@@ -98,6 +103,11 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             from: None,
             to: Some(false),
         },
+        GraphOp::SetEdgeFocusable {
+            id: eid,
+            from: None,
+            to: Some(true),
+        },
         GraphOp::SetEdgeDeletable {
             id: eid,
             from: None,
@@ -106,8 +116,8 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
     ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
-    assert_eq!(changes.nodes().len(), 8);
-    assert_eq!(changes.edges().len(), 2);
+    assert_eq!(changes.nodes().len(), 9);
+    assert_eq!(changes.edges().len(), 3);
 
     assert!(
         changes
@@ -115,6 +125,9 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             .iter()
             .any(|change| matches!(change, NodeChange::Selectable { id, selectable: Some(false) } if *id == a))
     );
+    assert!(changes.nodes().iter().any(
+        |change| matches!(change, NodeChange::Focusable { id, focusable: Some(true) } if *id == a)
+    ));
     assert!(changes.nodes().iter().any(
         |change| matches!(change, NodeChange::Draggable { id, draggable: Some(true) } if *id == a)
     ));
@@ -157,6 +170,9 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             .iter()
             .any(|change| matches!(change, EdgeChange::Selectable { id, selectable: Some(false) } if *id == eid))
     );
+    assert!(changes.edges().iter().any(
+        |change| matches!(change, EdgeChange::Focusable { id, focusable: Some(true) } if *id == eid)
+    ));
     assert!(changes.edges().iter().any(
         |change| matches!(change, EdgeChange::Deletable { id, deletable: Some(true) } if *id == eid)
     ));

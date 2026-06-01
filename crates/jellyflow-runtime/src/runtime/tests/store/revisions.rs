@@ -35,6 +35,7 @@ fn store_graph_revision_advances_for_graph_mutations() {
             kind_version: 1,
             pos: CanvasPoint { x: 0.0, y: 0.0 },
             selectable: None,
+            focusable: None,
             draggable: None,
             connectable: None,
             deletable: None,

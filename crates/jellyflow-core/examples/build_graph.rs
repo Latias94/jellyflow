@@ -8,6 +8,7 @@ fn make_node(kind: &str, x: f32, y: f32) -> Node {
         kind_version: 1,
         pos: CanvasPoint { x, y },
         selectable: None,
+        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,
