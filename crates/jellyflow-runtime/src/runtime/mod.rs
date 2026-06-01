@@ -8,6 +8,7 @@ pub mod auto_pan;
 pub mod commit;
 pub mod conformance;
 pub mod connection;
+pub mod delete;
 pub mod drag;
 pub mod events;
 pub mod fit_view;

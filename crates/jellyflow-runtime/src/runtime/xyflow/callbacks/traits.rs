@@ -21,6 +21,7 @@ use jellyflow_core::ops::EdgeEndpoints;
 /// 4) `on_edges_change` (if non-empty)
 /// 5) `on_connection_change` for each derived `ConnectionChange`
 /// 6) `on_connect`/`on_disconnect`/`on_reconnect` for each derived `ConnectionChange`
+/// 7) `on_nodes_delete` / `on_edges_delete` / `on_delete` for derived removals
 pub trait NodeGraphCommitCallbacks: 'static {
     fn on_graph_commit(&mut self, _patch: &NodeGraphPatch) {}
 

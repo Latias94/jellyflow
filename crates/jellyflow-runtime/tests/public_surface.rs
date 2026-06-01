@@ -8,8 +8,8 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, drag, events, rendering, selection, store, viewport,
-    xyflow,
+    auto_pan, commit, conformance, connection, delete, drag, events, rendering, selection, store,
+    viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -153,6 +153,17 @@ fn explicit_modules_expose_their_owned_surfaces() {
     };
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();
+    assert_eq!(
+        delete::DELETE_SELECTION_TRANSACTION_LABEL,
+        "delete selection"
+    );
+    let delete_plan = delete::plan_delete_selection(
+        &graph,
+        &NodeGraphViewState::default(),
+        &NodeGraphInteractionState::default(),
+    );
+    assert!(delete::delete_selection_transaction(&delete_plan).is_none());
+    let _ = std::mem::size_of::<delete::DeleteSelectionError>();
 
     let transform =
         viewport::ViewportTransform::new(CanvasPoint { x: 1.0, y: 2.0 }, 1.5).expect("viewport");

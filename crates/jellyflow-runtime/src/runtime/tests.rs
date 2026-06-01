@@ -2,6 +2,7 @@ mod adapter_conformance;
 mod auto_pan;
 mod conformance;
 mod connection;
+mod delete;
 mod drag;
 mod fixtures;
 mod harness;

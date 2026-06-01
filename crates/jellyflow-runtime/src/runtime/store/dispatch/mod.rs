@@ -3,9 +3,10 @@
 mod gate;
 mod pipeline;
 
+use crate::io::NodeGraphViewState;
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::events::NodeGraphStoreSnapshot;
+use crate::runtime::events::{NodeGraphStoreSnapshot, ViewChange};
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::GraphTransaction;
@@ -15,6 +16,17 @@ use super::snapshot::StoreSnapshotParts;
 use super::{DispatchError, DispatchOutcome, NodeGraphStore};
 
 use self::pipeline::{DispatchPipeline, DispatchPipelineResult};
+
+pub(super) struct PreparedGraphCommit {
+    patch: NodeGraphPatch,
+    sanitized_view_state: Option<SanitizedViewState>,
+}
+
+struct SanitizedViewState {
+    before: NodeGraphViewState,
+    after: NodeGraphViewState,
+    changes: Vec<ViewChange>,
+}
 
 impl NodeGraphStore {
     /// Applies a transaction and records it in history.
@@ -57,9 +69,9 @@ impl NodeGraphStore {
 
     fn commit_dispatch(&mut self, graph: Graph, committed: GraphTransaction) -> DispatchOutcome {
         let committed_for_history = committed.clone();
-        let patch = self.prepare_committed_graph_patch(graph, committed);
+        let prepared = self.prepare_committed_graph_patch(graph, committed);
         self.history.record(committed_for_history);
-        self.complete_committed_patch(patch)
+        self.complete_committed_patch(prepared)
     }
 
     fn run_before_dispatch_middleware(
@@ -113,6 +125,7 @@ impl NodeGraphStore {
     fn install_committed_graph_state(&mut self, graph: Graph, committed: &GraphTransaction) {
         self.graph = graph;
         self.bump_graph_revision();
+        self.view_state.sanitize_for_graph(&self.graph);
         self.lookups.apply_transaction(&self.graph, committed);
     }
 
@@ -120,14 +133,60 @@ impl NodeGraphStore {
         &mut self,
         graph: Graph,
         committed: GraphTransaction,
-    ) -> NodeGraphPatch {
+    ) -> PreparedGraphCommit {
+        let view_before = self.view_state.clone();
         self.install_committed_graph_state(graph, &committed);
-        NodeGraphPatch::new(committed)
+        let sanitized_view_state = self.committed_view_state_change(view_before);
+        PreparedGraphCommit {
+            patch: NodeGraphPatch::new(committed),
+            sanitized_view_state,
+        }
     }
 
-    pub(super) fn complete_committed_patch(&mut self, patch: NodeGraphPatch) -> DispatchOutcome {
+    pub(super) fn complete_committed_patch(
+        &mut self,
+        prepared: PreparedGraphCommit,
+    ) -> DispatchOutcome {
+        let PreparedGraphCommit {
+            patch,
+            sanitized_view_state,
+        } = prepared;
         self.run_after_dispatch_middleware(&patch);
         self.publish_graph_commit(&patch);
+        if let Some(sanitized) = sanitized_view_state {
+            self.publish_view_changed(&sanitized.before, &sanitized.after, &sanitized.changes);
+        }
         DispatchOutcome::new(patch)
+    }
+
+    fn committed_view_state_change(
+        &self,
+        before: NodeGraphViewState,
+    ) -> Option<SanitizedViewState> {
+        let after = self.view_state.clone();
+        if before == after {
+            return None;
+        }
+
+        let mut changes = Vec::new();
+        if before.pan != after.pan || (before.zoom - after.zoom).abs() > 1.0e-6 {
+            changes.push(ViewChange::viewport(after.pan, after.zoom));
+        }
+        if before.selected_nodes != after.selected_nodes
+            || before.selected_edges != after.selected_edges
+            || before.selected_groups != after.selected_groups
+        {
+            changes.push(ViewChange::selection(
+                after.selected_nodes.clone(),
+                after.selected_edges.clone(),
+                after.selected_groups.clone(),
+            ));
+        }
+
+        Some(SanitizedViewState {
+            before,
+            after,
+            changes,
+        })
     }
 }
