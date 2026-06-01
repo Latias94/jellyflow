@@ -49,11 +49,8 @@ fn mutation_planner_add_port_updates_node_ports_at_requested_index() {
     let existing = PortId::new();
     let inserted = PortId::new();
 
-    graph.nodes.insert(node_id, make_node("core.a"));
-    graph
-        .ports
-        .insert(existing, make_port(node_id, "out", PortDirection::Out));
-    graph.nodes.get_mut(&node_id).unwrap().ports.push(existing);
+    insert_node(&mut graph, node_id, "core.a");
+    insert_port(&mut graph, existing, node_id, "out", PortDirection::Out);
 
     let before = graph.clone();
     let tx = GraphMutationPlanner::new(&graph)
@@ -83,44 +80,17 @@ fn mutation_planner_add_port_updates_node_ports_at_requested_index() {
 #[test]
 fn mutation_planner_remove_port_tx_roundtrips_through_inverse() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let before = graph.clone();
     let tx = GraphMutationPlanner::new(&graph)
-        .remove_port_tx(out, "Remove Port")
+        .remove_port_tx(ids.out, "Remove Port")
         .expect("tx");
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(!graph.ports.contains_key(&out));
-    assert!(!graph.edges.contains_key(&edge_id));
-    assert!(!graph.nodes.get(&a).unwrap().ports.contains(&out));
+    assert!(!graph.ports.contains_key(&ids.out));
+    assert!(!graph.edges.contains_key(&ids.edge));
+    assert!(!graph.nodes.get(&ids.a).unwrap().ports.contains(&ids.out));
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo");
@@ -157,34 +127,17 @@ fn mutation_planner_connect_and_disconnect_edges() {
     let mut graph = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
+    insert_port(&mut graph, out, a, "out", PortDirection::Out);
+    insert_port(&mut graph, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::new();
     let connect = GraphMutationPlanner::new(&graph)
-        .add_edge_tx(
-            edge_id,
-            Edge {
-                kind: EdgeKind::Data,
-                from: out,
-                to: inn,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-            "Connect",
-        )
+        .add_edge_tx(edge_id, make_edge(out, inn), "Connect")
         .expect("connect tx");
 
     apply_transaction(&mut graph, &connect).expect("connect apply");
@@ -203,49 +156,24 @@ fn mutation_planner_connect_and_disconnect_edges() {
 #[test]
 fn mutation_planner_remove_node_tx_captures_ports_and_edges() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let tx = GraphMutationPlanner::new(&graph)
-        .remove_node_tx(a, "Delete Node A")
+        .remove_node_tx(ids.a, "Delete Node A")
         .expect("tx");
 
     assert!(matches!(
         &tx.ops()[0],
         GraphOp::RemoveNode { id, ports, edges, .. }
-            if *id == a && ports.iter().any(|(id, _)| *id == out) && edges.iter().any(|(id, _)| *id == edge_id)
+            if *id == ids.a
+                && ports.iter().any(|(id, _)| *id == ids.out)
+                && edges.iter().any(|(id, _)| *id == ids.edge)
     ));
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(!graph.nodes.contains_key(&a));
-    assert!(!graph.ports.contains_key(&out));
-    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.nodes.contains_key(&ids.a));
+    assert!(!graph.ports.contains_key(&ids.out));
+    assert!(!graph.edges.contains_key(&ids.edge));
 }
 
 #[test]
@@ -253,19 +181,13 @@ fn mutation_batch_planner_allows_edges_to_staged_ports() {
     let mut graph = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut graph, a, "core.a");
+    insert_node(&mut graph, b, "core.b");
 
     let out = PortId::new();
     let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
+    insert_port(&mut graph, out, a, "out", PortDirection::Out);
+    insert_port(&mut graph, inn, b, "in", PortDirection::In);
 
     let inserted = NodeId::new();
     let inserted_in = PortId::new();
@@ -285,30 +207,10 @@ fn mutation_batch_planner_allows_edges_to_staged_ports() {
         )
         .expect("add staged node");
     batch
-        .add_edge(
-            edge_a,
-            Edge {
-                kind: EdgeKind::Data,
-                from: out,
-                to: inserted_in,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        )
+        .add_edge(edge_a, make_edge(out, inserted_in))
         .expect("add first edge");
     batch
-        .add_edge(
-            edge_b,
-            Edge {
-                kind: EdgeKind::Data,
-                from: inserted_out,
-                to: inn,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        )
+        .add_edge(edge_b, make_edge(inserted_out, inn))
         .expect("add second edge");
 
     let tx = GraphTransaction::from_ops(batch.into_ops());
@@ -326,27 +228,14 @@ fn mutation_batch_planner_allows_edges_to_staged_ports() {
 fn mutation_batch_planner_rejects_edge_to_unknown_port() {
     let mut graph = Graph::default();
     let node = NodeId::new();
-    graph.nodes.insert(node, make_node("core.a"));
+    insert_node(&mut graph, node, "core.a");
 
     let out = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(node, "out", PortDirection::Out));
-    graph.nodes.get_mut(&node).unwrap().ports.push(out);
+    insert_port(&mut graph, out, node, "out", PortDirection::Out);
 
     let missing = PortId::new();
     let err = GraphMutationBatchPlanner::new(&graph)
-        .add_edge(
-            EdgeId::new(),
-            Edge {
-                kind: EdgeKind::Data,
-                from: out,
-                to: missing,
-                selectable: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        )
+        .add_edge(EdgeId::new(), make_edge(out, missing))
         .expect_err("missing port");
 
     assert!(matches!(err, GraphMutationError::MissingPort(id) if id == missing));
@@ -355,34 +244,7 @@ fn mutation_batch_planner_rejects_edge_to_unknown_port() {
 #[test]
 fn mutation_batch_planner_set_edge_endpoints_can_target_staged_port() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let inserted = NodeId::new();
     let inserted_in = PortId::new();
@@ -401,9 +263,9 @@ fn mutation_batch_planner_set_edge_endpoints_can_target_staged_port() {
         .expect("add staged node");
     batch
         .set_edge_endpoints(
-            edge_id,
+            ids.edge,
             EdgeEndpoints {
-                from: out,
+                from: ids.out,
                 to: inserted_in,
             },
         )
@@ -412,85 +274,33 @@ fn mutation_batch_planner_set_edge_endpoints_can_target_staged_port() {
     let tx = GraphTransaction::from_ops(batch.into_ops());
     apply_transaction(&mut graph, &tx).expect("apply");
 
-    assert_eq!(graph.edges.get(&edge_id).unwrap().to, inserted_in);
+    assert_eq!(graph.edges.get(&ids.edge).unwrap().to, inserted_in);
 }
 
 #[test]
 fn build_remove_node_tx_captures_ports_and_edges() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    let ids = insert_connected_pair(&mut graph);
 
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
-
-    let tx = graph.build_remove_node_tx(a, "Delete Node A").expect("tx");
+    let tx = graph
+        .build_remove_node_tx(ids.a, "Delete Node A")
+        .expect("tx");
     assert_eq!(tx.ops().len(), 1);
 
     apply_transaction(&mut graph, &tx).expect("apply");
 
-    assert!(!graph.nodes.contains_key(&a));
-    assert!(!graph.ports.contains_key(&out));
-    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.nodes.contains_key(&ids.a));
+    assert!(!graph.ports.contains_key(&ids.out));
+    assert!(!graph.edges.contains_key(&ids.edge));
 }
 
 #[test]
 fn build_disconnect_port_ops_removes_incident_edges() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let ops = graph
-        .build_disconnect_port_ops(inn)
+        .build_disconnect_port_ops(ids.inn)
         .expect("disconnect ops");
     assert_eq!(ops.len(), 1);
 

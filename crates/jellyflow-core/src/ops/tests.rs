@@ -7,7 +7,7 @@ mod mutation;
 mod normalize;
 mod setters;
 
-use fixtures::{make_node, make_port};
+use fixtures::{insert_connected_pair, insert_node, insert_port, make_edge, make_node, make_port};
 
 pub(super) use super::{apply::apply_transaction, diff::graph_diff, history::invert_transaction};
 pub(super) use crate::core::{

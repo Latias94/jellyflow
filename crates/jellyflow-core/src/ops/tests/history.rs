@@ -3,38 +3,13 @@ use super::*;
 #[test]
 fn invert_transaction_restores_graph_state() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let baseline = serde_json::to_value(&graph).unwrap();
 
-    let tx = graph.build_remove_node_tx(a, "Delete Node A").expect("tx");
+    let tx = graph
+        .build_remove_node_tx(ids.a, "Delete Node A")
+        .expect("tx");
     apply_transaction(&mut graph, &tx).expect("apply forward");
 
     let inverse = invert_transaction(&tx);
@@ -47,38 +22,13 @@ fn invert_transaction_restores_graph_state() {
 #[test]
 fn history_undo_redo_roundtrip() {
     let mut graph = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::new();
-    let inn = PortId::new();
-    graph
-        .ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    graph.nodes.get_mut(&a).unwrap().ports.push(out);
-    graph.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::new();
-    graph.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    let ids = insert_connected_pair(&mut graph);
 
     let baseline = serde_json::to_value(&graph).unwrap();
 
-    let tx = graph.build_remove_node_tx(a, "Delete Node A").expect("tx");
+    let tx = graph
+        .build_remove_node_tx(ids.a, "Delete Node A")
+        .expect("tx");
     apply_transaction(&mut graph, &tx).expect("apply forward");
     let forward_state = serde_json::to_value(&graph).unwrap();
 
