@@ -3,7 +3,9 @@ use crate::runtime::events::ViewportMoveKind;
 use jellyflow_core::core::CanvasPoint;
 
 use super::super::transform::{ViewportPanRequest, ViewportZoomRequest, valid_zoom};
-use super::shared::pan_on_drag_enabled;
+use super::shared::{
+    effective_pan_on_drag_buttons, effective_pan_on_scroll_enabled, pan_on_drag_enabled,
+};
 use super::types::{
     ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection, ViewportScrollInput,
 };
@@ -25,10 +27,11 @@ pub fn resolve_viewport_scroll_gesture(
     if !input.delta.is_finite() || !input.anchor_screen.is_finite() {
         return Err(ViewportGestureRejection::InvalidInput);
     }
-    if !any_viewport_gesture_enabled(pan, zoom) {
+    if !any_viewport_gesture_enabled(pan, zoom, context) {
         return Err(ViewportGestureRejection::AllViewportGesturesDisabled);
     }
 
+    let pan_on_scroll = effective_pan_on_scroll_enabled(pan.pan_on_scroll, context);
     let zoom_scroll = context.zoom_activation_key_pressed || zoom.zoom_on_scroll;
     let pinch_zoom = input.ctrl_key && zoom.zoom_on_pinch;
 
@@ -40,7 +43,7 @@ pub fn resolve_viewport_scroll_gesture(
         return zoom_intent(ViewportMoveKind::ZoomPinch, input);
     }
 
-    if pan.pan_on_scroll && !context.zoom_activation_key_pressed {
+    if pan_on_scroll && !context.zoom_activation_key_pressed {
         if !pan.pan_on_scroll_speed.is_finite() {
             return Err(ViewportGestureRejection::InvalidInput);
         }
@@ -60,9 +63,10 @@ pub fn resolve_viewport_scroll_gesture(
 fn any_viewport_gesture_enabled(
     pan: &NodeGraphPanInteraction<'_>,
     zoom: &NodeGraphZoomInteraction,
+    context: ViewportGestureContext,
 ) -> bool {
-    pan.pan_on_scroll
-        || pan_on_drag_enabled(pan.pan_on_drag)
+    effective_pan_on_scroll_enabled(pan.pan_on_scroll, context)
+        || pan_on_drag_enabled(effective_pan_on_drag_buttons(pan.pan_on_drag, context))
         || zoom.zoom_on_scroll
         || zoom.zoom_on_pinch
         || zoom.zoom_on_double_click

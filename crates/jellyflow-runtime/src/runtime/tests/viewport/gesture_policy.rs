@@ -198,6 +198,101 @@ fn viewport_drag_pan_policy_respects_buttons_and_context() {
 }
 
 #[test]
+fn pan_activation_key_enables_drag_and_scroll_like_xyflow() {
+    let state = NodeGraphInteractionState {
+        pan_on_scroll: false,
+        pan_on_drag: NodeGraphPanOnDragButtons::default(),
+        zoom_on_scroll: false,
+        zoom_on_pinch: false,
+        zoom_on_double_click: false,
+        ..NodeGraphInteractionState::default()
+    };
+    let context = ViewportGestureContext {
+        pan_activation_key_pressed: true,
+        ..ViewportGestureContext::idle()
+    };
+
+    let scroll = resolve_viewport_scroll_gesture(
+        &state.pan_interaction(),
+        &state.zoom_interaction(),
+        context,
+        ViewportScrollInput::new(
+            CanvasPoint { x: 8.0, y: 2.0 },
+            CanvasPoint { x: 20.0, y: 10.0 },
+            false,
+            2.0,
+            0.25,
+            4.0,
+        ),
+    )
+    .expect("pan activation key enables pan-on-scroll");
+    assert_eq!(scroll.move_kind(), ViewportMoveKind::PanScroll);
+
+    let drag = resolve_viewport_drag_pan_gesture(
+        &state.pan_interaction(),
+        context,
+        ViewportDragPanInput::new(ViewportPointerButton::Left, CanvasPoint { x: 2.0, y: 3.0 }),
+    )
+    .expect("pan activation key enables left-button drag pan");
+    assert_eq!(drag.move_kind(), ViewportMoveKind::PanDrag);
+
+    let right_click = resolve_viewport_drag_pan_gesture(
+        &state.pan_interaction(),
+        context,
+        ViewportDragPanInput::new(ViewportPointerButton::Right, CanvasPoint { x: 2.0, y: 3.0 }),
+    )
+    .expect_err("XyFlow activation-key pan does not enable right-click pan");
+    assert_eq!(
+        right_click,
+        ViewportGestureRejection::PanOnDragButtonDisabled
+    );
+}
+
+#[test]
+fn selection_key_pressed_suppresses_drag_pan_without_blocking_scroll() {
+    let state = NodeGraphInteractionState {
+        pan_on_scroll: true,
+        pan_on_drag: NodeGraphPanOnDragButtons {
+            left: true,
+            middle: false,
+            right: false,
+        },
+        zoom_on_scroll: false,
+        zoom_on_pinch: false,
+        zoom_on_double_click: false,
+        ..NodeGraphInteractionState::default()
+    };
+    let context = ViewportGestureContext {
+        selection_key_pressed: true,
+        ..ViewportGestureContext::idle()
+    };
+
+    let drag = resolve_viewport_drag_pan_gesture(
+        &state.pan_interaction(),
+        context,
+        ViewportDragPanInput::new(ViewportPointerButton::Left, CanvasPoint { x: 2.0, y: 3.0 }),
+    )
+    .expect_err("selection key lets selection claim drag gestures");
+    assert_eq!(drag, ViewportGestureRejection::PanOnDragDisabled);
+
+    let scroll = resolve_viewport_scroll_gesture(
+        &state.pan_interaction(),
+        &state.zoom_interaction(),
+        context,
+        ViewportScrollInput::new(
+            CanvasPoint { x: 8.0, y: 2.0 },
+            CanvasPoint { x: 20.0, y: 10.0 },
+            false,
+            2.0,
+            0.25,
+            4.0,
+        ),
+    )
+    .expect("selection key alone does not mark user selection active");
+    assert_eq!(scroll.move_kind(), ViewportMoveKind::PanScroll);
+}
+
+#[test]
 fn viewport_scroll_policy_reports_disabled_and_selection_rejections() {
     let disabled = NodeGraphInteractionState {
         pan_on_scroll: false,

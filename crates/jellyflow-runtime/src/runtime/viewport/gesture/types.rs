@@ -7,6 +7,7 @@ use super::super::transform::{ViewportPanRequest, ViewportZoomRequest};
 
 /// Runtime context that affects whether a normalized viewport gesture is accepted.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ViewportGestureContext {
     /// A user selection gesture is active and should suppress viewport gestures.
     pub user_selection_active: bool,
@@ -14,6 +15,15 @@ pub struct ViewportGestureContext {
     pub connection_in_progress: bool,
     /// The adapter resolved the configured zoom activation key as pressed.
     pub zoom_activation_key_pressed: bool,
+    /// The adapter resolved the configured pan activation key as pressed.
+    ///
+    /// XyFlow treats this as a temporary opt-in for left/middle-button drag pan and pan-on-scroll.
+    pub pan_activation_key_pressed: bool,
+    /// The adapter resolved the configured selection key as pressed.
+    ///
+    /// XyFlow disables viewport drag-pan while the selection key is pressed so box selection can
+    /// claim the pointer gesture before `user_selection_active` becomes true.
+    pub selection_key_pressed: bool,
 }
 
 impl ViewportGestureContext {
