@@ -42,7 +42,8 @@ impl<'a> GraphDiffPlanner<'a> {
             port: port_to.clone(),
         });
 
-        self.restore_replaced_port_order(id, port_to);
+        self.replaced_ports_requiring_port_order_restore.insert(id);
+        self.nodes_requiring_port_order_restore.insert(port_to.node);
         self.restore_edges_removed_with_port(removed_edge_ids);
     }
 
@@ -78,22 +79,6 @@ impl<'a> GraphDiffPlanner<'a> {
         removed_edge_ids
     }
 
-    fn restore_replaced_port_order(&mut self, id: PortId, port_to: &Port) {
-        // `RemovePort` detaches the port id from `node.ports`, but `AddPort` does not
-        // implicitly re-attach it.
-        if let Some(node_to) = self.to.nodes.get(&port_to.node) {
-            let mut from_ports = node_to.ports.clone();
-            from_ports.retain(|p| *p != id);
-            if from_ports != node_to.ports {
-                self.push_op(GraphOp::SetNodePorts {
-                    id: port_to.node,
-                    from: from_ports,
-                    to: node_to.ports.clone(),
-                });
-            }
-        }
-    }
-
     fn restore_edges_removed_with_port(&mut self, removed_edge_ids: Vec<EdgeId>) {
         // `RemovePort` cascades to incident edges. If those edges still exist in `to`, re-add
         // them to keep the patch apply-safe because edge diffing compares `from` vs `to`, not
@@ -109,7 +94,7 @@ impl<'a> GraphDiffPlanner<'a> {
         }
     }
 
-    pub(super) fn restore_added_port_orders(&mut self) {
+    pub(super) fn restore_target_port_orders(&mut self) {
         let node_ids: Vec<_> = self
             .nodes_requiring_port_order_restore
             .iter()
@@ -127,6 +112,11 @@ impl<'a> GraphDiffPlanner<'a> {
                 .iter()
                 .copied()
                 .filter(|port_id| self.to.ports.contains_key(port_id))
+                .filter(|port_id| {
+                    !self
+                        .replaced_ports_requiring_port_order_restore
+                        .contains(port_id)
+                })
                 .collect();
             if stable_ports != node_to.ports {
                 self.push_op(GraphOp::SetNodePorts {

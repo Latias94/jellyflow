@@ -24,6 +24,7 @@ struct GraphDiffPlanner<'a> {
     removed_edges_by_cascade: BTreeSet<EdgeId>,
     restored_edges_by_cascade: BTreeSet<EdgeId>,
     nodes_requiring_port_order_restore: BTreeSet<NodeId>,
+    replaced_ports_requiring_port_order_restore: BTreeSet<PortId>,
 }
 
 impl<'a> GraphDiffPlanner<'a> {
@@ -36,6 +37,7 @@ impl<'a> GraphDiffPlanner<'a> {
             removed_edges_by_cascade: BTreeSet::new(),
             restored_edges_by_cascade: BTreeSet::new(),
             nodes_requiring_port_order_restore: BTreeSet::new(),
+            replaced_ports_requiring_port_order_restore: BTreeSet::new(),
         }
     }
 
@@ -48,7 +50,7 @@ impl<'a> GraphDiffPlanner<'a> {
         // order apply-safe (edges last because they reference ports).
         self.diff_nodes();
         self.diff_ports();
-        self.restore_added_port_orders();
+        self.restore_target_port_orders();
         self.diff_edges();
         self.diff_sticky_notes();
 

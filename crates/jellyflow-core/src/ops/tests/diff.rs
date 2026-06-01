@@ -445,6 +445,42 @@ fn graph_diff_inverse_roundtrips_when_node_port_membership_is_replaced() {
 }
 
 #[test]
+fn graph_diff_inverse_roundtrips_when_structural_port_replacement_adds_sibling_port() {
+    let mut from = Graph::default();
+    let a = NodeId::new();
+    from.nodes.insert(a, make_node("core.a"));
+
+    let replaced = PortId::from_u128(39);
+    let added = PortId::from_u128(40);
+    from.ports
+        .insert(replaced, make_port(a, "old", PortDirection::Out));
+    from.nodes.get_mut(&a).unwrap().ports.push(replaced);
+
+    let mut to = from.clone();
+    to.ports.get_mut(&replaced).unwrap().key = PortKey::new("renamed");
+    to.ports
+        .insert(added, make_port(a, "added", PortDirection::Out));
+    to.nodes.get_mut(&a).unwrap().ports = vec![replaced, added];
+
+    let tx = graph_diff(&from, &to);
+    let mut patched = from.clone();
+    apply_transaction(&mut patched, &tx).expect("apply diff");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&to).unwrap(),
+        "diff must roundtrip"
+    );
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut patched, &inverse).expect("apply inverse");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&from).unwrap(),
+        "diff inverse must restore the source graph"
+    );
+}
+
+#[test]
 fn graph_diff_roundtrips_when_port_deletion_moves_incident_edge() {
     let mut from = Graph::default();
     let a = NodeId::new();
