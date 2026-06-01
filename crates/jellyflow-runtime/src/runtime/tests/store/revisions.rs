@@ -1,14 +1,12 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{make_graph, make_store};
 
-use crate::io::NodeGraphViewState;
-use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, Node, NodeId, NodeKindKey};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn store_graph_revision_stays_stable_for_view_only_updates() {
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
     let before = store.graph_revision();
 
     store.set_viewport(CanvasPoint { x: 3.0, y: 4.0 }, 1.5);
@@ -26,7 +24,7 @@ fn store_graph_revision_stays_stable_for_view_only_updates() {
 #[test]
 fn store_graph_revision_advances_for_graph_mutations() {
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
     let node_id = NodeId::new();
     let before = store.graph_revision();
 

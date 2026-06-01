@@ -1,8 +1,6 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{make_graph, make_store};
 
-use crate::io::NodeGraphViewState;
 use crate::runtime::events::NodeGraphStoreEvent;
-use crate::runtime::store::NodeGraphStore;
 use crate::runtime::xyflow::changes::{NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, Node, NodeId, NodeKindKey};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
@@ -13,7 +11,7 @@ fn store_subscription_receives_graph_and_view_events_and_can_unsubscribe() {
     use std::rc::Rc;
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let events2 = events.clone();
@@ -58,7 +56,7 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
     use std::rc::Rc;
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let node_counts: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let node_counts2 = node_counts.clone();
@@ -125,7 +123,7 @@ fn store_selector_diff_provides_prev_and_next() {
     use std::rc::Rc;
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let deltas: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
     let deltas2 = deltas.clone();
