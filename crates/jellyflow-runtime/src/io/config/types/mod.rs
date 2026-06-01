@@ -6,7 +6,7 @@ mod viewport;
 pub use node::{NodeGraphNodeOrigin, NodeGraphNudgeStepMode};
 pub use pan::{NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};
 pub use selection::{NodeGraphBoxSelectEdges, NodeGraphSelectionMode};
-pub use viewport::{NodeGraphViewportEase, NodeGraphViewportInterpolate};
+pub use viewport::NodeGraphViewportEase;
 
 pub(super) fn default_pan_on_drag_buttons() -> NodeGraphPanOnDragButtons {
     pan::default_pan_on_drag_buttons()

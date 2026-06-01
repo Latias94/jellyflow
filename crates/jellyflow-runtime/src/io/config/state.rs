@@ -15,7 +15,7 @@ use super::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
 use super::types::{
     NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
     NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportEase, NodeGraphViewportInterpolate,
+    NodeGraphViewportEase,
 };
 
 mod default_impl;
@@ -78,8 +78,7 @@ pub struct NodeGraphInteractionState {
     pub zoom_on_pinch_speed: f32,
     pub zoom_on_double_click: bool,
     pub frame_view_duration_ms: u32,
-    pub frame_view_interpolate: NodeGraphViewportInterpolate,
-    pub frame_view_ease: Option<NodeGraphViewportEase>,
+    pub frame_view_ease: NodeGraphViewportEase,
     pub frame_view_padding: f32,
     pub reroute_on_edge_double_click: bool,
     pub edge_insert_on_alt_drag: bool,

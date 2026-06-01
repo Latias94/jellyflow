@@ -17,5 +17,5 @@ pub use self::state::{
 pub use self::types::{
     NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
     NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportEase, NodeGraphViewportInterpolate,
+    NodeGraphViewportEase,
 };

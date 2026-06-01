@@ -10,7 +10,7 @@ use crate::io::config::defaults::*;
 use crate::io::config::keys::NodeGraphDeleteKey;
 use crate::io::config::types::{
     NodeGraphNodeOrigin, NodeGraphNudgeStepMode, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportInterpolate, default_box_select_edges, default_pan_on_drag_buttons,
+    NodeGraphViewportEase, default_box_select_edges, default_pan_on_drag_buttons,
 };
 
 use super::NodeGraphInteractionState;
@@ -66,8 +66,7 @@ impl Default for NodeGraphInteractionState {
             zoom_on_pinch_speed: default_zoom_on_pinch_speed(),
             zoom_on_double_click: default_zoom_on_double_click(),
             frame_view_duration_ms: default_frame_view_duration_ms(),
-            frame_view_interpolate: NodeGraphViewportInterpolate::default(),
-            frame_view_ease: None,
+            frame_view_ease: NodeGraphViewportEase::default(),
             frame_view_padding: default_frame_view_padding(),
             reroute_on_edge_double_click: default_reroute_on_edge_double_click(),
             edge_insert_on_alt_drag: default_edge_insert_on_alt_drag(),

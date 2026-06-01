@@ -12,8 +12,7 @@ pub use config::{
     NodeGraphKeyboardInteraction, NodeGraphNodeDragInteraction, NodeGraphNodeOrigin,
     NodeGraphNudgeStepMode, NodeGraphPanInteraction, NodeGraphPanOnDragButtons,
     NodeGraphPanOnScrollMode, NodeGraphRenderingInteraction, NodeGraphSelectionInteraction,
-    NodeGraphSelectionMode, NodeGraphViewportEase, NodeGraphViewportInterpolate,
-    NodeGraphZoomInteraction,
+    NodeGraphSelectionMode, NodeGraphViewportEase, NodeGraphZoomInteraction,
 };
 pub use files::{
     EDITOR_STATE_FILE_VERSION, GRAPH_FILE_VERSION, GraphFileError, GraphFileV1,

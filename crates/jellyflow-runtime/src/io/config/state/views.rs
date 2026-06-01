@@ -7,7 +7,7 @@ use crate::io::config::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
 use crate::io::config::types::{
     NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
     NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportEase, NodeGraphViewportInterpolate,
+    NodeGraphViewportEase,
 };
 use crate::io::tuning::{
     NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
@@ -83,8 +83,7 @@ pub struct NodeGraphZoomInteraction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeGraphFrameViewInteraction {
     pub duration_ms: u32,
-    pub interpolate: NodeGraphViewportInterpolate,
-    pub ease: Option<NodeGraphViewportEase>,
+    pub ease: NodeGraphViewportEase,
     pub padding: f32,
 }
 
@@ -190,7 +189,6 @@ impl NodeGraphInteractionState {
     pub fn frame_view_interaction(&self) -> NodeGraphFrameViewInteraction {
         NodeGraphFrameViewInteraction {
             duration_ms: self.frame_view_duration_ms,
-            interpolate: self.frame_view_interpolate,
             ease: self.frame_view_ease,
             padding: self.frame_view_padding,
         }
@@ -244,7 +242,7 @@ mod tests {
     use crate::io::config::types::{
         NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
         NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-        NodeGraphViewportEase, NodeGraphViewportInterpolate,
+        NodeGraphViewportEase,
     };
     use crate::io::tuning::{
         NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
@@ -356,8 +354,7 @@ mod tests {
             zoom_on_double_click: false,
             zoom_activation_key: NodeGraphModifierKey::Alt,
             frame_view_duration_ms: 123,
-            frame_view_interpolate: NodeGraphViewportInterpolate::Linear,
-            frame_view_ease: Some(NodeGraphViewportEase::CubicInOut),
+            frame_view_ease: NodeGraphViewportEase::CubicInOut,
             frame_view_padding: 0.25,
             nodes_draggable: false,
             snap_to_grid: true,
@@ -421,8 +418,7 @@ mod tests {
 
         let frame = state.frame_view_interaction();
         assert_eq!(frame.duration_ms, 123);
-        assert_eq!(frame.interpolate, NodeGraphViewportInterpolate::Linear);
-        assert_eq!(frame.ease, Some(NodeGraphViewportEase::CubicInOut));
+        assert_eq!(frame.ease, NodeGraphViewportEase::CubicInOut);
         assert_eq!(frame.padding, 0.25);
 
         let node_drag = state.node_drag_interaction();

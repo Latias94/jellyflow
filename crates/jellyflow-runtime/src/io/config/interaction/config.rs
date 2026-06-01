@@ -13,8 +13,7 @@ use super::super::state::NodeGraphInteractionState;
 use super::super::types::{
     NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
     NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportEase, NodeGraphViewportInterpolate, default_box_select_edges,
-    default_pan_on_drag_buttons,
+    NodeGraphViewportEase, default_box_select_edges, default_pan_on_drag_buttons,
 };
 
 /// Persisted interaction configuration stored alongside view state.
@@ -112,9 +111,7 @@ pub struct NodeGraphInteractionConfig {
     #[serde(default = "default_frame_view_duration_ms")]
     pub frame_view_duration_ms: u32,
     #[serde(default)]
-    pub frame_view_interpolate: NodeGraphViewportInterpolate,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame_view_ease: Option<NodeGraphViewportEase>,
+    pub frame_view_ease: NodeGraphViewportEase,
     #[serde(default = "default_frame_view_padding")]
     pub frame_view_padding: f32,
     #[serde(default = "default_reroute_on_edge_double_click")]
