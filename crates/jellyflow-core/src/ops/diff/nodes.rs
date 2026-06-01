@@ -132,11 +132,7 @@ impl<'a> GraphDiffPlanner<'a> {
             return;
         }
 
-        if node_to
-            .ports
-            .iter()
-            .any(|port_id| !self.from.ports.contains_key(port_id))
-        {
+        if self.node_port_order_needs_post_restore(id, &node_to.ports) {
             let stable_ports = self.stable_existing_port_order(&node_from.ports);
             if node_from.ports != stable_ports {
                 self.push_op(GraphOp::SetNodePorts {

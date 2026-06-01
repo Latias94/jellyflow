@@ -8,6 +8,17 @@ impl<'a> GraphDiffPlanner<'a> {
         let to = self.to;
 
         for (id, port_to) in &to.ports {
+            if self.removed_ports_by_cascade.contains(id) {
+                self.push_op(GraphOp::AddPort {
+                    id: *id,
+                    port: port_to.clone(),
+                });
+                if from.nodes.contains_key(&port_to.node) {
+                    self.nodes_requiring_port_order_restore.insert(port_to.node);
+                }
+                continue;
+            }
+
             if let Some(port_from) = from.ports.get(id) {
                 self.diff_existing_port(*id, port_from, port_to);
             } else {

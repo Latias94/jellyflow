@@ -79,4 +79,13 @@ impl<'a> GraphDiffPlanner<'a> {
             })
             .collect()
     }
+
+    fn node_port_order_needs_post_restore(&self, node: NodeId, ports: &[PortId]) -> bool {
+        ports
+            .iter()
+            .any(|port_id| match self.from.ports.get(port_id) {
+                Some(port_from) => port_from.node != node,
+                None => true,
+            })
+    }
 }
