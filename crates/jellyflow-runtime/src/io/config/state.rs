@@ -57,6 +57,7 @@ pub struct NodeGraphInteractionState {
     pub pan_on_scroll: bool,
     pub pan_on_drag: NodeGraphPanOnDragButtons,
     pub selection_on_drag: bool,
+    pub select_nodes_on_drag: bool,
     pub selection_mode: NodeGraphSelectionMode,
     pub box_select_edges: NodeGraphBoxSelectEdges,
     pub selection_key: NodeGraphModifierKey,

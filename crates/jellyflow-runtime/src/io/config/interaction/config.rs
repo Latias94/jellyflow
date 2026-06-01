@@ -65,6 +65,8 @@ pub struct NodeGraphInteractionConfig {
     pub pan_on_drag: NodeGraphPanOnDragButtons,
     #[serde(default)]
     pub selection_on_drag: bool,
+    #[serde(default = "default_select_nodes_on_drag")]
+    pub select_nodes_on_drag: bool,
     #[serde(default)]
     pub selection_mode: NodeGraphSelectionMode,
     #[serde(default = "default_box_select_edges")]

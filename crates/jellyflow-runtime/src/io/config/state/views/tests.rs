@@ -33,6 +33,7 @@ fn connection_and_selection_views_group_related_fields() {
         edge_interaction_width: 18.0,
         bezier_hit_test_steps: 32,
         selection_on_drag: true,
+        select_nodes_on_drag: false,
         selection_mode: NodeGraphSelectionMode::Partial,
         box_select_edges: NodeGraphBoxSelectEdges::BothEndpoints,
         selection_key: NodeGraphModifierKey::Alt,
@@ -66,6 +67,7 @@ fn connection_and_selection_views_group_related_fields() {
     assert!(!selection.elements_selectable);
     assert!(!selection.edges_selectable);
     assert!(selection.selection_on_drag);
+    assert!(!selection.select_nodes_on_drag);
     assert_eq!(selection.selection_mode, NodeGraphSelectionMode::Partial);
     assert_eq!(
         selection.box_select_edges,

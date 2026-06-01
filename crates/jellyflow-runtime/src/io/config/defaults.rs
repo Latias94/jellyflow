@@ -73,6 +73,10 @@ pub(super) fn default_multi_selection_key() -> NodeGraphModifierKey {
     NodeGraphModifierKey::CtrlOrMeta
 }
 
+pub(super) fn default_select_nodes_on_drag() -> bool {
+    true
+}
+
 pub(super) fn default_pan_activation_key_code() -> Option<NodeGraphKeyCode> {
     Some(NodeGraphKeyCode(KeyCode::Space))
 }

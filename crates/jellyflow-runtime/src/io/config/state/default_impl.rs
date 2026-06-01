@@ -45,6 +45,7 @@ impl Default for NodeGraphInteractionState {
             pan_on_scroll: default_pan_on_scroll(),
             pan_on_drag: default_pan_on_drag_buttons(),
             selection_on_drag: false,
+            select_nodes_on_drag: default_select_nodes_on_drag(),
             selection_mode: NodeGraphSelectionMode::default(),
             box_select_edges: default_box_select_edges(),
             selection_key: default_selection_key(),

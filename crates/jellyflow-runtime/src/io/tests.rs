@@ -57,6 +57,7 @@ fn editor_state_file_roundtrips_split_view_and_config() {
     };
     let mut editor_config = NodeGraphEditorConfig::default();
     editor_config.interaction.selection_on_drag = true;
+    editor_config.interaction.select_nodes_on_drag = false;
     editor_config.runtime_tuning.only_render_visible_elements = false;
 
     let file = NodeGraphEditorStateFile::new(graph_id, view_state.clone(), editor_config.clone());
@@ -86,6 +87,13 @@ fn editor_state_file_roundtrips_split_view_and_config() {
     );
     assert_eq!(
         root.get("editor_config")
+            .and_then(|v| v.get("interaction"))
+            .and_then(|v| v.get("select_nodes_on_drag"))
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        root.get("editor_config")
             .and_then(|v| v.get("runtime_tuning"))
             .and_then(|v| v.get("only_render_visible_elements"))
             .and_then(|v| v.as_bool()),
@@ -99,6 +107,7 @@ fn editor_state_file_roundtrips_split_view_and_config() {
     assert_eq!(loaded.view_state.pan.y, view_state.pan.y);
     assert_eq!(loaded.view_state.zoom, view_state.zoom);
     assert!(loaded.editor_config.interaction.selection_on_drag);
+    assert!(!loaded.editor_config.interaction.select_nodes_on_drag);
     assert!(
         !loaded
             .editor_config
@@ -113,12 +122,14 @@ fn editor_state_file_roundtrips_split_view_and_config() {
 fn interaction_state_split_roundtrips_runtime_tuning() {
     let mut interaction = NodeGraphInteractionState::default();
     interaction.selection_on_drag = true;
+    interaction.select_nodes_on_drag = false;
     interaction.only_render_visible_elements = false;
     interaction.spatial_index.edge_aabb_pad_screen_px = 123.0;
     interaction.paint_cache_prune.max_entries = 4_096;
 
     let (config, runtime_tuning) = interaction.split();
     assert!(config.selection_on_drag);
+    assert!(!config.select_nodes_on_drag);
     assert!(!runtime_tuning.only_render_visible_elements);
     assert_eq!(runtime_tuning.spatial_index.edge_aabb_pad_screen_px, 123.0);
     assert_eq!(runtime_tuning.paint_cache_prune.max_entries, 4_096);
@@ -131,6 +142,7 @@ fn interaction_state_split_roundtrips_runtime_tuning() {
 fn editor_config_parts_roundtrip() {
     let mut interaction = NodeGraphInteractionConfig::default();
     interaction.selection_on_drag = true;
+    interaction.select_nodes_on_drag = false;
     let runtime_tuning = NodeGraphRuntimeTuning {
         only_render_visible_elements: false,
         ..NodeGraphRuntimeTuning::default()
@@ -142,6 +154,20 @@ fn editor_config_parts_roundtrip() {
     assert_eq!(
         editor_config.clone().into_parts(),
         (interaction, runtime_tuning)
+    );
+}
+
+#[test]
+fn interaction_config_defaults_select_nodes_on_drag_like_xyflow() {
+    let config: NodeGraphInteractionConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+
+    assert!(config.select_nodes_on_drag);
+    assert!(NodeGraphInteractionConfig::default().select_nodes_on_drag);
+    assert!(NodeGraphInteractionState::default().select_nodes_on_drag);
+    assert!(
+        NodeGraphInteractionState::default()
+            .selection_interaction()
+            .select_nodes_on_drag
     );
 }
 
