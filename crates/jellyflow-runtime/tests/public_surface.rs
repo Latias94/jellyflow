@@ -147,7 +147,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     .expect("scroll policy");
     assert_eq!(
         scroll_intent.move_kind(),
-        events::ViewportMoveKind::PanScroll
+        events::ViewportMoveKind::ZoomWheel
     );
     let drag_state = NodeGraphInteractionState {
         pan_on_drag: NodeGraphPanOnDragButtons {

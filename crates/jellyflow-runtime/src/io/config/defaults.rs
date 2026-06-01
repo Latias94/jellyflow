@@ -26,11 +26,11 @@ pub(super) fn default_bezier_hit_test_steps() -> u8 {
 }
 
 pub(super) fn default_elevate_nodes_on_select() -> bool {
-    false
+    true
 }
 
 pub(super) fn default_elevate_edges_on_select() -> bool {
-    true
+    false
 }
 
 pub(super) fn default_nudge_step_px() -> f32 {
@@ -58,7 +58,7 @@ pub(super) fn default_edges_reconnectable() -> bool {
 }
 
 pub(super) fn default_pan_on_scroll() -> bool {
-    true
+    false
 }
 
 pub(super) fn default_space_to_pan() -> bool {
@@ -86,7 +86,7 @@ pub(super) fn default_pane_click_distance() -> f32 {
 }
 
 pub(super) fn default_pan_on_scroll_speed() -> f32 {
-    1.0
+    0.5
 }
 
 pub(super) fn default_zoom_on_scroll() -> bool {
@@ -126,7 +126,7 @@ pub(super) fn default_edge_insert_on_alt_drag() -> bool {
 }
 
 pub(super) fn default_connection_radius() -> f32 {
-    16.0
+    20.0
 }
 
 pub(super) fn default_reconnect_radius() -> f32 {
@@ -139,8 +139,8 @@ pub(super) fn default_edge_interaction_width() -> f32 {
 
 pub(super) fn default_snap_grid() -> CanvasSize {
     CanvasSize {
-        width: 16.0,
-        height: 16.0,
+        width: 15.0,
+        height: 15.0,
     }
 }
 
@@ -157,11 +157,11 @@ pub(super) fn default_node_drag_threshold() -> f32 {
 }
 
 pub(super) fn default_node_click_distance() -> f32 {
-    2.0
+    0.0
 }
 
 pub(super) fn default_connection_drag_threshold() -> f32 {
-    2.0
+    1.0
 }
 
 pub(super) fn default_connect_on_click() -> bool {
