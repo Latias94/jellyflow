@@ -21,6 +21,13 @@ use super::types::{
 
 mod default_impl;
 mod split;
+mod views;
+
+pub use views::{
+    NodeGraphConnectionInteraction, NodeGraphFrameViewInteraction, NodeGraphKeyboardInteraction,
+    NodeGraphNodeDragInteraction, NodeGraphPanInteraction, NodeGraphRenderingInteraction,
+    NodeGraphSelectionInteraction, NodeGraphZoomInteraction,
+};
 
 /// Resolved runtime interaction state assembled from persisted config and runtime tuning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -6,10 +6,13 @@ mod tuning;
 mod view_state;
 
 pub use config::{
-    NodeGraphBoxSelectEdges, NodeGraphDeleteKey, NodeGraphEditorConfig, NodeGraphInteractionConfig,
-    NodeGraphInteractionState, NodeGraphKeyCode, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
-    NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode, NodeGraphSelectionMode,
-    NodeGraphViewportEase, NodeGraphViewportInterpolate,
+    NodeGraphBoxSelectEdges, NodeGraphConnectionInteraction, NodeGraphDeleteKey,
+    NodeGraphEditorConfig, NodeGraphFrameViewInteraction, NodeGraphInteractionConfig,
+    NodeGraphInteractionState, NodeGraphKeyCode, NodeGraphKeyboardInteraction,
+    NodeGraphNodeDragInteraction, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,
+    NodeGraphPanInteraction, NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode,
+    NodeGraphRenderingInteraction, NodeGraphSelectionInteraction, NodeGraphSelectionMode,
+    NodeGraphViewportEase, NodeGraphViewportInterpolate, NodeGraphZoomInteraction,
 };
 pub use files::{
     EDITOR_STATE_FILE_VERSION, GRAPH_FILE_VERSION, GraphFileError, GraphFileV1,
