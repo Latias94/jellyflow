@@ -105,6 +105,42 @@ fn normalize_transaction_coalesces_setter_chains_when_chained() {
 }
 
 #[test]
+fn normalize_transaction_coalesces_node_port_order_chains() {
+    let node_id = NodeId::new();
+    let a = PortId::from_u128(1);
+    let b = PortId::from_u128(2);
+    let c = PortId::from_u128(3);
+
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePorts {
+            id: node_id,
+            from: vec![a],
+            to: vec![a, b],
+        },
+        GraphOp::SetNodePorts {
+            id: node_id,
+            from: vec![a, b],
+            to: vec![b, a],
+        },
+        GraphOp::SetNodePorts {
+            id: node_id,
+            from: vec![b, a],
+            to: vec![b, a, c],
+        },
+    ]);
+
+    let normalized = crate::ops::normalize_transaction(tx);
+    assert!(matches!(
+        normalized.ops(),
+        [GraphOp::SetNodePorts {
+            id,
+            from,
+            to
+        }] if *id == node_id && from == &vec![a] && to == &vec![b, a, c]
+    ));
+}
+
+#[test]
 fn normalize_transaction_does_not_coalesce_non_contiguous_setter_chains() {
     let node_id = NodeId::new();
 
