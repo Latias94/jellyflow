@@ -215,4 +215,25 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         serde_json::to_value(suite_decoded).expect("reserialize suite"),
         suite_encoded,
     );
+
+    let suite_path = std::env::temp_dir().join(format!(
+        "jellyflow-public-suite-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    suite.save_json(&suite_path).expect("save suite json");
+    let loaded_suite =
+        conformance::ConformanceSuite::load_json(&suite_path).expect("load suite json");
+    assert!(loaded_suite.run().is_match());
+    assert!(
+        conformance::ConformanceSuite::load_json_if_exists(&suite_path)
+            .expect("optional suite json")
+            .is_some()
+    );
+    let _ = std::fs::remove_file(&suite_path);
+    assert!(
+        conformance::ConformanceSuite::load_json_if_exists(&suite_path)
+            .expect("missing optional suite json")
+            .is_none()
+    );
+    let _ = std::mem::size_of::<conformance::ConformanceFixtureFileError>();
 }

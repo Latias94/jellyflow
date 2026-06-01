@@ -4,6 +4,7 @@
 
 use std::cell::RefCell;
 use std::fmt;
+use std::path::Path;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -118,6 +119,74 @@ impl ConformanceSuite {
     pub fn run(&self) -> ConformanceSuiteReport {
         run_conformance_suite(self)
     }
+
+    pub fn load_json(path: impl AsRef<Path>) -> Result<Self, ConformanceFixtureFileError> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path).map_err(|source| ConformanceFixtureFileError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        serde_json::from_slice(&bytes).map_err(|source| ConformanceFixtureFileError::Parse {
+            path: path.display().to_string(),
+            source,
+        })
+    }
+
+    pub fn load_json_if_exists(
+        path: impl AsRef<Path>,
+    ) -> Result<Option<Self>, ConformanceFixtureFileError> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::load_json(path).map(Some)
+    }
+
+    pub fn save_json(&self, path: impl AsRef<Path>) -> Result<(), ConformanceFixtureFileError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                ConformanceFixtureFileError::Write {
+                    path: path.display().to_string(),
+                    source,
+                }
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(self).map_err(|source| {
+            ConformanceFixtureFileError::Serialize {
+                path: path.display().to_string(),
+                source,
+            }
+        })?;
+        std::fs::write(path, bytes).map_err(|source| ConformanceFixtureFileError::Write {
+            path: path.display().to_string(),
+            source,
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConformanceFixtureFileError {
+    #[error("failed to read conformance fixture file: {path}")]
+    Read {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("failed to parse conformance fixture JSON: {path}")]
+    Parse {
+        path: String,
+        source: serde_json::Error,
+    },
+    #[error("failed to write conformance fixture file: {path}")]
+    Write {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("failed to serialize conformance fixture JSON: {path}")]
+    Serialize {
+        path: String,
+        source: serde_json::Error,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

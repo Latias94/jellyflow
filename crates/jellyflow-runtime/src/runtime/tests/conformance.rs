@@ -2,9 +2,9 @@ use super::fixtures::make_graph;
 
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceSuite,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
-    run_conformance_suite,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureFileError, ConformanceScenario,
+    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    run_conformance_scenario, run_conformance_suite,
 };
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
@@ -12,7 +12,7 @@ use crate::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
-use jellyflow_core::core::{CanvasPoint, CanvasSize};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId};
 
 #[test]
 fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
@@ -294,4 +294,52 @@ fn conformance_suite_captures_action_errors_without_aborting_later_scenarios() {
     assert_eq!(report.errors.len(), 1);
     assert_eq!(report.errors[0].scenario, "rejected pan");
     assert!(report.to_string().contains("rejected pan"));
+}
+
+#[test]
+fn conformance_file_suite_load_save_roundtrips_and_runs() {
+    let path = conformance_temp_path("suite-roundtrip");
+    let suite =
+        ConformanceSuite::new("file-backed suite").with_scenarios([ConformanceScenario::new(
+            "empty fixture",
+            Graph::new(GraphId::new()),
+        )]);
+
+    suite.save_json(&path).expect("save suite");
+    let loaded = ConformanceSuite::load_json(&path).expect("load suite");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(
+        serde_json::to_value(&loaded).expect("loaded suite json"),
+        serde_json::to_value(&suite).expect("suite json"),
+    );
+    assert!(loaded.run().is_match());
+}
+
+#[test]
+fn conformance_file_suite_load_if_exists_returns_none_for_missing_files() {
+    let path = conformance_temp_path("suite-missing");
+
+    let loaded = ConformanceSuite::load_json_if_exists(&path).expect("optional load");
+
+    assert!(loaded.is_none());
+}
+
+#[test]
+fn conformance_file_suite_load_reports_parse_errors_with_path_context() {
+    let path = conformance_temp_path("suite-parse-error");
+    std::fs::write(&path, b"{not json").expect("write invalid fixture");
+
+    let err = ConformanceSuite::load_json(&path).expect_err("parse error");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(matches!(err, ConformanceFixtureFileError::Parse { .. }));
+    assert!(err.to_string().contains("suite-parse-error"));
+}
+
+fn conformance_temp_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "jellyflow-conformance-{name}-{}.json",
+        uuid::Uuid::new_v4()
+    ))
 }
