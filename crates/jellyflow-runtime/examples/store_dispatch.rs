@@ -3,6 +3,7 @@ use jellyflow_core::{
 };
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use jellyflow_runtime::runtime::xyflow::NodeGraphChanges;
 
 fn make_node(kind: &str, x: f32, y: f32) -> Node {
     Node {
@@ -54,10 +55,20 @@ fn main() {
     let outcome = store
         .dispatch_transaction(&move_node)
         .expect("store dispatch succeeds");
+    let changes = NodeGraphChanges::from_patch(&outcome.patch);
 
     assert_eq!(outcome.committed().ops.len(), 1);
+    assert_eq!(changes.nodes.len(), 1);
+    assert!(changes.edges.is_empty());
     assert_eq!(
         store.graph().nodes[&node_id].pos,
         CanvasPoint { x: 32.0, y: 48.0 }
+    );
+
+    println!(
+        "committed {} op(s), projected {} node change(s) and {} edge change(s)",
+        outcome.committed().ops.len(),
+        changes.nodes.len(),
+        changes.edges.len()
     );
 }
