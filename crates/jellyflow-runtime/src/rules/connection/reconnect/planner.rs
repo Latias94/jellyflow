@@ -1,6 +1,6 @@
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, EdgeEndpoint};
-use jellyflow_core::core::{Edge, EdgeId, Graph, PortDirection, PortId};
+use jellyflow_core::core::{Edge, EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::EdgeEndpoints;
 
@@ -70,11 +70,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
     let mut ops =
         ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, Some(edge_id));
 
-    ops.push_set_edge_endpoints(
-        edge_id,
-        endpoint_change.old,
-        EdgeEndpoints::new(endpoints.from_id, endpoints.to_id),
-    );
+    ops.push_set_edge_endpoints(edge_id, endpoint_change.old, endpoints.edge_endpoints());
 
     ConnectPlan::from_ops(ops.into_ops())
 }
@@ -129,7 +125,6 @@ fn strict_mode_rejection(
     mode: NodeGraphConnectionMode,
     endpoints: &ConnectionEndpoints<'_>,
 ) -> Option<ConnectPlan> {
-    (mode == NodeGraphConnectionMode::Strict
-        && (endpoints.from.dir != PortDirection::Out || endpoints.to.dir != PortDirection::In))
+    (mode == NodeGraphConnectionMode::Strict && !endpoints.is_out_to_in())
         .then(reject_reconnect_directions_required)
 }

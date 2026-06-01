@@ -1,6 +1,7 @@
 use crate::rules::ConnectPlan;
 use jellyflow_core::core::{EdgeKind, Graph, Port, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::EdgeEndpoints;
 
 use super::rejections::{
     reject_incompatible_port_kinds, reject_missing_port, reject_opposite_directions_required,
@@ -13,6 +14,16 @@ pub(in crate::rules::connection) struct ConnectionEndpoints<'a> {
     pub from: &'a Port,
     pub to: &'a Port,
     pub edge_kind: EdgeKind,
+}
+
+impl ConnectionEndpoints<'_> {
+    pub(in crate::rules::connection) fn edge_endpoints(&self) -> EdgeEndpoints {
+        EdgeEndpoints::new(self.from_id, self.to_id)
+    }
+
+    pub(in crate::rules::connection) fn is_out_to_in(&self) -> bool {
+        self.from.dir == PortDirection::Out && self.to.dir == PortDirection::In
+    }
 }
 
 pub(in crate::rules::connection) fn resolve_connection_endpoints(
