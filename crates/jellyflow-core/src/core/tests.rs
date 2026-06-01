@@ -6,11 +6,7 @@ use crate::core::{
 };
 use crate::core::{CanvasSize, GraphValidationError, GroupId, validate_graph_structural};
 use crate::core::{
-    SUBGRAPH_NODE_KIND, is_subgraph_node, subgraph_target_graph_id,
-    validate_subgraph_targets_are_imported,
-};
-use crate::core::{
-    SYMBOL_REF_NODE_KIND, is_symbol_ref_node, symbol_ref_target_symbol_id,
+    SUBGRAPH_NODE_KIND, SYMBOL_REF_NODE_KIND, validate_subgraph_targets_are_imported,
     validate_symbol_ref_targets_are_declared,
 };
 
@@ -501,20 +497,6 @@ fn subgraph_nodes_must_reference_declared_imports() {
 }
 
 #[test]
-fn subgraph_parser_accepts_legacy_fret_kind() {
-    let node_id = NodeId::new();
-    let imported = GraphId::from_u128(2);
-    let mut node = make_node("fret.subgraph");
-    node.data = serde_json::json!({ "graph_id": imported });
-
-    assert!(is_subgraph_node(&node));
-    assert_eq!(
-        subgraph_target_graph_id(node_id, &node).expect("parse legacy subgraph target"),
-        Some(imported)
-    );
-}
-
-#[test]
 fn subgraph_targets_must_resolve_through_import_closure() {
     let a = GraphId::from_u128(1);
     let b = GraphId::from_u128(2);
@@ -584,20 +566,6 @@ fn validate_graph_reports_subgraph_import_binding_errors() {
         e,
         GraphValidationError::SubgraphNodeMissingGraphId { node } if *node == bad_id
     )));
-}
-
-#[test]
-fn symbol_ref_parser_accepts_legacy_fret_kind() {
-    let node_id = NodeId::new();
-    let symbol_id = SymbolId::from_u128(10);
-    let mut node = make_node("fret.symbol_ref");
-    node.data = serde_json::json!({ "symbol_id": symbol_id });
-
-    assert!(is_symbol_ref_node(&node));
-    assert_eq!(
-        symbol_ref_target_symbol_id(node_id, &node).expect("parse legacy symbol target"),
-        Some(symbol_id)
-    );
 }
 
 #[test]

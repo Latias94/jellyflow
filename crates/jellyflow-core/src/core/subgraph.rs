@@ -10,8 +10,6 @@ use super::{Graph, GraphId, Node, NodeId};
 /// This is intentionally a string constant (not an enum) so unknown kinds remain preservable.
 pub const SUBGRAPH_NODE_KIND: &str = "jellyflow.subgraph";
 
-const LEGACY_SUBGRAPH_NODE_KIND: &str = "fret.subgraph";
-
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum SubgraphNodeError {
     #[error("subgraph node missing graph_id: node={node:?}")]
@@ -31,15 +29,13 @@ pub enum SubgraphBindingError {
 }
 
 pub fn is_subgraph_node(node: &Node) -> bool {
-    let kind = node.kind.0.as_str();
-    kind == SUBGRAPH_NODE_KIND || kind == LEGACY_SUBGRAPH_NODE_KIND
+    node.kind.0 == SUBGRAPH_NODE_KIND
 }
 
 /// Parses the referenced graph id from a subgraph node.
 ///
 /// Contract:
 /// - `node.kind == SUBGRAPH_NODE_KIND` implies `node.data` is an object with a `graph_id` string.
-/// - legacy `fret.subgraph` nodes are accepted for existing documents.
 /// - `graph_id` must parse as a UUID.
 pub fn subgraph_target_graph_id(
     node_id: NodeId,

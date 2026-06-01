@@ -10,8 +10,6 @@ use super::{Graph, Node, NodeId, SymbolId};
 /// This is intentionally a string constant (not an enum) so unknown kinds remain preservable.
 pub const SYMBOL_REF_NODE_KIND: &str = "jellyflow.symbol_ref";
 
-const LEGACY_SYMBOL_REF_NODE_KIND: &str = "fret.symbol_ref";
-
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum SymbolRefNodeError {
     #[error("symbol ref node missing symbol_id: node={node:?}")]
@@ -33,15 +31,13 @@ pub enum SymbolRefBindingError {
 }
 
 pub fn is_symbol_ref_node(node: &Node) -> bool {
-    let kind = node.kind.0.as_str();
-    kind == SYMBOL_REF_NODE_KIND || kind == LEGACY_SYMBOL_REF_NODE_KIND
+    node.kind.0 == SYMBOL_REF_NODE_KIND
 }
 
 /// Parses the referenced symbol id from a symbol reference node.
 ///
 /// Contract:
 /// - `node.kind == SYMBOL_REF_NODE_KIND` implies `node.data` is an object with a `symbol_id` string.
-/// - legacy `fret.symbol_ref` nodes are accepted for existing documents.
 /// - `symbol_id` must parse as a UUID.
 pub fn symbol_ref_target_symbol_id(
     node_id: NodeId,
