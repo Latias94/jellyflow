@@ -15,6 +15,7 @@ use crate::rules::{ConnectPlan, Diagnostic};
 use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
+pub(crate) use pipeline::apply_transaction_with_profile_in_place;
 pub use pipeline::{
     ApplyPipelineError, apply_connect_plan_with_profile, apply_transaction_with_profile,
 };

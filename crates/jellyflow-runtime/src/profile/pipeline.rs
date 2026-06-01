@@ -40,6 +40,17 @@ pub fn apply_transaction_with_profile(
     profile: &mut dyn GraphProfile,
     tx: &GraphTransaction,
 ) -> Result<GraphTransaction, ApplyPipelineError> {
+    let mut scratch = graph.clone();
+    let committed = apply_transaction_with_profile_in_place(&mut scratch, profile, tx)?;
+    *graph = scratch;
+    Ok(committed)
+}
+
+pub(crate) fn apply_transaction_with_profile_in_place(
+    graph: &mut Graph,
+    profile: &mut dyn GraphProfile,
+    tx: &GraphTransaction,
+) -> Result<GraphTransaction, ApplyPipelineError> {
     let mut committed = CommittedTransactionBuilder::new(tx);
     apply_original_transaction(graph, tx, &mut committed)?;
 
@@ -155,6 +166,8 @@ fn rejected_diagnostics(
 mod tests {
     use jellyflow_core::core::{CanvasPoint, Graph, Node, NodeId, NodeKindKey, PortId};
 
+    use crate::rules::DiagnosticTarget;
+
     use super::*;
 
     #[test]
@@ -190,6 +203,28 @@ mod tests {
             CanvasPoint { x: 10.0, y: 20.0 }
         );
         assert!(graph.nodes.get(&node).expect("node").hidden);
+    }
+
+    #[test]
+    fn apply_transaction_with_profile_rejection_leaves_graph_unchanged() {
+        let node = NodeId::new();
+        let mut graph = Graph::default();
+        graph.nodes.insert(node, make_node());
+
+        let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
+            id: node,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 10.0, y: 20.0 },
+        }]);
+
+        let err = apply_transaction_with_profile(&mut graph, &mut RejectingProfile, &tx)
+            .expect_err("profile should reject");
+
+        assert!(matches!(err, ApplyPipelineError::Rejected { .. }));
+        assert_eq!(
+            graph.nodes.get(&node).expect("node").pos,
+            CanvasPoint { x: 0.0, y: 0.0 }
+        );
     }
 
     struct OneDerivedOp {
@@ -230,6 +265,26 @@ mod tests {
                 from: false,
                 to: true,
             }]
+        }
+    }
+
+    struct RejectingProfile;
+
+    impl GraphProfile for RejectingProfile {
+        fn type_of_port(
+            &mut self,
+            _graph: &Graph,
+            _port: PortId,
+        ) -> Option<jellyflow_core::types::TypeDesc> {
+            None
+        }
+
+        fn validate_graph(&mut self, _graph: &Graph) -> Vec<Diagnostic> {
+            vec![Diagnostic::error(
+                "profile.reject",
+                DiagnosticTarget::Graph,
+                "profile rejected graph",
+            )]
         }
     }
 

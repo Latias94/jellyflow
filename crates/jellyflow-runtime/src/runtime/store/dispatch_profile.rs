@@ -1,4 +1,4 @@
-use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
+use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile_in_place};
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::GraphTransaction;
 
@@ -18,7 +18,9 @@ impl DispatchProfile<'_> {
     ) -> Result<GraphTransaction, ApplyPipelineError> {
         match self {
             Self::StoreProfile => store.apply_to_graph(graph, tx),
-            Self::External(profile) => apply_transaction_with_profile(graph, &mut **profile, tx),
+            Self::External(profile) => {
+                apply_transaction_with_profile_in_place(graph, &mut **profile, tx)
+            }
         }
     }
 }
