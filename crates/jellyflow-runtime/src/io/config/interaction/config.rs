@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use jellyflow_core::core::{CanvasRect, CanvasSize};
 use jellyflow_core::interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey,
-    NodeGraphZoomActivationKey,
 };
 
 use crate::io::tuning::{NodeGraphAutoPanTuning, NodeGraphPanInertiaTuning};
@@ -126,7 +125,7 @@ pub struct NodeGraphInteractionConfig {
     #[serde(default = "default_edge_insert_on_alt_drag")]
     pub edge_insert_on_alt_drag: bool,
     #[serde(default)]
-    pub zoom_activation_key: NodeGraphZoomActivationKey,
+    pub zoom_activation_key: NodeGraphModifierKey,
     #[serde(default = "default_node_drag_threshold")]
     pub node_drag_threshold: f32,
     #[serde(default)]

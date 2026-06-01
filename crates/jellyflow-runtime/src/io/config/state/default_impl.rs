@@ -1,5 +1,5 @@
 use jellyflow_core::interaction::{
-    NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphZoomActivationKey,
+    NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey,
 };
 
 use crate::io::tuning::{
@@ -71,7 +71,7 @@ impl Default for NodeGraphInteractionState {
             frame_view_padding: default_frame_view_padding(),
             reroute_on_edge_double_click: default_reroute_on_edge_double_click(),
             edge_insert_on_alt_drag: default_edge_insert_on_alt_drag(),
-            zoom_activation_key: NodeGraphZoomActivationKey::default(),
+            zoom_activation_key: NodeGraphModifierKey::default(),
             node_drag_threshold: default_node_drag_threshold(),
             node_drag_handle_mode: NodeGraphDragHandleMode::default(),
             node_click_distance: default_node_click_distance(),

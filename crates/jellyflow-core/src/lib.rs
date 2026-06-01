@@ -20,7 +20,6 @@ pub use core::{
 };
 pub use interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,
-    NodeGraphZoomActivationKey,
 };
 pub use ops::{
     ApplyError, DEFAULT_HISTORY_LIMIT, EdgeEndpoints, GraphFragment, GraphHistory, GraphOp,

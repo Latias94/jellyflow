@@ -1,7 +1,6 @@
 use jellyflow_core::core::{CanvasRect, CanvasSize};
 use jellyflow_core::interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey,
-    NodeGraphZoomActivationKey,
 };
 
 use crate::io::config::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
@@ -77,7 +76,7 @@ pub struct NodeGraphZoomInteraction {
     pub zoom_on_pinch: bool,
     pub zoom_on_pinch_speed: f32,
     pub zoom_on_double_click: bool,
-    pub zoom_activation_key: NodeGraphZoomActivationKey,
+    pub zoom_activation_key: NodeGraphModifierKey,
 }
 
 /// Programmatic viewport framing behaviour resolved for runtime use.
@@ -239,7 +238,6 @@ mod tests {
     use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
     use jellyflow_core::interaction::{
         NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey,
-        NodeGraphZoomActivationKey,
     };
 
     use crate::io::config::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
@@ -356,7 +354,7 @@ mod tests {
             zoom_on_pinch: false,
             zoom_on_pinch_speed: 4.0,
             zoom_on_double_click: false,
-            zoom_activation_key: NodeGraphZoomActivationKey::Alt,
+            zoom_activation_key: NodeGraphModifierKey::Alt,
             frame_view_duration_ms: 123,
             frame_view_interpolate: NodeGraphViewportInterpolate::Linear,
             frame_view_ease: Some(NodeGraphViewportEase::CubicInOut),
@@ -419,7 +417,7 @@ mod tests {
         assert!(!zoom.zoom_on_pinch);
         assert_eq!(zoom.zoom_on_pinch_speed, 4.0);
         assert!(!zoom.zoom_on_double_click);
-        assert_eq!(zoom.zoom_activation_key, NodeGraphZoomActivationKey::Alt);
+        assert_eq!(zoom.zoom_activation_key, NodeGraphModifierKey::Alt);
 
         let frame = state.frame_view_interaction();
         assert_eq!(frame.duration_ms, 123);

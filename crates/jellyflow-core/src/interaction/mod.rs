@@ -48,9 +48,6 @@ pub enum NodeGraphModifierKey {
     Alt,
 }
 
-/// Backward-compat alias for older API surface.
-pub type NodeGraphZoomActivationKey = NodeGraphModifierKey;
-
 /// Keyboard modifier state used by headless interaction policies.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeGraphModifiers {

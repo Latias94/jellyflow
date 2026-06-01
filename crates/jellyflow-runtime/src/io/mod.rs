@@ -21,7 +21,6 @@ pub use files::{
 };
 pub use jellyflow_core::interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,
-    NodeGraphZoomActivationKey,
 };
 pub use tuning::{
     NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
