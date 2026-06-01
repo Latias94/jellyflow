@@ -27,6 +27,18 @@ fn plan_reconnect_preserves_edge_id() {
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out1, inn);
 
+    let noop_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out1);
+    assert!(noop_plan.is_accept());
+    assert!(noop_plan.ops().is_empty());
+
+    let self_connection_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, out1);
+    assert!(self_connection_plan.is_reject());
+    assert_eq!(
+        self_connection_plan.diagnostics()[0].message,
+        "cannot connect a port to itself"
+    );
+    assert!(self_connection_plan.ops().is_empty());
+
     let plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out2);
     assert!(plan.is_accept());
     assert_eq!(plan.ops().len(), 1);

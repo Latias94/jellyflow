@@ -1,11 +1,11 @@
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, EdgeEndpoint};
-use jellyflow_core::core::{Edge, EdgeId, Graph, Port, PortDirection, PortId};
+use jellyflow_core::core::{Edge, EdgeId, Graph, PortDirection, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::common::{
-    ConnectionOpBuilder, connection_exists, reject_duplicate_connection,
+    ConnectionEndpoints, ConnectionOpBuilder, connection_exists, reject_duplicate_connection,
     reject_edge_kind_incompatible_with_ports, reject_if_connection_policy_disallows,
     reject_missing_edge, reject_reconnect_directions_required, reject_self_connection,
     resolve_ordered_connection_endpoints,
@@ -30,24 +30,22 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return reject;
     }
 
-    let old = EdgeEndpoints::from_edge(edge);
-    let candidate = reconnect_candidate(edge, endpoint, new_port);
+    let endpoint_change = ReconnectEndpointChange::new(edge, endpoint, new_port);
 
-    if candidate.from == candidate.to {
-        return reject_self_connection();
+    if let Some(reject) = endpoint_change.self_connection_rejection() {
+        return reject;
     }
 
-    if candidate == old {
+    if endpoint_change.is_noop() {
         return ConnectPlan::accept();
     }
 
-    let endpoints = match resolve_ordered_connection_endpoints(graph, candidate.from, candidate.to)
-    {
+    let endpoints = match endpoint_change.resolve(graph) {
         Ok(endpoints) => endpoints,
         Err(reject) => return reject,
     };
 
-    if let Some(reject) = strict_mode_rejection(mode, endpoints.from, endpoints.to) {
+    if let Some(reject) = strict_mode_rejection(mode, &endpoints) {
         return reject;
     }
 
@@ -74,7 +72,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
 
     ops.push_set_edge_endpoints(
         edge_id,
-        old,
+        endpoint_change.old,
         EdgeEndpoints::new(endpoints.from_id, endpoints.to_id),
     );
 
@@ -98,19 +96,40 @@ fn reconnect_endpoint_policy_rejection(
     }
 }
 
-fn reconnect_candidate(edge: &Edge, endpoint: EdgeEndpoint, new_port: PortId) -> EdgeEndpoints {
-    match endpoint {
-        EdgeEndpoint::From => EdgeEndpoints::new(new_port, edge.to),
-        EdgeEndpoint::To => EdgeEndpoints::new(edge.from, new_port),
+struct ReconnectEndpointChange {
+    old: EdgeEndpoints,
+    candidate: EdgeEndpoints,
+}
+
+impl ReconnectEndpointChange {
+    fn new(edge: &Edge, endpoint: EdgeEndpoint, new_port: PortId) -> Self {
+        Self {
+            old: EdgeEndpoints::from_edge(edge),
+            candidate: match endpoint {
+                EdgeEndpoint::From => EdgeEndpoints::new(new_port, edge.to),
+                EdgeEndpoint::To => EdgeEndpoints::new(edge.from, new_port),
+            },
+        }
+    }
+
+    fn self_connection_rejection(&self) -> Option<ConnectPlan> {
+        (self.candidate.from == self.candidate.to).then(reject_self_connection)
+    }
+
+    fn is_noop(&self) -> bool {
+        self.candidate == self.old
+    }
+
+    fn resolve<'a>(&self, graph: &'a Graph) -> Result<ConnectionEndpoints<'a>, ConnectPlan> {
+        resolve_ordered_connection_endpoints(graph, self.candidate.from, self.candidate.to)
     }
 }
 
 fn strict_mode_rejection(
     mode: NodeGraphConnectionMode,
-    from: &Port,
-    to: &Port,
+    endpoints: &ConnectionEndpoints<'_>,
 ) -> Option<ConnectPlan> {
     (mode == NodeGraphConnectionMode::Strict
-        && (from.dir != PortDirection::Out || to.dir != PortDirection::In))
+        && (endpoints.from.dir != PortDirection::Out || endpoints.to.dir != PortDirection::In))
         .then(reject_reconnect_directions_required)
 }
