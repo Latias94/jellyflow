@@ -1,5 +1,5 @@
 use super::GraphDiffPlanner;
-use crate::core::{Node, NodeId, PortId};
+use crate::core::{Node, NodeId};
 use crate::ops::{GraphMutationPlanner, GraphOp};
 
 impl<'a> GraphDiffPlanner<'a> {
@@ -137,7 +137,7 @@ impl<'a> GraphDiffPlanner<'a> {
             .iter()
             .any(|port_id| !self.from.ports.contains_key(port_id))
         {
-            let stable_ports = self.stable_existing_port_order(node_from);
+            let stable_ports = self.stable_existing_port_order(&node_from.ports);
             if node_from.ports != stable_ports {
                 self.push_op(GraphOp::SetNodePorts {
                     id,
@@ -195,15 +195,6 @@ impl<'a> GraphDiffPlanner<'a> {
         };
 
         self.from.groups.contains_key(&group_id) && !self.to.groups.contains_key(&group_id)
-    }
-
-    fn stable_existing_port_order(&self, node_from: &Node) -> Vec<PortId> {
-        node_from
-            .ports
-            .iter()
-            .copied()
-            .filter(|port_id| self.to.ports.contains_key(port_id))
-            .collect()
     }
 
     fn diff_removed_node(&mut self, id: NodeId, node_from: &Node) {

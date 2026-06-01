@@ -107,17 +107,7 @@ impl<'a> GraphDiffPlanner<'a> {
             let Some(node_to) = self.to.nodes.get(&node_id) else {
                 continue;
             };
-            let stable_ports: Vec<_> = node_from
-                .ports
-                .iter()
-                .copied()
-                .filter(|port_id| self.to.ports.contains_key(port_id))
-                .filter(|port_id| {
-                    !self
-                        .replaced_ports_requiring_port_order_restore
-                        .contains(port_id)
-                })
-                .collect();
+            let stable_ports = self.stable_restored_port_order(&node_from.ports);
             if stable_ports != node_to.ports {
                 self.push_op(GraphOp::SetNodePorts {
                     id: node_id,

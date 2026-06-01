@@ -60,4 +60,23 @@ impl<'a> GraphDiffPlanner<'a> {
     fn push_op(&mut self, op: GraphOp) {
         self.tx.push(op);
     }
+
+    fn stable_existing_port_order(&self, ports: &[PortId]) -> Vec<PortId> {
+        ports
+            .iter()
+            .copied()
+            .filter(|port_id| self.to.ports.contains_key(port_id))
+            .collect()
+    }
+
+    fn stable_restored_port_order(&self, ports: &[PortId]) -> Vec<PortId> {
+        self.stable_existing_port_order(ports)
+            .into_iter()
+            .filter(|port_id| {
+                !self
+                    .replaced_ports_requiring_port_order_restore
+                    .contains(port_id)
+            })
+            .collect()
+    }
 }

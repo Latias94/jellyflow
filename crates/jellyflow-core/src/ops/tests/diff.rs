@@ -621,6 +621,14 @@ fn graph_diff_roundtrips_when_a_port_changes_structurally() {
         serde_json::to_value(&to).unwrap(),
         "diff must roundtrip"
     );
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut patched, &inverse).expect("apply inverse");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&from).unwrap(),
+        "diff inverse must restore the source graph"
+    );
 }
 
 #[test]
