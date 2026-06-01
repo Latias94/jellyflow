@@ -1,5 +1,6 @@
 //! Transaction dispatch, undo, redo, middleware, and commit publication.
 
+mod gate;
 mod pipeline;
 
 use crate::profile::{ApplyPipelineError, GraphProfile, apply_transaction_with_profile};
