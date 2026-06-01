@@ -1,12 +1,12 @@
 use jellyflow_core::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Group, GroupId,
+    Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use crate::runtime::rendering::{
-    EdgeRenderOrderOptions, NodeRenderOrderOptions, resolve_edge_render_order,
-    resolve_node_render_order,
+    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions,
+    resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
 };
 use crate::runtime::store::NodeGraphStore;
 
@@ -40,6 +40,31 @@ fn graph_with_three_nodes(hidden_c: bool) -> (Graph, NodeId, NodeId, NodeId) {
     graph.nodes.insert(a, node("test.a", false));
     graph.nodes.insert(b, node("test.b", false));
     graph.nodes.insert(c, node("test.c", hidden_c));
+    (graph, a, b, c)
+}
+
+fn group(title: &str) -> Group {
+    Group {
+        title: title.to_owned(),
+        rect: CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            },
+        },
+        color: None,
+    }
+}
+
+fn graph_with_three_groups() -> (Graph, GroupId, GroupId, GroupId) {
+    let mut graph = Graph::new(GraphId::from_u128(1));
+    let a = GroupId::from_u128(1);
+    let b = GroupId::from_u128(2);
+    let c = GroupId::from_u128(3);
+    graph.groups.insert(a, group("group-a"));
+    graph.groups.insert(b, group("group-b"));
+    graph.groups.insert(c, group("group-c"));
     (graph, a, b, c)
 }
 
@@ -166,6 +191,34 @@ fn node_render_order_filters_hidden_nodes_unless_requested() {
 }
 
 #[test]
+fn group_render_order_respects_group_draw_order_and_elevates_selected_groups() {
+    let (graph, a, b, c) = graph_with_three_groups();
+    let view_state = NodeGraphViewState {
+        selected_groups: vec![c],
+        group_draw_order: vec![c, a, c, GroupId::from_u128(404)],
+        ..NodeGraphViewState::default()
+    };
+
+    assert_eq!(
+        resolve_group_render_order(&graph, &view_state, GroupRenderOrderOptions::default()),
+        vec![a, b, c],
+        "selected groups are moved after non-selected groups while preserving base order"
+    );
+
+    assert_eq!(
+        resolve_group_render_order(
+            &graph,
+            &view_state,
+            GroupRenderOrderOptions {
+                elevate_groups_on_select: false,
+            },
+        ),
+        vec![c, a, b],
+        "explicit group draw order is the base order when elevation is disabled"
+    );
+}
+
+#[test]
 fn edge_render_order_elevates_selected_edges_and_edges_connected_to_selected_nodes() {
     let (graph, selected_node, e1, e2, e3) = graph_with_three_edges(false);
     let view_state = NodeGraphViewState {
@@ -221,6 +274,25 @@ fn edge_render_order_filters_hidden_edges_unless_requested() {
         vec![e2, e1, e3],
         "hidden selected edges can be included explicitly and still elevate"
     );
+}
+
+#[test]
+fn store_group_render_order_uses_resolved_editor_config() {
+    let (graph, a, b, c) = graph_with_three_groups();
+    let view_state = NodeGraphViewState {
+        selected_groups: vec![c],
+        group_draw_order: vec![c, a],
+        ..NodeGraphViewState::default()
+    };
+    let mut store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+
+    assert_eq!(store.group_render_order(), vec![a, b, c]);
+
+    store.update_editor_config(|config| {
+        config.interaction.elevate_nodes_on_select = false;
+    });
+
+    assert_eq!(store.group_render_order(), vec![c, a, b]);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
 use crate::runtime::store::NodeGraphStore;
-use jellyflow_core::core::{Edge, EdgeId, Graph, NodeId};
+use jellyflow_core::core::{Edge, EdgeId, Graph, GroupId, NodeId};
 
 /// Options for resolving a node render order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,13 @@ pub struct EdgeRenderOrderOptions {
     pub elevate_edges_on_select: bool,
 }
 
+/// Options for resolving a group render order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupRenderOrderOptions {
+    /// Raise selected groups to the front of the returned order.
+    pub elevate_groups_on_select: bool,
+}
+
 impl EdgeRenderOrderOptions {
     pub fn from_interaction(interaction: &NodeGraphInteractionState) -> Self {
         Self {
@@ -42,6 +49,22 @@ impl Default for EdgeRenderOrderOptions {
         Self {
             include_hidden: false,
             elevate_edges_on_select: true,
+        }
+    }
+}
+
+impl GroupRenderOrderOptions {
+    pub fn from_interaction(interaction: &NodeGraphInteractionState) -> Self {
+        Self {
+            elevate_groups_on_select: interaction.rendering_interaction().elevate_nodes_on_select,
+        }
+    }
+}
+
+impl Default for GroupRenderOrderOptions {
+    fn default() -> Self {
+        Self {
+            elevate_groups_on_select: true,
         }
     }
 }
@@ -62,6 +85,55 @@ impl Default for NodeRenderOrderOptions {
             elevate_nodes_on_select: true,
         }
     }
+}
+
+/// Resolves the stable group order an adapter should paint.
+///
+/// The base order is:
+/// 1. valid IDs from `view_state.group_draw_order`,
+/// 2. remaining graph groups in deterministic ID order.
+///
+/// Groups are Jellyflow frame resources rather than XyFlow nodes, but adapters usually paint them
+/// as node-like containers. When elevation is enabled, selected groups move to the end while
+/// preserving their relative order.
+pub fn resolve_group_render_order(
+    graph: &Graph,
+    view_state: &NodeGraphViewState,
+    options: GroupRenderOrderOptions,
+) -> Vec<GroupId> {
+    let mut seen: HashSet<GroupId> = HashSet::new();
+    let mut base: Vec<GroupId> = Vec::with_capacity(graph.groups.len());
+
+    for id in &view_state.group_draw_order {
+        if seen.insert(*id) && graph.groups.contains_key(id) {
+            base.push(*id);
+        }
+    }
+
+    for id in graph.groups.keys() {
+        if seen.insert(*id) {
+            base.push(*id);
+        }
+    }
+
+    if !options.elevate_groups_on_select || view_state.selected_groups.is_empty() {
+        return base;
+    }
+
+    let selected: HashSet<GroupId> = view_state.selected_groups.iter().copied().collect();
+    let mut normal: Vec<GroupId> = Vec::with_capacity(base.len());
+    let mut elevated: Vec<GroupId> = Vec::new();
+
+    for id in base {
+        if selected.contains(&id) {
+            elevated.push(id);
+        } else {
+            normal.push(id);
+        }
+    }
+
+    normal.extend(elevated);
+    normal
 }
 
 /// Resolves the stable node order an adapter should paint.
@@ -207,6 +279,16 @@ fn edge_is_elevated(
 }
 
 impl NodeGraphStore {
+    /// Resolves the current group render order using the store's view-state and editor config.
+    pub fn group_render_order(&self) -> Vec<GroupId> {
+        let interaction = self.resolved_interaction_state();
+        resolve_group_render_order(
+            self.graph(),
+            self.view_state(),
+            GroupRenderOrderOptions::from_interaction(&interaction),
+        )
+    }
+
     /// Resolves the current node render order using the store's view-state and editor config.
     pub fn node_render_order(&self) -> Vec<NodeId> {
         let interaction = self.resolved_interaction_state();
