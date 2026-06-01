@@ -24,12 +24,13 @@ Last updated: 2026-06-01
 
 ## M2 - Multi-Selection Drag Items
 
-- [ ] JND-030 [owner=codex] [deps=JND-020] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs]
+- [x] JND-030 [owner=codex] [deps=JND-020] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Extend drag planning to build deterministic drag items from the primary node plus selected nodes.
   Validation: `cargo nextest run -p jellyflow-runtime drag`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture covers selected-node co-dragging, primary node inclusion, sorted output, non-draggable nodes, and selected-parent child filtering.
   Context: `docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Extended `NodeGraphStore::plan_node_drag` to co-drag current selected nodes with the primary node, added ordered `NodeDragItem` output, deterministic sorted `SetNodePos` ops, selected-group child filtering for Jellyflow parent semantics, and public surface coverage for `NodeDragItem`.
 
 ## M3 - Snap And Extent Constraints
 

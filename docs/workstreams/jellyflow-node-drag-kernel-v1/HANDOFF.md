@@ -15,10 +15,14 @@ The helper converts a canvas-space target into a labeled `SetNodePos` transactio
 `NodeGraphStore` dispatch. Harness-backed fixtures prove successful commit traces and no-commit
 behavior for missing, hidden, non-draggable, no-op, non-finite, and global-disabled cases.
 
+JND-030 is complete: drag planning now builds ordered `NodeDragItem` output from the primary node
+plus current selected nodes. It co-drags selected nodes with the primary node, filters hidden and
+non-draggable nodes, filters child nodes whose parent group is selected, and commits sorted
+`SetNodePos` ops.
+
 ## Next Task
 
-JND-030: extend drag planning to build deterministic multi-selection drag items from the primary
-node plus selected nodes.
+JND-040: add snap-to-grid and movement extent handling without renderer dependencies.
 
 ## Decisions Since Last Update
 
@@ -32,6 +36,8 @@ node plus selected nodes.
   explicitly pulls one in later.
 - The first apply helper records normal store history. A later drag-session task can decide whether
   continuous pointer updates need separate preview/final-commit semantics.
+- Jellyflow's selected-parent filtering currently maps to node `parent: GroupId` plus selected
+  groups, not XyFlow node-parent nesting.
 
 ## Blockers
 

@@ -89,6 +89,26 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo check -p jellyflow-runtime`: passed.
   - `cargo nextest run -p jellyflow-runtime`: passed, 145 tests.
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+- 2026-06-01: JND-030 added deterministic multi-selection drag planning.
+  - Extended `plan_node_drag` and `NodeGraphStore::plan_node_drag` to use current view-state
+    selection.
+  - Added public `NodeDragItem` output and `NodeDragPlan::items`.
+  - Multi-drag candidates are selected nodes plus the primary node, sorted by `NodeId`, filtered by
+    existing draggable/hidden policy, and filtered when a node's parent group is selected.
+  - Fixture coverage: selected-node co-dragging, primary node inclusion when not selected, sorted
+    transaction ops, non-draggable selected node exclusion, and selected-parent child filtering via
+    Jellyflow's selected group parent semantics.
+  - RED gate: `cargo nextest run -p jellyflow-runtime multi_selection_drag` failed before
+    `NodeDragItem`, `NodeDragPlan::items`, and view-state-aware planning existed.
+  - `cargo fmt --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime multi_selection_drag`: passed, 1 test.
+  - `cargo nextest run -p jellyflow-runtime drag`: passed, 5 tests.
+  - `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 2 tests.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 146 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `review-workstream` self-review: no blocking findings; selected-parent filtering is documented
+    as selected group parent semantics for Jellyflow.
 
 ## Notes
 
