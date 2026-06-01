@@ -1,11 +1,12 @@
 use crate::io::NodeGraphInteractionState;
 use crate::runtime::geometry::CanvasBounds;
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeExtent};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
-use super::candidates::DragCandidate;
-use super::types::NodeDragItem;
+use super::super::candidates::DragCandidate;
+use super::super::types::NodeDragItem;
+use super::geometry::{candidate_bounds, candidate_bounds_at, normalized_rect};
 
-pub(super) fn drag_items(
+pub(in crate::runtime::drag) fn drag_items(
     interaction: &NodeGraphInteractionState,
     candidates: &[DragCandidate],
     delta: CanvasPoint,
@@ -38,53 +39,6 @@ pub(super) fn drag_items(
             })
         })
         .collect()
-}
-
-pub(super) fn snapped_delta(
-    interaction: &NodeGraphInteractionState,
-    candidates: &[DragCandidate],
-    delta: CanvasPoint,
-) -> CanvasPoint {
-    let node_drag = interaction.node_drag_interaction();
-    if !node_drag.snap_to_grid || !node_drag.snap_grid.is_positive_finite() {
-        return delta;
-    }
-
-    let Some(reference) = candidates.first() else {
-        return delta;
-    };
-    let reference_target = CanvasPoint {
-        x: reference.from.x + delta.x,
-        y: reference.from.y + delta.y,
-    };
-    let snapped = snap_point(reference_target, node_drag.snap_grid);
-
-    CanvasPoint {
-        x: snapped.x - reference.from.x,
-        y: snapped.y - reference.from.y,
-    }
-}
-
-fn candidate_bounds(candidates: &[DragCandidate], node_origin: (f32, f32)) -> Option<CanvasBounds> {
-    candidates
-        .iter()
-        .filter_map(|candidate| candidate_bounds_at(*candidate, candidate.from, node_origin))
-        .reduce(CanvasBounds::union)
-}
-
-fn candidate_bounds_at(
-    candidate: DragCandidate,
-    position: CanvasPoint,
-    node_origin: (f32, f32),
-) -> Option<CanvasBounds> {
-    let origin = CanvasPoint {
-        x: position.x - node_origin.0 * candidate.size.width,
-        y: position.y - node_origin.1 * candidate.size.height,
-    };
-    CanvasBounds::from_rect(CanvasRect {
-        origin,
-        size: candidate.size,
-    })
 }
 
 fn adjusted_candidate_extent(
@@ -150,50 +104,6 @@ fn clamp_candidate_position(
         x: top_left.x + node_origin.0 * candidate.size.width,
         y: top_left.y + node_origin.1 * candidate.size.height,
     }
-}
-
-pub(super) fn resolved_extent_rect(
-    graph: &Graph,
-    node: &Node,
-    extent: Option<NodeExtent>,
-    expand_parent: bool,
-) -> Option<CanvasRect> {
-    match extent? {
-        NodeExtent::Rect { rect } => normalized_rect(rect),
-        NodeExtent::Parent if !expand_parent => node
-            .parent
-            .and_then(|parent| graph.groups.get(&parent))
-            .and_then(|group| normalized_rect(group.rect)),
-        NodeExtent::Parent => None,
-    }
-}
-
-fn normalized_rect(rect: CanvasRect) -> Option<CanvasRect> {
-    CanvasBounds::from_rect(rect).map(CanvasBounds::to_rect)
-}
-
-pub(super) fn normalized_size(size: Option<CanvasSize>) -> CanvasSize {
-    let Some(size) = size else {
-        return CanvasSize::default();
-    };
-    if !size.is_finite() {
-        return CanvasSize::default();
-    }
-    CanvasSize {
-        width: size.width.max(0.0),
-        height: size.height.max(0.0),
-    }
-}
-
-fn snap_point(point: CanvasPoint, grid: jellyflow_core::core::CanvasSize) -> CanvasPoint {
-    CanvasPoint {
-        x: grid.width * js_round(point.x / grid.width),
-        y: grid.height * js_round(point.y / grid.height),
-    }
-}
-
-fn js_round(value: f32) -> f32 {
-    (value + 0.5).floor()
 }
 
 fn clamp(value: f32, min: f32, max: f32) -> f32 {
