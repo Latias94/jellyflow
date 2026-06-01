@@ -6,6 +6,7 @@ mod drag;
 mod fixtures;
 mod harness;
 mod lookups;
+mod rendering;
 mod selection;
 mod store;
 mod utils;

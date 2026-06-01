@@ -8,7 +8,8 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, drag, events, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, drag, events, rendering, selection, store, viewport,
+    xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -243,10 +244,16 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _gesture = events::NodeGraphGestureEvent::NodeDragUpdate(drag_update);
 
     let _module_store = store::NodeGraphStore::new(
-        graph,
+        graph.clone(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
+    let render_order = rendering::resolve_node_render_order(
+        &graph,
+        &NodeGraphViewState::default(),
+        rendering::NodeRenderOrderOptions::default(),
+    );
+    assert!(render_order.is_empty());
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
     let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();
