@@ -1,8 +1,3 @@
-//! Renderer-neutral connection gesture helpers.
-//!
-//! Adapters own pointer capture and handle hit testing. The runtime owns deterministic activation
-//! policy that should feel like XyFlow across renderers.
-
 use jellyflow_core::core::CanvasPoint;
 
 /// Screen-space input for deciding whether a connection drag should activate.

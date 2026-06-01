@@ -91,6 +91,18 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert!(connection::connection_drag_threshold_met(
         connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
+    let from_handle = connection::ConnectionHandleRef::new(
+        NodeId::new(),
+        jellyflow_core::core::PortId::new(),
+        jellyflow_core::core::PortDirection::Out,
+    );
+    let _: Option<connection::ClosestConnectionHandle> =
+        connection::closest_connection_handle(connection::ClosestConnectionHandleInput::new(
+            CanvasPoint::default(),
+            0.0,
+            from_handle,
+            &[],
+        ));
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
