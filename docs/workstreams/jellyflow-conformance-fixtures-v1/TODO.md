@@ -46,7 +46,7 @@ Last updated: 2026-06-01
 
 ## M3 - Convert Existing Scenarios
 
-- [ ] JCF-040 [owner=codex] [deps=JCF-030] [scope=crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/tests/conformance.rs,crates/jellyflow-runtime/src/runtime/conformance]
+- [x] JCF-040 [owner=codex] [deps=JCF-030] [scope=crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/tests/conformance.rs,crates/jellyflow-runtime/src/runtime/conformance]
   Goal: Convert existing connect and node drag adapter-conformance scenarios to use the fixture
   runner while preserving current behavior coverage.
   Validation: `cargo nextest run -p jellyflow-runtime adapter_conformance`; `cargo nextest run -p
@@ -55,6 +55,9 @@ Last updated: 2026-06-01
   Evidence: Existing trace assertions still prove connect and drag ordering, transaction projection,
   gesture payloads, and callback payloads through the fixture runner.
   Context: `docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Converted connect dispatch, connect gesture lifecycle, connect gesture
+  transaction callbacks, and node drag gesture callbacks to `run_conformance_scenario`; retained
+  focused private harness tests for reconnect, delete, viewport, and geometry coverage.
 
 ## M4 - Documentation And Closeout
 

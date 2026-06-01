@@ -17,10 +17,13 @@ scenario/setup/action/trace vocabulary, gesture and callback payloads are serde-
 JCF-030 is complete: `run_conformance_scenario` executes fixtures against `NodeGraphStore`,
 records normalized store/gesture/callback traces, and returns compact per-index mismatches.
 
+JCF-040 is complete: connect dispatch, connect gesture lifecycle, connect gesture transaction
+callbacks, and node drag gesture callbacks now run through `run_conformance_scenario`.
+
 ## Next Task
 
-JCF-040: convert existing connect and node drag adapter-conformance scenarios to use the fixture
-runner while preserving behavior coverage.
+JCF-050: document the fixture strategy, record fresh closeout evidence, and close the lane or split
+follow-ons.
 
 ## Decisions Since Opening
 
@@ -35,6 +38,8 @@ runner while preserving behavior coverage.
   conversion of existing scenarios remain in JCF-030/JCF-040.
 - JCF-030 keeps runner actions renderer-free: dispatch transaction, apply node drag, set
   viewport/selection, and emit normalized gesture events.
+- Reconnect, delete, viewport, and geometry adapter-conformance tests remain focused private
+  harness/direct tests because JCF-040 only targeted connect and node drag fixture conversion.
 
 ## Blockers
 

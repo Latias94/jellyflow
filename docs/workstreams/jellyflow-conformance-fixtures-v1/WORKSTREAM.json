@@ -60,6 +60,11 @@
       "date": "2026-06-01",
       "task": "JCF-030",
       "summary": "Added the headless conformance runner with normalized trace recording, compact mismatches, and tests for graph commit, gesture, callback trace, and mismatch output."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCF-040",
+      "summary": "Converted connect dispatch, connect gesture, and node drag adapter-conformance trace scenarios to run through the conformance fixture runner."
     }
   ],
   "adr_refs": [
@@ -76,7 +81,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JCF-040",
-    "notes": "Convert existing connect and node drag adapter-conformance scenarios to use the fixture runner."
+    "next_task": "JCF-050",
+    "notes": "Document the fixture strategy, record closeout evidence, and close or split follow-ons."
   }
 }

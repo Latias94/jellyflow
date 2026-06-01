@@ -89,6 +89,12 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo fmt --check`: PASS.
   - Evidence: runner executes a node drag fixture against `NodeGraphStore`, records gesture,
     graph-commit, and callback trace events, and reports compact trace mismatches.
+- 2026-06-01: JCF-040 converted connect and node drag adapter-conformance traces to fixtures.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance`: PASS, 8 tests.
+  - `cargo nextest run -p jellyflow-runtime conformance`: PASS, 11 tests.
+  - `cargo check -p jellyflow-runtime`: PASS.
+  - Evidence: connect dispatch, connect gesture lifecycle, connect gesture transaction callbacks,
+    and node drag gesture callbacks now assert through `run_conformance_scenario`.
 
 ## Notes
 

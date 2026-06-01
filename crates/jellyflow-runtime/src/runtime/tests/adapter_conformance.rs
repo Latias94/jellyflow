@@ -1,8 +1,12 @@
 use super::fixtures::make_graph;
-use super::harness::{HarnessCallbackEvent, HarnessEvent, InteractionHarness};
+use super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::rules::plan_connect;
-use crate::runtime::drag::{NODE_DRAG_TRANSACTION_LABEL, NodeDragRequest};
+use crate::runtime::conformance::{
+    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
+    ConformanceTraceEvent, run_conformance_scenario,
+};
+use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
@@ -26,7 +30,6 @@ use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 #[test]
 fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
     let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
-    let mut harness = InteractionHarness::new("connect dispatches patch and projection", graph);
     let edge_id = EdgeId::new();
     let edge = Edge {
         kind: EdgeKind::Data,
@@ -39,25 +42,27 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
 
     let tx = GraphTransaction::from_ops([GraphOp::AddEdge { id: edge_id, edge }])
         .with_label("adapter connect");
-    let outcome = harness.dispatch_transaction(&tx).expect("dispatch connect");
-    let changes = NodeGraphChanges::from_patch(&outcome.patch);
-    let connection_changes = connection_changes_from_transaction(outcome.committed());
+    let connection = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
+    let scenario = ConformanceScenario::new("connect dispatches patch and projection", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::dispatch_transaction(tx)])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(Some("adapter connect"), ["add_edge"]),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some("adapter connect".to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 0,
+                edges: 1,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
+                ConnectionChange::Connected(connection),
+            )),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Connect(connection)),
+        ]);
 
-    assert_eq!(outcome.committed().label(), Some("adapter connect"));
-    assert!(harness.store().graph().edges.contains_key(&edge_id));
-    assert!(
-        matches!(changes.edges(), [EdgeChange::Add { id, .. }] if *id == edge_id),
-        "connect should project to one edge add",
-    );
-    assert!(
-        matches!(connection_changes.as_slice(), [ConnectionChange::Connected(conn)]
-            if conn.edge == edge_id && conn.from == out_port && conn.to == in_port),
-        "connect should project to one connection event",
-    );
-    harness.assert_events(&[HarnessEvent::graph_commit(
-        Some("adapter connect"),
-        &["add_edge"],
-    )]);
+    assert_conformance_trace(&scenario);
 }
 
 #[test]
@@ -164,9 +169,8 @@ fn adapter_conformance_viewport_and_selection_emit_ordered_view_changes() {
 }
 
 #[test]
-fn adapter_conformance_harness_records_connect_gesture_lifecycle() {
+fn adapter_conformance_fixture_runner_records_connect_gesture_lifecycle() {
     let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
-    let mut harness = InteractionHarness::new("connect gesture lifecycle", graph);
     let kind = ConnectDragKind::New {
         from: out_port,
         bundle: vec![out_port],
@@ -181,19 +185,23 @@ fn adapter_conformance_harness_records_connect_gesture_lifecycle() {
         target: Some(in_port),
         outcome: ConnectEndOutcome::Committed,
     });
+    let scenario = ConformanceScenario::new("connect gesture lifecycle", graph)
+        .with_actions([
+            ConformanceAction::emit_gesture(start.clone()),
+            ConformanceAction::emit_gesture(end.clone()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::gesture(start),
+            ConformanceTraceEvent::gesture(end),
+        ]);
 
-    harness.emit_gesture(start.clone());
-    harness.emit_gesture(end.clone());
-
-    harness.assert_events(&[HarnessEvent::gesture(start), HarnessEvent::gesture(end)]);
+    assert_conformance_trace(&scenario);
 }
 
 #[test]
-fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks() {
+fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_callbacks() {
     let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");
-    let mut harness = InteractionHarness::new("connect gesture transaction callbacks", graph);
-    let _callbacks = harness.install_callback_trace();
     let kind = ConnectDragKind::New {
         from: out_port,
         bundle: vec![out_port],
@@ -204,9 +212,7 @@ fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks
     };
     let start_event = NodeGraphGestureEvent::ConnectStart(start.clone());
 
-    harness.emit_gesture(start_event.clone());
-
-    let plan = plan_connect(harness.store().graph(), out_port, next_in);
+    let plan = plan_connect(&graph, out_port, next_in);
     assert!(plan.is_accept(), "connect gesture fixture should accept");
     let tx = GraphTransaction::from_ops(plan.into_ops()).with_label("connect gesture commit");
     let (edge_id, edge) = match tx.ops() {
@@ -215,10 +221,6 @@ fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks
     };
     let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
 
-    let _outcome = harness
-        .dispatch_transaction(&tx)
-        .expect("dispatch connect gesture transaction");
-
     let end = ConnectEnd {
         kind,
         mode: NodeGraphConnectionMode::Strict,
@@ -226,33 +228,42 @@ fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks
         outcome: ConnectEndOutcome::Committed,
     };
     let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
-    harness.emit_gesture(end_event.clone());
 
     assert_eq!(edge.from, out_port);
     assert_eq!(edge.to, next_in);
-    harness.assert_events(&[
-        HarnessEvent::gesture(start_event),
-        HarnessEvent::callback(HarnessCallbackEvent::ConnectStart(start)),
-        HarnessEvent::graph_commit(Some("connect gesture commit"), &["add_edge"]),
-        HarnessEvent::callback(HarnessCallbackEvent::GraphCommit {
-            label: Some("connect gesture commit".to_owned()),
-        }),
-        HarnessEvent::callback(HarnessCallbackEvent::NodeEdgeChanges { nodes: 0, edges: 1 }),
-        HarnessEvent::callback(HarnessCallbackEvent::EdgesChange { count: 1 }),
-        HarnessEvent::callback(HarnessCallbackEvent::ConnectionChange(
-            ConnectionChange::Connected(connection),
-        )),
-        HarnessEvent::callback(HarnessCallbackEvent::Connect(connection)),
-        HarnessEvent::gesture(end_event),
-        HarnessEvent::callback(HarnessCallbackEvent::ConnectEnd(end)),
-    ]);
+    let scenario = ConformanceScenario::new("connect gesture transaction callbacks", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::emit_gesture(start_event.clone()),
+            ConformanceAction::dispatch_transaction(tx),
+            ConformanceAction::emit_gesture(end_event.clone()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::gesture(start_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectStart(start)),
+            ConformanceTraceEvent::graph_commit(Some("connect gesture commit"), ["add_edge"]),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some("connect gesture commit".to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 0,
+                edges: 1,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
+                ConnectionChange::Connected(connection),
+            )),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Connect(connection)),
+            ConformanceTraceEvent::gesture(end_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectEnd(end)),
+        ]);
+
+    assert_conformance_trace(&scenario);
 }
 
 #[test]
-fn adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbacks() {
+fn adapter_conformance_fixture_runner_records_node_drag_gesture_transaction_and_callbacks() {
     let (graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut harness = InteractionHarness::new("node drag gesture transaction callbacks", graph);
-    let _callbacks = harness.install_callback_trace();
 
     let start = NodeDragStart {
         primary: node_id,
@@ -260,31 +271,14 @@ fn adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbac
         pointer: CanvasPoint { x: 1.0, y: 2.0 },
     };
     let start_event = NodeGraphGestureEvent::NodeDragStart(start.clone());
-    harness.emit_gesture(start_event.clone());
 
     let target = CanvasPoint { x: 32.0, y: 16.0 };
-    let outcome = harness
-        .store_mut()
-        .apply_node_drag(NodeDragRequest {
-            node: node_id,
-            to: target,
-        })
-        .expect("dispatch node drag")
-        .expect("node drag commits");
-    let changes = NodeGraphChanges::from_patch(&outcome.patch);
-    assert!(
-        matches!(changes.nodes(), [NodeChange::Position { id, position }]
-            if *id == node_id && *position == target),
-        "node drag should project to one position change",
-    );
-
     let update = NodeDragUpdate {
         primary: node_id,
         nodes: vec![node_id],
         pointer: target,
     };
     let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
-    harness.emit_gesture(update_event.clone());
 
     let end = NodeDragEnd {
         primary: node_id,
@@ -293,22 +287,36 @@ fn adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbac
         outcome: NodeDragEndOutcome::Committed,
     };
     let end_event = NodeGraphGestureEvent::NodeDragEnd(end.clone());
-    harness.emit_gesture(end_event.clone());
+    let scenario = ConformanceScenario::new("node drag gesture transaction callbacks", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::emit_gesture(start_event.clone()),
+            ConformanceAction::apply_node_drag(node_id, target),
+            ConformanceAction::emit_gesture(update_event.clone()),
+            ConformanceAction::emit_gesture(end_event.clone()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::gesture(start_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start)),
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_DRAG_TRANSACTION_LABEL),
+                ["set_node_pos"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+            ConformanceTraceEvent::gesture(update_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update)),
+            ConformanceTraceEvent::gesture(end_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragEnd(end)),
+        ]);
 
-    harness.assert_events(&[
-        HarnessEvent::gesture(start_event),
-        HarnessEvent::callback(HarnessCallbackEvent::NodeDragStart(start)),
-        HarnessEvent::graph_commit(Some(NODE_DRAG_TRANSACTION_LABEL), &["set_node_pos"]),
-        HarnessEvent::callback(HarnessCallbackEvent::GraphCommit {
-            label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
-        }),
-        HarnessEvent::callback(HarnessCallbackEvent::NodeEdgeChanges { nodes: 1, edges: 0 }),
-        HarnessEvent::callback(HarnessCallbackEvent::NodesChange { count: 1 }),
-        HarnessEvent::gesture(update_event),
-        HarnessEvent::callback(HarnessCallbackEvent::NodeDrag(update)),
-        HarnessEvent::gesture(end_event),
-        HarnessEvent::callback(HarnessCallbackEvent::NodeDragEnd(end)),
-    ]);
+    assert_conformance_trace(&scenario);
 }
 
 #[test]
@@ -371,6 +379,11 @@ fn adapter_conformance_geometry_hit_test_is_renderer_neutral() {
         path.label.point,
         EdgeHitTestOptions::default(),
     ));
+}
+
+fn assert_conformance_trace(scenario: &ConformanceScenario) {
+    let report = run_conformance_scenario(scenario).expect("run conformance scenario");
+    assert!(report.is_match(), "{report}");
 }
 
 fn insert_input_port(graph: &mut jellyflow_core::core::Graph, node: NodeId, key: &str) -> PortId {
