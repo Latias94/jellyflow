@@ -73,6 +73,16 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert!(selection::selection_drag_threshold_met(
         selection::SelectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0, false),
     ));
+    let drag_start_selection = selection::resolve_node_drag_start_selection(
+        &graph,
+        &NodeGraphViewState::default(),
+        &NodeGraphInteractionState::default(),
+        selection::NodeDragStartSelectionInput::new(NodeId::new(), false),
+    );
+    assert_eq!(
+        drag_start_selection,
+        selection::NodeDragStartSelectionAction::Unchanged
+    );
 
     let _drag_request = drag::NodeDragRequest {
         node: NodeId::new(),
