@@ -55,6 +55,11 @@
       "date": "2026-06-01",
       "task": "JCF-020",
       "summary": "Added public runtime::conformance fixture vocabulary for setup, actions, gestures, and normalized traces, with serde-friendly payloads and public surface coverage."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCF-030",
+      "summary": "Added the headless conformance runner with normalized trace recording, compact mismatches, and tests for graph commit, gesture, callback trace, and mismatch output."
     }
   ],
   "adr_refs": [
@@ -71,7 +76,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JCF-030",
-    "notes": "Add the fixture runner against NodeGraphStore before converting adapter-conformance scenarios."
+    "next_task": "JCF-040",
+    "notes": "Convert existing connect and node drag adapter-conformance scenarios to use the fixture runner."
   }
 }

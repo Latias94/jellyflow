@@ -83,6 +83,12 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `git diff --check`: PASS.
   - Evidence: `runtime::conformance` exposes scenario/setup/action/trace types that serialize
     without renderer dependencies; public surface test round-trips a node drag fixture.
+- 2026-06-01: JCF-030 added the headless fixture runner.
+  - `cargo nextest run -p jellyflow-runtime conformance`: PASS, 11 tests.
+  - `cargo check -p jellyflow-runtime`: PASS.
+  - `cargo fmt --check`: PASS.
+  - Evidence: runner executes a node drag fixture against `NodeGraphStore`, records gesture,
+    graph-commit, and callback trace events, and reports compact trace mismatches.
 
 ## Notes
 

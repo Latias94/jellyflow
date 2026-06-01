@@ -31,7 +31,7 @@ Last updated: 2026-06-01
 
 ## M2 - Fixture Runner
 
-- [ ] JCF-030 [owner=codex] [deps=JCF-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/conformance.rs]
+- [x] JCF-030 [owner=codex] [deps=JCF-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/conformance.rs]
   Goal: Add a headless fixture runner that executes scenarios against a real `NodeGraphStore` and
   returns compact normalized trace mismatches.
   Validation: `cargo nextest run -p jellyflow-runtime conformance`; `cargo check -p
@@ -40,6 +40,9 @@ Last updated: 2026-06-01
   Evidence: Runner can execute at least one graph commit, one gesture, and one callback trace
   fixture with readable failure output.
   Context: `docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added `run_conformance_scenario`, `ConformanceRunner`,
+  `ConformanceRunReport`, and compact trace mismatch reporting; tests cover node drag gesture,
+  graph commit, callback trace, and mismatch rendering.
 
 ## M3 - Convert Existing Scenarios
 

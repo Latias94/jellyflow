@@ -14,10 +14,13 @@ JCF-020 is complete: `jellyflow_runtime::runtime::conformance` now exposes rende
 scenario/setup/action/trace vocabulary, gesture and callback payloads are serde-friendly, and
 `public_surface` protects a node-drag fixture round trip.
 
+JCF-030 is complete: `run_conformance_scenario` executes fixtures against `NodeGraphStore`,
+records normalized store/gesture/callback traces, and returns compact per-index mismatches.
+
 ## Next Task
 
-JCF-030: add the headless fixture runner that executes scenarios against a real `NodeGraphStore`
-and returns compact normalized trace mismatches.
+JCF-040: convert existing connect and node drag adapter-conformance scenarios to use the fixture
+runner while preserving behavior coverage.
 
 ## Decisions Since Opening
 
@@ -30,6 +33,8 @@ and returns compact normalized trace mismatches.
 - Fixture schema version starts at `CONFORMANCE_FIXTURE_SCHEMA_VERSION = 1`.
 - JCF-020 intentionally defines the vocabulary only; execution, mismatch formatting, and
   conversion of existing scenarios remain in JCF-030/JCF-040.
+- JCF-030 keeps runner actions renderer-free: dispatch transaction, apply node drag, set
+  viewport/selection, and emit normalized gesture events.
 
 ## Blockers
 

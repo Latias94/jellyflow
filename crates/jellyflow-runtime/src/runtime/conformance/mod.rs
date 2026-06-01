@@ -1,15 +1,25 @@
 //! Headless conformance fixture vocabulary for runtime and adapter checks.
 //!
 //! These types describe renderer-free scenarios that can be replayed against the runtime store.
-//! The runner lives in this module's next slice; this file only defines the stable fixture schema.
+
+use std::cell::RefCell;
+use std::fmt;
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
+    NodeGraphStoreEvent, ViewChange,
 };
-use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
+use crate::runtime::store::NodeGraphStore;
+use crate::runtime::xyflow::callbacks::{
+    ConnectionChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
+    NodeGraphViewCallbacks, install_callbacks,
+};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GroupId, NodeId};
 use jellyflow_core::ops::{EdgeEndpoints, GraphTransaction};
 
@@ -156,6 +166,16 @@ pub enum ConformanceAction {
 }
 
 impl ConformanceAction {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::DispatchTransaction { .. } => "dispatch_transaction",
+            Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::SetViewport { .. } => "set_viewport",
+            Self::SetSelection { .. } => "set_selection",
+            Self::EmitGesture { .. } => "emit_gesture",
+        }
+    }
+
     pub fn dispatch_transaction(transaction: GraphTransaction) -> Self {
         Self::DispatchTransaction { transaction }
     }
@@ -289,6 +309,350 @@ pub enum ConformanceCallbackEvent {
     NodeDragEnd(NodeDragEnd),
     ConnectStart(ConnectStart),
     ConnectEnd(ConnectEnd),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConformanceRunReport {
+    pub scenario: String,
+    pub actual_trace: Vec<ConformanceTraceEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mismatches: Vec<ConformanceTraceMismatch>,
+}
+
+impl ConformanceRunReport {
+    pub fn new(
+        scenario: impl Into<String>,
+        actual_trace: Vec<ConformanceTraceEvent>,
+        expected_trace: &[ConformanceTraceEvent],
+    ) -> Self {
+        let mismatches = trace_mismatches(expected_trace, &actual_trace);
+        Self {
+            scenario: scenario.into(),
+            actual_trace,
+            mismatches,
+        }
+    }
+
+    pub fn is_match(&self) -> bool {
+        self.mismatches.is_empty()
+    }
+
+    pub fn actual_trace(&self) -> &[ConformanceTraceEvent] {
+        &self.actual_trace
+    }
+
+    pub fn mismatches(&self) -> &[ConformanceTraceMismatch] {
+        &self.mismatches
+    }
+}
+
+impl fmt::Display for ConformanceRunReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_match() {
+            return write!(
+                f,
+                "conformance scenario `{}` matched {} trace events",
+                self.scenario,
+                self.actual_trace.len()
+            );
+        }
+
+        writeln!(
+            f,
+            "conformance trace mismatch for scenario `{}` ({} mismatch(es))",
+            self.scenario,
+            self.mismatches.len()
+        )?;
+        for mismatch in self.mismatches.iter().take(8) {
+            writeln!(
+                f,
+                "  [{}] expected: {:?}; actual: {:?}",
+                mismatch.index, mismatch.expected, mismatch.actual
+            )?;
+        }
+        if self.mismatches.len() > 8 {
+            writeln!(f, "  ... {} more", self.mismatches.len() - 8)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceTraceMismatch {
+    pub index: usize,
+    pub expected: Option<ConformanceTraceEvent>,
+    pub actual: Option<ConformanceTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error(
+    "conformance scenario `{scenario}` failed at action {action_index} ({action_kind}): {message}"
+)]
+pub struct ConformanceRunError {
+    pub scenario: String,
+    pub action_index: usize,
+    pub action_kind: String,
+    pub message: String,
+}
+
+pub fn run_conformance_scenario(
+    scenario: &ConformanceScenario,
+) -> Result<ConformanceRunReport, ConformanceRunError> {
+    ConformanceRunner::new(scenario).run()
+}
+
+#[derive(Debug)]
+pub struct ConformanceRunner<'a> {
+    scenario: &'a ConformanceScenario,
+}
+
+impl<'a> ConformanceRunner<'a> {
+    pub fn new(scenario: &'a ConformanceScenario) -> Self {
+        Self { scenario }
+    }
+
+    pub fn run(&self) -> Result<ConformanceRunReport, ConformanceRunError> {
+        let mut store = NodeGraphStore::new(
+            self.scenario.setup.graph.clone(),
+            self.scenario.setup.view_state.clone(),
+            self.scenario.setup.editor_config.clone(),
+        );
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        install_trace_recorders(&mut store, self.scenario.setup.trace, trace.clone());
+
+        for (index, action) in self.scenario.actions.iter().enumerate() {
+            execute_action(&mut store, action).map_err(|message| ConformanceRunError {
+                scenario: self.scenario.name.clone(),
+                action_index: index,
+                action_kind: action.kind().to_owned(),
+                message,
+            })?;
+        }
+
+        Ok(ConformanceRunReport::new(
+            self.scenario.name.clone(),
+            trace.borrow().clone(),
+            &self.scenario.expected_trace,
+        ))
+    }
+}
+
+fn install_trace_recorders(
+    store: &mut NodeGraphStore,
+    config: ConformanceTraceConfig,
+    trace: Rc<RefCell<Vec<ConformanceTraceEvent>>>,
+) {
+    if config.record_store_events || config.record_gesture_events {
+        let store_trace = trace.clone();
+        let token = store.subscribe(move |event| {
+            if config.record_store_events {
+                store_trace
+                    .borrow_mut()
+                    .push(ConformanceTraceEvent::from_store_event(event));
+            }
+        });
+
+        if config.record_gesture_events {
+            let gesture_trace = trace.clone();
+            store.subscribe_gesture_with_token(token, move |event| {
+                gesture_trace
+                    .borrow_mut()
+                    .push(ConformanceTraceEvent::Gesture(event));
+            });
+        }
+    }
+
+    if config.record_xyflow_callbacks {
+        let _ = install_callbacks(&mut *store, CallbackTraceRecorder { trace });
+    }
+}
+
+fn execute_action(store: &mut NodeGraphStore, action: &ConformanceAction) -> Result<(), String> {
+    match action {
+        ConformanceAction::DispatchTransaction { transaction } => store
+            .dispatch_transaction(transaction)
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyNodeDrag { node, to } => store
+            .apply_node_drag(NodeDragRequest {
+                node: *node,
+                to: *to,
+            })
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
+        ConformanceAction::SetViewport { pan, zoom } => {
+            store.set_viewport(*pan, *zoom);
+            Ok(())
+        }
+        ConformanceAction::SetSelection {
+            nodes,
+            edges,
+            groups,
+        } => {
+            store.set_selection(nodes.clone(), edges.clone(), groups.clone());
+            Ok(())
+        }
+        ConformanceAction::EmitGesture { event } => {
+            store.emit_gesture(event.clone());
+            Ok(())
+        }
+    }
+}
+
+fn trace_mismatches(
+    expected: &[ConformanceTraceEvent],
+    actual: &[ConformanceTraceEvent],
+) -> Vec<ConformanceTraceMismatch> {
+    let len = expected.len().max(actual.len());
+    (0..len)
+        .filter_map(|index| {
+            let expected = expected.get(index);
+            let actual = actual.get(index);
+            (expected != actual).then(|| ConformanceTraceMismatch {
+                index,
+                expected: expected.cloned(),
+                actual: actual.cloned(),
+            })
+        })
+        .collect()
+}
+
+impl ConformanceTraceEvent {
+    fn from_store_event(event: NodeGraphStoreEvent<'_>) -> Self {
+        match event {
+            NodeGraphStoreEvent::DocumentReplaced { before, after } => Self::DocumentReplaced {
+                before_revision: before.graph_revision,
+                after_revision: after.graph_revision,
+            },
+            NodeGraphStoreEvent::GraphCommitted { patch } => Self::GraphCommitted {
+                label: patch.transaction().label().map(str::to_owned),
+                op_kinds: patch
+                    .transaction()
+                    .ops()
+                    .iter()
+                    .map(serialized_graph_op_kind)
+                    .collect(),
+            },
+            NodeGraphStoreEvent::ViewChanged { changes, .. } => Self::ViewChanged {
+                changes: changes
+                    .iter()
+                    .map(ConformanceViewChange::from_view_change)
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl ConformanceViewChange {
+    fn from_view_change(change: &ViewChange) -> Self {
+        match change {
+            ViewChange::Viewport { pan, zoom } => Self::Viewport {
+                pan: *pan,
+                zoom: *zoom,
+            },
+            ViewChange::Selection {
+                nodes,
+                edges,
+                groups,
+            } => Self::Selection {
+                nodes: nodes.clone(),
+                edges: edges.clone(),
+                groups: groups.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CallbackTraceRecorder {
+    trace: Rc<RefCell<Vec<ConformanceTraceEvent>>>,
+}
+
+impl CallbackTraceRecorder {
+    fn push(&self, event: ConformanceCallbackEvent) {
+        self.trace
+            .borrow_mut()
+            .push(ConformanceTraceEvent::Callback(event));
+    }
+}
+
+impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
+    fn on_graph_commit(&mut self, patch: &crate::runtime::commit::NodeGraphPatch) {
+        self.push(ConformanceCallbackEvent::GraphCommit {
+            label: patch.transaction().label().map(str::to_owned),
+        });
+    }
+
+    fn on_node_edge_changes(&mut self, changes: &NodeGraphChanges) {
+        self.push(ConformanceCallbackEvent::NodeEdgeChanges {
+            nodes: changes.nodes().len(),
+            edges: changes.edges().len(),
+        });
+    }
+
+    fn on_nodes_change(&mut self, changes: &[NodeChange]) {
+        self.push(ConformanceCallbackEvent::NodesChange {
+            count: changes.len(),
+        });
+    }
+
+    fn on_edges_change(&mut self, changes: &[EdgeChange]) {
+        self.push(ConformanceCallbackEvent::EdgesChange {
+            count: changes.len(),
+        });
+    }
+
+    fn on_connection_change(&mut self, change: ConnectionChange) {
+        self.push(ConformanceCallbackEvent::ConnectionChange(change));
+    }
+
+    fn on_connect(&mut self, conn: EdgeConnection) {
+        self.push(ConformanceCallbackEvent::Connect(conn));
+    }
+
+    fn on_disconnect(&mut self, conn: EdgeConnection) {
+        self.push(ConformanceCallbackEvent::Disconnect(conn));
+    }
+
+    fn on_reconnect(&mut self, edge: EdgeId, from: EdgeEndpoints, to: EdgeEndpoints) {
+        self.push(ConformanceCallbackEvent::Reconnect { edge, from, to });
+    }
+}
+
+impl NodeGraphViewCallbacks for CallbackTraceRecorder {}
+
+impl NodeGraphGestureCallbacks for CallbackTraceRecorder {
+    fn on_node_drag_start(&mut self, ev: NodeDragStart) {
+        self.push(ConformanceCallbackEvent::NodeDragStart(ev));
+    }
+
+    fn on_node_drag(&mut self, ev: NodeDragUpdate) {
+        self.push(ConformanceCallbackEvent::NodeDrag(ev));
+    }
+
+    fn on_node_drag_end(&mut self, ev: NodeDragEnd) {
+        self.push(ConformanceCallbackEvent::NodeDragEnd(ev));
+    }
+
+    fn on_connect_start(&mut self, ev: ConnectStart) {
+        self.push(ConformanceCallbackEvent::ConnectStart(ev));
+    }
+
+    fn on_connect_end(&mut self, ev: ConnectEnd) {
+        self.push(ConformanceCallbackEvent::ConnectEnd(ev));
+    }
+}
+
+fn serialized_graph_op_kind(op: &jellyflow_core::ops::GraphOp) -> String {
+    serde_json::to_value(op)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("op")
+                .and_then(|op| op.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 fn default_schema_version() -> u32 {
