@@ -1,4 +1,4 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{default_editor_config, make_graph, make_store};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::commit::NodeGraphPatch;
@@ -12,7 +12,7 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 #[test]
 fn store_dispatch_changes_records_history_and_supports_undo() {
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let changes = NodeGraphChanges::from_parts(
         vec![NodeChange::Position {
@@ -44,7 +44,7 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
     use std::rc::Rc;
 
     let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let observed: Rc<RefCell<Option<(bool, Option<EdgeReconnectable>)>>> =
         Rc::new(RefCell::new(None));
@@ -191,10 +191,9 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
     let trace = Rc::new(RefCell::new(Vec::new()));
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config())
-        .with_middleware(TraceMiddleware {
-            trace: trace.clone(),
-        });
+    let mut store = make_store(g0).with_middleware(TraceMiddleware {
+        trace: trace.clone(),
+    });
     let mut profile = PassProfile;
 
     let observed: Rc<RefCell<Option<(usize, bool)>>> = Rc::new(RefCell::new(None));
@@ -334,11 +333,7 @@ fn store_rejects_non_finite_transactions() {
         },
     }]);
 
-    let mut store = NodeGraphStore::new(
-        g.clone(),
-        NodeGraphViewState::default(),
-        default_editor_config(),
-    );
+    let mut store = make_store(g.clone());
     let err = store.dispatch_transaction(&tx).expect_err("reject");
     let crate::runtime::store::DispatchError::Apply(crate::profile::ApplyPipelineError::Rejected {
         diagnostics,
@@ -382,11 +377,7 @@ fn store_rejects_invalid_size_transactions() {
         },
     }]);
 
-    let mut store = NodeGraphStore::new(
-        g.clone(),
-        NodeGraphViewState::default(),
-        default_editor_config(),
-    );
+    let mut store = make_store(g.clone());
     let err = store.dispatch_transaction(&tx).expect_err("reject");
     let crate::runtime::store::DispatchError::Apply(crate::profile::ApplyPipelineError::Rejected {
         diagnostics,
