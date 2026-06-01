@@ -241,55 +241,38 @@ fn graph_diff_is_deterministic_and_roundtrips() {
 #[test]
 fn graph_diff_roundtrips_when_deleting_a_node_with_ports_and_edges() {
     let mut from = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::from_u128(20);
-    let inn = PortId::from_u128(21);
-    from.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.push(out);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::from_u128(456);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
+    let ids = insert_connected_pair_with_ids(
+        &mut from,
+        ConnectedPairIds {
+            out: PortId::from_u128(20),
+            inn: PortId::from_u128(21),
+            edge: EdgeId::from_u128(456),
+            ..ConnectedPairIds::new()
         },
     );
 
     let mut to = from.clone();
-    to.nodes.remove(&b);
-    to.ports.remove(&inn);
-    to.edges.remove(&edge_id);
+    to.nodes.remove(&ids.b);
+    to.ports.remove(&ids.inn);
+    to.edges.remove(&ids.edge);
 
     let tx = graph_diff(&from, &to);
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == b)),
+            .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == ids.b)),
         "diff must use reversible RemoveNode for node deletion"
     );
     assert!(
         !tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == inn)),
+            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == ids.inn)),
         "diff must not double-remove ports that are already removed by RemoveNode"
     );
     assert!(
         !tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
+            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == ids.edge)),
         "diff must not double-remove edges that are already removed by RemoveNode"
     );
 
@@ -305,49 +288,36 @@ fn graph_diff_roundtrips_when_deleting_a_node_with_ports_and_edges() {
 #[test]
 fn graph_diff_roundtrips_when_deleting_a_port_with_incident_edges() {
     let mut from = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::from_u128(30);
-    let inn = PortId::from_u128(31);
-    from.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.push(out);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::from_u128(789);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
+    let ids = insert_connected_pair_with_ids(
+        &mut from,
+        ConnectedPairIds {
+            out: PortId::from_u128(30),
+            inn: PortId::from_u128(31),
+            edge: EdgeId::from_u128(789),
+            ..ConnectedPairIds::new()
         },
     );
 
     let mut to = from.clone();
-    to.nodes.get_mut(&a).unwrap().ports.retain(|p| *p != out);
-    to.ports.remove(&out);
-    to.edges.remove(&edge_id);
+    to.nodes
+        .get_mut(&ids.a)
+        .unwrap()
+        .ports
+        .retain(|p| *p != ids.out);
+    to.ports.remove(&ids.out);
+    to.edges.remove(&ids.edge);
 
     let tx = graph_diff(&from, &to);
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == out)),
+            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == ids.out)),
         "diff must use reversible RemovePort for port deletion"
     );
     assert!(
         !tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
+            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == ids.edge)),
         "diff must not double-remove edges that are already removed by RemovePort"
     );
 
@@ -364,13 +334,11 @@ fn graph_diff_roundtrips_when_deleting_a_port_with_incident_edges() {
 fn graph_diff_roundtrips_when_adding_a_port_to_existing_node() {
     let mut from = Graph::default();
     let a = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
+    insert_node(&mut from, a, "core.a");
 
     let out = PortId::from_u128(35);
     let mut to = from.clone();
-    to.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    to.nodes.get_mut(&a).unwrap().ports.push(out);
+    insert_port(&mut to, out, a, "out", PortDirection::Out);
 
     let tx = graph_diff(&from, &to);
     let add_index = tx
@@ -410,29 +378,16 @@ fn graph_diff_inverse_roundtrips_when_adding_ports_and_edge() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let out = PortId::from_u128(41);
     let inn = PortId::from_u128(42);
     let edge_id = EdgeId::from_u128(43);
     let mut to = from.clone();
-    to.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    to.ports.insert(inn, make_port(b, "in", PortDirection::In));
-    to.nodes.get_mut(&a).unwrap().ports.push(out);
-    to.nodes.get_mut(&b).unwrap().ports.push(inn);
-    to.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    insert_port(&mut to, out, a, "out", PortDirection::Out);
+    insert_port(&mut to, inn, b, "in", PortDirection::In);
+    to.edges.insert(edge_id, make_edge(out, inn));
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();
@@ -457,19 +412,15 @@ fn graph_diff_inverse_roundtrips_when_deleted_node_port_moves_to_existing_node()
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let moved = PortId::from_u128(44);
-    from.ports
-        .insert(moved, make_port(a, "moved", PortDirection::Out));
-    from.nodes.get_mut(&a).unwrap().ports.push(moved);
+    insert_port(&mut from, moved, a, "moved", PortDirection::Out);
 
     let mut to = from.clone();
     to.nodes.remove(&a);
-    to.ports
-        .insert(moved, make_port(b, "moved", PortDirection::Out));
-    to.nodes.get_mut(&b).unwrap().ports.push(moved);
+    insert_port(&mut to, moved, b, "moved", PortDirection::Out);
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();
@@ -494,13 +445,11 @@ fn graph_diff_inverse_roundtrips_when_port_moves_between_existing_nodes() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let moved = PortId::from_u128(45);
-    from.ports
-        .insert(moved, make_port(a, "moved", PortDirection::Out));
-    from.nodes.get_mut(&a).unwrap().ports.push(moved);
+    insert_port(&mut from, moved, a, "moved", PortDirection::Out);
 
     let mut to = from.clone();
     to.ports
@@ -530,16 +479,13 @@ fn graph_diff_inverse_roundtrips_when_port_moves_between_existing_nodes() {
 fn graph_diff_inverse_roundtrips_when_node_port_membership_is_replaced() {
     let mut from = Graph::default();
     let a = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
+    insert_node(&mut from, a, "core.a");
 
     let old = PortId::from_u128(36);
     let kept = PortId::from_u128(37);
     let new = PortId::from_u128(38);
-    from.ports
-        .insert(old, make_port(a, "old", PortDirection::Out));
-    from.ports
-        .insert(kept, make_port(a, "kept", PortDirection::Out));
-    from.nodes.get_mut(&a).unwrap().ports.extend([old, kept]);
+    insert_port(&mut from, old, a, "old", PortDirection::Out);
+    insert_port(&mut from, kept, a, "kept", PortDirection::Out);
 
     let mut to = from.clone();
     to.ports.remove(&old);
@@ -569,13 +515,11 @@ fn graph_diff_inverse_roundtrips_when_node_port_membership_is_replaced() {
 fn graph_diff_inverse_roundtrips_when_structural_port_replacement_adds_sibling_port() {
     let mut from = Graph::default();
     let a = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
+    insert_node(&mut from, a, "core.a");
 
     let replaced = PortId::from_u128(39);
     let added = PortId::from_u128(40);
-    from.ports
-        .insert(replaced, make_port(a, "old", PortDirection::Out));
-    from.nodes.get_mut(&a).unwrap().ports.push(replaced);
+    insert_port(&mut from, replaced, a, "old", PortDirection::Out);
 
     let mut to = from.clone();
     to.ports.get_mut(&replaced).unwrap().key = PortKey::new("renamed");
@@ -606,33 +550,18 @@ fn graph_diff_roundtrips_when_port_deletion_moves_incident_edge() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let out1 = PortId::from_u128(32);
     let out2 = PortId::from_u128(33);
     let inn = PortId::from_u128(34);
-    from.ports
-        .insert(out1, make_port(a, "out1", PortDirection::Out));
-    from.ports
-        .insert(out2, make_port(a, "out2", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.extend([out1, out2]);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+    insert_port(&mut from, out1, a, "out1", PortDirection::Out);
+    insert_port(&mut from, out2, a, "out2", PortDirection::Out);
+    insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(790);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out1,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    from.edges.insert(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
     to.nodes.get_mut(&a).unwrap().ports.retain(|p| *p != out1);
@@ -673,65 +602,48 @@ fn graph_diff_roundtrips_when_port_deletion_moves_incident_edge() {
 #[test]
 fn graph_diff_roundtrips_when_a_port_changes_structurally() {
     let mut from = Graph::default();
-    let a = NodeId::new();
-    let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
-
-    let out = PortId::from_u128(40);
-    let inn = PortId::from_u128(41);
-    from.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.push(out);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
-
-    let edge_id = EdgeId::from_u128(1010);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
+    let ids = insert_connected_pair_with_ids(
+        &mut from,
+        ConnectedPairIds {
+            out: PortId::from_u128(40),
+            inn: PortId::from_u128(41),
+            edge: EdgeId::from_u128(1010),
+            ..ConnectedPairIds::new()
         },
     );
 
     let mut to = from.clone();
-    to.ports.get_mut(&out).unwrap().key = PortKey::new("out2");
+    to.ports.get_mut(&ids.out).unwrap().key = PortKey::new("out2");
 
     let tx = graph_diff(&from, &to);
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == out)),
+            .any(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == ids.out)),
         "diff must represent structural port changes as remove+add"
     );
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::AddPort { id, .. } if *id == out)),
+            .any(|op| matches!(op, GraphOp::AddPort { id, .. } if *id == ids.out)),
         "diff must represent structural port changes as remove+add"
     );
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::SetNodePorts { id, .. } if *id == a)),
+            .any(|op| matches!(op, GraphOp::SetNodePorts { id, .. } if *id == ids.a)),
         "diff must restore node port ordering after remove+add"
     );
     assert!(
         tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)),
+            .any(|op| matches!(op, GraphOp::AddEdge { id, .. } if *id == ids.edge)),
         "diff must re-add incident edges removed by RemovePort when they still exist in 'to'"
     );
     assert!(
         !tx.ops()
             .iter()
-            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)),
+            .any(|op| matches!(op, GraphOp::RemoveEdge { id, .. } if *id == ids.edge)),
         "diff must not double-remove edges that are removed by RemovePort"
     );
 
@@ -821,33 +733,18 @@ fn graph_diff_roundtrips_when_edge_endpoints_change() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let out1 = PortId::from_u128(50);
     let out2 = PortId::from_u128(51);
     let inn = PortId::from_u128(52);
-    from.ports
-        .insert(out1, make_port(a, "out1", PortDirection::Out));
-    from.ports
-        .insert(out2, make_port(a, "out2", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.extend([out1, out2]);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+    insert_port(&mut from, out1, a, "out1", PortDirection::Out);
+    insert_port(&mut from, out2, a, "out2", PortDirection::Out);
+    insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(2020);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out1,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    from.edges.insert(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
     to.edges.get_mut(&edge_id).unwrap().from = out2;
@@ -881,33 +778,18 @@ fn graph_diff_inverse_roundtrips_when_structural_port_replacement_moves_edge() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    insert_node(&mut from, a, "core.a");
+    insert_node(&mut from, b, "core.b");
 
     let out1 = PortId::from_u128(60);
     let out2 = PortId::from_u128(61);
     let inn = PortId::from_u128(62);
-    from.ports
-        .insert(out1, make_port(a, "out1", PortDirection::Out));
-    from.ports
-        .insert(out2, make_port(a, "out2", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.extend([out1, out2]);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+    insert_port(&mut from, out1, a, "out1", PortDirection::Out);
+    insert_port(&mut from, out2, a, "out2", PortDirection::Out);
+    insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(3030);
-    from.edges.insert(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out1,
-            to: inn,
-            selectable: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    from.edges.insert(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
     to.ports.get_mut(&out1).unwrap().key = PortKey::new("out1-renamed");
