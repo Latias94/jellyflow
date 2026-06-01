@@ -55,7 +55,7 @@ fn interaction_config_defaults_match_xyflow_connection_and_drag_feel() {
     assert!(config.nodes_focusable);
     assert!(config.edges_focusable);
     assert!(config.elevate_nodes_on_select);
-    assert!(!config.elevate_edges_on_select);
+    assert!(config.elevate_edges_on_select);
     assert!(config.auto_pan.on_node_drag);
     assert!(config.auto_pan.on_connect);
     assert!(config.auto_pan.on_node_focus);

@@ -34,7 +34,7 @@ pub(super) fn default_elevate_nodes_on_select() -> bool {
 }
 
 pub(super) fn default_elevate_edges_on_select() -> bool {
-    false
+    true
 }
 
 pub(super) fn default_nudge_step_px() -> f32 {

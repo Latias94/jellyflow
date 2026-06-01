@@ -155,7 +155,7 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
             max_entries: 20,
         },
         elevate_nodes_on_select: true,
-        elevate_edges_on_select: false,
+        elevate_edges_on_select: true,
         auto_pan: NodeGraphAutoPanTuning {
             on_node_drag: false,
             ..NodeGraphAutoPanTuning::default()
@@ -224,5 +224,5 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
     assert!(!rendering.only_render_visible_elements);
     assert_eq!(rendering.paint_cache_prune.max_entries, 20);
     assert!(rendering.elevate_nodes_on_select);
-    assert!(!rendering.elevate_edges_on_select);
+    assert!(rendering.elevate_edges_on_select);
 }

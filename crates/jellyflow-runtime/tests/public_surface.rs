@@ -254,6 +254,12 @@ fn explicit_modules_expose_their_owned_surfaces() {
         rendering::NodeRenderOrderOptions::default(),
     );
     assert!(render_order.is_empty());
+    let edge_render_order = rendering::resolve_edge_render_order(
+        &graph,
+        &NodeGraphViewState::default(),
+        rendering::EdgeRenderOrderOptions::default(),
+    );
+    assert!(edge_render_order.is_empty());
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
     let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();

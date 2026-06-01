@@ -1,7 +1,13 @@
-use jellyflow_core::core::{CanvasPoint, Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_core::core::{
+    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+};
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
-use crate::runtime::rendering::{NodeRenderOrderOptions, resolve_node_render_order};
+use crate::runtime::rendering::{
+    EdgeRenderOrderOptions, NodeRenderOrderOptions, resolve_edge_render_order,
+    resolve_node_render_order,
+};
 use crate::runtime::store::NodeGraphStore;
 
 fn node(kind: &str, hidden: bool) -> Node {
@@ -34,6 +40,71 @@ fn graph_with_three_nodes(hidden_c: bool) -> (Graph, NodeId, NodeId, NodeId) {
     graph.nodes.insert(b, node("test.b", false));
     graph.nodes.insert(c, node("test.c", hidden_c));
     (graph, a, b, c)
+}
+
+fn port(node: NodeId, dir: PortDirection) -> Port {
+    Port {
+        node,
+        key: PortKey::new("p"),
+        dir,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Multi,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: None,
+        data: serde_json::Value::Null,
+    }
+}
+
+fn edge(from: PortId, to: PortId, hidden: bool) -> Edge {
+    Edge {
+        kind: EdgeKind::Data,
+        from,
+        to,
+        hidden,
+        selectable: None,
+        focusable: None,
+        interaction_width: None,
+        deletable: None,
+        reconnectable: None,
+    }
+}
+
+fn graph_with_three_edges(hidden_c: bool) -> (Graph, NodeId, EdgeId, EdgeId, EdgeId) {
+    let mut graph = Graph::new(GraphId::from_u128(1));
+    let a = NodeId::from_u128(1);
+    let b = NodeId::from_u128(2);
+    let c = NodeId::from_u128(3);
+    let d = NodeId::from_u128(4);
+    for (id, kind) in [(a, "test.a"), (b, "test.b"), (c, "test.c"), (d, "test.d")] {
+        graph.nodes.insert(id, node(kind, false));
+    }
+
+    let a_out = PortId::from_u128(10);
+    let b_in = PortId::from_u128(11);
+    let c_out = PortId::from_u128(12);
+    let d_in = PortId::from_u128(13);
+    let b_out = PortId::from_u128(14);
+    let c_in = PortId::from_u128(15);
+    for (id, port) in [
+        (a_out, port(a, PortDirection::Out)),
+        (b_in, port(b, PortDirection::In)),
+        (c_out, port(c, PortDirection::Out)),
+        (d_in, port(d, PortDirection::In)),
+        (b_out, port(b, PortDirection::Out)),
+        (c_in, port(c, PortDirection::In)),
+    ] {
+        graph.ports.insert(id, port);
+    }
+
+    let e1 = EdgeId::from_u128(1);
+    let e2 = EdgeId::from_u128(2);
+    let e3 = EdgeId::from_u128(3);
+    graph.edges.insert(e1, edge(a_out, b_in, false));
+    graph.edges.insert(e2, edge(c_out, d_in, false));
+    graph.edges.insert(e3, edge(b_out, c_in, hidden_c));
+    (graph, a, e1, e2, e3)
 }
 
 #[test]
@@ -94,6 +165,63 @@ fn node_render_order_filters_hidden_nodes_unless_requested() {
 }
 
 #[test]
+fn edge_render_order_elevates_selected_edges_and_edges_connected_to_selected_nodes() {
+    let (graph, selected_node, e1, e2, e3) = graph_with_three_edges(false);
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![selected_node],
+        selected_edges: vec![e2],
+        ..NodeGraphViewState::default()
+    };
+
+    assert_eq!(
+        resolve_edge_render_order(&graph, &view_state, EdgeRenderOrderOptions::default()),
+        vec![e3, e1, e2],
+        "edges connected to selected nodes and selected edges are moved after non-elevated edges"
+    );
+
+    assert_eq!(
+        resolve_edge_render_order(
+            &graph,
+            &view_state,
+            EdgeRenderOrderOptions {
+                elevate_edges_on_select: false,
+                ..EdgeRenderOrderOptions::default()
+            },
+        ),
+        vec![e1, e2, e3],
+        "graph edge ID order is the base order when elevation is disabled"
+    );
+}
+
+#[test]
+fn edge_render_order_filters_hidden_edges_unless_requested() {
+    let (graph, selected_node, e1, e2, e3) = graph_with_three_edges(true);
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![selected_node],
+        selected_edges: vec![e3],
+        ..NodeGraphViewState::default()
+    };
+
+    assert_eq!(
+        resolve_edge_render_order(&graph, &view_state, EdgeRenderOrderOptions::default()),
+        vec![e2, e1]
+    );
+
+    assert_eq!(
+        resolve_edge_render_order(
+            &graph,
+            &view_state,
+            EdgeRenderOrderOptions {
+                include_hidden: true,
+                ..EdgeRenderOrderOptions::default()
+            },
+        ),
+        vec![e2, e1, e3],
+        "hidden selected edges can be included explicitly and still elevate"
+    );
+}
+
+#[test]
 fn store_node_render_order_uses_resolved_editor_config() {
     let (graph, a, b, c) = graph_with_three_nodes(false);
     let view_state = NodeGraphViewState {
@@ -110,4 +238,23 @@ fn store_node_render_order_uses_resolved_editor_config() {
     });
 
     assert_eq!(store.node_render_order(), vec![c, a, b]);
+}
+
+#[test]
+fn store_edge_render_order_uses_resolved_editor_config() {
+    let (graph, selected_node, e1, e2, e3) = graph_with_three_edges(false);
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![selected_node],
+        selected_edges: vec![e2],
+        ..NodeGraphViewState::default()
+    };
+    let mut store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+
+    assert_eq!(store.edge_render_order(), vec![e3, e1, e2]);
+
+    store.update_editor_config(|config| {
+        config.interaction.elevate_edges_on_select = false;
+    });
+
+    assert_eq!(store.edge_render_order(), vec![e1, e2, e3]);
 }
