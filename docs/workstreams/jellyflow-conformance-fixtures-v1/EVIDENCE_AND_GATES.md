@@ -76,6 +76,13 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `git status --short --branch`: clean before opening docs, branch ahead of origin.
   - Governing decision: ADR 0003 keeps fixture execution renderer-free.
   - Source evidence: interaction harness closeout and node drag kernel closeout.
+- 2026-06-01: JCF-020 added the public headless fixture vocabulary.
+  - `cargo nextest run -p jellyflow-runtime --test public_surface`: PASS, 3 tests.
+  - `cargo check -p jellyflow-runtime`: PASS.
+  - `cargo fmt --check`: PASS.
+  - `git diff --check`: PASS.
+  - Evidence: `runtime::conformance` exposes scenario/setup/action/trace types that serialize
+    without renderer dependencies; public surface test round-trips a node drag fixture.
 
 ## Notes
 

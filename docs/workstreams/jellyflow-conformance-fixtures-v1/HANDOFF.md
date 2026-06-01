@@ -5,15 +5,19 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as a follow-on to the closed interaction harness and node drag kernel lanes.
+The workstream is active as a follow-on to the closed interaction harness and node drag kernel lanes.
 
 JCF-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.
 
+JCF-020 is complete: `jellyflow_runtime::runtime::conformance` now exposes renderer-free
+scenario/setup/action/trace vocabulary, gesture and callback payloads are serde-friendly, and
+`public_surface` protects a node-drag fixture round trip.
+
 ## Next Task
 
-JCF-020: define the first public headless conformance fixture vocabulary for graph setup,
-view/config setup, actions, gestures, and expected normalized trace events.
+JCF-030: add the headless fixture runner that executes scenarios against a real `NodeGraphStore`
+and returns compact normalized trace mismatches.
 
 ## Decisions Since Opening
 
@@ -23,6 +27,9 @@ view/config setup, actions, gestures, and expected normalized trace events.
 - Public fixture API should be small and behavior-oriented, with public surface smoke coverage.
 - Future adapter smoke tests can consume the fixture vocabulary but should live outside
   `jellyflow-runtime`.
+- Fixture schema version starts at `CONFORMANCE_FIXTURE_SCHEMA_VERSION = 1`.
+- JCF-020 intentionally defines the vocabulary only; execution, mismatch formatting, and
+  conversion of existing scenarios remain in JCF-030/JCF-040.
 
 ## Blockers
 

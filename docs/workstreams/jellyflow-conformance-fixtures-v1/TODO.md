@@ -16,7 +16,7 @@ Last updated: 2026-06-01
 
 ## M1 - Fixture Vocabulary
 
-- [ ] JCF-020 [owner=codex] [deps=JCF-010] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JCF-020 [owner=codex] [deps=JCF-010] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Define the first public headless conformance fixture vocabulary for graph setup, view/config
   setup, actions, gestures, and expected normalized trace events.
   Validation: `cargo nextest run -p jellyflow-runtime --test public_surface`;
@@ -25,6 +25,9 @@ Last updated: 2026-06-01
   Evidence: Fixture types are public, serde-friendly where appropriate, renderer-free, and able to
   represent existing connect and node drag scenarios without renderer concepts.
   Context: `docs/workstreams/jellyflow-conformance-fixtures-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added `runtime::conformance` scenario/setup/action/trace vocabulary,
+  serde-enabled gesture/callback payloads needed by fixtures, and public surface round-trip
+  coverage.
 
 ## M2 - Fixture Runner
 

@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use jellyflow_core::core::{Edge, EdgeId, EdgeKind, PortId};
 use jellyflow_core::ops::EdgeEndpoints;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeConnection {
     pub edge: EdgeId,
     pub from: PortId,
@@ -24,7 +26,8 @@ impl EdgeConnection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConnectionChange {
     Connected(EdgeConnection),
     Disconnected(EdgeConnection),

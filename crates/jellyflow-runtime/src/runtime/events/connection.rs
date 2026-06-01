@@ -1,9 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 use crate::rules::EdgeEndpoint;
 use jellyflow_core::core::{EdgeId, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 /// Connection start kind (UI-driven).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConnectDragKind {
     New {
         from: PortId,
@@ -19,13 +22,14 @@ pub enum ConnectDragKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectStart {
     pub kind: ConnectDragKind,
     pub mode: NodeGraphConnectionMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectEndOutcome {
     /// A graph transaction was committed.
     Committed,
@@ -41,7 +45,7 @@ pub enum ConnectEndOutcome {
     NoOp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectEnd {
     pub kind: ConnectDragKind,
     pub mode: NodeGraphConnectionMode,

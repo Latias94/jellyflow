@@ -50,6 +50,11 @@
       "date": "2026-06-01",
       "task": "JCF-010",
       "summary": "Opened the conformance fixtures workstream from interaction harness and node drag closeout follow-ons, with ADR 0003 renderer-free testing constraints."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JCF-020",
+      "summary": "Added public runtime::conformance fixture vocabulary for setup, actions, gestures, and normalized traces, with serde-friendly payloads and public surface coverage."
     }
   ],
   "adr_refs": [
@@ -66,7 +71,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JCF-020",
-    "notes": "Define the public headless fixture vocabulary before adding a runner."
+    "next_task": "JCF-030",
+    "notes": "Add the fixture runner against NodeGraphStore before converting adapter-conformance scenarios."
   }
 }
