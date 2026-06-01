@@ -1,11 +1,11 @@
 use crate::io::NodeGraphInteractionState;
 use crate::rules::ConnectPlan;
 use crate::runtime::policy::NodeGraphPortInteractionPolicy;
-use jellyflow_core::core::{Graph, PortId};
+use jellyflow_core::core::{Graph, Port, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::endpoints::{ConnectionEndpoints, resolve_connection_endpoints};
-use super::rejections::{reject_missing_port, reject_missing_port_owner_node};
+use super::rejections::reject_missing_port_owner_node;
 
 pub(in crate::rules::connection) fn resolve_policy_checked_connection<'a>(
     graph: &'a Graph,
@@ -16,9 +16,7 @@ pub(in crate::rules::connection) fn resolve_policy_checked_connection<'a>(
 ) -> Result<ConnectionEndpoints<'a>, ConnectPlan> {
     let endpoints = resolve_connection_endpoints(graph, a, b, mode)?;
 
-    if let Some(reject) =
-        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
-    {
+    if let Some(reject) = reject_if_connection_policy_disallows(graph, &endpoints, state) {
         return Err(reject);
     }
 
@@ -27,11 +25,10 @@ pub(in crate::rules::connection) fn resolve_policy_checked_connection<'a>(
 
 pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
     graph: &Graph,
-    from_id: PortId,
-    to_id: PortId,
+    endpoints: &ConnectionEndpoints<'_>,
     state: &NodeGraphInteractionState,
 ) -> Option<ConnectPlan> {
-    let from_policy = match port_policy_or_reject(graph, from_id, state) {
+    let from_policy = match port_policy_or_reject(graph, endpoints.from, state) {
         Ok(policy) => policy,
         Err(plan) => return Some(plan),
     };
@@ -39,7 +36,7 @@ pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
         return Some(ConnectPlan::reject("source port is not connectable"));
     }
 
-    let to_policy = match port_policy_or_reject(graph, to_id, state) {
+    let to_policy = match port_policy_or_reject(graph, endpoints.to, state) {
         Ok(policy) => policy,
         Err(plan) => return Some(plan),
     };
@@ -52,12 +49,9 @@ pub(in crate::rules::connection) fn reject_if_connection_policy_disallows(
 
 fn port_policy_or_reject(
     graph: &Graph,
-    port_id: PortId,
+    port: &Port,
     state: &NodeGraphInteractionState,
 ) -> Result<NodeGraphPortInteractionPolicy, ConnectPlan> {
-    let Some(port) = graph.ports.get(&port_id) else {
-        return Err(reject_missing_port(port_id));
-    };
     let Some(node) = graph.nodes.get(&port.node) else {
         return Err(reject_missing_port_owner_node(port.node));
     };

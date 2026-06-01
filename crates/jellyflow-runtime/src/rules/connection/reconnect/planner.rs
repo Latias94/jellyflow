@@ -51,9 +51,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
         return reject;
     }
 
-    if let Some(reject) =
-        reject_if_connection_policy_disallows(graph, endpoints.from_id, endpoints.to_id, state)
-    {
+    if let Some(reject) = reject_if_connection_policy_disallows(graph, &endpoints, state) {
         return reject;
     }
 
