@@ -47,6 +47,14 @@ pub struct NodeGraphSelectionInteraction {
     pub multi_selection_key: NodeGraphModifierKey,
 }
 
+/// Delete policy and keyboard binding resolved for runtime use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeGraphDeleteInteraction {
+    pub nodes_deletable: bool,
+    pub edges_deletable: bool,
+    pub delete_key: NodeGraphDeleteKey,
+}
+
 /// Canvas pan behaviour resolved for runtime use.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeGraphPanInteraction<'a> {
@@ -144,6 +152,14 @@ impl NodeGraphInteractionState {
             box_select_edges: self.box_select_edges,
             selection_key: self.selection_key,
             multi_selection_key: self.multi_selection_key,
+        }
+    }
+
+    pub fn delete_interaction(&self) -> NodeGraphDeleteInteraction {
+        NodeGraphDeleteInteraction {
+            nodes_deletable: self.nodes_deletable,
+            edges_deletable: self.edges_deletable,
+            delete_key: self.delete_key,
         }
     }
 
@@ -245,7 +261,9 @@ mod tests {
         let state = NodeGraphInteractionState {
             elements_selectable: false,
             nodes_connectable: false,
+            nodes_deletable: false,
             edges_selectable: false,
+            edges_deletable: false,
             edges_reconnectable: false,
             connection_mode: NodeGraphConnectionMode::Loose,
             connection_radius: 42.0,
@@ -294,6 +312,11 @@ mod tests {
         );
         assert_eq!(selection.selection_key, NodeGraphModifierKey::Alt);
         assert_eq!(selection.multi_selection_key, NodeGraphModifierKey::Shift);
+
+        let delete = state.delete_interaction();
+        assert!(!delete.nodes_deletable);
+        assert!(!delete.edges_deletable);
+        assert_eq!(delete.delete_key, NodeGraphDeleteKey::Backspace);
     }
 
     #[test]

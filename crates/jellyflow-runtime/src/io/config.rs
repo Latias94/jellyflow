@@ -9,9 +9,10 @@ mod types;
 pub use self::interaction::{NodeGraphEditorConfig, NodeGraphInteractionConfig};
 pub use self::keys::{NodeGraphDeleteKey, NodeGraphKeyCode};
 pub use self::state::{
-    NodeGraphConnectionInteraction, NodeGraphFrameViewInteraction, NodeGraphInteractionState,
-    NodeGraphKeyboardInteraction, NodeGraphNodeDragInteraction, NodeGraphPanInteraction,
-    NodeGraphRenderingInteraction, NodeGraphSelectionInteraction, NodeGraphZoomInteraction,
+    NodeGraphConnectionInteraction, NodeGraphDeleteInteraction, NodeGraphFrameViewInteraction,
+    NodeGraphInteractionState, NodeGraphKeyboardInteraction, NodeGraphNodeDragInteraction,
+    NodeGraphPanInteraction, NodeGraphRenderingInteraction, NodeGraphSelectionInteraction,
+    NodeGraphZoomInteraction,
 };
 pub use self::types::{
     NodeGraphBoxSelectEdges, NodeGraphNodeOrigin, NodeGraphNudgeStepMode,

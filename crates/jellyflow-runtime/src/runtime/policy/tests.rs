@@ -70,15 +70,19 @@ fn policy_node_overrides_global_defaults() {
         ..NodeGraphInteractionState::default()
     };
 
+    let selection = state.selection_interaction();
+    let node_drag = state.node_drag_interaction();
+    let connection = state.connection_interaction();
+    let delete = state.delete_interaction();
     let default_policy = resolve_node_interaction_policy(&node(), &state);
     assert_eq!(
         default_policy,
         NodeGraphNodeInteractionPolicy {
-            selectable: false,
-            draggable: false,
-            connectable: false,
-            deletable: false,
-            extent: state.node_extent.map(|rect| NodeExtent::Rect { rect }),
+            selectable: selection.elements_selectable,
+            draggable: node_drag.nodes_draggable,
+            connectable: connection.nodes_connectable,
+            deletable: delete.nodes_deletable,
+            extent: node_drag.node_extent.map(|rect| NodeExtent::Rect { rect }),
             expand_parent: false,
         }
     );
@@ -162,14 +166,17 @@ fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability
         ..NodeGraphInteractionState::default()
     };
 
+    let selection = disabled_state.selection_interaction();
+    let connection = disabled_state.connection_interaction();
+    let delete = disabled_state.delete_interaction();
     let default_policy = resolve_edge_interaction_policy(&edge(from, to), &disabled_state);
     assert_eq!(
         default_policy,
         NodeGraphEdgeInteractionPolicy {
-            selectable: false,
-            deletable: false,
-            reconnect_source: false,
-            reconnect_target: false,
+            selectable: selection.edges_selectable,
+            deletable: delete.edges_deletable,
+            reconnect_source: connection.edges_reconnectable,
+            reconnect_target: connection.edges_reconnectable,
         }
     );
     assert!(!default_policy.can_delete());

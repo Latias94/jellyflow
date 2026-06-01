@@ -21,14 +21,19 @@ pub fn resolve_node_interaction_policy(
     node: &Node,
     state: &NodeGraphInteractionState,
 ) -> NodeGraphNodeInteractionPolicy {
+    let selection = state.selection_interaction();
+    let node_drag = state.node_drag_interaction();
+    let connection = state.connection_interaction();
+    let delete = state.delete_interaction();
+
     NodeGraphNodeInteractionPolicy {
-        selectable: node.selectable.unwrap_or(state.elements_selectable),
-        draggable: node.draggable.unwrap_or(state.nodes_draggable),
-        connectable: node.connectable.unwrap_or(state.nodes_connectable),
-        deletable: node.deletable.unwrap_or(state.nodes_deletable),
+        selectable: node.selectable.unwrap_or(selection.elements_selectable),
+        draggable: node.draggable.unwrap_or(node_drag.nodes_draggable),
+        connectable: node.connectable.unwrap_or(connection.nodes_connectable),
+        deletable: node.deletable.unwrap_or(delete.nodes_deletable),
         extent: node
             .extent
-            .or_else(|| state.node_extent.map(|rect| NodeExtent::Rect { rect })),
+            .or_else(|| node_drag.node_extent.map(|rect| NodeExtent::Rect { rect })),
         expand_parent: node.expand_parent.unwrap_or(false),
     }
 }

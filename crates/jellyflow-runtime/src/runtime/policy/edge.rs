@@ -31,14 +31,17 @@ pub fn resolve_edge_interaction_policy(
     edge: &Edge,
     state: &NodeGraphInteractionState,
 ) -> NodeGraphEdgeInteractionPolicy {
+    let connection = state.connection_interaction();
+    let selection = state.selection_interaction();
+    let delete = state.delete_interaction();
     let reconnectable = edge
         .reconnectable
-        .unwrap_or(EdgeReconnectable::Bool(state.edges_reconnectable));
+        .unwrap_or(EdgeReconnectable::Bool(connection.edges_reconnectable));
     let (reconnect_source, reconnect_target) = reconnectable.endpoint_flags();
 
     NodeGraphEdgeInteractionPolicy {
-        selectable: edge.selectable.unwrap_or(state.edges_selectable),
-        deletable: edge.deletable.unwrap_or(state.edges_deletable),
+        selectable: edge.selectable.unwrap_or(selection.edges_selectable),
+        deletable: edge.deletable.unwrap_or(delete.edges_deletable),
         reconnect_source,
         reconnect_target,
     }

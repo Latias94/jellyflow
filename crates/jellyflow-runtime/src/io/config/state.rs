@@ -24,9 +24,9 @@ mod split;
 mod views;
 
 pub use views::{
-    NodeGraphConnectionInteraction, NodeGraphFrameViewInteraction, NodeGraphKeyboardInteraction,
-    NodeGraphNodeDragInteraction, NodeGraphPanInteraction, NodeGraphRenderingInteraction,
-    NodeGraphSelectionInteraction, NodeGraphZoomInteraction,
+    NodeGraphConnectionInteraction, NodeGraphDeleteInteraction, NodeGraphFrameViewInteraction,
+    NodeGraphKeyboardInteraction, NodeGraphNodeDragInteraction, NodeGraphPanInteraction,
+    NodeGraphRenderingInteraction, NodeGraphSelectionInteraction, NodeGraphZoomInteraction,
 };
 
 /// Resolved runtime interaction state assembled from persisted config and runtime tuning.
