@@ -1,8 +1,11 @@
 use super::super::harness::{HarnessEvent, InteractionHarness};
 use super::support::drag_fixture;
 
-use crate::io::NodeGraphViewState;
-use crate::runtime::drag::{NODE_DRAG_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest};
+use crate::io::{NodeGraphNudgeStepMode, NodeGraphViewState};
+use crate::runtime::drag::{
+    NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest,
+    NodeNudgeDirection, NodeNudgeRequest,
+};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 use jellyflow_core::ops::GraphOp;
 
@@ -156,6 +159,140 @@ fn multi_selection_drag_uses_shared_snap_offset() {
             },
         ],
     );
+}
+
+#[test]
+fn keyboard_nudge_moves_selected_draggable_nodes_with_screen_step() {
+    let fixture = drag_fixture();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.zoom = 2.0;
+    view_state.set_selection(
+        vec![
+            fixture.selected_high,
+            fixture.disabled,
+            fixture.child_in_selected_group,
+            fixture.selected_low,
+        ],
+        Vec::new(),
+        vec![fixture.selected_group],
+    );
+    let mut harness = InteractionHarness::with_view_state(
+        "keyboard nudge screen step",
+        fixture.graph,
+        view_state,
+    );
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.nudge_step_px = 5.0;
+    });
+
+    let request = NodeNudgeRequest {
+        direction: NodeNudgeDirection::Right,
+        fast: false,
+    };
+    let plan = harness
+        .store()
+        .plan_node_nudge(request)
+        .expect("keyboard nudge plan");
+
+    assert_eq!(plan.direction, NodeNudgeDirection::Right);
+    assert_eq!(plan.delta, CanvasPoint { x: 2.5, y: 0.0 });
+    assert_eq!(
+        plan.items(),
+        &[
+            NodeDragItem {
+                node: fixture.selected_low,
+                from: CanvasPoint { x: 0.0, y: 0.0 },
+                to: CanvasPoint { x: 2.5, y: 0.0 },
+            },
+            NodeDragItem {
+                node: fixture.selected_high,
+                from: CanvasPoint { x: 100.0, y: 0.0 },
+                to: CanvasPoint { x: 102.5, y: 0.0 },
+            },
+        ],
+    );
+
+    harness
+        .store_mut()
+        .apply_node_nudge(request)
+        .expect("keyboard nudge dispatch succeeds")
+        .expect("keyboard nudge dispatch commits");
+
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.selected_low].pos,
+        CanvasPoint { x: 2.5, y: 0.0 },
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.selected_high].pos,
+        CanvasPoint { x: 102.5, y: 0.0 },
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.disabled].pos,
+        CanvasPoint { x: 200.0, y: 0.0 },
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.child_in_selected_group].pos,
+        CanvasPoint { x: 300.0, y: 0.0 },
+    );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some(NODE_NUDGE_TRANSACTION_LABEL),
+        &["set_node_pos", "set_node_pos"],
+    )]);
+}
+
+#[test]
+fn keyboard_nudge_uses_grid_step_and_fast_factor() {
+    let fixture = drag_fixture();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![fixture.selected_low], Vec::new(), Vec::new());
+    let mut harness =
+        InteractionHarness::with_view_state("keyboard nudge grid step", fixture.graph, view_state);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.nudge_step_mode = NodeGraphNudgeStepMode::Grid;
+        editor_config.interaction.snap_grid = CanvasSize {
+            width: 20.0,
+            height: 10.0,
+        };
+    });
+
+    let plan = harness
+        .store()
+        .plan_node_nudge(NodeNudgeRequest {
+            direction: NodeNudgeDirection::Down,
+            fast: true,
+        })
+        .expect("keyboard grid nudge plan");
+
+    assert_eq!(plan.delta, CanvasPoint { x: 0.0, y: 40.0 });
+    assert_eq!(
+        plan.items(),
+        &[NodeDragItem {
+            node: fixture.selected_low,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 0.0, y: 40.0 },
+        }],
+    );
+}
+
+#[test]
+fn keyboard_nudge_returns_none_without_keyboard_accessibility_or_selection() {
+    let fixture = drag_fixture();
+    let mut harness = InteractionHarness::new("keyboard nudge disabled", fixture.graph);
+    let request = NodeNudgeRequest {
+        direction: NodeNudgeDirection::Left,
+        fast: false,
+    };
+
+    assert!(harness.store().plan_node_nudge(request).is_none());
+
+    harness
+        .store_mut()
+        .update_view_state(|state| state.selected_nodes = vec![fixture.selected_low]);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.disable_keyboard_a11y = true;
+    });
+
+    assert!(harness.store().plan_node_nudge(request).is_none());
 }
 
 #[test]
