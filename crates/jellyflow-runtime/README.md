@@ -12,6 +12,7 @@
 - renderer-neutral selection-box helpers under `runtime::selection`;
 - renderer-neutral node drag planning and commit helpers under `runtime::drag`;
 - renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
+- renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
   commands, and numeric hit testing;
@@ -47,6 +48,9 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::viewport::{ViewportTransform, ViewportPanRequest, ViewportZoomRequest}` plus
   `NodeGraphStore::apply_viewport_pan` and `NodeGraphStore::apply_viewport_zoom` for deterministic
   drag-pan and zoom-around-pointer state changes;
+- `runtime::auto_pan::{AutoPanActivation, AutoPanRequest, AutoPanPlan}` plus
+  `NodeGraphStore::apply_auto_pan` for deterministic edge-proximity auto-pan frames that feed the
+  normal viewport publication path;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -67,12 +71,15 @@ Viewport conformance is also headless. Runtime tests cover:
 
 - screen-delta pan conversion at the current zoom;
 - anchored zoom that keeps the pointer's canvas coordinate stable;
+- auto-pan conversion from pointer-edge proximity and elapsed frame time into viewport pan frames;
 - `NodeGraphStore` view-state publication for viewport intent;
 - viewport move gesture callback ordering;
-- fixture-runner traces for pan, zoom, view changes, gestures, and XyFlow-style callbacks.
+- fixture-runner traces for pan, zoom, auto-pan, view changes, gestures, and XyFlow-style callbacks.
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
-window event loops, screenshots, and pixel assertions.
+frame scheduling, window event loops, screenshots, and pixel assertions. For selection workflows,
+adapters may call the generic `AutoPanActivation::Always` path until a persisted selection-specific
+auto-pan toggle is justified by integration evidence.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

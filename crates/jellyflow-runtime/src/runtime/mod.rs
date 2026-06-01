@@ -4,6 +4,7 @@
 //! The goal is to provide a stable, ergonomic "runtime/store" surface without coupling to
 //! a specific rendering or widget layer. XyFlow-compatible projections live in [`xyflow`].
 
+pub mod auto_pan;
 pub mod commit;
 pub mod conformance;
 pub mod drag;

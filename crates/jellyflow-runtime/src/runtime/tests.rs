@@ -1,4 +1,5 @@
 mod adapter_conformance;
+mod auto_pan;
 mod conformance;
 mod drag;
 mod fixtures;

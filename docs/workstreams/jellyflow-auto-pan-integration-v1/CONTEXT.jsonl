@@ -1,0 +1,6 @@
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Governs renderer-free runtime tests and keeps wgpu/egui/Fret smoke tests outside jellyflow-runtime."}
+{"file":"docs/workstreams/jellyflow-node-drag-kernel-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the node drag follow-on and renderer-neutral interaction kernel pattern."}
+{"file":"docs/workstreams/jellyflow-viewport-interaction-kernel-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the viewport pan/zoom API and conformance fixture boundary that auto-pan should reuse."}
+{"file":"docs/workstreams/jellyflow-interaction-harness-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides interaction harness and fixture strategy context."}
+{"file":"README.md","reason":"Root project interaction testing strategy to update at closeout."}
+{"file":"crates/jellyflow-runtime/README.md","reason":"Runtime crate contract and adapter guidance to update at closeout."}

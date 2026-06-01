@@ -1,8 +1,9 @@
 use super::fixtures::make_graph;
 
+use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
-    ConformanceTraceEvent, run_conformance_scenario,
+    ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
 };
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
@@ -10,7 +11,7 @@ use crate::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, CanvasSize};
 
 #[test]
 fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
@@ -188,6 +189,42 @@ fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMove(zoom_update)),
             ConformanceTraceEvent::gesture(zoom_end_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMoveEnd(zoom_end)),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
+fn conformance_runner_records_auto_pan_fixture_and_callbacks() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.auto_pan.speed = 100.0;
+    editor_config.interaction.auto_pan.margin = 20.0;
+
+    let pan = CanvasPoint { x: -50.0, y: 0.0 };
+    let scenario = ConformanceScenario::new("auto-pan fixture", graph)
+        .with_editor_config(editor_config)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_auto_pan(AutoPanRequest::new(
+            AutoPanActivation::Always,
+            CanvasPoint { x: 190.0, y: 50.0 },
+            CanvasSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            1.0,
+        ))])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(pan, 1.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport { pan, zoom: 1.0 }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan,
+                zoom: 1.0,
+            }),
         ]);
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");

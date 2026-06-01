@@ -7,7 +7,7 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
 use jellyflow_runtime::runtime::{
-    commit, conformance, drag, events, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, drag, events, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -95,6 +95,22 @@ fn explicit_modules_expose_their_owned_surfaces() {
         viewport::ViewportZoomRequest::new(CanvasPoint { x: 24.0, y: 12.0 }, 2.0, 0.5, 4.0),
     )
     .expect("zoom");
+    let auto_pan_request = auto_pan::AutoPanRequest::new(
+        auto_pan::AutoPanActivation::Always,
+        CanvasPoint { x: 99.0, y: 40.0 },
+        jellyflow_core::core::CanvasSize {
+            width: 100.0,
+            height: 80.0,
+        },
+        0.016,
+    );
+    let auto_pan_plan = auto_pan::compute_auto_pan(
+        &jellyflow_runtime::io::NodeGraphAutoPanTuning::default(),
+        auto_pan_request,
+    )
+    .expect("auto-pan");
+    let _ = auto_pan_plan.viewport_pan_request();
+    let _ = std::mem::size_of::<auto_pan::AutoPanOutcome>();
 
     let drag_start = events::NodeDragStart {
         primary: NodeId::new(),

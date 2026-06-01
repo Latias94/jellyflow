@@ -9,6 +9,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
+use crate::runtime::auto_pan::AutoPanRequest;
 use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
@@ -152,6 +153,9 @@ pub enum ConformanceAction {
         node: NodeId,
         to: CanvasPoint,
     },
+    ApplyAutoPan {
+        request: AutoPanRequest,
+    },
     ApplyViewportPan {
         request: ViewportPanRequest,
     },
@@ -177,6 +181,7 @@ impl ConformanceAction {
         match self {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
             Self::SetViewport { .. } => "set_viewport",
@@ -191,6 +196,10 @@ impl ConformanceAction {
 
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn apply_auto_pan(request: AutoPanRequest) -> Self {
+        Self::ApplyAutoPan { request }
     }
 
     pub fn apply_viewport_pan(request: ViewportPanRequest) -> Self {
@@ -512,6 +521,10 @@ fn execute_action(store: &mut NodeGraphStore, action: &ConformanceAction) -> Res
             })
             .map(|_| ())
             .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyAutoPan { request } => store
+            .apply_auto_pan(*request)
+            .map(|_| ())
+            .ok_or_else(|| "auto-pan request was rejected".to_owned()),
         ConformanceAction::ApplyViewportPan { request } => store
             .apply_viewport_pan(*request)
             .map(|_| ())

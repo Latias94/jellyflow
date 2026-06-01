@@ -2,6 +2,7 @@ use super::fixtures::make_graph;
 use super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::rules::plan_connect;
+use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
     ConformanceTraceEvent, run_conformance_scenario,
@@ -166,6 +167,30 @@ fn adapter_conformance_fixture_runner_records_viewport_and_selection_ordering() 
             ConformanceTraceEvent::viewport(CanvasPoint { x: 10.0, y: 20.0 }, 1.25),
             ConformanceTraceEvent::selection(vec![node_id], vec![edge_id], Vec::new()),
         ]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
+fn adapter_conformance_fixture_runner_records_auto_pan_frame() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.auto_pan.speed = 100.0;
+    editor_config.interaction.auto_pan.margin = 20.0;
+    let pan = CanvasPoint { x: -50.0, y: 0.0 };
+
+    let scenario = ConformanceScenario::new("auto-pan frame", graph)
+        .with_editor_config(editor_config)
+        .with_actions([ConformanceAction::apply_auto_pan(AutoPanRequest::new(
+            AutoPanActivation::Always,
+            CanvasPoint { x: 190.0, y: 50.0 },
+            CanvasSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            1.0,
+        ))])
+        .with_expected_trace([ConformanceTraceEvent::viewport(pan, 1.0)]);
 
     assert_conformance_trace(&scenario);
 }
