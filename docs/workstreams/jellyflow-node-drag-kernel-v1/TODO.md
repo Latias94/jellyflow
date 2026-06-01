@@ -34,12 +34,13 @@ Last updated: 2026-06-01
 
 ## M3 - Snap And Extent Constraints
 
-- [ ] JND-040 [owner=codex] [deps=JND-030] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs]
+- [x] JND-040 [owner=codex] [deps=JND-030] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs]
   Goal: Add snap-to-grid and movement extent handling without renderer dependencies.
   Validation: `cargo nextest run -p jellyflow-runtime drag`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture covers shared snap offset for multi-drag, global node extent, per-node rect extent, node origin, and deterministic clamping.
   Context: `docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added shared snap-offset planning, global extent group clamping for multi-drag, per-node rect extent clamping, node-origin-aware bounds calculation, and basic parent-group extent resolution without renderer dependencies.
 
 ## M4 - Gesture Trace And XyFlow Projection
 

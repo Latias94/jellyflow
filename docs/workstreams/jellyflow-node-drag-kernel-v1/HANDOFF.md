@@ -20,9 +20,16 @@ plus current selected nodes. It co-drags selected nodes with the primary node, f
 non-draggable nodes, filters child nodes whose parent group is selected, and commits sorted
 `SetNodePos` ops.
 
+JND-040 is complete: drag planning now applies snap-to-grid and movement extent constraints without
+renderer dependencies. Multi-selection drag uses one shared snap offset from the first deterministic
+drag item. Global `node_extent` clamps a multi-selection as a group, per-node rect extents clamp
+individual nodes, and node-origin-aware bounds are used for extent math. `NodeExtent::Parent` is
+resolved to the parent group rect when `expand_parent` is false.
+
 ## Next Task
 
-JND-040: add snap-to-grid and movement extent handling without renderer dependencies.
+JND-050: record drag start/update/end behavior through the interaction harness and XyFlow
+compatibility callbacks.
 
 ## Decisions Since Last Update
 
@@ -38,6 +45,8 @@ JND-040: add snap-to-grid and movement extent handling without renderer dependen
   continuous pointer updates need separate preview/final-commit semantics.
 - Jellyflow's selected-parent filtering currently maps to node `parent: GroupId` plus selected
   groups, not XyFlow node-parent nesting.
+- JND-040 keeps parent expansion out of scope. Parent extent can constrain to the current group
+  rect, but automatic group resizing should remain a follow-on if needed.
 
 ## Blockers
 

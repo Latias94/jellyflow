@@ -59,6 +59,11 @@
       "date": "2026-06-01",
       "task": "JND-030",
       "summary": "Extended drag planning to co-drag selected nodes with the primary node, expose ordered NodeDragItem output, filter non-draggable and selected-parent child nodes, and commit sorted SetNodePos ops."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JND-040",
+      "summary": "Added shared snap-offset planning, global extent group clamping, per-node rect extent clamping, and node-origin-aware bounds math for renderer-neutral node drag."
     }
   ],
   "adr_refs": [
@@ -76,7 +81,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JND-040",
-    "notes": "Add snap-to-grid and movement extent handling before wiring gesture/callback traces."
+    "next_task": "JND-050",
+    "notes": "Wire drag start/update/end traces and XyFlow compatibility callbacks after snap and extent behavior."
   }
 }

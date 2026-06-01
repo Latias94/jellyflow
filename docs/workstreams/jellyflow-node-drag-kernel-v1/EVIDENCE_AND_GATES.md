@@ -109,6 +109,42 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
   - `review-workstream` self-review: no blocking findings; selected-parent filtering is documented
     as selected group parent semantics for Jellyflow.
+- 2026-06-01: JND-040 added snap-to-grid and movement extent handling.
+  - Added shared snap-offset planning for multi-selection drag based on the first deterministic drag
+    item, matching the XyFlow reference behavior that keeps a selection moving as one group.
+  - Added node-origin-aware bounds calculation for clamping node movement to extents.
+  - Added global `node_extent` handling that clamps multi-selection movement as a group instead of
+    letting individual nodes split apart at the boundary.
+  - Added per-node rect extent handling and basic `NodeExtent::Parent` resolution to a parent group
+    rect when `expand_parent` is false.
+  - Fixture coverage: shared snap offset for multi-drag, global node extent, per-node rect extent,
+    node origin, sorted drag items, and deterministic clamped targets.
+  - RED gate: `cargo nextest run -p jellyflow-runtime multi_selection_drag_uses_shared_snap_offset`
+    failed before snap handling because the primary target remained unsnapped.
+  - RED gate:
+    `cargo nextest run -p jellyflow-runtime multi_selection_drag_clamps_global_extent_as_group`
+    failed before extent handling because multi-selection targets ignored global extent.
+  - RED gate:
+    `cargo nextest run -p jellyflow-runtime single_node_drag_clamps_per_node_rect_with_node_origin`
+    failed before per-node extent handling because the target ignored node-origin-aware bounds.
+  - `cargo fmt`: applied formatting after implementation.
+  - `cargo nextest run -p jellyflow-runtime multi_selection_drag_uses_shared_snap_offset`: passed,
+    1 test.
+  - `cargo nextest run -p jellyflow-runtime multi_selection_drag_clamps_global_extent_as_group`:
+    passed, 1 test.
+  - `cargo nextest run -p jellyflow-runtime single_node_drag_clamps_per_node_rect_with_node_origin`:
+    passed, 1 test.
+  - `cargo nextest run -p jellyflow-runtime multi_selection_drag`: passed, 3 tests.
+  - `cargo nextest run -p jellyflow-runtime drag`: passed, 8 tests.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo fmt --check`: passed.
+  - `jq empty docs/workstreams/jellyflow-node-drag-kernel-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 149 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `review-workstream` self-review: no blocking findings; residual risk is limited to parent
+    expansion and untested mixed custom/global extent edge cases, both outside the JND-040 evidence
+    contract.
 
 ## Notes
 
