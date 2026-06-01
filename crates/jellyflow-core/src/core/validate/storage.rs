@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{CanvasSize, EdgeId, Graph, Node, NodeId, PortId};
 
@@ -14,6 +14,7 @@ pub fn validate_graph_storage(graph: &Graph) -> GraphValidationReport {
 
 struct StorageValidator<'a> {
     graph: &'a Graph,
+    listed_ports_by_node: BTreeMap<NodeId, BTreeSet<PortId>>,
     report: GraphValidationReport,
 }
 
@@ -21,6 +22,7 @@ impl<'a> StorageValidator<'a> {
     fn new(graph: &'a Graph) -> Self {
         Self {
             graph,
+            listed_ports_by_node: listed_ports_by_node(graph),
             report: GraphValidationReport::default(),
         }
     }
@@ -63,10 +65,10 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_ports_are_listed_by_owner(&mut self) {
         for (port_id, port) in &self.graph.ports {
-            let Some(node) = self.graph.nodes.get(&port.node) else {
+            if !self.graph.nodes.contains_key(&port.node) {
                 continue;
-            };
-            if !node.ports.contains(port_id) {
+            }
+            if !self.node_lists_port(port.node, *port_id) {
                 self.report
                     .push(GraphValidationError::PortMissingFromOwner {
                         port: *port_id,
@@ -74,6 +76,12 @@ impl<'a> StorageValidator<'a> {
                     });
             }
         }
+    }
+
+    fn node_lists_port(&self, node_id: NodeId, port_id: PortId) -> bool {
+        self.listed_ports_by_node
+            .get(&node_id)
+            .is_some_and(|ports| ports.contains(&port_id))
     }
 
     fn validate_nodes(&mut self) {
@@ -155,4 +163,12 @@ impl<'a> StorageValidator<'a> {
             });
         }
     }
+}
+
+fn listed_ports_by_node(graph: &Graph) -> BTreeMap<NodeId, BTreeSet<PortId>> {
+    graph
+        .nodes
+        .iter()
+        .map(|(node_id, node)| (*node_id, node.ports.iter().copied().collect()))
+        .collect()
 }
