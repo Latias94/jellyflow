@@ -1,8 +1,7 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{default_editor_config, make_graph, make_store};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::NodeGraphStoreEvent;
-use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -12,7 +11,7 @@ fn store_replace_view_state_emits_view_changed_event() {
     use std::rc::Rc;
 
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let events2 = events.clone();
@@ -36,7 +35,7 @@ fn store_set_viewport_emits_exact_zoom_changes_below_projection_epsilon() {
     use std::rc::Rc;
 
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let pan = CanvasPoint { x: 10.0, y: 20.0 };
     store.set_viewport(pan, 1.0);
@@ -66,7 +65,7 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
 
     let (g0, a, b, _out_port, _in_port, _eid) = make_graph();
     let replacement_node = g0.nodes.get(&b).expect("replacement node").clone();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let from = store.graph().nodes.get(&a).expect("node a").pos;
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
@@ -152,7 +151,7 @@ fn store_replace_graph_emits_document_event_and_preserves_history_policy() {
 
     let (g0, a, b, _out_port, _in_port, _eid) = make_graph();
     let replacement_node = g0.nodes.get(&a).expect("replacement node").clone();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
     store.set_selection(vec![b], Vec::new(), Vec::new());
 
     let from = store.graph().nodes.get(&a).expect("node a").pos;
@@ -199,7 +198,7 @@ fn store_replace_editor_config_notifies_selectors_for_runtime_tuning_only_change
     use std::rc::Rc;
 
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let events2 = events.clone();
@@ -231,7 +230,7 @@ fn store_update_editor_config_notifies_selectors_only_when_changed() {
     use std::rc::Rc;
 
     let (g0, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let runtime_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
     let runtime_flags2 = runtime_flags.clone();
@@ -260,7 +259,7 @@ fn store_update_view_state_notifies_selectors_for_draw_order_only_changes() {
     use std::rc::Rc;
 
     let (g0, a, b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let events2 = events.clone();
