@@ -61,6 +61,14 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - Governing decision: ADR 0003 keeps viewport interaction headless and renderer-free.
   - Source evidence: conformance fixture closeout, node drag kernel closeout, and geometry spatial
     closeout.
+- 2026-06-01: JVI-020 added renderer-neutral viewport transform helpers.
+  - `cargo nextest run -p jellyflow-runtime viewport`: 12 passed, 144 skipped.
+  - `cargo nextest run -p jellyflow-runtime explicit_modules_expose_their_owned_surfaces`: 1
+    passed, 155 skipped.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo fmt --check`: passed.
+  - Public API: `runtime::viewport::{ViewportTransform, ViewportPanRequest,
+    ViewportZoomRequest, pan_viewport, zoom_viewport}`.
 
 ## Notes
 

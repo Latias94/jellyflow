@@ -6,7 +6,9 @@ use jellyflow_runtime::io::{
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
-use jellyflow_runtime::runtime::{commit, conformance, drag, events, selection, store, xyflow};
+use jellyflow_runtime::runtime::{
+    commit, conformance, drag, events, selection, store, viewport, xyflow,
+};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -80,6 +82,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
     };
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();
+
+    let transform =
+        viewport::ViewportTransform::new(CanvasPoint { x: 1.0, y: 2.0 }, 1.5).expect("viewport");
+    let panned = viewport::pan_viewport(
+        transform,
+        viewport::ViewportPanRequest::new(CanvasPoint { x: 3.0, y: 6.0 }),
+    )
+    .expect("pan");
+    let _zoomed = viewport::zoom_viewport(
+        panned,
+        viewport::ViewportZoomRequest::new(CanvasPoint { x: 24.0, y: 12.0 }, 2.0, 0.5, 4.0),
+    )
+    .expect("zoom");
 
     let drag_start = events::NodeDragStart {
         primary: NodeId::new(),

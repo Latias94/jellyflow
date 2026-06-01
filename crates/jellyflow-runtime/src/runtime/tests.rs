@@ -7,4 +7,5 @@ mod lookups;
 mod selection;
 mod store;
 mod utils;
+mod viewport;
 mod xyflow;

@@ -58,6 +58,11 @@
       "date": "2026-06-01",
       "task": "JVI-010",
       "summary": "Opened the viewport interaction kernel workstream from conformance fixture, node drag, and geometry follow-ons, with ADR 0003 renderer-free constraints."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JVI-020",
+      "summary": "Added renderer-neutral viewport transform helpers for drag-pan and zoom-around-pointer, with focused tests and public surface coverage."
     }
   ],
   "adr_refs": [
@@ -74,7 +79,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JVI-020",
-    "notes": "Add renderer-neutral viewport pan/zoom request types and deterministic transform helpers first."
+    "next_task": "JVI-030",
+    "notes": "Wire viewport intent helpers through NodeGraphStore view-state publication and viewport gesture/callback lifecycle events."
   }
 }

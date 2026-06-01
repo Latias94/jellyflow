@@ -16,6 +16,7 @@ pub mod policy;
 pub mod selection;
 pub mod store;
 pub mod utils;
+pub mod viewport;
 pub mod xyflow;
 
 #[cfg(test)]

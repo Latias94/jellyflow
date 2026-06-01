@@ -16,7 +16,7 @@ Last updated: 2026-06-01
 
 ## M1 - Viewport Kernel
 
-- [ ] JVI-020 [owner=codex] [deps=JVI-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport.rs,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JVI-020 [owner=codex] [deps=JVI-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport.rs,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add renderer-neutral viewport pan/zoom request types and deterministic transform helpers.
   Validation: `cargo nextest run -p jellyflow-runtime viewport`; `cargo check -p
   jellyflow-runtime`.
@@ -24,6 +24,8 @@ Last updated: 2026-06-01
   Evidence: Helpers can express drag-pan and zoom-around-pointer without renderer or platform
   events.
   Context: `docs/workstreams/jellyflow-viewport-interaction-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added public `runtime::viewport` request/transform helpers,
+  focused viewport tests, and public surface coverage.
 
 ## M2 - Store Gesture And Callbacks
 

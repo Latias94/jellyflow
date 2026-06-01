@@ -11,9 +11,15 @@ kernel lane.
 JVI-010 is complete: the lane scope, non-goals, source coverage, task ledger, machine-readable task
 state, draft campaign, milestones, gate set, context manifest, and workstream metadata are recorded.
 
+JVI-020 is complete: `runtime::viewport` now exposes renderer-neutral pan/zoom request types and
+deterministic transform helpers. Focused viewport tests cover drag-pan screen delta conversion,
+zoom-around-pointer clamping/anchor stability, and invalid transform/input rejection. Public
+surface coverage imports and exercises the new module.
+
 ## Next Task
 
-JVI-020: add renderer-neutral viewport pan/zoom request types and deterministic transform helpers.
+JVI-030: wire viewport intent helpers through `NodeGraphStore` view-state publication and viewport
+gesture/callback lifecycle events.
 
 ## Decisions Since Opening
 
@@ -25,6 +31,14 @@ JVI-020: add renderer-neutral viewport pan/zoom request types and deterministic 
 ## Blockers
 
 - None known.
+
+## Latest Validation
+
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime viewport` passed, 12 tests run.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime explicit_modules_expose_their_owned_surfaces`
+  passed, 1 test run.
+- 2026-06-01: `cargo check -p jellyflow-runtime` passed.
+- 2026-06-01: `cargo fmt --check` passed.
 
 ## Follow-On Candidates
 
