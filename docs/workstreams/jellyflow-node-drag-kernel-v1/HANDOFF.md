@@ -26,10 +26,16 @@ drag item. Global `node_extent` clamps a multi-selection as a group, per-node re
 individual nodes, and node-origin-aware bounds are used for extent math. `NodeExtent::Parent` is
 resolved to the parent group rect when `expand_parent` is false.
 
+JND-050 is complete: the runtime now exposes renderer-neutral node drag gesture payloads for
+start/update/end with pointer intent. The interaction harness records these events, the
+XyFlow-compatible callback adapter dispatches node drag start/update/end callbacks, and adapter
+conformance verifies ordering around a committed drag transaction and `NodeChange::Position`
+projection.
+
 ## Next Task
 
-JND-050: record drag start/update/end behavior through the interaction harness and XyFlow
-compatibility callbacks.
+JND-060: document the drag kernel strategy, record fresh evidence, and close the lane or split
+follow-ons.
 
 ## Decisions Since Last Update
 
@@ -47,6 +53,8 @@ compatibility callbacks.
   groups, not XyFlow node-parent nesting.
 - JND-040 keeps parent expansion out of scope. Parent extent can constrain to the current group
   rect, but automatic group resizing should remain a follow-on if needed.
+- JND-050 keeps renderer pointer capture out of scope. Adapters emit already-normalized canvas
+  pointer payloads into the runtime gesture stream.
 
 ## Blockers
 

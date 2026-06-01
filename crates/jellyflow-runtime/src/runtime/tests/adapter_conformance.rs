@@ -2,8 +2,10 @@ use super::fixtures::make_graph;
 use super::harness::{HarnessCallbackEvent, HarnessEvent, InteractionHarness};
 
 use crate::rules::plan_connect;
+use crate::runtime::drag::{NODE_DRAG_TRANSACTION_LABEL, NodeDragRequest};
 use crate::runtime::events::{
-    ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeGraphGestureEvent,
+    ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
+    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
 };
 use crate::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, HandleBounds, HandlePosition,
@@ -243,6 +245,69 @@ fn adapter_conformance_harness_records_connect_gesture_transaction_and_callbacks
         HarnessEvent::callback(HarnessCallbackEvent::Connect(connection)),
         HarnessEvent::gesture(end_event),
         HarnessEvent::callback(HarnessCallbackEvent::ConnectEnd(end)),
+    ]);
+}
+
+#[test]
+fn adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbacks() {
+    let (graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut harness = InteractionHarness::new("node drag gesture transaction callbacks", graph);
+    let _callbacks = harness.install_callback_trace();
+
+    let start = NodeDragStart {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+    };
+    let start_event = NodeGraphGestureEvent::NodeDragStart(start.clone());
+    harness.emit_gesture(start_event.clone());
+
+    let target = CanvasPoint { x: 32.0, y: 16.0 };
+    let outcome = harness
+        .store_mut()
+        .apply_node_drag(NodeDragRequest {
+            node: node_id,
+            to: target,
+        })
+        .expect("dispatch node drag")
+        .expect("node drag commits");
+    let changes = NodeGraphChanges::from_patch(&outcome.patch);
+    assert!(
+        matches!(changes.nodes(), [NodeChange::Position { id, position }]
+            if *id == node_id && *position == target),
+        "node drag should project to one position change",
+    );
+
+    let update = NodeDragUpdate {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: target,
+    };
+    let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
+    harness.emit_gesture(update_event.clone());
+
+    let end = NodeDragEnd {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: target,
+        outcome: NodeDragEndOutcome::Committed,
+    };
+    let end_event = NodeGraphGestureEvent::NodeDragEnd(end.clone());
+    harness.emit_gesture(end_event.clone());
+
+    harness.assert_events(&[
+        HarnessEvent::gesture(start_event),
+        HarnessEvent::callback(HarnessCallbackEvent::NodeDragStart(start)),
+        HarnessEvent::graph_commit(Some(NODE_DRAG_TRANSACTION_LABEL), &["set_node_pos"]),
+        HarnessEvent::callback(HarnessCallbackEvent::GraphCommit {
+            label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+        }),
+        HarnessEvent::callback(HarnessCallbackEvent::NodeEdgeChanges { nodes: 1, edges: 0 }),
+        HarnessEvent::callback(HarnessCallbackEvent::NodesChange { count: 1 }),
+        HarnessEvent::gesture(update_event),
+        HarnessEvent::callback(HarnessCallbackEvent::NodeDrag(update)),
+        HarnessEvent::gesture(end_event),
+        HarnessEvent::callback(HarnessCallbackEvent::NodeDragEnd(end)),
     ]);
 }
 

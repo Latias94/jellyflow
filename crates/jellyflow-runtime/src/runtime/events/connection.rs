@@ -48,10 +48,3 @@ pub struct ConnectEnd {
     pub target: Option<PortId>,
     pub outcome: ConnectEndOutcome,
 }
-
-/// Transient UI gesture event emitted to gesture subscribers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeGraphGestureEvent {
-    ConnectStart(ConnectStart),
-    ConnectEnd(ConnectEnd),
-}

@@ -145,6 +145,34 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `review-workstream` self-review: no blocking findings; residual risk is limited to parent
     expansion and untested mixed custom/global extent edge cases, both outside the JND-040 evidence
     contract.
+- 2026-06-01: JND-050 added node drag gesture traces and XyFlow callback projection.
+  - Added renderer-neutral `NodeDragStart`, `NodeDragUpdate`, `NodeDragEnd`, and
+    `NodeDragEndOutcome` gesture payloads in `runtime::events`.
+  - Split gesture event ownership into focused `connection`, `node_drag`, and `gesture` event
+    modules.
+  - Wired `NodeGraphGestureEvent::NodeDragStart`, `NodeGraphGestureEvent::NodeDragUpdate`, and
+    `NodeGraphGestureEvent::NodeDragEnd` through `install_callbacks`.
+  - Changed XyFlow-compatible `on_node_drag` to receive a `NodeDragUpdate` payload, so callback
+    consumers get the same primary node, dragged nodes, and pointer intent as the raw gesture trace.
+  - Extended the interaction harness callback recorder with node drag start/update/end events.
+  - Fixture coverage: pointer intent, committed drag transaction, `NodeChange::Position`
+    projection, gesture ordering, graph commit callback ordering, and node drag callback payloads.
+  - RED gate:
+    `cargo nextest run -p jellyflow-runtime adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbacks`
+    failed before node drag events, callback variants, and dispatch support existed.
+  - `cargo fmt`: applied formatting after implementation.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance_harness_records_node_drag_gesture_transaction_and_callbacks`:
+    passed, 1 test.
+  - `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 8 tests.
+  - `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 2 tests.
+  - `cargo check -p jellyflow-runtime`: passed.
+  - `cargo fmt --check`: passed.
+  - `jq empty docs/workstreams/jellyflow-node-drag-kernel-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 150 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `review-workstream` self-review: no blocking findings; residual risk is that drag gesture
+    start/update/end remains adapter-emitted rather than managed by a runtime drag session helper.
 
 ## Notes
 

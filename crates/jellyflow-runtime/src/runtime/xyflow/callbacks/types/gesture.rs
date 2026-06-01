@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, NodeId};
+use jellyflow_core::core::CanvasPoint;
 
 /// Viewport move gesture kind (UI-driven).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,25 +36,4 @@ pub struct ViewportMoveEnd {
     pub pan: CanvasPoint,
     pub zoom: f32,
     pub outcome: ViewportMoveEndOutcome,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeDragEndOutcome {
-    Committed,
-    Rejected,
-    Canceled,
-    NoOp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeDragStart {
-    pub primary: NodeId,
-    pub nodes: Vec<NodeId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeDragEnd {
-    pub primary: NodeId,
-    pub nodes: Vec<NodeId>,
-    pub outcome: NodeDragEndOutcome,
 }

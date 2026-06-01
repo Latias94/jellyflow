@@ -17,7 +17,7 @@ mod transaction;
 pub use apply::{ApplyChangesReport, apply_edge_changes, apply_graph_changes, apply_node_changes};
 pub use callbacks::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
-    NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
+    NodeDragUpdate, NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
     NodeGraphViewCallbacks, SelectionChange, ViewportMoveEnd, ViewportMoveEndOutcome,
     ViewportMoveKind, ViewportMoveStart, connection_changes_from_transaction,
     delete_changes_from_transaction, install_callbacks,

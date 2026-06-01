@@ -1,6 +1,6 @@
 use super::types::{
-    ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragStart, SelectionChange,
-    ViewportMoveEnd, ViewportMoveStart,
+    ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragStart, NodeDragUpdate,
+    SelectionChange, ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
@@ -79,7 +79,7 @@ pub trait NodeGraphGestureCallbacks: 'static {
     /// UI-driven hook: node drag gesture end (ReactFlow `onNodeDragStop`).
     fn on_node_drag_end(&mut self, _ev: NodeDragEnd) {}
     /// UI-driven hook: node drag gesture move (ReactFlow `onNodeDrag`).
-    fn on_node_drag(&mut self, _primary: NodeId, _nodes: &[NodeId]) {}
+    fn on_node_drag(&mut self, _ev: NodeDragUpdate) {}
 
     /// UI-driven hook: called when a connection gesture starts (after drag threshold / click-to-connect).
     fn on_connect_start(&mut self, _ev: crate::runtime::events::ConnectStart) {}

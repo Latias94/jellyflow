@@ -6,7 +6,7 @@ use jellyflow_runtime::io::{
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
-use jellyflow_runtime::runtime::{commit, drag, selection, store, xyflow};
+use jellyflow_runtime::runtime::{commit, drag, events, selection, store, xyflow};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -81,6 +81,24 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();
 
+    let drag_start = events::NodeDragStart {
+        primary: NodeId::new(),
+        nodes: Vec::new(),
+        pointer: CanvasPoint::default(),
+    };
+    let drag_update = events::NodeDragUpdate {
+        primary: drag_start.primary,
+        nodes: drag_start.nodes.clone(),
+        pointer: drag_start.pointer,
+    };
+    let _drag_end = events::NodeDragEnd {
+        primary: drag_start.primary,
+        nodes: drag_start.nodes,
+        pointer: drag_update.pointer,
+        outcome: events::NodeDragEndOutcome::NoOp,
+    };
+    let _gesture = events::NodeGraphGestureEvent::NodeDragUpdate(drag_update);
+
     let _module_store = store::NodeGraphStore::new(
         graph,
         NodeGraphViewState::default(),
@@ -88,4 +106,5 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
+    let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();
 }

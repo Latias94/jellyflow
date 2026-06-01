@@ -64,6 +64,11 @@
       "date": "2026-06-01",
       "task": "JND-040",
       "summary": "Added shared snap-offset planning, global extent group clamping, per-node rect extent clamping, and node-origin-aware bounds math for renderer-neutral node drag."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JND-050",
+      "summary": "Added renderer-neutral node drag gesture payloads, interaction harness tracing, XyFlow-compatible drag callbacks, adapter conformance coverage, and public surface smoke coverage."
     }
   ],
   "adr_refs": [
@@ -81,7 +86,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JND-050",
-    "notes": "Wire drag start/update/end traces and XyFlow compatibility callbacks after snap and extent behavior."
+    "next_task": "JND-060",
+    "notes": "Close the node drag kernel lane by documenting strategy, rerunning closeout gates, and splitting follow-ons for parent expansion, auto-pan, public fixtures, or renderer smoke tests."
   }
 }

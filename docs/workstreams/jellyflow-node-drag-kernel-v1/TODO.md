@@ -44,12 +44,13 @@ Last updated: 2026-06-01
 
 ## M4 - Gesture Trace And XyFlow Projection
 
-- [ ] JND-050 [owner=codex] [deps=JND-040] [scope=crates/jellyflow-runtime/src/runtime/events,crates/jellyflow-runtime/src/runtime/tests/harness.rs,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/xyflow]
+- [x] JND-050 [owner=codex] [deps=JND-040] [scope=crates/jellyflow-runtime/src/runtime/events,crates/jellyflow-runtime/src/runtime/tests/harness.rs,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs,crates/jellyflow-runtime/src/runtime/xyflow,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Record drag start/update/end behavior through the interaction harness and XyFlow compatibility callbacks.
   Validation: `cargo nextest run -p jellyflow-runtime adapter_conformance`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture proves pointer intent, graph transaction, gesture ordering, node-change projection, and drag callback payloads.
   Context: `docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added renderer-neutral node drag gesture events with pointer payloads, wired XyFlow-compatible drag start/update/end callbacks, extended the interaction harness trace, and added adapter conformance plus public surface coverage.
 
 ## M5 - Closeout
 
