@@ -4,6 +4,7 @@ use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{TypeCompatibility, TypeCompatibilityResult, TypeDesc};
 
+use super::common::ConnectionEndpoints;
 use super::connect::plan_resolved_connect;
 
 /// Plans connecting two ports with optional type compatibility checks.
@@ -61,30 +62,50 @@ pub fn plan_connect_typed_with_mode_and_policy(
         Ok(planned) => planned,
         Err(plan) => return plan,
     };
-    let endpoints = planned.endpoints();
-    let edge_kind = endpoints.edge_kind;
-    let from_id = endpoints.from_id;
-    let to_id = endpoints.to_id;
-
-    if edge_kind != EdgeKind::Data {
+    let Some(types) = ConnectionTypePair::resolve(graph, planned.endpoints(), &mut type_of) else {
         return planned.into_plan();
+    };
+
+    match compat.compatible(&types.from, &types.to) {
+        TypeCompatibilityResult::Compatible => planned.into_plan(),
+        TypeCompatibilityResult::Incompatible { reason } => types.mismatch_plan(reason),
+    }
+}
+
+struct ConnectionTypePair {
+    target_id: PortId,
+    from: TypeDesc,
+    to: TypeDesc,
+}
+
+impl ConnectionTypePair {
+    fn resolve(
+        graph: &Graph,
+        endpoints: &ConnectionEndpoints<'_>,
+        type_of: &mut impl FnMut(&Graph, PortId) -> Option<TypeDesc>,
+    ) -> Option<Self> {
+        if endpoints.edge_kind != EdgeKind::Data {
+            return None;
+        }
+
+        let from = type_of(graph, endpoints.from_id)?;
+        let to = type_of(graph, endpoints.to_id)?;
+
+        Some(Self {
+            target_id: endpoints.to_id,
+            from,
+            to,
+        })
     }
 
-    let Some(from_ty) = type_of(graph, from_id) else {
-        return planned.into_plan();
-    };
-    let Some(to_ty) = type_of(graph, to_id) else {
-        return planned.into_plan();
-    };
-
-    match compat.compatible(&from_ty, &to_ty) {
-        TypeCompatibilityResult::Compatible => planned.into_plan(),
-        TypeCompatibilityResult::Incompatible { reason } => {
-            ConnectPlan::reject_with_diagnostic(Diagnostic::error(
-                "connect.type_mismatch",
-                DiagnosticTarget::Port { id: to_id },
-                format!("type mismatch: {reason} (from={from_ty:?} to={to_ty:?})"),
-            ))
-        }
+    fn mismatch_plan(self, reason: String) -> ConnectPlan {
+        ConnectPlan::reject_with_diagnostic(Diagnostic::error(
+            "connect.type_mismatch",
+            DiagnosticTarget::Port { id: self.target_id },
+            format!(
+                "type mismatch: {reason} (from={:?} to={:?})",
+                self.from, self.to
+            ),
+        ))
     }
 }
