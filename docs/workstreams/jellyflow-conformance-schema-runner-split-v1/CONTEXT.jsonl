@@ -1,0 +1,5 @@
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Keeps conformance behavior headless and renderer-free."}
+{"file":"docs/workstreams/jellyflow-conformance-module-split-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the immediate conformance facade split pattern to preserve."}
+{"file":"docs/workstreams/jellyflow-conformance-fixtures-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records current fixture vocabulary and public conformance responsibilities."}
+{"file":"docs/workstreams/jellyflow-conformance-cli-harness-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records latest harness evidence and public API expectations."}
+{"file":"docs/workstreams/jellyflow-node-drag-module-split-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the newest behavior-preserving module split and closeout pattern."}
