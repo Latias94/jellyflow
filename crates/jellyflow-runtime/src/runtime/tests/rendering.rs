@@ -171,6 +171,7 @@ fn edge_render_order_elevates_selected_edges_and_edges_connected_to_selected_nod
     let view_state = NodeGraphViewState {
         selected_nodes: vec![selected_node],
         selected_edges: vec![e2],
+        edge_draw_order: vec![e3, e1, e3, EdgeId::from_u128(404)],
         ..NodeGraphViewState::default()
     };
 
@@ -189,8 +190,8 @@ fn edge_render_order_elevates_selected_edges_and_edges_connected_to_selected_nod
                 ..EdgeRenderOrderOptions::default()
             },
         ),
-        vec![e1, e2, e3],
-        "graph edge ID order is the base order when elevation is disabled"
+        vec![e3, e1, e2],
+        "explicit edge draw order is the base order when elevation is disabled"
     );
 }
 

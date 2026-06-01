@@ -23,6 +23,8 @@ pub struct NodeGraphPureViewState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub draw_order: Vec<NodeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_draw_order: Vec<EdgeId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_draw_order: Vec<GroupId>,
 }
 
@@ -35,6 +37,7 @@ impl Default for NodeGraphPureViewState {
             selected_edges: Vec::new(),
             selected_groups: Vec::new(),
             draw_order: Vec::new(),
+            edge_draw_order: Vec::new(),
             group_draw_order: Vec::new(),
         }
     }

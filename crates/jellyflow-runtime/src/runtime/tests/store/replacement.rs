@@ -2,7 +2,7 @@ use super::super::fixtures::{default_editor_config, make_graph, make_store};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::NodeGraphStoreEvent;
-use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GraphId, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
@@ -283,4 +283,37 @@ fn store_update_view_state_notifies_selectors_for_draw_order_only_changes() {
     assert!(events.borrow().is_empty());
     assert_eq!(draw_order_snapshots.borrow().as_slice(), &[vec![b, a]]);
     assert_eq!(store.view_state().draw_order.as_slice(), &[b, a]);
+}
+
+#[test]
+fn store_update_view_state_notifies_selectors_for_edge_draw_order_only_changes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (g0, _a, _b, _out_port, _in_port, eid) = make_graph();
+    let mut store = make_store(g0);
+
+    let events: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let events2 = events.clone();
+    store.subscribe(move |ev| match ev {
+        NodeGraphStoreEvent::DocumentReplaced { .. } => events2.borrow_mut().push("document"),
+        NodeGraphStoreEvent::ViewChanged { .. } => events2.borrow_mut().push("view"),
+        NodeGraphStoreEvent::GraphCommitted { .. } => events2.borrow_mut().push("graph"),
+    });
+
+    let edge_draw_order_snapshots: Rc<RefCell<Vec<Vec<EdgeId>>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let edge_draw_order_snapshots2 = edge_draw_order_snapshots.clone();
+    store.subscribe_selector(
+        |s| s.view_state.edge_draw_order.clone(),
+        move |value| edge_draw_order_snapshots2.borrow_mut().push(value.clone()),
+    );
+
+    store.update_view_state(|s| {
+        s.edge_draw_order = vec![eid];
+    });
+
+    assert!(events.borrow().is_empty());
+    assert_eq!(edge_draw_order_snapshots.borrow().as_slice(), &[vec![eid]]);
+    assert_eq!(store.view_state().edge_draw_order.as_slice(), &[eid]);
 }

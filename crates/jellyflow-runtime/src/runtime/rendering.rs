@@ -115,20 +115,35 @@ pub fn resolve_node_render_order(
 
 /// Resolves the stable edge order an adapter should paint.
 ///
-/// The base order is deterministic graph edge ID order. When `elevate_edges_on_select` is enabled,
-/// selected edges and edges connected to selected nodes are moved to the end while preserving their
-/// relative order. This mirrors XyFlow's selected-edge elevation behavior without exposing DOM
-/// z-index details in the headless interface.
+/// The base order is:
+/// 1. valid IDs from `view_state.edge_draw_order`,
+/// 2. remaining graph edges in deterministic ID order.
+///
+/// When `elevate_edges_on_select` is enabled, selected edges and edges connected to selected nodes
+/// are moved to the end while preserving their relative order. This mirrors XyFlow's selected-edge
+/// elevation behavior without exposing DOM z-index details in the headless interface.
 pub fn resolve_edge_render_order(
     graph: &Graph,
     view_state: &NodeGraphViewState,
     options: EdgeRenderOrderOptions,
 ) -> Vec<EdgeId> {
-    let mut base: Vec<EdgeId> = graph
-        .edges
-        .iter()
-        .filter_map(|(id, edge)| edge_is_renderable(edge, options.include_hidden).then_some(*id))
-        .collect();
+    let mut seen: HashSet<EdgeId> = HashSet::new();
+    let mut base: Vec<EdgeId> = Vec::with_capacity(graph.edges.len());
+
+    for id in &view_state.edge_draw_order {
+        let Some(edge) = graph.edges.get(id) else {
+            continue;
+        };
+        if seen.insert(*id) && edge_is_renderable(edge, options.include_hidden) {
+            base.push(*id);
+        }
+    }
+
+    for (id, edge) in &graph.edges {
+        if seen.insert(*id) && edge_is_renderable(edge, options.include_hidden) {
+            base.push(*id);
+        }
+    }
 
     if !options.elevate_edges_on_select
         || (view_state.selected_edges.is_empty() && view_state.selected_nodes.is_empty())

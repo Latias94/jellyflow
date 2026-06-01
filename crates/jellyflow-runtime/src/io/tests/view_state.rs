@@ -35,6 +35,7 @@ fn view_state_sanitize_removes_stale_ids() {
     let from_port = PortId::new();
     let to_port = PortId::new();
     let hidden_edge = EdgeId::new();
+    let keep_edge = EdgeId::new();
     graph.ports.insert(
         from_port,
         Port {
@@ -79,18 +80,34 @@ fn view_state_sanitize_removes_stale_ids() {
             reconnectable: None,
         },
     );
+    graph.edges.insert(
+        keep_edge,
+        Edge {
+            kind: EdgeKind::Data,
+            from: from_port,
+            to: to_port,
+            hidden: false,
+            selectable: None,
+            focusable: None,
+            interaction_width: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
 
     let mut state = NodeGraphViewState {
         selected_nodes: vec![keep_node, NodeId::new()],
-        selected_edges: vec![hidden_edge],
+        selected_edges: vec![hidden_edge, keep_edge],
         draw_order: vec![NodeId::new(), keep_node],
+        edge_draw_order: vec![EdgeId::new(), hidden_edge, keep_edge],
         ..NodeGraphViewState::default()
     };
 
     state.sanitize_for_graph(&graph);
     assert_eq!(state.selected_nodes, vec![keep_node]);
-    assert!(state.selected_edges.is_empty());
+    assert_eq!(state.selected_edges, vec![keep_edge]);
     assert_eq!(state.draw_order, vec![keep_node]);
+    assert_eq!(state.edge_draw_order, vec![keep_edge]);
 }
 
 #[test]

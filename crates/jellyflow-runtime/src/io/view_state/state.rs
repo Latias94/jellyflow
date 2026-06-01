@@ -28,6 +28,9 @@ pub struct NodeGraphViewState {
     /// Explicit draw order (optional).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub draw_order: Vec<NodeId>,
+    /// Explicit edge draw order (optional).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_draw_order: Vec<EdgeId>,
     /// Explicit group draw order (optional).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_draw_order: Vec<GroupId>,
@@ -42,6 +45,7 @@ impl Default for NodeGraphViewState {
             selected_edges: Vec::new(),
             selected_groups: Vec::new(),
             draw_order: Vec::new(),
+            edge_draw_order: Vec::new(),
             group_draw_order: Vec::new(),
         }
     }
@@ -66,7 +70,7 @@ impl NodeGraphViewState {
         let visible_node = |id: &NodeId| graph.nodes.get(id).is_some_and(|node| !node.hidden);
 
         self.selected_nodes.retain(visible_node);
-        self.selected_edges.retain(|id| {
+        let visible_edge = |id: &EdgeId| {
             let Some(edge) = graph.edges.get(id) else {
                 return false;
             };
@@ -80,10 +84,13 @@ impl NodeGraphViewState {
                 return false;
             };
             visible_node(&from.node) && visible_node(&to.node)
-        });
+        };
+
+        self.selected_edges.retain(|id| visible_edge(id));
         self.selected_groups
             .retain(|id| graph.groups.contains_key(id));
         self.draw_order.retain(visible_node);
+        self.edge_draw_order.retain(|id| visible_edge(id));
         self.group_draw_order
             .retain(|id| graph.groups.contains_key(id));
     }
@@ -119,6 +126,7 @@ impl From<NodeGraphPureViewState> for NodeGraphViewState {
             selected_edges: value.selected_edges,
             selected_groups: value.selected_groups,
             draw_order: value.draw_order,
+            edge_draw_order: value.edge_draw_order,
             group_draw_order: value.group_draw_order,
         }
     }
@@ -133,6 +141,7 @@ impl From<NodeGraphViewState> for NodeGraphPureViewState {
             selected_edges: value.selected_edges,
             selected_groups: value.selected_groups,
             draw_order: value.draw_order,
+            edge_draw_order: value.edge_draw_order,
             group_draw_order: value.group_draw_order,
         }
     }
@@ -147,6 +156,7 @@ impl From<&NodeGraphViewState> for NodeGraphPureViewState {
             selected_edges: value.selected_edges.clone(),
             selected_groups: value.selected_groups.clone(),
             draw_order: value.draw_order.clone(),
+            edge_draw_order: value.edge_draw_order.clone(),
             group_draw_order: value.group_draw_order.clone(),
         }
     }

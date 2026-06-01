@@ -19,7 +19,7 @@ ADR 0002 accepts an additive v1 boundary:
 | Layout model | Canvas-space placement and persisted structural layout. | `jellyflow-core` storage, runtime/adapters consume |
 | Persisted editor policy | Per-element overrides for editor interaction behavior. | `jellyflow-core` storage, `jellyflow-runtime::policy` resolves |
 | Persisted presentation | Document-visible presentation flags or styling. | `jellyflow-core` storage, adapters/renderers consume |
-| Volatile/per-user view state | Pan, zoom, selection, draw order, and runtime/editor defaults stored outside the graph. | `jellyflow-runtime::io` |
+| Volatile/per-user view state | Pan, zoom, selection, node/edge/group draw order, and runtime/editor defaults stored outside the graph. | `jellyflow-runtime::io` |
 | Compatibility vocabulary | XyFlow/ReactFlow-shaped change and callback naming. | `jellyflow-runtime::runtime::xyflow` |
 
 ## Graph-Level Fields
@@ -90,7 +90,7 @@ ADR 0002 accepts an additive v1 boundary:
 
 | Field group | Category | Notes |
 | --- | --- | --- |
-| `NodeGraphPureViewState::{pan, zoom, selected_*, draw_order, group_draw_order}` | Volatile/per-user view state | Stored outside `Graph`; may be per project or per user. |
+| `NodeGraphPureViewState::{pan, zoom, selected_*, draw_order, edge_draw_order, group_draw_order}` | Volatile/per-user view state | Stored outside `Graph`; may be per project or per user. |
 | `NodeGraphInteractionConfig` | Volatile/per-user or editor profile policy defaults | Global defaults for effective editor behavior. |
 | `NodeGraphRuntimeTuning` | Runtime tuning | Performance/cache/spatial index settings, not graph semantics. |
 | `NodeGraphInteractionState` | Resolved global policy state | Input to runtime policy facade. |

@@ -42,6 +42,7 @@ fn view_state_eq(a: &NodeGraphViewState, b: &NodeGraphViewState) -> bool {
     !viewport_changed(a, b)
         && !selection_changed(a, b)
         && a.draw_order == b.draw_order
+        && a.edge_draw_order == b.edge_draw_order
         && a.group_draw_order == b.group_draw_order
 }
 
