@@ -1,3 +1,4 @@
+mod builder;
 mod diagnostics;
 mod planner;
 mod selection;
