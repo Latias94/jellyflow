@@ -1,8 +1,6 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{make_graph, make_store};
 
-use crate::io::NodeGraphViewState;
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::store::NodeGraphStore;
 use crate::runtime::xyflow::apply::{apply_edge_changes, apply_node_changes};
 use crate::runtime::xyflow::callbacks::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeGraphCommitCallbacks,
@@ -52,7 +50,7 @@ fn install_callbacks_receives_graph_and_view_events() {
     impl NodeGraphGestureCallbacks for Recorder {}
 
     let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let recorder = Recorder { log: log.clone() };
@@ -105,7 +103,7 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
     impl NodeGraphGestureCallbacks for Recorder {}
 
     let (g0, _a, _b, out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let saw_port_patch = Rc::new(RefCell::new(false));
     let node_edge_counts = Rc::new(RefCell::new(Vec::new()));
@@ -159,11 +157,7 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
     impl NodeGraphGestureCallbacks for ControlledApply {}
 
     let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
-    let mut store = NodeGraphStore::new(
-        g0.clone(),
-        NodeGraphViewState::default(),
-        default_editor_config(),
-    );
+    let mut store = make_store(g0.clone());
 
     let controlled = Rc::new(RefCell::new(g0));
     let _token = install_callbacks(
@@ -316,7 +310,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
         },
     );
 
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let recorder = Recorder { log: log.clone() };
@@ -410,7 +404,7 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
     impl NodeGraphGestureCallbacks for Recorder {}
 
     let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
-    let mut store = NodeGraphStore::new(g0, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g0);
 
     let nodes_deleted: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));
     let edges_deleted: Rc<RefCell<Vec<EdgeId>>> = Rc::new(RefCell::new(Vec::new()));
