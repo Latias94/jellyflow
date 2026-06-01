@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-node-drag-kernel-v1",
+  "title": "Jellyflow Node Drag Kernel v1",
+  "status": "active",
+  "updated": "2026-06-01",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-interaction-harness-v1",
+  "problem": "Jellyflow needs a renderer-neutral node drag kernel so Rust adapters can get XyFlow-like node dragging through headless runtime transactions and harness fixtures instead of renderer-local reimplementations.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/TODO.md"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-node-drag-kernel-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl",
+  "gates": [
+    "cargo nextest run -p jellyflow-runtime drag",
+    "cargo check -p jellyflow-runtime",
+    "cargo nextest run -p jellyflow-runtime adapter_conformance",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo fmt --check",
+    "cargo clippy -p jellyflow-runtime --all-targets -- -D warnings",
+    "jq empty docs/workstreams/jellyflow-node-drag-kernel-v1/WORKSTREAM.json",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-01",
+      "task": "JND-010",
+      "summary": "Opened the node drag kernel workstream from the interaction harness follow-on, with ADR 0003 renderer-free testing and ADR 0002 schema-boundary constraints."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0002-jellyflow-model-policy-boundary.md",
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "node-drag",
+    "interaction-kernel",
+    "adapter-conformance",
+    "headless-runtime",
+    "xyflow-reference"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "run_next_task",
+    "next_task": "JND-020",
+    "notes": "Implement the first single-node drag transaction helper and fixture before expanding to multi-selection, snap, extents, and callbacks."
+  }
+}
