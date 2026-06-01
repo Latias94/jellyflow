@@ -1,6 +1,6 @@
 # Jellyflow Viewport Interaction Kernel v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Current State
@@ -24,10 +24,12 @@ JVI-040 is complete: the conformance fixture vocabulary can replay viewport pan/
 record viewport store/view callbacks, and record viewport move gesture callbacks. The old adapter
 viewport/selection ordering trace now runs through the fixture runner.
 
+JVI-050 is complete: README/runtime README explain viewport conformance before renderer smoke tests,
+the closeout audit records final evidence, and the workstream is closed.
+
 ## Next Task
 
-JVI-050: document viewport conformance, record fresh evidence, and close the lane or split
-follow-ons.
+None in this workstream. Follow-ons are split below.
 
 ## Decisions Since Opening
 
@@ -58,6 +60,12 @@ follow-ons.
 - 2026-06-01: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 8 tests run
   after JVI-040.
 - 2026-06-01: `cargo check -p jellyflow-runtime` passed after JVI-040.
+- 2026-06-01: `cargo fmt --check` passed at closeout.
+- 2026-06-01: `cargo nextest run -p jellyflow-runtime` passed, 159 tests run at closeout.
+- 2026-06-01: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed at closeout.
+- 2026-06-01: `jq empty docs/workstreams/jellyflow-viewport-interaction-kernel-v1/WORKSTREAM.json`
+  passed at closeout.
+- 2026-06-01: `git diff --check` passed at closeout.
 
 ## Follow-On Candidates
 

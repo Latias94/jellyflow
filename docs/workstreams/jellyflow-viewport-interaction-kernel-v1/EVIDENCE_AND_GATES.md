@@ -1,6 +1,6 @@
 # Jellyflow Viewport Interaction Kernel v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Smallest Current Repro
@@ -90,6 +90,14 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
     `ConformanceAction::apply_viewport_zoom`, viewport view callback trace events, and viewport
     move callback trace events.
   - Adapter viewport/selection ordering now runs through `run_conformance_scenario`.
+- 2026-06-01: JVI-050 closed the viewport interaction kernel workstream.
+  - `cargo fmt --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: 159 passed, 0 skipped.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `jq empty docs/workstreams/jellyflow-viewport-interaction-kernel-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
+  - Documentation: `README.md`, `crates/jellyflow-runtime/README.md`, and
+    `CLOSEOUT_AUDIT_2026-06-01.md`.
 
 ## Notes
 

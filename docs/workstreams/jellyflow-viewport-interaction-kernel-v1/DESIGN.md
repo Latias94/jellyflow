@@ -1,6 +1,6 @@
 # Jellyflow Viewport Interaction Kernel v1 - Design
 
-Status: Active
+Status: Closed
 Date: 2026-06-01
 
 ## Problem

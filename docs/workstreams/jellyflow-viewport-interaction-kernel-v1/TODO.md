@@ -1,6 +1,6 @@
 # Jellyflow Viewport Interaction Kernel v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Contract
@@ -57,7 +57,7 @@ Last updated: 2026-06-01
 
 ## M4 - Documentation And Closeout
 
-- [ ] JVI-050 [owner=codex] [deps=JVI-040] [scope=docs/workstreams/jellyflow-viewport-interaction-kernel-v1,README.md,crates/jellyflow-runtime/README.md]
+- [x] JVI-050 [owner=codex] [deps=JVI-040] [scope=docs/workstreams/jellyflow-viewport-interaction-kernel-v1,README.md,crates/jellyflow-runtime/README.md]
   Goal: Document viewport conformance, record fresh evidence, and close the lane or split
   follow-ons.
   Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p
@@ -66,3 +66,6 @@ Last updated: 2026-06-01
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: README/runtime README explain viewport headless conformance before renderer smoke tests.
   Context: `docs/workstreams/jellyflow-viewport-interaction-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Updated README/runtime README, recorded closeout audit and final
+  verification evidence, closed the workstream, and split follow-ons for viewport smoothing,
+  auto-pan, adapter runner helpers, and renderer smoke tests.

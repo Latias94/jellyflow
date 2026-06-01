@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-viewport-interaction-kernel-v1",
   "title": "Jellyflow Viewport Interaction Kernel v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-01",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-conformance-fixtures-v1",
@@ -73,6 +73,11 @@
       "date": "2026-06-01",
       "task": "JVI-040",
       "summary": "Added viewport pan/zoom conformance actions and fixture traces, and converted viewport adapter ordering to the fixture runner."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JVI-050",
+      "summary": "Documented viewport conformance before renderer smoke tests, recorded closeout evidence, and closed the workstream with follow-ons split."
     }
   ],
   "adr_refs": [
@@ -88,8 +93,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "run_next_task",
-    "next_task": "JVI-050",
-    "notes": "Document viewport conformance, record fresh closeout evidence, and close or split follow-ons."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Viewport interaction kernel v1 is closed. Follow-ons: viewport animation/smoothing, auto-pan integration, adapter runner helpers, and renderer smoke tests outside jellyflow-runtime."
   }
 }
