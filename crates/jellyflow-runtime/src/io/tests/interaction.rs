@@ -40,15 +40,23 @@ fn editor_config_parts_roundtrip() {
 }
 
 #[test]
-fn interaction_config_defaults_select_nodes_on_drag_like_xyflow() {
+fn interaction_config_defaults_match_xyflow_connection_and_drag_feel() {
     let config: NodeGraphInteractionConfig = serde_json::from_value(serde_json::json!({})).unwrap();
 
     assert!(config.select_nodes_on_drag);
+    assert!(config.connect_on_click);
     assert!(NodeGraphInteractionConfig::default().select_nodes_on_drag);
+    assert!(NodeGraphInteractionConfig::default().connect_on_click);
     assert!(NodeGraphInteractionState::default().select_nodes_on_drag);
+    assert!(NodeGraphInteractionState::default().connect_on_click);
     assert!(
         NodeGraphInteractionState::default()
             .selection_interaction()
             .select_nodes_on_drag
+    );
+    assert!(
+        NodeGraphInteractionState::default()
+            .connection_interaction()
+            .connect_on_click
     );
 }

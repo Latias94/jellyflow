@@ -130,7 +130,7 @@ pub struct NodeGraphInteractionConfig {
     pub node_click_distance: f32,
     #[serde(default = "default_connection_drag_threshold")]
     pub connection_drag_threshold: f32,
-    #[serde(default)]
+    #[serde(default = "default_connect_on_click")]
     pub connect_on_click: bool,
     #[serde(default)]
     pub auto_pan: NodeGraphAutoPanTuning,

@@ -163,3 +163,7 @@ pub(super) fn default_node_click_distance() -> f32 {
 pub(super) fn default_connection_drag_threshold() -> f32 {
     2.0
 }
+
+pub(super) fn default_connect_on_click() -> bool {
+    true
+}

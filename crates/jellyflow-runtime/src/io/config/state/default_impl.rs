@@ -76,7 +76,7 @@ impl Default for NodeGraphInteractionState {
             node_drag_handle_mode: NodeGraphDragHandleMode::default(),
             node_click_distance: default_node_click_distance(),
             connection_drag_threshold: default_connection_drag_threshold(),
-            connect_on_click: false,
+            connect_on_click: default_connect_on_click(),
             auto_pan: NodeGraphAutoPanTuning::default(),
             translate_extent: None,
             node_extent: None,
