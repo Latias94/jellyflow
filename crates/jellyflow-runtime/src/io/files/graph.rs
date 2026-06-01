@@ -38,8 +38,6 @@ impl GraphFileV1 {
     }
 
     /// Loads a JSON file.
-    ///
-    /// Backward compatibility: accepts both the wrapped form and a plain `Graph` root object.
     pub fn load_json(path: impl AsRef<Path>) -> Result<Self, GraphFileError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|source| GraphFileError::Read {
@@ -47,19 +45,12 @@ impl GraphFileV1 {
             source,
         })?;
 
-        match serde_json::from_slice::<Self>(&bytes) {
-            Ok(v) => {
-                v.validate()?;
-                Ok(v)
-            }
-            Err(new_err) => match serde_json::from_slice::<Graph>(&bytes) {
-                Ok(graph) => Ok(Self::from_graph(graph)),
-                Err(_old_err) => Err(GraphFileError::Parse {
-                    path: path.display().to_string(),
-                    source: new_err,
-                }),
-            },
-        }
+        let v = serde_json::from_slice::<Self>(&bytes).map_err(|source| GraphFileError::Parse {
+            path: path.display().to_string(),
+            source,
+        })?;
+        v.validate()?;
+        Ok(v)
     }
 
     /// Loads the JSON file if it exists.
