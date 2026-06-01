@@ -1,3 +1,4 @@
+mod capacity;
 mod edge_ops;
 mod endpoints;
 mod insert_spec;
