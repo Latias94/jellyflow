@@ -2,8 +2,19 @@ use jellyflow_core::core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port,
 };
 
+use crate::io::NodeGraphViewState;
+use crate::runtime::store::NodeGraphStore;
+
 pub(super) fn default_editor_config() -> crate::io::NodeGraphEditorConfig {
     crate::io::NodeGraphEditorConfig::default()
+}
+
+pub(super) fn make_store(graph: Graph) -> NodeGraphStore {
+    NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        default_editor_config(),
+    )
 }
 
 pub(super) fn make_graph() -> (

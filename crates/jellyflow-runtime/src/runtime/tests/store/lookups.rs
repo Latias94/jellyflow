@@ -1,8 +1,6 @@
-use super::super::fixtures::{default_editor_config, make_graph};
+use super::super::fixtures::{make_graph, make_store};
 
-use crate::io::NodeGraphViewState;
 use crate::runtime::lookups::ConnectionSide;
-use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable, Group, GroupId,
     PortKind,
@@ -14,7 +12,7 @@ fn store_lookups_update_after_dispatch_transaction() {
     let (mut g, _a, _b, out_port, in_port, eid) = make_graph();
     g.edges.clear();
 
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
     assert!(store.lookups().edge_lookup.is_empty());
 
     let tx = GraphTransaction::from_ops([GraphOp::AddEdge {
@@ -36,7 +34,7 @@ fn store_lookups_update_after_dispatch_transaction() {
 #[test]
 fn store_lookups_update_node_hidden_after_dispatch_transaction() {
     let (g, a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
     assert!(!store.lookups().node_lookup.get(&a).unwrap().hidden);
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodeHidden {
@@ -52,7 +50,7 @@ fn store_lookups_update_node_hidden_after_dispatch_transaction() {
 #[test]
 fn store_lookups_update_edge_reconnectable_after_dispatch_transaction() {
     let (g, _a, _b, _out_port, _in_port, eid) = make_graph();
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
     assert_eq!(
         store.lookups().edge_lookup.get(&eid).unwrap().reconnectable,
         None
@@ -76,7 +74,7 @@ fn store_lookups_update_edge_kind_in_connection_lookup_after_dispatch_transactio
     let (mut g, a, b, out_port, in_port, eid) = make_graph();
     g.ports.get_mut(&out_port).unwrap().kind = PortKind::Exec;
     g.ports.get_mut(&in_port).unwrap().kind = PortKind::Exec;
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
 
     let tx = GraphTransaction::from_ops([GraphOp::SetEdgeKind {
         id: eid,
@@ -117,7 +115,7 @@ fn store_lookups_remove_port_updates_node_ports_and_incident_edges() {
     let (g, a, _b, out_port, _in_port, eid) = make_graph();
     let port = g.ports.get(&out_port).expect("port").clone();
     let edge = g.edges.get(&eid).expect("edge").clone();
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
 
     assert!(
         store
@@ -167,7 +165,7 @@ fn store_lookups_remove_group_clears_detached_node_parent() {
     g.groups.insert(group_id, group.clone());
     g.nodes.get_mut(&a).expect("node").parent = Some(group_id);
 
-    let mut store = NodeGraphStore::new(g, NodeGraphViewState::default(), default_editor_config());
+    let mut store = make_store(g);
     assert_eq!(
         store.lookups().node_lookup.get(&a).unwrap().parent,
         Some(group_id)
