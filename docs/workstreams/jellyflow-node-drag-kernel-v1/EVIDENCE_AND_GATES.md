@@ -173,6 +173,22 @@ This proves formatting, runtime behavior, lint cleanliness, JSON validity, and d
   - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
   - `review-workstream` self-review: no blocking findings; residual risk is that drag gesture
     start/update/end remains adapter-emitted rather than managed by a runtime drag session helper.
+- 2026-06-01: JND-060 closed the node drag kernel lane.
+  - Updated root README and `crates/jellyflow-runtime/README.md` with the headless drag kernel
+    strategy.
+  - Marked DESIGN, TODO, MILESTONES, HANDOFF, and WORKSTREAM metadata closed.
+  - Added `CLOSEOUT_AUDIT_2026-06-01.md`.
+  - Split follow-ons: parent expansion, auto-pan, public fixture format, and renderer adapter smoke
+    tests.
+  - `review-workstream` self-review: no blocking findings; all task ledger items are complete and
+    renderer-specific dependencies stayed out of scope.
+  - `verify-rust-workstream` closeout claim: node drag kernel v1 is documented and complete, and
+    the runtime package remains formatted, tested, lint-clean, JSON-valid, and diff-clean.
+  - `cargo fmt --check`: passed.
+  - `cargo nextest run -p jellyflow-runtime`: passed, 150 tests.
+  - `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+  - `jq empty docs/workstreams/jellyflow-node-drag-kernel-v1/WORKSTREAM.json`: passed.
+  - `git diff --check`: passed.
 
 ## Notes
 

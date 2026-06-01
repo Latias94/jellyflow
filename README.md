@@ -11,7 +11,7 @@ The initial package split is intentionally small:
 - `jellyflow-runtime`: headless `NodeGraphStore`, view-state/config payloads, policy resolution,
   rules, schema/profile pipeline, explicit `runtime::xyflow` compatibility projections,
   persistence file types without project-path policy, fit-view math, renderer-neutral selection
-  helpers, and renderer-neutral geometry.
+  helpers, renderer-neutral node dragging, and renderer-neutral geometry.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -54,6 +54,9 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
 - runtime contracts cover store commits, undo/redo, view state, policy, geometry, and hit testing;
 - `runtime::selection` turns canvas-space selection boxes into deterministic selection state
   without a renderer dependency;
+- `runtime::drag` turns canvas-space node drag intent into deterministic drag items and normal
+  `SetNodePos` transactions, including selection co-dragging, snap-to-grid, extents, node origin,
+  and renderer-neutral gesture payloads;
 - runtime adapter-conformance tests drive a real `NodeGraphStore` and compare normalized traces for
   graph transactions, view changes, gesture lifecycle events, and XyFlow compatibility callbacks;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the

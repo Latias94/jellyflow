@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Kernel v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Contract
@@ -54,9 +54,10 @@ Last updated: 2026-06-01
 
 ## M5 - Closeout
 
-- [ ] JND-060 [owner=codex] [deps=JND-050] [scope=docs/workstreams/jellyflow-node-drag-kernel-v1,README.md,crates/jellyflow-runtime/README.md]
+- [x] JND-060 [owner=codex] [deps=JND-050] [scope=docs/workstreams/jellyflow-node-drag-kernel-v1,README.md,crates/jellyflow-runtime/README.md]
   Goal: Document the drag kernel strategy, record fresh evidence, and close the lane or split follow-ons.
   Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`; `jq empty docs/workstreams/jellyflow-node-drag-kernel-v1/WORKSTREAM.json`; `git diff --check`.
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: EVIDENCE_AND_GATES.md and HANDOFF.md.
   Context: `docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Updated README/runtime README, recorded closeout audit and verification evidence, closed the workstream, and split follow-ons for parent expansion, auto-pan, public fixtures, and renderer smoke tests.

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-node-drag-kernel-v1",
   "title": "Jellyflow Node Drag Kernel v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-01",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-interaction-harness-v1",
@@ -69,6 +69,11 @@
       "date": "2026-06-01",
       "task": "JND-050",
       "summary": "Added renderer-neutral node drag gesture payloads, interaction harness tracing, XyFlow-compatible drag callbacks, adapter conformance coverage, and public surface smoke coverage."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JND-060",
+      "summary": "Closed the node drag kernel lane with README documentation, closeout audit, fresh verification evidence, and follow-ons split out of scope."
     }
   ],
   "adr_refs": [
@@ -85,8 +90,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "run_next_task",
-    "next_task": "JND-060",
-    "notes": "Close the node drag kernel lane by documenting strategy, rerunning closeout gates, and splitting follow-ons for parent expansion, auto-pan, public fixtures, or renderer smoke tests."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Node drag kernel v1 is closed. Follow-ons: parent expansion, auto-pan, public fixture format, and renderer adapter smoke tests."
   }
 }

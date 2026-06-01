@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Kernel v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Current State
@@ -32,10 +32,12 @@ XyFlow-compatible callback adapter dispatches node drag start/update/end callbac
 conformance verifies ordering around a committed drag transaction and `NodeChange::Position`
 projection.
 
+JND-060 is complete: README material documents the drag kernel strategy, closeout evidence is
+recorded, the workstream is closed, and follow-ons are split below.
+
 ## Next Task
 
-JND-060: document the drag kernel strategy, record fresh evidence, and close the lane or split
-follow-ons.
+None in this workstream. Open a new lane or workstream for the follow-ons below.
 
 ## Decisions Since Last Update
 

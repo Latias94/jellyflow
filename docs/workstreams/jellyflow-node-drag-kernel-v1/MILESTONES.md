@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Kernel v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## M0 - Scope And Contract
@@ -51,3 +51,6 @@ Exit criteria:
 - Workstream evidence is current.
 - Follow-ons are split for auto-pan, parent expansion, public fixture format, or renderer smoke
   tests if they remain out of scope.
+
+Status: Complete on 2026-06-01. Closeout evidence is recorded in
+`EVIDENCE_AND_GATES.md` and `CLOSEOUT_AUDIT_2026-06-01.md`.

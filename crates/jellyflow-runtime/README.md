@@ -10,6 +10,7 @@
 - undo/redo store dispatch;
 - XyFlow-style node/edge change projections under `runtime::xyflow`;
 - renderer-neutral selection-box helpers under `runtime::selection`;
+- renderer-neutral node drag planning and commit helpers under `runtime::drag`;
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
   commands, and numeric hit testing.
@@ -38,6 +39,11 @@ validate behavior before rendering. The runtime crate supports that split with:
 
 - `NodeGraphStore::apply_selection_box` and `runtime::selection::compute_selection_box` for
   deterministic canvas-space selection;
+- `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
+  deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
+  snap-to-grid, global/per-node extents, and node-origin-aware clamping;
+- `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
+  want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - rules-derived connect/reconnect/delete planners for graph transactions;
 - `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
 - private adapter-conformance tests that record normalized graph commit, view, gesture, and

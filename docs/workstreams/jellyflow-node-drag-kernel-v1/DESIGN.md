@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Kernel v1 - Design
 
-Status: Active
+Status: Closed
 Date: 2026-06-01
 
 ## Problem
@@ -82,3 +82,11 @@ normalized canvas-space points and decide when a drag starts based on their inpu
   claiming parity.
 - Auto-pan requires viewport mutation plus drag updates. Keep it out of the first node-drag kernel
   unless a later task proves a clean headless contract.
+
+## Closeout Summary
+
+Closed on 2026-06-01. The renderer-neutral drag kernel now exposes deterministic drag planning,
+normal `SetNodePos` transactions, selected-node co-dragging, snap-to-grid, global/per-node extent
+clamping, node-origin-aware bounds math, node drag gesture payloads, and XyFlow-compatible callback
+dispatch. Renderer input capture, parent expansion, auto-pan, public fixture format, and renderer
+smoke tests remain follow-ons.
