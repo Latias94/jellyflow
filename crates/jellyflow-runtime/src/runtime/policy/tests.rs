@@ -48,6 +48,7 @@ fn edge(from: PortId, to: PortId) -> Edge {
         kind: EdgeKind::Data,
         from,
         to,
+        hidden: false,
         selectable: None,
         focusable: None,
         deletable: None,

@@ -182,6 +182,8 @@ pub enum GraphOp {
         from: Option<bool>,
         to: Option<bool>,
     },
+    /// Sets an edge hidden flag.
+    SetEdgeHidden { id: EdgeId, from: bool, to: bool },
     /// Sets an edge deletable override.
     SetEdgeDeletable {
         id: EdgeId,

@@ -41,6 +41,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             kind: EdgeKind::Data,
             from: out,
             to: inn,
+            hidden: false,
             selectable: None,
             focusable: None,
             deletable: None,
@@ -98,6 +99,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
         group.color = Some("red".to_string());
     }
     if let Some(edge) = to.edges.get_mut(&edge_id) {
+        edge.hidden = true;
         edge.deletable = Some(true);
         edge.reconnectable = Some(crate::core::EdgeReconnectable::Endpoint(
             crate::core::EdgeReconnectableEndpoint::Target,
@@ -202,6 +204,32 @@ fn graph_diff_is_deterministic_and_roundtrips() {
                 || matches!(op, GraphOp::AddStickyNote { id, .. } if *id == note_id)
         }),
         "diff must not fall back to remove+add for sticky note field changes"
+    );
+
+    assert!(
+        tx1.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeHidden { id, .. } if *id == edge_id)),
+        "diff must use edge setter ops for hidden changes"
+    );
+    assert!(
+        tx1.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeDeletable { id, .. } if *id == edge_id)),
+        "diff must use edge setter ops for policy changes"
+    );
+    assert!(
+        tx1.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeReconnectable { id, .. } if *id == edge_id)),
+        "diff must use edge setter ops for policy changes"
+    );
+    assert!(
+        !tx1.ops().iter().any(|op| {
+            matches!(op, GraphOp::RemoveEdge { id, .. } if *id == edge_id)
+                || matches!(op, GraphOp::AddEdge { id, .. } if *id == edge_id)
+        }),
+        "diff must not fall back to remove+add for soft edge changes"
     );
 
     assert!(

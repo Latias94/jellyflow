@@ -33,10 +33,15 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
                 id: eid,
                 kind: EdgeKind::Exec,
             },
+            EdgeChange::Hidden {
+                id: eid,
+                hidden: true,
+            },
             EdgeChange::Remove { id: missing },
         ],
     );
     assert!(report.did_change());
     assert_eq!(report.ignored(), 1);
     assert_eq!(g0.edges.get(&eid).unwrap().kind, EdgeKind::Exec);
+    assert!(g0.edges.get(&eid).unwrap().hidden);
 }

@@ -22,6 +22,7 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
         kind: EdgeKind::Data,
         from: out_port,
         to: in_port,
+        hidden: false,
         selectable: None,
         focusable: None,
         deletable: None,

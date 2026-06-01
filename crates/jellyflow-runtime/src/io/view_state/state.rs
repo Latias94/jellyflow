@@ -70,6 +70,9 @@ impl NodeGraphViewState {
             let Some(edge) = graph.edges.get(id) else {
                 return false;
             };
+            if edge.hidden {
+                return false;
+            }
             let Some(from) = graph.ports.get(&edge.from) else {
                 return false;
             };

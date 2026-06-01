@@ -1,5 +1,8 @@
 use super::*;
-use jellyflow_core::core::{Graph, GraphId, NodeId};
+use jellyflow_core::core::{
+    Edge, EdgeId, EdgeKind, Graph, GraphId, NodeId, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
+};
 
 #[test]
 fn view_state_sanitize_removes_stale_ids() {
@@ -28,15 +31,63 @@ fn view_state_sanitize_removes_stale_ids() {
             data: serde_json::Value::Null,
         },
     );
+    let from_port = PortId::new();
+    let to_port = PortId::new();
+    let hidden_edge = EdgeId::new();
+    graph.ports.insert(
+        from_port,
+        Port {
+            node: keep_node,
+            key: PortKey::new("from"),
+            dir: PortDirection::Out,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        },
+    );
+    graph.ports.insert(
+        to_port,
+        Port {
+            node: keep_node,
+            key: PortKey::new("to"),
+            dir: PortDirection::In,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        },
+    );
+    graph.edges.insert(
+        hidden_edge,
+        Edge {
+            kind: EdgeKind::Data,
+            from: from_port,
+            to: to_port,
+            hidden: true,
+            selectable: None,
+            focusable: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
 
     let mut state = NodeGraphViewState {
         selected_nodes: vec![keep_node, NodeId::new()],
+        selected_edges: vec![hidden_edge],
         draw_order: vec![NodeId::new(), keep_node],
         ..NodeGraphViewState::default()
     };
 
     state.sanitize_for_graph(&graph);
     assert_eq!(state.selected_nodes, vec![keep_node]);
+    assert!(state.selected_edges.is_empty());
     assert_eq!(state.draw_order, vec![keep_node]);
 }
 

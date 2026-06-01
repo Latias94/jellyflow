@@ -21,6 +21,7 @@ fn store_lookups_update_after_dispatch_transaction() {
             kind: EdgeKind::Data,
             from: out_port,
             to: in_port,
+            hidden: false,
             selectable: None,
             focusable: None,
             deletable: None,

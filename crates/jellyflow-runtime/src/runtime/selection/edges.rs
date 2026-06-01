@@ -22,6 +22,9 @@ pub(super) fn selection_box_edges(
         let Some(edge) = graph.edges.get(edge_id) else {
             continue;
         };
+        if edge.hidden {
+            continue;
+        }
         if !resolve_edge_interaction_policy(edge, interaction).selectable {
             continue;
         }

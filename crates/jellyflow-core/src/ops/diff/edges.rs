@@ -72,6 +72,13 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: edge_to.focusable,
             });
         }
+        if edge_from.hidden != edge_to.hidden {
+            self.push_op(GraphOp::SetEdgeHidden {
+                id,
+                from: edge_from.hidden,
+                to: edge_to.hidden,
+            });
+        }
         if edge_from.deletable != edge_to.deletable {
             self.push_op(GraphOp::SetEdgeDeletable {
                 id,

@@ -110,6 +110,7 @@ pub(super) fn make_graph() -> (
             kind: EdgeKind::Data,
             from: out_port,
             to: in_port,
+            hidden: false,
             selectable: None,
             focusable: None,
             deletable: None,

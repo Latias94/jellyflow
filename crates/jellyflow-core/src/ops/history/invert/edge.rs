@@ -25,6 +25,11 @@ pub(super) fn invert_edge_op(op: &GraphOp) -> Vec<GraphOp> {
             from: *to,
             to: *from,
         }],
+        GraphOp::SetEdgeHidden { id, from, to } => vec![GraphOp::SetEdgeHidden {
+            id: *id,
+            from: *to,
+            to: *from,
+        }],
         GraphOp::SetEdgeDeletable { id, from, to } => vec![GraphOp::SetEdgeDeletable {
             id: *id,
             from: *to,

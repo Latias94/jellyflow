@@ -142,6 +142,7 @@ pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortI
             kind: EdgeKind::Data,
             from,
             to,
+            hidden: false,
             selectable: None,
             focusable: None,
             deletable: None,

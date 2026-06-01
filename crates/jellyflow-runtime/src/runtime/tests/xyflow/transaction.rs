@@ -15,11 +15,17 @@ fn changes_to_transaction_is_reversible_and_applicable() {
             id: a,
             position: CanvasPoint { x: 42.0, y: 7.0 },
         }],
-        vec![EdgeChange::Endpoints {
-            id: eid,
-            from: out_port,
-            to: in_port,
-        }],
+        vec![
+            EdgeChange::Endpoints {
+                id: eid,
+                from: out_port,
+                to: in_port,
+            },
+            EdgeChange::Hidden {
+                id: eid,
+                hidden: true,
+            },
+        ],
     );
 
     let tx = changes.to_transaction(&g0).expect("tx");
@@ -32,6 +38,7 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     );
     assert_eq!(g1.edges.get(&eid).unwrap().from, out_port);
     assert_eq!(g1.edges.get(&eid).unwrap().to, in_port);
+    assert!(g1.edges.get(&eid).unwrap().hidden);
 }
 
 #[test]

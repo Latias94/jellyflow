@@ -25,6 +25,10 @@ pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
             id: *id,
             focusable: *to,
         }),
+        GraphOp::SetEdgeHidden { id, to, .. } => out.push_edge(EdgeChange::Hidden {
+            id: *id,
+            hidden: *to,
+        }),
         GraphOp::SetEdgeDeletable { id, to, .. } => out.push_edge(EdgeChange::Deletable {
             id: *id,
             deletable: *to,

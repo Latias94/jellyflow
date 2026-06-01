@@ -28,6 +28,9 @@ impl<'a> ApplyChangesPlanner<'a> {
             EdgeChange::Focusable { id, focusable } => {
                 self.mutate_existing_edge(*id, |edge| edge.focusable = *focusable);
             }
+            EdgeChange::Hidden { id, hidden } => {
+                self.mutate_existing_edge(*id, |edge| edge.hidden = *hidden);
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.mutate_existing_edge(*id, |edge| edge.deletable = *deletable);
             }

@@ -154,6 +154,7 @@ impl<'a> FragmentPastePlanner<'a> {
             kind: old_edge.kind,
             from: self.ids.port(old_edge.from),
             to: self.ids.port(old_edge.to),
+            hidden: old_edge.hidden,
             selectable: old_edge.selectable,
             focusable: old_edge.focusable,
             deletable: old_edge.deletable,

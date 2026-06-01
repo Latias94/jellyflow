@@ -119,6 +119,7 @@ fn from_selection_keeps_parent_when_group_is_selected_and_includes_children() {
             kind: EdgeKind::Data,
             from: a_out,
             to: b_in,
+            hidden: false,
             selectable: None,
             focusable: None,
             deletable: None,

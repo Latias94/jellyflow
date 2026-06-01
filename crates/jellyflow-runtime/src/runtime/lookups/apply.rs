@@ -59,6 +59,7 @@ impl NodeGraphLookups {
             | GraphOp::SetPortData { .. }
             | GraphOp::SetEdgeSelectable { .. }
             | GraphOp::SetEdgeFocusable { .. }
+            | GraphOp::SetEdgeHidden { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }

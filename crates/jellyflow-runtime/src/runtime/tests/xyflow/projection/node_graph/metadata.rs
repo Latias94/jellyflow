@@ -108,6 +108,11 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             from: None,
             to: Some(true),
         },
+        GraphOp::SetEdgeHidden {
+            id: eid,
+            from: false,
+            to: true,
+        },
         GraphOp::SetEdgeDeletable {
             id: eid,
             from: None,
@@ -117,7 +122,7 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
 
     let changes = NodeGraphChanges::from_transaction(&tx);
     assert_eq!(changes.nodes().len(), 9);
-    assert_eq!(changes.edges().len(), 3);
+    assert_eq!(changes.edges().len(), 4);
 
     assert!(
         changes
@@ -173,6 +178,12 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
     assert!(changes.edges().iter().any(
         |change| matches!(change, EdgeChange::Focusable { id, focusable: Some(true) } if *id == eid)
     ));
+    assert!(
+        changes
+            .edges()
+            .iter()
+            .any(|change| matches!(change, EdgeChange::Hidden { id, hidden: true } if *id == eid))
+    );
     assert!(changes.edges().iter().any(
         |change| matches!(change, EdgeChange::Deletable { id, deletable: Some(true) } if *id == eid)
     ));

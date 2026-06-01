@@ -78,7 +78,9 @@ ADR 0002 accepts an additive v1 boundary:
 | `kind` | Semantic model | Data/exec edge kind. |
 | `from` | Semantic model | Source port. |
 | `to` | Semantic model | Target port. |
+| `hidden` | Persisted presentation | Excluded from derived selection/rendering surfaces. |
 | `selectable` | Persisted editor policy | Override resolved against global `edges_selectable`. |
+| `focusable` | Persisted editor policy | Override resolved against global `edges_focusable`. |
 | `deletable` | Persisted editor policy | Override resolved against global `edges_deletable`. |
 | `reconnectable` | Persisted editor policy | Override resolved against global `edges_reconnectable`. |
 

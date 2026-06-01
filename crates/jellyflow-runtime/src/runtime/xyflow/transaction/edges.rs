@@ -40,6 +40,13 @@ impl<'a> ChangesTransactionPlanner<'a> {
                     to: *focusable,
                 })?;
             }
+            EdgeChange::Hidden { id, hidden } => {
+                self.push_edge_update(*id, |edge| GraphOp::SetEdgeHidden {
+                    id: *id,
+                    from: edge.hidden,
+                    to: *hidden,
+                })?;
+            }
             EdgeChange::Deletable { id, deletable } => {
                 self.push_edge_update(*id, |edge| GraphOp::SetEdgeDeletable {
                     id: *id,

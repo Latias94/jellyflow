@@ -4,6 +4,10 @@ use crate::core::ids::PortId;
 
 use super::port::PortKind;
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// Edge kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +36,12 @@ pub struct Edge {
     pub from: PortId,
     /// Target port.
     pub to: PortId,
+    /// Whether the edge is hidden (XyFlow `edge.hidden`).
+    ///
+    /// Hidden edges are excluded from derived selection and rendering surfaces.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
+
     /// Whether the edge can be selected (XyFlow `edge.selectable`).
     ///
     /// When omitted, the global `NodeGraphInteractionState.edges_selectable` decides.

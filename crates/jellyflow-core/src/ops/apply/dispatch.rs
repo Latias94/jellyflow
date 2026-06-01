@@ -57,6 +57,7 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         | GraphOp::SetEdgeKind { .. }
         | GraphOp::SetEdgeSelectable { .. }
         | GraphOp::SetEdgeFocusable { .. }
+        | GraphOp::SetEdgeHidden { .. }
         | GraphOp::SetEdgeDeletable { .. }
         | GraphOp::SetEdgeReconnectable { .. }
         | GraphOp::SetEdgeEndpoints { .. } => super::edges::apply_edge_op(graph, op),

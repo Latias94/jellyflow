@@ -61,3 +61,31 @@ fn selection_box_additive_mode_unions_with_existing_selection_and_sorts() {
         expected.groups,
     )]);
 }
+
+#[test]
+fn selection_box_skips_hidden_edges() {
+    let mut fixture = selection_fixture();
+    fixture
+        .graph
+        .edges
+        .get_mut(&fixture.connected_edge)
+        .expect("edge")
+        .hidden = true;
+    let mut harness = InteractionHarness::new("selection box hidden edge", fixture.graph);
+
+    let result = harness
+        .store_mut()
+        .apply_selection_box(selection_rect(), SelectionBoxOptions::default());
+
+    let expected = SelectionBoxResult {
+        nodes: vec![fixture.low, fixture.high],
+        edges: vec![fixture.connected_outside_edge],
+        groups: Vec::new(),
+    };
+    assert_eq!(result, expected);
+    harness.assert_events(&[HarnessEvent::selection(
+        expected.nodes,
+        expected.edges,
+        expected.groups,
+    )]);
+}

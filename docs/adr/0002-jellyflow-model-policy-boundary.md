@@ -11,8 +11,8 @@ but the persisted graph document still carries several lifecycles in one model:
 
 - semantic graph data, such as node kinds, ports, edges, symbols, imports, and domain payloads,
 - canvas layout data, such as node positions, node sizes, group bounds, and sticky-note bounds,
-- persisted editor policy overrides, such as selectable, draggable, connectable, deletable,
-  reconnectable, extent, and expand-parent,
+- persisted editor policy overrides, such as selectable, focusable, draggable, connectable,
+  deletable, reconnectable, extent, and expand-parent,
 - presentation state, such as hidden, collapsed, color, and port ordering,
 - volatile editor view state and runtime-wide defaults stored outside the graph in
   `jellyflow-runtime`.
@@ -52,9 +52,9 @@ The summary taxonomy is:
 - semantic model: graph identity/version, imports, symbols, node kind/version/data, port key,
   direction, kind, capacity, type/data, edge kind/endpoints;
 - layout model: node position/size, group bounds, sticky-note bounds, parent group relationship;
-- persisted editor policy: node selectable/draggable/connectable/deletable/extent/expand-parent,
-  port connectable/start/end, edge selectable/deletable/reconnectable;
-- persisted presentation: hidden, collapsed, port order, group/sticky color;
+- persisted editor policy: node selectable/focusable/draggable/connectable/deletable/extent/expand-parent,
+  port connectable/start/end, edge selectable/focusable/deletable/reconnectable;
+- persisted presentation: node/edge hidden, collapsed, port order, group/sticky color;
 - volatile or per-user view state: pan, zoom, selection, draw order, and editor/runtime config files.
 
 ## Consequences

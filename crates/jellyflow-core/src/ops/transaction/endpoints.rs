@@ -32,6 +32,7 @@ mod tests {
             kind: EdgeKind::Data,
             from,
             to,
+            hidden: false,
             selectable: Some(true),
             focusable: None,
             deletable: Some(false),
