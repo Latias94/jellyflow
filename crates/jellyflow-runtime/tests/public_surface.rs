@@ -129,6 +129,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
         resolved_target.feedback,
         connection::ConnectionHandleValidity::Valid
     );
+    let indicator = connection::resolve_connection_handle_indicator(
+        connection::ConnectionHandleIndicatorInput::new(
+            target_handle.handle,
+            NodeGraphConnectionMode::Strict,
+        )
+        .with_connection(
+            Some(from_handle),
+            Some(target_handle.handle),
+            resolved_target.feedback,
+        ),
+    );
+    let _: connection::ConnectionHandleIndicator = indicator;
+    assert!(indicator.show_connection_indicator);
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
