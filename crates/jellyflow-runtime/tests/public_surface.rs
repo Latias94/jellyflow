@@ -75,6 +75,9 @@ fn explicit_modules_expose_their_owned_surfaces() {
         node: NodeId::new(),
         to: CanvasPoint::default(),
     };
+    assert!(drag::node_drag_threshold_met(
+        drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
+    ));
     let _drag_item = drag::NodeDragItem {
         node: NodeId::new(),
         from: CanvasPoint::default(),
