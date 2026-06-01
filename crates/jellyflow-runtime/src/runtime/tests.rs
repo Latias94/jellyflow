@@ -1,3 +1,4 @@
+mod adapter_conformance;
 mod fixtures;
 mod lookups;
 mod store;
