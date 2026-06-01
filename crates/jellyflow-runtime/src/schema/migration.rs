@@ -68,6 +68,10 @@ impl CanonicalizeKindsPlan {
     pub fn rewrites(&self) -> &[NodeKindRewrite] {
         &self.rewrites
     }
+
+    pub fn into_parts(self) -> (GraphTransaction, Vec<NodeKindRewrite>) {
+        (self.tx, self.rewrites)
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -232,5 +236,9 @@ impl MigrateNodesPlan {
 
     pub fn report(&self) -> &MigrateNodesReport {
         &self.report
+    }
+
+    pub fn into_parts(self) -> (GraphTransaction, MigrateNodesReport) {
+        (self.tx, self.report)
     }
 }
