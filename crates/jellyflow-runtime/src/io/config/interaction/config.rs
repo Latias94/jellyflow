@@ -68,10 +68,7 @@ pub struct NodeGraphInteractionConfig {
     pub selection_on_drag: bool,
     #[serde(default)]
     pub selection_mode: NodeGraphSelectionMode,
-    #[serde(
-        default = "default_box_select_edges",
-        alias = "box_select_connected_edges"
-    )]
+    #[serde(default = "default_box_select_edges")]
     pub box_select_edges: NodeGraphBoxSelectEdges,
     #[serde(default = "default_selection_key")]
     pub selection_key: NodeGraphModifierKey,
