@@ -1,4 +1,5 @@
 mod adapter_conformance;
+mod drag;
 mod fixtures;
 mod harness;
 mod lookups;

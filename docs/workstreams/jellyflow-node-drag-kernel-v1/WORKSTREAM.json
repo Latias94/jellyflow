@@ -49,6 +49,11 @@
       "date": "2026-06-01",
       "task": "JND-010",
       "summary": "Opened the node drag kernel workstream from the interaction harness follow-on, with ADR 0003 renderer-free testing and ADR 0002 schema-boundary constraints."
+    },
+    {
+      "date": "2026-06-01",
+      "task": "JND-020",
+      "summary": "Added public runtime::drag single-node planning/apply helpers and harness-backed fixtures covering successful SetNodePos commit traces plus missing, hidden, non-draggable, no-op, non-finite, and global-disabled no-commit cases."
     }
   ],
   "adr_refs": [
@@ -66,7 +71,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "run_next_task",
-    "next_task": "JND-020",
-    "notes": "Implement the first single-node drag transaction helper and fixture before expanding to multi-selection, snap, extents, and callbacks."
+    "next_task": "JND-030",
+    "notes": "Extend drag planning to build deterministic multi-selection drag items before adding snap, extents, and callbacks."
   }
 }

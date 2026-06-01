@@ -5,6 +5,7 @@
 //! a specific rendering or widget layer. XyFlow-compatible projections live in [`xyflow`].
 
 pub mod commit;
+pub mod drag;
 pub mod events;
 pub mod fit_view;
 pub mod geometry;

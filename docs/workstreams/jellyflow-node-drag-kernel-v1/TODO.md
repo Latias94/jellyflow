@@ -14,12 +14,13 @@ Last updated: 2026-06-01
 
 ## M1 - Single Node Drag Transaction
 
-- [ ] JND-020 [owner=codex] [deps=JND-010] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JND-020 [owner=codex] [deps=JND-010] [scope=crates/jellyflow-runtime/src/runtime/drag.rs,crates/jellyflow-runtime/src/runtime/tests/drag.rs,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add the first renderer-neutral drag helper that plans and applies a single-node `SetNodePos` transaction from canvas-space intent.
   Validation: `cargo nextest run -p jellyflow-runtime drag`; `cargo check -p jellyflow-runtime`.
   Review: review-workstream before accepting completion.
   Evidence: Fixture proves draggable policy, hidden-node exclusion, no-op filtering, deterministic transaction label/op, and committed graph state.
   Context: `docs/workstreams/jellyflow-node-drag-kernel-v1/CONTEXT.jsonl`
+  Handoff: DONE 2026-06-01. Added public `runtime::drag` single-node planning/apply helpers, exposed them through the public surface check, and added harness-backed fixtures for successful commit trace plus missing/hidden/non-draggable/no-op/non-finite/global-disabled no-commit cases.
 
 ## M2 - Multi-Selection Drag Items
 

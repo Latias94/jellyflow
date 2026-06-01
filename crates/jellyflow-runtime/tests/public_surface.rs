@@ -1,4 +1,4 @@
-use jellyflow_core::core::{Graph, GraphId};
+use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
     GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
@@ -6,7 +6,7 @@ use jellyflow_runtime::io::{
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::ConnectPlan;
-use jellyflow_runtime::runtime::{commit, selection, store, xyflow};
+use jellyflow_runtime::runtime::{commit, drag, selection, store, xyflow};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -68,6 +68,13 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let selection_result = selection::SelectionBoxResult::default();
     assert!(selection_result.is_empty());
     let _selection_options = selection::SelectionBoxOptions::default();
+
+    let _drag_request = drag::NodeDragRequest {
+        node: NodeId::new(),
+        to: CanvasPoint::default(),
+    };
+    assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
+    let _ = std::mem::size_of::<drag::NodeDragPlan>();
 
     let _module_store = store::NodeGraphStore::new(
         graph,

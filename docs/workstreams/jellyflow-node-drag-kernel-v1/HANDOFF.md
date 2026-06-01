@@ -10,9 +10,15 @@ The workstream is open as a follow-on to the closed interaction harness lane.
 JND-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.
 
+JND-020 is complete: `runtime::drag` now exposes the first single-node drag planning/apply helper.
+The helper converts a canvas-space target into a labeled `SetNodePos` transaction through normal
+`NodeGraphStore` dispatch. Harness-backed fixtures prove successful commit traces and no-commit
+behavior for missing, hidden, non-draggable, no-op, non-finite, and global-disabled cases.
+
 ## Next Task
 
-JND-020: add the first renderer-neutral single-node drag helper and fixture.
+JND-030: extend drag planning to build deterministic multi-selection drag items from the primary
+node plus selected nodes.
 
 ## Decisions Since Last Update
 
@@ -24,6 +30,8 @@ JND-020: add the first renderer-neutral single-node drag helper and fixture.
 - Use existing policy resolution for `draggable` and node extents.
 - Treat public fixture format, auto-pan, and renderer smoke tests as follow-ons unless this lane
   explicitly pulls one in later.
+- The first apply helper records normal store history. A later drag-session task can decide whether
+  continuous pointer updates need separate preview/final-commit semantics.
 
 ## Blockers
 
