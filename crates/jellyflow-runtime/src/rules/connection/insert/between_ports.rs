@@ -2,12 +2,12 @@ use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::GraphMutationBatchPlanner;
 
 use super::super::common::{
-    ConnectionOpBuilder, edge_between, ensure_edge_id_available, reject_mutation_error,
-    resolve_policy_checked_connection, validate_insert_node_spec,
+    ConnectionOpBuilder, edge_between, ensure_edge_id_available, resolve_policy_checked_connection,
+    validate_insert_node_spec,
 };
+use super::batch::InsertNodeMutationBuilder;
 
 /// Plans connecting two ports by inserting a node between them.
 ///
@@ -53,21 +53,21 @@ pub fn plan_connect_by_inserting_node_with_policy(
 
     let mut ops = ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, None);
 
-    let mut batch = GraphMutationBatchPlanner::new(graph);
-    if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
-        return reject_mutation_error(error);
-    }
-    if let Err(error) = batch.add_edge(
+    let mut batch = match InsertNodeMutationBuilder::new(graph, inserted) {
+        Ok(batch) => batch,
+        Err(plan) => return plan,
+    };
+    if let Err(plan) = batch.add_edge(
         first_edge_id,
         edge_between(endpoints.edge_kind, endpoints.from_id, inserted_ports.input),
     ) {
-        return reject_mutation_error(error);
+        return plan;
     }
-    if let Err(error) = batch.add_edge(
+    if let Err(plan) = batch.add_edge(
         second_edge_id,
         edge_between(endpoints.edge_kind, inserted_ports.output, endpoints.to_id),
     ) {
-        return reject_mutation_error(error);
+        return plan;
     }
     ops.extend(batch.into_ops());
 

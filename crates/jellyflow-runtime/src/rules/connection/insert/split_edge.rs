@@ -1,11 +1,12 @@
 use crate::rules::{ConnectPlan, InsertNodeSpec};
 use jellyflow_core::core::{EdgeId, Graph, PortDirection};
-use jellyflow_core::ops::{EdgeEndpoints, GraphMutationBatchPlanner};
+use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::common::{
     edge_like, ensure_edge_id_available, reject_edge_kind_incompatible, reject_missing_edge,
-    reject_mutation_error, validate_insert_node_spec,
+    validate_insert_node_spec,
 };
+use super::batch::InsertNodeMutationBuilder;
 
 /// Plans splitting an existing edge by inserting a node (preserving the edge identity for the first segment).
 pub fn plan_split_edge_by_inserting_node(
@@ -48,18 +49,18 @@ pub fn plan_split_edge_by_inserting_node(
         Err(plan) => return plan,
     };
 
-    let mut batch = GraphMutationBatchPlanner::new(graph);
-    if let Err(error) = batch.add_node_with_ports(inserted.node_id, inserted.node, inserted.ports) {
-        return reject_mutation_error(error);
-    }
-    if let Err(error) =
+    let mut batch = match InsertNodeMutationBuilder::new(graph, inserted) {
+        Ok(batch) => batch,
+        Err(plan) => return plan,
+    };
+    if let Err(plan) =
         batch.set_edge_endpoints(edge_id, EdgeEndpoints::new(edge.from, inserted_ports.input))
     {
-        return reject_mutation_error(error);
+        return plan;
     }
-    if let Err(error) = batch.add_edge(new_edge_id, edge_like(edge, inserted_ports.output, edge.to))
+    if let Err(plan) = batch.add_edge(new_edge_id, edge_like(edge, inserted_ports.output, edge.to))
     {
-        return reject_mutation_error(error);
+        return plan;
     }
 
     ConnectPlan::from_ops(batch.into_ops())
