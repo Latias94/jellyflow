@@ -333,3 +333,85 @@ fn viewport_scroll_policy_reports_disabled_and_selection_rejections() {
     .expect_err("selection active blocks scroll gestures");
     assert_eq!(err, ViewportGestureRejection::UserSelectionActive);
 }
+
+#[test]
+fn double_click_zoom_plans_anchored_animation() {
+    let state = NodeGraphInteractionState::default();
+    let current = ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0).unwrap();
+    let anchor = CanvasPoint { x: 120.0, y: 60.0 };
+    let input = ViewportDoubleClickZoomInput::new(
+        current,
+        anchor,
+        2.0,
+        0.5,
+        3.0,
+        ViewportAnimationOptions::new(0.2).with_easing(ViewportAnimationEasing::Linear),
+    );
+
+    let plan = resolve_viewport_double_click_zoom(&state.zoom_interaction(), input)
+        .expect("double-click zoom plan");
+    let expected_target = zoom_viewport(current, ViewportZoomRequest::new(anchor, 4.0, 0.5, 3.0))
+        .expect("anchored target");
+
+    assert_eq!(plan.from, current);
+    assert_eq!(plan.to, expected_target);
+    assert_eq!(plan.duration_seconds, 0.2);
+    assert_eq!(plan.easing, ViewportAnimationEasing::Linear);
+    assert_eq!(
+        current.canvas_point_at_screen(anchor),
+        plan.to.canvas_point_at_screen(anchor),
+    );
+
+    let midpoint = plan.frame_at(0.1).expect("midpoint frame");
+    assert_eq!(midpoint.progress, 0.5);
+    assert_eq!(midpoint.eased_progress, 0.5);
+}
+
+#[test]
+fn double_click_zoom_respects_policy_and_rejects_invalid_input() {
+    let disabled = NodeGraphInteractionState {
+        zoom_on_double_click: false,
+        ..NodeGraphInteractionState::default()
+    };
+    let current = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+    let input = ViewportDoubleClickZoomInput::new(
+        current,
+        CanvasPoint { x: 10.0, y: 10.0 },
+        2.0,
+        0.5,
+        4.0,
+        ViewportAnimationOptions::new(0.2),
+    );
+
+    let err = resolve_viewport_double_click_zoom(&disabled.zoom_interaction(), input)
+        .expect_err("double-click zoom disabled");
+    assert_eq!(err, ViewportGestureRejection::DoubleClickZoomDisabled);
+
+    let state = NodeGraphInteractionState::default();
+    let invalid_factor = ViewportDoubleClickZoomInput::new(
+        current,
+        CanvasPoint { x: 10.0, y: 10.0 },
+        0.0,
+        0.5,
+        4.0,
+        ViewportAnimationOptions::new(0.2),
+    );
+    let err = resolve_viewport_double_click_zoom(&state.zoom_interaction(), invalid_factor)
+        .expect_err("factor must be positive");
+    assert_eq!(err, ViewportGestureRejection::InvalidInput);
+
+    let invalid_anchor = ViewportDoubleClickZoomInput::new(
+        current,
+        CanvasPoint {
+            x: f32::NAN,
+            y: 10.0,
+        },
+        2.0,
+        0.5,
+        4.0,
+        ViewportAnimationOptions::new(0.2),
+    );
+    let err = resolve_viewport_double_click_zoom(&state.zoom_interaction(), invalid_anchor)
+        .expect_err("anchor must be finite");
+    assert_eq!(err, ViewportGestureRejection::InvalidInput);
+}

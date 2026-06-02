@@ -5,6 +5,7 @@ use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::CanvasPoint;
 
 use super::super::transform::{ViewportPanRequest, ViewportZoomRequest};
+use super::super::{ViewportAnimationOptions, ViewportTransform};
 
 /// Runtime context that affects whether a normalized viewport gesture is accepted.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +97,37 @@ impl ViewportDragPanInput {
     }
 }
 
+/// Normalized double-click zoom input.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ViewportDoubleClickZoomInput {
+    pub current: ViewportTransform,
+    pub anchor_screen: CanvasPoint,
+    pub zoom_factor: f32,
+    pub min_zoom: f32,
+    pub max_zoom: f32,
+    pub animation: ViewportAnimationOptions,
+}
+
+impl ViewportDoubleClickZoomInput {
+    pub fn new(
+        current: ViewportTransform,
+        anchor_screen: CanvasPoint,
+        zoom_factor: f32,
+        min_zoom: f32,
+        max_zoom: f32,
+        animation: ViewportAnimationOptions,
+    ) -> Self {
+        Self {
+            current,
+            anchor_screen,
+            zoom_factor,
+            min_zoom,
+            max_zoom,
+            animation,
+        }
+    }
+}
+
 /// Accepted viewport gesture intent.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -134,6 +166,7 @@ pub enum ViewportGestureRejection {
     ConnectionInProgress,
     WheelDisabled,
     PinchDisabled,
+    DoubleClickZoomDisabled,
     PanOnDragDisabled,
     PanOnDragButtonDisabled,
     InvalidInput,

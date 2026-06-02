@@ -48,6 +48,8 @@ cargo fmt --check
 cargo nextest run -p jellyflow-runtime double_click_zoom
 ```
 
+Status: complete on 2026-06-02.
+
 ## M3 - Conformance Trace Integration
 
 Exit criteria:

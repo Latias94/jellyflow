@@ -119,6 +119,41 @@ Behavior proven:
 - Linear easing is available as a named, serializable runtime option.
 - Public surface smoke covers exported animation request/options/easing/plan/frame types.
 
+### 2026-06-02 - JVAS-030 Double-Click Zoom Plan
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/viewport/gesture/double_click.rs`
+- `crates/jellyflow-runtime/src/runtime/viewport/gesture/types.rs`
+- `crates/jellyflow-runtime/src/runtime/viewport/gesture/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/viewport/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/viewport/gesture_policy.rs`
+- `crates/jellyflow-runtime/tests/public_surface.rs`
+
+Commands:
+
+```bash
+cargo fmt --check
+cargo nextest run -p jellyflow-runtime double_click_zoom
+cargo nextest run -p jellyflow-runtime --test public_surface
+cargo nextest run -p jellyflow-runtime viewport
+```
+
+Result:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime double_click_zoom`: passed, 2 tests run, 2 passed.
+- `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 3 tests run, 3 passed.
+- `cargo nextest run -p jellyflow-runtime viewport`: passed, 36 tests run, 36 passed.
+
+Behavior proven:
+
+- Normalized double-click zoom input resolves to an anchored viewport animation plan.
+- The resolver respects `zoom_on_double_click`.
+- Target zoom uses existing anchored zoom math and min/max clamps.
+- Invalid factor and non-finite anchor inputs reject deterministically.
+- Public surface smoke covers the new input and resolver.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

@@ -34,14 +34,16 @@ Last updated: 2026-06-02
 
 ## M2 - Double-Click Zoom Plan
 
-- [ ] JVAS-030 [owner=codex] [deps=JVAS-020] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport]
+- [x] JVAS-030 [owner=codex] [deps=JVAS-020] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport]
   Goal: Resolve normalized double-click zoom input into an anchored viewport animation plan that
   respects `zoom_on_double_click`, min/max zoom, invalid input, and existing zoom math.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime double_click_zoom
   Review: review-workstream before accepting completion.
   Evidence: focused viewport tests for accepted and rejected double-click zoom.
   Context: docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Split raw double-click detection or adapter event-loop behavior if scope expands.
+  Handoff: DONE 2026-06-02. Added normalized double-click zoom input and resolver that respects
+  `zoom_on_double_click`, reuses anchored zoom math, clamps min/max zoom, and returns viewport
+  animation plans without owning raw double-click detection.
   State: TASKS.jsonl entry JVAS-030 records owner, scope, validation, evidence, and handoff status.
 
 ## M3 - Conformance Trace Integration

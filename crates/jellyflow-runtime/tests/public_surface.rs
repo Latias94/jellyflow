@@ -258,6 +258,20 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<viewport::ViewportAnimationPlan>();
     let _ = std::mem::size_of::<viewport::ViewportAnimationFrame>();
     let interaction_state = NodeGraphInteractionState::default();
+    let double_click_plan = viewport::resolve_viewport_double_click_zoom(
+        &interaction_state.zoom_interaction(),
+        viewport::ViewportDoubleClickZoomInput::new(
+            transform,
+            CanvasPoint { x: 24.0, y: 12.0 },
+            2.0,
+            0.5,
+            4.0,
+            viewport::ViewportAnimationOptions::new(0.2),
+        ),
+    )
+    .expect("double-click zoom policy");
+    assert_eq!(double_click_plan.from, transform);
+    let _ = std::mem::size_of::<viewport::ViewportDoubleClickZoomInput>();
     let scroll_intent = viewport::resolve_viewport_scroll_gesture(
         &interaction_state.pan_interaction(),
         &interaction_state.zoom_interaction(),

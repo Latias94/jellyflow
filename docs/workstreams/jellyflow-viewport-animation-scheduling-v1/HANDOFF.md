@@ -15,15 +15,19 @@ JVAS-020 is complete: `runtime::viewport` now exposes renderer-neutral animation
 easing, plan, and frame primitives. Focused tests cover cubic-in-out easing, linear easing,
 zero-duration immediate completion, invalid time input, and broader viewport regression coverage.
 
+JVAS-030 is complete: normalized double-click zoom input now resolves to anchored viewport
+animation plans, respects `zoom_on_double_click`, uses existing min/max zoom clamp behavior, and
+rejects invalid normalized input without adding raw platform event handling.
+
 ## Active Task
 
-- Task ID: JVAS-030
+- Task ID: JVAS-040
 - Owner: codex
-- Files: `crates/jellyflow-runtime/src/runtime/viewport`, `crates/jellyflow-runtime/src/runtime/tests/viewport`
-- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime double_click_zoom`
+- Files: `crates/jellyflow-runtime/src/runtime/conformance`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance`
+- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime conformance`; `cargo nextest run -p jellyflow-runtime adapter_conformance`
 - Status: NEEDS_CONTEXT
 - Review: review-workstream before accepting completion
-- Evidence: focused viewport tests for accepted and rejected double-click zoom
+- Evidence: fixture-runner traces for viewport animation planning
 
 ## Decisions Since Opening
 
@@ -37,6 +41,8 @@ zero-duration immediate completion, invalid time input, and broader viewport reg
   input.
 - Model animation duration in seconds, matching existing frame-time runtime APIs such as auto-pan.
 - Add named runtime easing modes rather than accepting arbitrary adapter-provided functions.
+- Model double-click zoom as normalized runtime input with a zoom factor; adapters own raw
+  double-click detection and any platform-specific modifier semantics.
 
 ## Blockers
 
@@ -44,5 +50,5 @@ zero-duration immediate completion, invalid time input, and broader viewport reg
 
 ## Next Recommended Action
 
-- Implement JVAS-030: normalized double-click zoom should reuse existing anchored zoom math and
-  produce a viewport animation plan.
+- Implement JVAS-040: conformance fixtures should assert viewport animation planning and
+  double-click zoom traces without timers or renderer dependencies.

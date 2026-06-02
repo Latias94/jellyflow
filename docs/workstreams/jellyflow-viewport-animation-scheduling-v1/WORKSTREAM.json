@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl",
-  "current_task": "JVAS-030",
+  "current_task": "JVAS-040",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime viewport_animation",
@@ -69,6 +69,11 @@
       "date": "2026-06-02",
       "task": "JVAS-020",
       "summary": "Added renderer-neutral viewport animation request, options, easing, plan, and frame primitives with focused runtime and public-surface tests."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JVAS-030",
+      "summary": "Added normalized double-click zoom planning that respects zoom policy and produces anchored viewport animation plans."
     }
   ],
   "adr_refs": [
@@ -91,7 +96,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "continue",
-    "next_task": "JVAS-030",
+    "next_task": "JVAS-040",
     "notes": "Continue with the pure viewport animation planner while the renderer-free boundary and existing viewport math remain stable. Split a follow-on if exact d3 interpolateZoom parity, pan inertia, or adapter renderer smoke becomes required."
   }
 }

@@ -14,10 +14,10 @@ pub use animation::{
     plan_viewport_animation_with_options,
 };
 pub use gesture::{
-    PaneClickDistanceInput, ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent,
-    ViewportGestureRejection, ViewportPointerButton, ViewportScrollInput,
-    resolve_pane_click_distance, resolve_viewport_drag_pan_gesture,
-    resolve_viewport_scroll_gesture,
+    PaneClickDistanceInput, ViewportDoubleClickZoomInput, ViewportDragPanInput,
+    ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection, ViewportPointerButton,
+    ViewportScrollInput, resolve_pane_click_distance, resolve_viewport_double_click_zoom,
+    resolve_viewport_drag_pan_gesture, resolve_viewport_scroll_gesture,
 };
 pub use transform::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
