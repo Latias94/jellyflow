@@ -18,7 +18,7 @@ Last updated: 2026-06-02
 
 ## M1 - Pure Animation Planner
 
-- [ ] JVAS-020 [owner=codex] [deps=JVAS-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JVAS-020 [owner=codex] [deps=JVAS-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add renderer-neutral viewport animation request/plan/frame primitives that interpolate
   between viewport transforms with deterministic easing and immediate zero-duration behavior.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime viewport_animation; cargo
@@ -27,7 +27,9 @@ Last updated: 2026-06-02
   Evidence: runtime viewport animation tests and public surface smoke.
   Context: docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl plus XyFlow
   panzoom transition references.
-  Handoff: Final status must be DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT.
+  Handoff: DONE 2026-06-02. Added `ViewportAnimationRequest`, `ViewportAnimationOptions`,
+  `ViewportAnimationEasing`, `ViewportAnimationPlan`, and `ViewportAnimationFrame`, with focused
+  tests for cubic easing, linear easing, immediate zero-duration behavior, and invalid time input.
   State: TASKS.jsonl entry JVAS-020 records owner, scope, validation, evidence, and handoff status.
 
 ## M2 - Double-Click Zoom Plan

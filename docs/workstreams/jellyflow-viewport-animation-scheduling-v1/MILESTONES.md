@@ -31,6 +31,8 @@ cargo nextest run -p jellyflow-runtime viewport_animation
 cargo nextest run -p jellyflow-runtime --test public_surface
 ```
 
+Status: complete on 2026-06-02.
+
 ## M2 - Double-Click Zoom Plan
 
 Exit criteria:

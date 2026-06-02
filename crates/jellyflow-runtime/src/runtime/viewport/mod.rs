@@ -4,9 +4,15 @@
 //! canvas/screen transform math and gesture policy without depending on renderer, windowing, or
 //! gesture APIs.
 
+mod animation;
 mod gesture;
 mod transform;
 
+pub use animation::{
+    ViewportAnimationEasing, ViewportAnimationFrame, ViewportAnimationOptions,
+    ViewportAnimationPlan, ViewportAnimationRequest, plan_viewport_animation,
+    plan_viewport_animation_with_options,
+};
 pub use gesture::{
     PaneClickDistanceInput, ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent,
     ViewportGestureRejection, ViewportPointerButton, ViewportScrollInput,

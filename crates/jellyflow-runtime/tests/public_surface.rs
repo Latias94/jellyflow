@@ -233,11 +233,30 @@ fn explicit_modules_expose_their_owned_surfaces() {
         viewport::ViewportPanRequest::new(CanvasPoint { x: 3.0, y: 6.0 }),
     )
     .expect("pan");
-    let _zoomed = viewport::zoom_viewport(
+    let zoomed = viewport::zoom_viewport(
         panned,
         viewport::ViewportZoomRequest::new(CanvasPoint { x: 24.0, y: 12.0 }, 2.0, 0.5, 4.0),
     )
     .expect("zoom");
+    let animation_plan =
+        viewport::plan_viewport_animation_with_options(viewport::ViewportAnimationRequest::new(
+            transform,
+            zoomed,
+            viewport::ViewportAnimationOptions::new(0.25)
+                .with_easing(viewport::ViewportAnimationEasing::Linear),
+        ))
+        .expect("viewport animation plan");
+    let animation_frame = animation_plan
+        .frame_at(0.125)
+        .expect("viewport animation frame");
+    assert!(!animation_frame.done);
+    assert_eq!(
+        animation_plan.easing,
+        viewport::ViewportAnimationEasing::Linear
+    );
+    let _ = std::mem::size_of::<viewport::ViewportAnimationEasing>();
+    let _ = std::mem::size_of::<viewport::ViewportAnimationPlan>();
+    let _ = std::mem::size_of::<viewport::ViewportAnimationFrame>();
     let interaction_state = NodeGraphInteractionState::default();
     let scroll_intent = viewport::resolve_viewport_scroll_gesture(
         &interaction_state.pan_interaction(),

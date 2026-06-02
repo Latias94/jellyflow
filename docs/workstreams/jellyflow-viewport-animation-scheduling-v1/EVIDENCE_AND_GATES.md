@@ -86,6 +86,39 @@ Fresh verification:
 - `jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl`: passed.
 - `git diff --check`: passed.
 
+### 2026-06-02 - JVAS-020 Pure Animation Planner
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/viewport/animation.rs`
+- `crates/jellyflow-runtime/src/runtime/viewport/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/viewport/animation.rs`
+- `crates/jellyflow-runtime/tests/public_surface.rs`
+
+Commands:
+
+```bash
+cargo fmt --check
+cargo nextest run -p jellyflow-runtime viewport_animation
+cargo nextest run -p jellyflow-runtime --test public_surface
+cargo nextest run -p jellyflow-runtime viewport
+```
+
+Result:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime viewport_animation`: passed, 4 tests run, 4 passed.
+- `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 3 tests run, 3 passed.
+- `cargo nextest run -p jellyflow-runtime viewport`: passed, 34 tests run, 34 passed.
+
+Behavior proven:
+
+- Viewport animation plans sample deterministic cubic-in-out eased frames.
+- Zero-duration animations finish immediately at the target transform.
+- Non-finite durations and elapsed times are rejected; negative elapsed time clamps to the start.
+- Linear easing is available as a named, serializable runtime option.
+- Public surface smoke covers exported animation request/options/easing/plan/frame types.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.
