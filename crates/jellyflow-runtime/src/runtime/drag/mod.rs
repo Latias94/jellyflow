@@ -6,6 +6,7 @@
 mod activation;
 mod candidates;
 mod constraints;
+mod parent_expansion;
 mod planner;
 mod pointer_gesture;
 mod store;

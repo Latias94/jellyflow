@@ -10,7 +10,7 @@ pub(super) fn candidate_bounds(candidates: &[DragCandidate]) -> Option<CanvasBou
         .reduce(CanvasBounds::union)
 }
 
-pub(super) fn candidate_bounds_at(
+pub(in crate::runtime::drag) fn candidate_bounds_at(
     candidate: DragCandidate,
     position: CanvasPoint,
 ) -> Option<CanvasBounds> {

@@ -1,7 +1,7 @@
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
 use crate::node_origin::resolve_node_origin;
 use crate::runtime::policy::resolve_node_interaction_policy;
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GroupId, Node, NodeId};
 
 use super::constraints::{normalized_size, resolved_extent_rect};
 
@@ -11,6 +11,8 @@ pub(super) struct DragCandidate {
     pub(super) from: CanvasPoint,
     pub(super) size: CanvasSize,
     pub(super) origin: (f32, f32),
+    pub(super) parent: Option<GroupId>,
+    pub(super) expand_parent: bool,
     pub(super) extent: Option<CanvasRect>,
     pub(super) node_extent_override: bool,
 }
@@ -44,6 +46,8 @@ pub(super) fn drag_candidates(
                     graph_node.origin,
                     (fallback_origin.x, fallback_origin.y),
                 ),
+                parent: graph_node.parent,
+                expand_parent: policy.expand_parent,
                 extent: resolved_extent_rect(
                     graph,
                     graph_node,

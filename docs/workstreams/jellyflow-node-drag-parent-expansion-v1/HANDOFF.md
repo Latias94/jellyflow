@@ -11,15 +11,21 @@ module split lanes.
 JNPE-010 is complete: the lane scope, non-goals, source coverage, task ledger, campaign record,
 milestones, gate set, context manifest, and machine-readable workstream metadata are recorded.
 
-The architecture gap is specific: current Jellyflow drag planning resolves `NodeExtent::Parent`
-with `expand_parent = true` to no parent clamp, then emits only `SetNodePos` operations. XyFlow's
-drag update path instead calls `handleExpandParent`, which expands parent rects and compensates
-non-dragged siblings when the parent expands left or upward.
+JNPE-020 is complete: `runtime::drag` now plans single-parent expansion by appending deterministic
+`SetGroupRect` operations after `SetNodePos` operations when a child with effective
+`expand_parent = true` would exceed the current parent group rect. `expand_parent = false` still
+clamps `NodeExtent::Parent` movement to the current parent rect.
+
+The remaining architecture gap is multi-node and left/top expansion behavior. XyFlow's drag update
+path calls `handleExpandParent`, which expands parent rects and compensates non-dragged siblings
+when the parent expands left or upward. Jellyflow now has the first `SetGroupRect` planning seam,
+but JNPE-030 still needs to prove deterministic multi-parent ordering and decide whether absolute
+group/node coordinates require sibling compensation.
 
 ## Next Task
 
-JNPE-020: implement the minimal runtime drag planner behavior for one dragged child expanding one
-parent group while preserving `expand_parent = false` clamping.
+JNPE-030: make parent expansion deterministic for multi-node drags, multiple parent groups, and
+non-dragged sibling compensation when parent rects expand left or upward.
 
 ## Decisions Since Opening
 
@@ -28,6 +34,8 @@ parent group while preserving `expand_parent = false` clamping.
 - Preserve current parent extent clamping when `expand_parent = false`.
 - Keep resize handles, raw pointer capture, renderer smoke, and schema migration outside this lane.
 - Treat nested parent cascading as a follow-on unless implementation evidence proves it is required.
+- XyFlow keyboard movement uses the same `updateNodePositions` path, so Jellyflow's shared
+  move-planner behavior may also expand parents during keyboard nudge.
 
 ## Blockers
 
@@ -35,7 +43,7 @@ parent group while preserving `expand_parent = false` clamping.
 
 ## Validation To Run
 
-For JNPE-020:
+For JNPE-030:
 
 ```bash
 cargo fmt --check
@@ -57,11 +65,14 @@ git diff --check
 
 - 2026-06-02: JNPE-010 opened the workstream from XyFlow `expandParent` source evidence and current
   Jellyflow drag planner gaps.
+- 2026-06-02: JNPE-020 added minimal single-parent expansion planning and focused runtime tests.
 
 ## Next Recommended Action
 
-Start JNPE-020 with red tests in `crates/jellyflow-runtime/src/runtime/tests/drag`, asserting that:
+Start JNPE-030 with focused runtime tests in `crates/jellyflow-runtime/src/runtime/tests/drag`,
+asserting that:
 
-- `expand_parent = false` still clamps a child to the current parent group rect;
-- `expand_parent = true` can move the child past the current parent edge;
-- the planned transaction includes a deterministic `SetGroupRect` for the parent group.
+- multiple expanding parent groups produce deterministic `SetGroupRect` ordering;
+- multi-selection expands each affected parent based on its moved children;
+- left/top expansion either preserves Jellyflow's absolute sibling positions without compensation or
+  adds explicit sibling `SetNodePos` compensation if the coordinate contract requires it.

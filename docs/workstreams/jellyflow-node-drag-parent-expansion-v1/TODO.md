@@ -20,7 +20,7 @@ Last updated: 2026-06-02
 
 ## M1 - Single-Parent Drag Expansion
 
-- [ ] JNPE-020 [owner=codex] [deps=JNPE-010] [scope=crates/jellyflow-runtime/src/runtime/drag,crates/jellyflow-runtime/src/runtime/tests/drag]
+- [x] JNPE-020 [owner=codex] [deps=JNPE-010] [scope=crates/jellyflow-runtime/src/runtime/drag,crates/jellyflow-runtime/src/runtime/tests/drag]
   Goal: Implement the minimal runtime drag planner behavior for one dragged child expanding one
   parent group while preserving `expand_parent = false` clamping.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime drag_parent_expansion;
@@ -28,9 +28,9 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: focused runtime drag tests and transaction op assertions.
   Context: docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNPE-020 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. Single-parent expansion now emits `SetNodePos` plus deterministic
+  `SetGroupRect`; `expand_parent = false` keeps the existing parent extent clamp.
+  State: TASKS.jsonl entry JNPE-020 records completion, validation, evidence, and handoff status.
 
 ## M2 - Multi-Selection And Sibling Compensation
 

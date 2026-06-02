@@ -92,6 +92,47 @@ Fresh verification:
 
 - Pending for the opening commit.
 
+### 2026-06-02 - JNPE-020 Single-Parent Drag Expansion
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/drag/candidates.rs`
+- `crates/jellyflow-runtime/src/runtime/drag/constraints/geometry.rs`
+- `crates/jellyflow-runtime/src/runtime/drag/constraints/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/drag/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/drag/parent_expansion.rs`
+- `crates/jellyflow-runtime/src/runtime/drag/planner.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/drag/parent_expansion.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/drag/mod.rs`
+
+Result:
+
+- Added a private `runtime::drag::parent_expansion` planner helper.
+- Drag candidates now carry parent group id and effective `expand_parent` policy.
+- Node move planning appends deterministic `SetGroupRect` operations after `SetNodePos` operations
+  when an expanding child would exceed the current parent group rect.
+- `expand_parent = false` continues to clamp `NodeExtent::Parent` movement to the current parent
+  group rect.
+
+Behavior proven:
+
+- A child with `NodeExtent::Parent` and `expand_parent = false` clamps to the current parent rect and
+  emits only `SetNodePos`.
+- A child with `NodeExtent::Parent` and `expand_parent = true` can move past the current parent edge
+  and emits `SetNodePos` followed by `SetGroupRect`.
+- Applying the planned drag updates both child position and parent group rect through normal
+  `NodeGraphStore` graph commit events.
+- Existing drag, nudge, gesture, conformance, and adapter drag tests still pass.
+
+Fresh verification:
+
+- Red check: `cargo nextest run -p jellyflow-runtime drag_parent_expansion` failed before
+  implementation because the enabled expansion plan emitted only `SetNodePos`.
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime drag_parent_expansion`: passed, 2 tests run, 2 passed.
+- `cargo nextest run -p jellyflow-runtime drag`: passed, 40 tests run, 40 passed.
+- `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

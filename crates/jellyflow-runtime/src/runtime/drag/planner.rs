@@ -5,6 +5,7 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 use super::candidates::drag_candidates;
 use super::constraints::{drag_items, snapped_delta};
+use super::parent_expansion::parent_expansion_ops;
 use super::types::{
     NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeDragItem, NodeDragPlan,
     NodeDragRequest, NodeNudgePlan, NodeNudgeRequest,
@@ -102,12 +103,16 @@ fn plan_node_move_delta(
     if items.is_empty() || items.iter().all(|item| item.from == item.to) {
         return None;
     }
-    let transaction = GraphTransaction::from_ops(items.iter().map(|item| GraphOp::SetNodePos {
-        id: item.node,
-        from: item.from,
-        to: item.to,
-    }))
-    .with_label(label);
+    let mut ops = items
+        .iter()
+        .map(|item| GraphOp::SetNodePos {
+            id: item.node,
+            from: item.from,
+            to: item.to,
+        })
+        .collect::<Vec<_>>();
+    ops.extend(parent_expansion_ops(graph, &candidates, &items));
+    let transaction = GraphTransaction::from_ops(ops).with_label(label);
 
     Some((delta, items, transaction))
 }
