@@ -1,6 +1,6 @@
 # Jellyflow Delete Contract v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Why This Lane Exists
@@ -91,3 +91,7 @@ This lane can close when:
 - docs teach the delete runtime/adapter split;
 - stale "no delete planner" follow-on wording is no longer the current navigation state;
 - package, JSON, and diff gates pass.
+
+Closed on 2026-06-02. Delete selection is documented as a runtime-owned headless contract, the
+template suite includes key-bound delete selection coverage, and async pre-delete/confirmation UI
+parity remains split to adapters or future evidence-backed lanes.

@@ -1,6 +1,6 @@
 # Jellyflow Delete Contract v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -38,7 +38,7 @@ Last updated: 2026-06-02
 
 ## M2 - Documentation And Closeout
 
-- [ ] JDC-030 [owner=codex] [deps=JDC-020] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-delete-contract-v1]
+- [x] JDC-030 [owner=codex] [deps=JDC-020] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-delete-contract-v1]
   Goal: Document delete runtime/adapter boundaries, clear stale follow-on navigation, record fresh
   evidence, and close or split follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -48,8 +48,11 @@ Last updated: 2026-06-02
   docs/workstreams/jellyflow-delete-contract-v1/CAMPAIGNS.jsonl
   docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl; git diff --check
   Review: review-workstream and verify-rust-workstream before closeout.
-  Evidence: README.md, crates/jellyflow-runtime/README.md, CONTEXT.md,
-  EVIDENCE_AND_GATES.md, WORKSTREAM.json, and closeout audit.
+  Evidence: `README.md`, `crates/jellyflow-runtime/README.md`, `CONTEXT.md`,
+  `docs/workstreams/jellyflow-delete-contract-v1/EVIDENCE_AND_GATES.md`,
+  `docs/workstreams/jellyflow-delete-contract-v1/WORKSTREAM.json`, and
+  `docs/workstreams/jellyflow-delete-contract-v1/CLOSEOUT_AUDIT_2026-06-02.md`.
   Context: docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JDC-030 must record closeout validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Documented runtime/adapter delete boundaries, recorded closeout
+  verification, split async pre-delete/confirmation parity, and closed the workstream.
+  State: TASKS.jsonl entry JDC-030 records DONE with closeout validation and evidence.

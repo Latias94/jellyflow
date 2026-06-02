@@ -1,6 +1,6 @@
 # Jellyflow Delete Contract v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -36,4 +36,6 @@ Exit criteria:
 - closeout audit records follow-ons such as async pre-delete or renderer confirmation dialogs;
 - package, clippy, JSON, and diff gates pass.
 
-Status: pending.
+Status: complete on 2026-06-02. Root/runtime docs document runtime-owned selection delete
+planning, adapter-owned platform key capture and pre-delete UI, and async confirmation parity as a
+follow-on. Workstream evidence and machine-readable state are closed with fresh package gates.

@@ -16,6 +16,8 @@
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
+- renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
+  `runtime::keyboard`;
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
   commands, and numeric hit testing;
@@ -45,6 +47,10 @@ validate behavior before rendering. The runtime crate supports that split with:
 
 - `NodeGraphStore::apply_selection_box` and `runtime::selection::compute_selection_box` for
   deterministic canvas-space selection;
+- `NodeGraphStore::plan_delete_selection`, `NodeGraphStore::apply_delete_selection`,
+  `NodeGraphStore::apply_delete_selection_for_key`, and `runtime::keyboard::KeyboardIntent` for
+  deterministic selected node/edge deletion through effective policy, configured delete keys,
+  cascaded connected-edge deletion, normal graph transactions, and selection cleanup;
 - `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
   deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
   snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;
@@ -105,6 +111,13 @@ and pixels. Exact XyFlow pointer-resize extent and keep-aspect-ratio parity shou
 through a future pointer-resize session request if adapter evidence needs it; it is intentionally
 not modeled as a renderer or DOM dependency in `jellyflow-runtime`.
 
+Delete selection planning is runtime-owned: adapters maintain view-state selection and translate
+platform keyboard input into direct delete calls or `KeyboardIntent`. The runtime resolves the
+configured delete key, effective `deletable` policy, selected nodes/edges, cascaded connected-edge
+deletion, `delete selection` transactions, XyFlow-style callback projections, and stale selection
+cleanup. Adapters still own raw key capture, focus/input suppression, confirmation dialogs, async
+pre-delete hooks such as XyFlow `onBeforeDelete`, renderer feedback, screenshots, and pixels.
+
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
 fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
 node drag, node resize, connect/reconnect, delete, viewport gestures, viewport animation frames,
@@ -114,7 +127,10 @@ loops into runtime. Parent expansion fixtures should use `ConformanceAction::app
 exercises the same runtime interaction boundary and records `set_group_rect` graph-commit traces
 when parent expansion occurs. Resize fixtures should use `ConformanceAction::apply_node_resize`,
 which exercises the same runtime interaction boundary and records `set_node_size` or
-`set_node_pos` plus `set_node_size` graph-commit traces.
+`set_node_pos` plus `set_node_size` graph-commit traces. Delete fixtures should use
+`ConformanceAction::apply_delete_selection` or `apply_delete_selection_for_key`, which records
+`remove_node` or `remove_edge` graph commits, XyFlow-style delete/disconnect callbacks, and
+selection cleanup traces.
 
 The runtime crate also includes a thin renderer-free example harness for agents and CI:
 

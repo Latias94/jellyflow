@@ -1,6 +1,6 @@
 # Jellyflow Delete Contract v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -108,6 +108,36 @@ Fresh verification:
 - 2026-06-02: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 18 tests run.
 - 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml` passed, 10 tests run.
 - 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check` passed and reported matching built-in suite traces.
+
+### 2026-06-02 - JDC-030 Documentation And Closeout
+
+Scope: `README.md`, `crates/jellyflow-runtime/README.md`, `CONTEXT.md`,
+`docs/workstreams/jellyflow-delete-contract-v1`
+
+Result:
+
+- Documented `runtime::delete` and `runtime::keyboard` in the root and runtime README interaction
+  contracts.
+- Documented runtime ownership of delete selection planning, configured delete-key gating,
+  effective policy checks, cascaded edge deletion, XyFlow-style callbacks, and selection cleanup.
+- Documented adapter ownership of platform key capture, focus/input suppression, confirmation
+  dialogs, async pre-delete hooks, renderer feedback, screenshots, and pixels.
+- Cleared stale "delete planner ownership" navigation from `CONTEXT.md`.
+- Closed workstream metadata, task ledger, campaign record, handoff, and closeout audit.
+
+Behavior proven:
+
+- Template and runtime conformance evidence already prove delete commit and callback traces.
+- Headless crates still avoid renderer, DOM, d3, wgpu, egui, Fret, screenshot, and pixel
+  dependencies.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime` passed, 291 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+- 2026-06-02: `jq empty docs/workstreams/jellyflow-delete-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-delete-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl` passed.
+- 2026-06-02: `git diff --check` passed.
 
 ## Notes
 

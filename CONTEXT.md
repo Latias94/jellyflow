@@ -95,9 +95,7 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the active workstream is
-`docs/workstreams/jellyflow-delete-contract-v1/`, which promotes existing runtime delete selection
-helpers into a documented adapter conformance/template contract. Verify current state with:
+audits, and handoffs. At this update, the existing workstreams are closed. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -111,7 +109,7 @@ Closed lane themes include:
 - runtime public-surface cleanup and XyFlow compatibility isolation;
 - model policy boundary and `runtime::policy`;
 - geometry/spatial extraction into renderer-neutral runtime APIs;
-- interaction harness, node drag, viewport, and auto-pan kernels;
+- interaction harness, node drag, delete selection, viewport, and auto-pan kernels;
 - renderer-neutral node resize planning and conformance/template coverage;
 - conformance module splits, fixture format, golden approval, CLI harness, fixture discovery, and
   file-backed fixture loading;

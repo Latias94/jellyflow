@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-delete-contract-v1",
   "title": "Jellyflow Delete Contract v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl",
-  "current_task": "JDC-030",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime conformance",
@@ -68,6 +68,11 @@
       "date": "2026-06-02",
       "task": "JDC-020",
       "summary": "Added template adapter delete selection smoke coverage with key-bound conformance action, cascaded edge deletion, XyFlow-style callbacks, and 7-scenario suite assertions."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JDC-030",
+      "summary": "Documented runtime/adapter delete boundaries, cleared stale follow-on navigation, split async pre-delete/confirmation parity, and closed the workstream."
     }
   ],
   "adr_refs": [
@@ -93,8 +98,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "next_task",
-    "next_task": "JDC-030",
-    "notes": "Continue with JDC-030: document delete runtime/adapter boundaries, clear stale follow-on navigation, record closeout evidence, and close or split follow-ons. Keep DOM key handling, async pre-delete hooks, renderer UI, screenshots, and pixels out of scope."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Workstream closed on 2026-06-02. Follow-on: async pre-delete or confirmation-dialog parity only after adapter evidence proves normalized runtime::delete/runtime::keyboard calls are insufficient."
   }
 }

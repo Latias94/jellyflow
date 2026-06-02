@@ -1,6 +1,6 @@
 # Jellyflow Delete Contract v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
@@ -10,6 +10,10 @@ JDC-010 is complete: the lane is open and source coverage is recorded.
 JDC-020 is complete: the headless adapter template now includes a delete selection scenario using
 `apply_delete_selection_for_key(Backspace)`, a single-scenario smoke helper, 7-scenario suite
 assertions, and README coverage.
+
+JDC-030 is complete: root/runtime docs present delete as a first-class runtime interaction
+contract, stale follow-on navigation is cleared, closeout evidence is recorded, and this workstream
+is closed.
 
 Jellyflow already has the core runtime behavior:
 
@@ -21,13 +25,11 @@ Jellyflow already has the core runtime behavior:
 - focused runtime tests already cover node deletion, edge deletion, key gates, policy rejection,
   empty selection no-op, and stale view-state cleanup.
 
-The remaining gap is documentation/closeout: root/runtime docs should present delete as a
-first-class runtime interaction contract, and stale follow-on navigation should be cleared.
+The remaining gaps are intentionally split follow-ons.
 
 ## Next Task
 
-JDC-030: document delete runtime/adapter boundaries, record closeout evidence, and close or split
-follow-ons.
+None. This workstream is closed.
 
 ## Decisions Since Opening
 
@@ -61,11 +63,9 @@ jq empty docs/workstreams/jellyflow-delete-contract-v1/WORKSTREAM.json docs/work
 git diff --check
 ```
 
+JDC-030 passed these gates on 2026-06-02.
+
 ## Next Recommended Action
 
-Start JDC-030 by updating README/runtime README and closeout docs:
-
-- explain runtime owns selection delete planning and deterministic transactions;
-- explain adapters own platform key capture, focus/input suppression, confirmation dialogs, and
-  async pre-delete hooks;
-- keep renderer smoke and pixel checks in adapter crates.
+Open a follow-on only if adapter evidence needs async pre-delete or confirmation-dialog parity
+inside a structured headless request. Renderer smoke remains in adapter crates.
