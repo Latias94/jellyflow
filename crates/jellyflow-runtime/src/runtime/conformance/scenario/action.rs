@@ -70,6 +70,10 @@ pub enum ConformanceAction {
         request: ViewportAnimationRequest,
         elapsed_seconds: f32,
     },
+    ApplyViewportAnimationFrames {
+        request: ViewportAnimationRequest,
+        elapsed_seconds: Vec<f32>,
+    },
     AssertViewportAnimationFrame {
         request: ViewportAnimationRequest,
         elapsed_seconds: f32,
@@ -125,6 +129,7 @@ impl ConformanceAction {
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
             Self::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
+            Self::ApplyViewportAnimationFrames { .. } => "apply_viewport_animation_frames",
             Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
             Self::AssertViewportDoubleClickZoom { .. } => "assert_viewport_double_click_zoom",
             Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
@@ -214,6 +219,16 @@ impl ConformanceAction {
         Self::ApplyViewportAnimationFrame {
             request,
             elapsed_seconds,
+        }
+    }
+
+    pub fn apply_viewport_animation_frames(
+        request: ViewportAnimationRequest,
+        elapsed_seconds: impl IntoIterator<Item = f32>,
+    ) -> Self {
+        Self::ApplyViewportAnimationFrames {
+            request,
+            elapsed_seconds: elapsed_seconds.into_iter().collect(),
         }
     }
 

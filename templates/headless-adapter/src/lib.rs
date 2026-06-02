@@ -159,8 +159,8 @@ fn viewport_animation_scenario() -> ConformanceScenario {
         .expect("valid viewport");
     let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0)
         .expect("valid viewport");
-    let sampled_pan = CanvasPoint { x: 40.0, y: -20.0 };
-    let sampled_zoom = 1.5;
+    let midpoint_pan = CanvasPoint { x: 40.0, y: -20.0 };
+    let endpoint_pan = CanvasPoint { x: 80.0, y: -40.0 };
 
     let double_click_current =
         ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0)
@@ -178,9 +178,9 @@ fn viewport_animation_scenario() -> ConformanceScenario {
     ConformanceScenario::new("template viewport animation", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
         .with_actions([
-            ConformanceAction::apply_viewport_animation_frame(
+            ConformanceAction::apply_viewport_animation_frames(
                 ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
-                0.5,
+                [0.5, 1.0],
             ),
             ConformanceAction::assert_viewport_double_click_zoom(
                 ViewportDoubleClickZoomInput::new(
@@ -195,16 +195,27 @@ fn viewport_animation_scenario() -> ConformanceScenario {
             ),
         ])
         .with_expected_trace([
-            ConformanceTraceEvent::viewport(sampled_pan, sampled_zoom),
+            ConformanceTraceEvent::viewport(midpoint_pan, 1.5),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
                 changes: vec![ConformanceViewChange::Viewport {
-                    pan: sampled_pan,
-                    zoom: sampled_zoom,
+                    pan: midpoint_pan,
+                    zoom: 1.5,
                 }],
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
-                pan: sampled_pan,
-                zoom: sampled_zoom,
+                pan: midpoint_pan,
+                zoom: 1.5,
+            }),
+            ConformanceTraceEvent::viewport(endpoint_pan, 2.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: endpoint_pan,
+                    zoom: 2.0,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: endpoint_pan,
+                zoom: 2.0,
             }),
         ])
 }

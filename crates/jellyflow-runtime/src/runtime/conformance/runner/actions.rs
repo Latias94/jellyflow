@@ -80,10 +80,21 @@ pub(super) fn execute_action(
         } => {
             let plan = plan_viewport_animation_with_options(*request)
                 .ok_or_else(|| "viewport animation request was rejected".to_owned())?;
-            let frame = plan
-                .frame_at(*elapsed_seconds)
-                .ok_or_else(|| "viewport animation frame was rejected".to_owned())?;
-            store.set_viewport(frame.transform.pan, frame.transform.zoom);
+            apply_viewport_animation_frame(store, plan, *elapsed_seconds)?;
+            Ok(())
+        }
+        ConformanceAction::ApplyViewportAnimationFrames {
+            request,
+            elapsed_seconds,
+        } => {
+            if elapsed_seconds.is_empty() {
+                return Err("viewport animation frame list was empty".to_owned());
+            }
+            let plan = plan_viewport_animation_with_options(*request)
+                .ok_or_else(|| "viewport animation request was rejected".to_owned())?;
+            for elapsed_seconds in elapsed_seconds {
+                apply_viewport_animation_frame(store, plan, *elapsed_seconds)?;
+            }
             Ok(())
         }
         ConformanceAction::AssertViewportAnimationFrame {
@@ -155,6 +166,18 @@ pub(super) fn execute_action(
             Ok(())
         }
     }
+}
+
+fn apply_viewport_animation_frame(
+    store: &mut NodeGraphStore,
+    plan: ViewportAnimationPlan,
+    elapsed_seconds: f32,
+) -> Result<(), String> {
+    let frame = plan
+        .frame_at(elapsed_seconds)
+        .ok_or_else(|| "viewport animation frame was rejected".to_owned())?;
+    store.set_viewport(frame.transform.pan, frame.transform.zoom);
+    Ok(())
 }
 
 fn assert_viewport_double_click_zoom_result(

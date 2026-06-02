@@ -271,6 +271,70 @@ fn conformance_runner_applies_viewport_animation_frame_with_trace() {
 }
 
 #[test]
+fn conformance_runner_applies_viewport_animation_frames_with_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).unwrap();
+    let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0).unwrap();
+    let midpoint_pan = CanvasPoint { x: 40.0, y: -20.0 };
+    let endpoint_pan = CanvasPoint { x: 80.0, y: -40.0 };
+
+    let scenario = ConformanceScenario::new("viewport animation frame sequence", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_viewport_animation_frames(
+            ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
+            [0.5, 1.0],
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(midpoint_pan, 1.5),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: midpoint_pan,
+                    zoom: 1.5,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: midpoint_pan,
+                zoom: 1.5,
+            }),
+            ConformanceTraceEvent::viewport(endpoint_pan, 2.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: endpoint_pan,
+                    zoom: 2.0,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: endpoint_pan,
+                zoom: 2.0,
+            }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
+fn conformance_runner_rejects_empty_viewport_animation_frame_sequence() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).unwrap();
+    let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0).unwrap();
+
+    let scenario = ConformanceScenario::new("empty viewport animation frame sequence", graph)
+        .with_actions([ConformanceAction::apply_viewport_animation_frames(
+            ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
+            Vec::<f32>::new(),
+        )]);
+
+    let err = run_conformance_scenario(&scenario).expect_err("empty frame sequence should error");
+
+    assert_eq!(err.scenario, "empty viewport animation frame sequence");
+    assert_eq!(err.action_index, 0);
+    assert_eq!(err.action_kind, "apply_viewport_animation_frames");
+    assert!(err.message.contains("frame list was empty"));
+}
+
+#[test]
 fn conformance_runner_asserts_double_click_zoom_plan_without_trace() {
     let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let current = ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0).unwrap();
