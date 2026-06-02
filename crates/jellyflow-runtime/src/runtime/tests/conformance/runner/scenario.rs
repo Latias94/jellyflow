@@ -1,8 +1,8 @@
 use super::*;
 use jellyflow_core::core::{EdgeId, NodeId};
 
-fn node_pointer_down_selection_trace(node_id: NodeId) -> [ConformanceTraceEvent; 3] {
-    [
+fn node_pointer_down_selection_trace(node_id: NodeId) -> Vec<ConformanceTraceEvent> {
+    vec![
         ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
         ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
             changes: vec![ConformanceViewChange::Selection {
@@ -19,14 +19,9 @@ fn node_pointer_down_selection_trace(node_id: NodeId) -> [ConformanceTraceEvent;
     ]
 }
 
-fn node_pointer_down_view_state(
-    node_id: NodeId,
-    other: NodeId,
-    edge_id: EdgeId,
-) -> crate::io::NodeGraphViewState {
+fn node_pointer_down_view_state(other: NodeId, edge_id: EdgeId) -> crate::io::NodeGraphViewState {
     let mut view_state = crate::io::NodeGraphViewState::default();
     view_state.set_selection(vec![other], vec![edge_id], Vec::new());
-    let _ = node_id;
     view_state
 }
 
@@ -200,7 +195,7 @@ fn conformance_runner_reports_compact_trace_mismatches() {
 #[test]
 fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_trace() {
     let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
-    let view_state = node_pointer_down_view_state(node_id, other, edge_id);
+    let view_state = node_pointer_down_view_state(other, edge_id);
 
     let scenario = ConformanceScenario::new("node pointer down runner", graph)
         .with_view_state(view_state)
@@ -221,7 +216,7 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
 #[test]
 fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
     let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
-    let view_state = node_pointer_down_view_state(node_id, other, edge_id);
+    let view_state = node_pointer_down_view_state(other, edge_id);
 
     let start = NodeDragStart {
         primary: node_id,
@@ -238,6 +233,23 @@ fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
     };
     let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
 
+    let mut expected_trace = node_pointer_down_selection_trace(node_id);
+    expected_trace.extend([
+        ConformanceTraceEvent::gesture(start_event.clone()),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start.clone())),
+        ConformanceTraceEvent::graph_commit(Some(NODE_DRAG_TRANSACTION_LABEL), ["set_node_pos"]),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+            label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+        }),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+            nodes: 1,
+            edges: 0,
+        }),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ConformanceTraceEvent::gesture(update_event.clone()),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update.clone())),
+    ]);
+
     let scenario = ConformanceScenario::new("node pointer down drag chain", graph)
         .with_view_state(view_state)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
@@ -251,27 +263,7 @@ fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
             ConformanceAction::apply_node_drag(node_id, target),
             ConformanceAction::emit_gesture(update_event.clone()),
         ])
-        .with_expected_trace([
-            node_pointer_down_selection_trace(node_id)[0].clone(),
-            node_pointer_down_selection_trace(node_id)[1].clone(),
-            node_pointer_down_selection_trace(node_id)[2].clone(),
-            ConformanceTraceEvent::gesture(start_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start)),
-            ConformanceTraceEvent::graph_commit(
-                Some(NODE_DRAG_TRANSACTION_LABEL),
-                ["set_node_pos"],
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 1,
-                edges: 0,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-            ConformanceTraceEvent::gesture(update_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update)),
-        ]);
+        .with_expected_trace(expected_trace);
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
 
