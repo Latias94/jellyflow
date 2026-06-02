@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guidance for quality check."}
+{"file": ".trellis/spec/repository/backend/index.md", "reason": "Repository-level backend quality guidance."}
+{"file": "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md", "reason": "Verify report preserves headless boundary."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Verify report preserves renderer/testing boundary."}

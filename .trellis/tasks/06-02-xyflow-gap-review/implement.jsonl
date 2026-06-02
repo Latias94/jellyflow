@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guidance for all tasks."}
+{"file": ".trellis/spec/repository/backend/index.md", "reason": "Repository-level backend guidelines for documentation-only review work."}
+{"file": ".trellis/spec/jellyflow-core/backend/index.md", "reason": "Core package boundary and quality guidance."}
+{"file": ".trellis/spec/jellyflow-runtime/backend/index.md", "reason": "Runtime package boundary and quality guidance."}
+{"file": "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md", "reason": "Accepted headless package boundary for core/runtime versus adapters."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Accepted conformance and renderer boundary."}
