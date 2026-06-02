@@ -34,7 +34,7 @@ Last updated: 2026-06-02
 
 ## M2 - Multi-Selection And Sibling Compensation
 
-- [ ] JNPE-030 [owner=codex] [deps=JNPE-020] [scope=crates/jellyflow-runtime/src/runtime/drag,crates/jellyflow-runtime/src/runtime/tests/drag]
+- [x] JNPE-030 [owner=codex] [deps=JNPE-020] [scope=crates/jellyflow-runtime/src/runtime/drag,crates/jellyflow-runtime/src/runtime/tests/drag]
   Goal: Make parent expansion deterministic for multi-node drags, multiple parent groups, and
   non-dragged sibling compensation when parent rects expand left or upward.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime drag_parent_expansion;
@@ -42,9 +42,10 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: multi-parent and sibling-compensation runtime tests.
   Context: docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNPE-030 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. Multi-parent expansion order is deterministic; left/top expansion keeps
+  non-dragged sibling node positions unchanged because Jellyflow stores node positions in canvas
+  space.
+  State: TASKS.jsonl entry JNPE-030 records completion, validation, evidence, and handoff status.
 
 ## M3 - Conformance And Adapter Trace Coverage
 

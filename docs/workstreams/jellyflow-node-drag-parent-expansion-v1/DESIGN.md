@@ -84,7 +84,7 @@ This lane closes when Jellyflow has a renderer-neutral parent expansion contract
 | Parent expansion belongs in `runtime::drag`, not adapters. | High | Drag already plans movement, snap, extents, and store transactions. | Adapter crates would duplicate behavior and conformance would miss it. |
 | Existing `GraphOp::SetGroupRect` is the right operation for parent expansion. | High | Core transactions already support group rect edits and undo/redo. | Add a new op only if rect expansion cannot express the behavior. |
 | `expand_parent = false` must keep current parent clamp behavior. | High | XyFlow `calculateNodePosition` clamps `extent: parent` when expandParent is false. | Regression tests must protect current clamping. |
-| Parent-left/top expansion needs sibling compensation. | Medium | XyFlow `handleExpandParent` moves non-dragged children in the opposite direction. | If Jellyflow group/node coordinates differ, document and test the chosen contract. |
+| Parent-left/top expansion needs a Jellyflow-specific coordinate decision. | High | XyFlow uses parent-relative child positions, while Jellyflow stores node positions in canvas space. | Document and test whether sibling compensation is required. |
 | Nested parent cascading can wait for evidence. | Medium | Current Jellyflow groups are rect resources rather than nested node containers. | Split a follow-on if adapter tests expose nested expansion gaps. |
 
 ## Architecture Direction
@@ -102,6 +102,16 @@ canvas-space drag target
 The public request should remain small if possible. The planner already has enough graph, policy,
 node size, origin, parent, and extent context to decide expansion. Any new public plan output should
 describe what happened, not require adapters to participate in the calculation.
+
+## Coordinate Decision
+
+XyFlow compensates non-dragged siblings when a parent expands left or upward because child node
+positions are parent-relative: changing the parent position would otherwise move siblings visually.
+Jellyflow stores node positions in canvas space and group rects as independent canvas-space
+resources. Expanding a group rect left or upward does not move child nodes by itself, so the runtime
+does not add sibling `SetNodePos` compensation ops for v1. If a future adapter introduces
+parent-relative rendering, that adapter must either translate into Jellyflow's canvas-space model or
+open a new ADR-backed coordinate-model lane.
 
 ## Source Coverage
 

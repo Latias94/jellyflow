@@ -16,16 +16,16 @@ JNPE-020 is complete: `runtime::drag` now plans single-parent expansion by appen
 `expand_parent = true` would exceed the current parent group rect. `expand_parent = false` still
 clamps `NodeExtent::Parent` movement to the current parent rect.
 
-The remaining architecture gap is multi-node and left/top expansion behavior. XyFlow's drag update
-path calls `handleExpandParent`, which expands parent rects and compensates non-dragged siblings
-when the parent expands left or upward. Jellyflow now has the first `SetGroupRect` planning seam,
-but JNPE-030 still needs to prove deterministic multi-parent ordering and decide whether absolute
-group/node coordinates require sibling compensation.
+JNPE-030 is complete: multi-parent expansion order is tested and deterministic. Left/top expansion
+updates the parent group rect while preserving non-dragged sibling node positions. This is
+intentional because Jellyflow stores node positions in canvas space, unlike XyFlow's
+parent-relative child positions that require sibling compensation when parent position changes.
 
 ## Next Task
 
-JNPE-030: make parent expansion deterministic for multi-node drags, multiple parent groups, and
-non-dragged sibling compensation when parent rects expand left or upward.
+JNPE-040: add conformance/template coverage for parent expansion transactions and any adapter-facing
+node-change or callback traces affected by expanded parent groups, or record a no-schema-change
+decision if existing transaction dispatch coverage is enough.
 
 ## Decisions Since Opening
 
@@ -36,6 +36,8 @@ non-dragged sibling compensation when parent rects expand left or upward.
 - Treat nested parent cascading as a follow-on unless implementation evidence proves it is required.
 - XyFlow keyboard movement uses the same `updateNodePositions` path, so Jellyflow's shared
   move-planner behavior may also expand parents during keyboard nudge.
+- Do not add XyFlow-style sibling compensation ops for left/top parent expansion while Jellyflow
+  keeps node positions in canvas space.
 
 ## Blockers
 
@@ -43,12 +45,14 @@ non-dragged sibling compensation when parent rects expand left or upward.
 
 ## Validation To Run
 
-For JNPE-030:
+For JNPE-040:
 
 ```bash
 cargo fmt --check
-cargo nextest run -p jellyflow-runtime drag_parent_expansion
-cargo nextest run -p jellyflow-runtime drag
+cargo nextest run -p jellyflow-runtime conformance
+cargo nextest run -p jellyflow-runtime adapter_conformance
+cargo test --manifest-path templates/headless-adapter/Cargo.toml
+cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
 For lane closeout:
@@ -66,13 +70,14 @@ git diff --check
 - 2026-06-02: JNPE-010 opened the workstream from XyFlow `expandParent` source evidence and current
   Jellyflow drag planner gaps.
 - 2026-06-02: JNPE-020 added minimal single-parent expansion planning and focused runtime tests.
+- 2026-06-02: JNPE-030 proved multi-parent ordering and left/top no-compensation coordinate
+  behavior with focused runtime tests.
 
 ## Next Recommended Action
 
-Start JNPE-030 with focused runtime tests in `crates/jellyflow-runtime/src/runtime/tests/drag`,
-asserting that:
+Start JNPE-040 by checking the current conformance fixture vocabulary:
 
-- multiple expanding parent groups produce deterministic `SetGroupRect` ordering;
-- multi-selection expands each affected parent based on its moved children;
-- left/top expansion either preserves Jellyflow's absolute sibling positions without compensation or
-  adds explicit sibling `SetNodePos` compensation if the coordinate contract requires it.
+- if `DispatchTransaction` already proves `SetGroupRect` replay and callback traces, record a
+  no-schema-change decision and only add adapter-facing tests where coverage is missing;
+- otherwise add a dedicated parent-expansion conformance action or template scenario without
+  renderer dependencies.

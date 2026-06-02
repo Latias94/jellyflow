@@ -51,7 +51,7 @@ cargo nextest run -p jellyflow-runtime drag_parent_expansion
 cargo nextest run -p jellyflow-runtime drag
 ```
 
-Status: pending.
+Status: complete on 2026-06-02.
 
 ## M3 - Conformance And Adapter Trace Coverage
 

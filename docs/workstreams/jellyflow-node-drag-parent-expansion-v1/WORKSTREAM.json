@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl",
-  "current_task": "JNPE-030",
+  "current_task": "JNPE-040",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime drag_parent_expansion",
@@ -69,6 +69,11 @@
       "date": "2026-06-02",
       "task": "JNPE-020",
       "summary": "Added minimal single-parent drag expansion planning with SetGroupRect while preserving expand_parent=false parent extent clamping."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNPE-030",
+      "summary": "Proved deterministic multi-parent expansion and recorded that Jellyflow absolute node coordinates do not require sibling compensation ops."
     }
   ],
   "adr_refs": [
@@ -95,7 +100,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "next_task",
-    "next_task": "JNPE-030",
-    "notes": "Continue with JNPE-030: prove multi-node, multi-parent, and left/top expansion behavior. Decide whether Jellyflow absolute group/node coordinates require XyFlow-style sibling compensation or a documented no-compensation contract."
+    "next_task": "JNPE-040",
+    "notes": "Continue with JNPE-040: decide and implement conformance/template coverage for parent expansion transactions and adapter-facing traces, or record why existing transaction dispatch is enough."
   }
 }
