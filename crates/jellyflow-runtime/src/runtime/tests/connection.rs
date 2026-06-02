@@ -8,7 +8,7 @@ use crate::runtime::connection::{
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, NodeId, Port, PortCapacity, PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
@@ -371,13 +371,13 @@ fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
         crate::io::NodeGraphViewState::default(),
         crate::runtime::tests::fixtures::default_editor_config(),
     );
+    let edge_id = EdgeId::from_u128(900);
 
     let outcome = store
-        .apply_connect_edge(ConnectEdgeRequest::new(
-            out_port,
-            next_in,
-            NodeGraphConnectionMode::Strict,
-        ))
+        .apply_connect_edge(
+            ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
+                .with_edge_id(edge_id),
+        )
         .expect("connect edge should dispatch")
         .expect("connect edge should commit");
 
@@ -385,11 +385,11 @@ fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
         outcome.committed().label(),
         Some(CONNECT_EDGE_TRANSACTION_LABEL)
     );
-    let edge_id = match outcome.committed().ops() {
+    match outcome.committed().ops() {
         [GraphOp::AddEdge { id, edge }] => {
+            assert_eq!(*id, edge_id);
             assert_eq!(edge.from, out_port);
             assert_eq!(edge.to, next_in);
-            *id
         }
         other => panic!("expected single add-edge op, got {other:#?}"),
     };

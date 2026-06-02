@@ -13,6 +13,7 @@ mod target;
 pub use activation::{ConnectionDragActivationInput, connection_drag_threshold_met};
 pub use connect::{
     CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeError, ConnectEdgeRequest, connect_edge_transaction,
+    connect_edge_transaction_with_edge_id,
 };
 pub use handles::{
     ClosestConnectionHandle, ClosestConnectionHandleInput, ConnectionHandleCandidate,

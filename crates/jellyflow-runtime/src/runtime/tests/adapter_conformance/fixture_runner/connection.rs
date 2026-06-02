@@ -59,28 +59,10 @@ fn adapter_conformance_fixture_runner_asserts_connection_target_policy() {
 }
 
 #[test]
-fn adapter_conformance_fixture_runner_executes_connect_edge_action() {
-    let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
-    let next_in = insert_input_port(&mut graph, b, "in2");
-
-    let scenario = ConformanceScenario::new("connect edge action", graph)
-        .with_trace_config(ConformanceTraceConfig {
-            record_store_events: false,
-            record_gesture_events: false,
-            record_xyflow_callbacks: false,
-        })
-        .with_actions([ConformanceAction::apply_connect_edge(
-            ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict),
-        )])
-        .with_expected_trace([]);
-
-    assert_conformance_trace(&scenario);
-}
-
-#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_callbacks() {
     let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");
+    let edge_id = EdgeId::from_u128(300);
     let kind = ConnectDragKind::New {
         from: out_port,
         bundle: vec![out_port],
@@ -90,14 +72,6 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
         mode: NodeGraphConnectionMode::Strict,
     };
     let start_event = NodeGraphGestureEvent::ConnectStart(start.clone());
-
-    let plan = plan_connect(&graph, out_port, next_in);
-    assert!(plan.is_accept(), "connect gesture fixture should accept");
-    let tx = GraphTransaction::from_ops(plan.into_ops()).with_label("connect gesture commit");
-    let (edge_id, edge) = match tx.ops() {
-        [GraphOp::AddEdge { id, edge }] => (*id, edge.clone()),
-        other => panic!("expected single add-edge op, got {other:#?}"),
-    };
     let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
 
     let end = ConnectEnd {
@@ -108,21 +82,22 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
     };
     let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
 
-    assert_eq!(edge.from, out_port);
-    assert_eq!(edge.to, next_in);
     let scenario = ConformanceScenario::new("connect gesture transaction callbacks", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
         .with_actions([
             ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::dispatch_transaction(tx),
+            ConformanceAction::apply_connect_edge(
+                ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
+                    .with_edge_id(edge_id),
+            ),
             ConformanceAction::emit_gesture(end_event.clone()),
         ])
         .with_expected_trace([
             ConformanceTraceEvent::gesture(start_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectStart(start)),
-            ConformanceTraceEvent::graph_commit(Some("connect gesture commit"), ["add_edge"]),
+            ConformanceTraceEvent::graph_commit(Some(CONNECT_EDGE_TRANSACTION_LABEL), ["add_edge"]),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some("connect gesture commit".to_owned()),
+                label: Some(CONNECT_EDGE_TRANSACTION_LABEL.to_owned()),
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
                 nodes: 0,

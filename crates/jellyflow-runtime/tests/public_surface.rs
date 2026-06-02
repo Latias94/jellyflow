@@ -174,6 +174,8 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<connection::ConnectEdgeRequest>();
     let _ = std::mem::size_of::<connection::ConnectEdgeError>();
     let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::connect_edge_transaction;
+    let _: fn(&ConnectPlan, EdgeId) -> Option<GraphTransaction> =
+        connection::connect_edge_transaction_with_edge_id;
     assert_eq!(connection::CONNECT_EDGE_TRANSACTION_LABEL, "connect edge");
     let _ = std::mem::size_of::<connection::ReconnectEdgeRequest>();
     let _ = std::mem::size_of::<connection::ReconnectEdgeError>();
@@ -397,12 +399,14 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             feedback: connection::ConnectionHandleValidity::Valid,
         },
     );
-    let connect_action =
-        conformance::ConformanceAction::apply_connect_edge(connection::ConnectEdgeRequest::new(
+    let connect_action = conformance::ConformanceAction::apply_connect_edge(
+        connection::ConnectEdgeRequest::new(
             PortId::new(),
             PortId::new(),
             NodeGraphConnectionMode::Strict,
-        ));
+        )
+        .with_edge_id(EdgeId::new()),
+    );
     let reconnect_action = conformance::ConformanceAction::apply_reconnect_edge(
         connection::ReconnectEdgeRequest::new(
             EdgeId::new(),
