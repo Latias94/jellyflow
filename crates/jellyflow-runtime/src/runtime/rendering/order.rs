@@ -1,18 +1,7 @@
-//! Renderer-neutral ordering helpers.
-//!
-//! Adapters still own painting, widgets, and GPU/UI details. This module only resolves the stable
-//! node order they should use when interpreting Jellyflow view-state.
-
 use std::collections::HashSet;
 
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
-use crate::runtime::lookups::NodeGraphLookups;
-use crate::runtime::store::NodeGraphStore;
-use crate::runtime::utils::{GetNodesInsideOptions, NodeInclusion, get_nodes_inside};
-use crate::runtime::viewport::ViewportTransform;
-use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, Graph, GroupId, NodeId,
-};
+use jellyflow_core::core::{Edge, EdgeId, Graph, GroupId, NodeId};
 
 /// Options for resolving a node render order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,48 +27,6 @@ pub struct EdgeRenderOrderOptions {
 pub struct GroupRenderOrderOptions {
     /// Raise selected groups to the front of the returned order.
     pub elevate_groups_on_select: bool,
-}
-
-/// Request for resolving node ids that should be considered visible to a renderer.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VisibleNodeIdsRequest {
-    /// Current viewport transform.
-    pub transform: ViewportTransform,
-    /// Logical screen-pixel size of the adapter viewport.
-    pub viewport_size: CanvasSize,
-    /// Whether to cull nodes outside the current viewport.
-    pub only_render_visible_elements: bool,
-    /// Node origin fallback used when a node does not carry its own origin.
-    pub node_origin: (f32, f32),
-    /// Fallback size for nodes without resolved dimensions.
-    pub fallback_size: Option<CanvasSize>,
-}
-
-impl VisibleNodeIdsRequest {
-    pub fn new(transform: ViewportTransform, viewport_size: CanvasSize) -> Self {
-        Self {
-            transform,
-            viewport_size,
-            only_render_visible_elements: true,
-            node_origin: (0.0, 0.0),
-            fallback_size: None,
-        }
-    }
-
-    pub fn with_only_render_visible_elements(mut self, enabled: bool) -> Self {
-        self.only_render_visible_elements = enabled;
-        self
-    }
-
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.node_origin = node_origin;
-        self
-    }
-
-    pub fn with_fallback_size(mut self, fallback_size: Option<CanvasSize>) -> Self {
-        self.fallback_size = fallback_size;
-        self
-    }
 }
 
 impl EdgeRenderOrderOptions {
@@ -290,59 +237,6 @@ pub fn resolve_edge_render_order(
     normal
 }
 
-/// Resolves deterministic node ids visible to the current viewport.
-///
-/// This is the headless counterpart to XyFlow's `onlyRenderVisibleElements` node culling. It keeps
-/// the v1 implementation on the existing linear lookup scan so a later spatial index can replace
-/// the backend without changing adapter calls.
-pub fn resolve_visible_node_ids(
-    lookups: &NodeGraphLookups,
-    request: VisibleNodeIdsRequest,
-) -> Vec<NodeId> {
-    let Some(viewport_rect) = canvas_viewport_rect(request.transform, request.viewport_size) else {
-        return Vec::new();
-    };
-
-    if !request.only_render_visible_elements {
-        return all_non_hidden_node_ids(lookups);
-    }
-
-    get_nodes_inside(
-        lookups,
-        viewport_rect,
-        GetNodesInsideOptions {
-            inclusion: NodeInclusion::Partial,
-            node_origin: request.node_origin,
-            include_hidden: false,
-            fallback_size: request.fallback_size,
-        },
-    )
-}
-
-/// Resolves visible node ids in the order an adapter should paint them.
-///
-/// This composes viewport culling with the stable render-order contract so adapters do not have to
-/// duplicate hidden-node, draw-order, and selected-node elevation rules before rendering.
-pub fn resolve_visible_node_render_order(
-    graph: &Graph,
-    lookups: &NodeGraphLookups,
-    view_state: &NodeGraphViewState,
-    visibility_request: VisibleNodeIdsRequest,
-    order_options: NodeRenderOrderOptions,
-) -> Vec<NodeId> {
-    let visible: HashSet<NodeId> = resolve_visible_node_ids(lookups, visibility_request)
-        .into_iter()
-        .collect();
-    if visible.is_empty() {
-        return Vec::new();
-    }
-
-    resolve_node_render_order(graph, view_state, order_options)
-        .into_iter()
-        .filter(|id| visible.contains(id))
-        .collect()
-}
-
 fn node_is_renderable(graph: &Graph, id: NodeId, include_hidden: bool) -> bool {
     graph
         .nodes
@@ -376,105 +270,4 @@ fn edge_is_elevated(
             .ports
             .get(&edge.to)
             .is_some_and(|port| selected_nodes.contains(&port.node))
-}
-
-fn all_non_hidden_node_ids(lookups: &NodeGraphLookups) -> Vec<NodeId> {
-    let mut ids: Vec<NodeId> = lookups
-        .node_lookup
-        .iter()
-        .filter_map(|(id, entry)| entry.is_visible_with_hidden_policy(false).then_some(*id))
-        .collect();
-    ids.sort();
-    ids
-}
-
-fn canvas_viewport_rect(
-    transform: ViewportTransform,
-    viewport_size: CanvasSize,
-) -> Option<CanvasRect> {
-    if !transform.is_valid() || !viewport_size.is_positive_finite() {
-        return None;
-    }
-
-    let origin = transform.canvas_point_at_screen(CanvasPoint::default());
-    let far_corner = transform.canvas_point_at_screen(CanvasPoint {
-        x: viewport_size.width,
-        y: viewport_size.height,
-    });
-    let rect = CanvasRect {
-        origin,
-        size: CanvasSize {
-            width: far_corner.x - origin.x,
-            height: far_corner.y - origin.y,
-        },
-    };
-    rect.is_positive_finite().then_some(rect)
-}
-
-impl NodeGraphStore {
-    /// Resolves the current group render order using the store's view-state and editor config.
-    pub fn group_render_order(&self) -> Vec<GroupId> {
-        let interaction = self.resolved_interaction_state();
-        resolve_group_render_order(
-            self.graph(),
-            self.view_state(),
-            GroupRenderOrderOptions::from_interaction(&interaction),
-        )
-    }
-
-    /// Resolves the current node render order using the store's view-state and editor config.
-    pub fn node_render_order(&self) -> Vec<NodeId> {
-        let interaction = self.resolved_interaction_state();
-        resolve_node_render_order(
-            self.graph(),
-            self.view_state(),
-            NodeRenderOrderOptions::from_interaction(&interaction),
-        )
-    }
-
-    /// Resolves the current edge render order using the store's view-state and editor config.
-    pub fn edge_render_order(&self) -> Vec<EdgeId> {
-        let interaction = self.resolved_interaction_state();
-        resolve_edge_render_order(
-            self.graph(),
-            self.view_state(),
-            EdgeRenderOrderOptions::from_interaction(&interaction),
-        )
-    }
-
-    /// Resolves node ids visible in the given logical viewport size using current store tuning.
-    pub fn visible_node_ids(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        let Some(request) = self.visible_node_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-
-        resolve_visible_node_ids(self.lookups(), request)
-    }
-
-    /// Resolves visible node ids in the current node paint order using current store tuning.
-    pub fn visible_node_render_order(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        let Some(request) = self.visible_node_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-        let interaction = self.resolved_interaction_state();
-        resolve_visible_node_render_order(
-            self.graph(),
-            self.lookups(),
-            self.view_state(),
-            request,
-            NodeRenderOrderOptions::from_interaction(&interaction),
-        )
-    }
-
-    fn visible_node_ids_request(&self, viewport_size: CanvasSize) -> Option<VisibleNodeIdsRequest> {
-        let transform = ViewportTransform::from_view_state(self.view_state())?;
-        let interaction = self.resolved_interaction_state();
-        let rendering = interaction.rendering_interaction();
-        let node_origin = interaction.node_origin.normalized();
-        Some(
-            VisibleNodeIdsRequest::new(transform, viewport_size)
-                .with_only_render_visible_elements(rendering.only_render_visible_elements)
-                .with_node_origin((node_origin.x, node_origin.y)),
-        )
-    }
 }
