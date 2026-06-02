@@ -16,6 +16,9 @@ use jellyflow_runtime::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
+use jellyflow_runtime::runtime::resize::{
+    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeDirection, NodeResizeRequest,
+};
 use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
     ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanInertiaRequest,
@@ -27,6 +30,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
         .with_scenarios([
             node_drag_scenario(),
             node_drag_parent_expansion_scenario(),
+            node_resize_scenario(),
             viewport_pan_scenario(),
             viewport_animation_scenario(),
             viewport_pan_inertia_scenario(),
@@ -65,6 +69,11 @@ pub fn run_node_drag_parent_expansion_smoke() -> Result<ConformanceRunReport, St
         &node_drag_parent_expansion_scenario(),
     )
     .map_err(|err| err.to_string())
+}
+
+pub fn run_node_resize_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&node_resize_scenario())
+        .map_err(|err| err.to_string())
 }
 
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
@@ -141,6 +150,38 @@ fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
             ),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
                 label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ])
+}
+
+fn node_resize_scenario() -> ConformanceScenario {
+    let node_id = NodeId::from_u128(4);
+    let graph = graph_with_node(node_id);
+
+    ConformanceScenario::new("template node resize", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_resize(
+            NodeResizeRequest::new(
+                node_id,
+                CanvasSize {
+                    width: 220.0,
+                    height: 120.0,
+                },
+            )
+            .with_direction(NodeResizeDirection::BottomRight),
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_RESIZE_TRANSACTION_LABEL),
+                ["set_node_size"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_RESIZE_TRANSACTION_LABEL.to_owned()),
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
                 nodes: 1,
@@ -391,7 +432,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 5);
+        assert_eq!(report.scenario_count(), 6);
     }
 
     #[test]
@@ -405,6 +446,13 @@ mod tests {
     fn node_drag_parent_expansion_smoke_runs_as_single_scenario() {
         let report = run_node_drag_parent_expansion_smoke()
             .expect("node drag parent expansion scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn node_resize_smoke_runs_as_single_scenario() {
+        let report = run_node_resize_smoke().expect("node resize scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -437,7 +485,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 5);
+        assert_eq!(report.scenario_count(), 6);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

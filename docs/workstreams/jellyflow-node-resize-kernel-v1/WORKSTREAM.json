@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl",
-  "current_task": "JNR-040",
+  "current_task": "JNR-050",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime resize",
@@ -75,6 +75,11 @@
       "date": "2026-06-02",
       "task": "JNR-030",
       "summary": "Added direction-aware resize position planning, node-origin fallback/override handling, public surface coverage, and split parent/child extent parity with evidence."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNR-040",
+      "summary": "Added apply_node_resize conformance action vocabulary, runner support, adapter conformance resize traces, and template node resize smoke coverage."
     }
   ],
   "adr_refs": [
@@ -100,7 +105,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "next_task",
-    "next_task": "JNR-040",
-    "notes": "Continue with JNR-040: add conformance/template coverage for the stable target-size resize planner and document that exact pointer-resize extent parity remains split until adapter evidence needs it. Keep DOM handles, renderer UI, raw pointer capture, screenshots, and pixels out of scope."
+    "next_task": "JNR-050",
+    "notes": "Continue with JNR-050: document resize runtime/adapter boundaries, record closeout evidence, close or split follow-ons, and run package closeout gates. Keep DOM handles, renderer UI, raw pointer capture, screenshots, and pixels out of scope."
   }
 }

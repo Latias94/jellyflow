@@ -18,6 +18,9 @@ use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
 };
+use crate::runtime::resize::{
+    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeDirection, NodeResizeRequest,
+};
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationOptions, ViewportAnimationPlan,
     ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
@@ -34,4 +37,5 @@ use jellyflow_core::ops::EdgeEndpoints;
 
 mod connection;
 mod node_drag;
+mod node_resize;
 mod viewport;

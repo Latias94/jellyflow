@@ -49,7 +49,7 @@ Last updated: 2026-06-02
 
 ## M3 - Conformance And Template Integration
 
-- [ ] JNR-040 [owner=codex] [deps=JNR-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
+- [x] JNR-040 [owner=codex] [deps=JNR-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
   Goal: Add conformance/template coverage for resize transactions and adapter-facing callback
   traces once the resize planner interface stabilizes.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo nextest
@@ -57,11 +57,11 @@ Last updated: 2026-06-02
   templates/headless-adapter/Cargo.toml; cargo run --manifest-path templates/headless-adapter/Cargo.toml
   -- check
   Review: review-workstream before accepting completion.
-  Evidence: conformance/template resize fixtures or a documented no-schema-change decision.
+  Evidence: `crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs`, `crates/jellyflow-runtime/src/runtime/conformance/runner/actions.rs`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/node_resize.rs`, and `templates/headless-adapter/src/lib.rs`.
   Context: docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNR-040 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. Added `apply_node_resize` fixture vocabulary, conformance runner
+  support, adapter conformance trace coverage, and a template node resize smoke scenario.
+  State: TASKS.jsonl entry JNR-040 records DONE with validation and evidence.
 
 ## M4 - Documentation And Closeout
 

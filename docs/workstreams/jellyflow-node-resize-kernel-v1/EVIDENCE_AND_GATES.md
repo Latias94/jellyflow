@@ -161,6 +161,39 @@ Fresh verification:
 - 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface` passed, 3 tests run.
 - 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
 
+### 2026-06-02 - JNR-040 Conformance And Template Resize Coverage
+
+Scope: `crates/jellyflow-runtime/src/runtime/conformance`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance`,
+`templates/headless-adapter`
+
+Result:
+
+- Added `apply_node_resize` conformance action vocabulary with serde-friendly request, constraint,
+  and direction wrappers.
+- Wired the conformance runner to `NodeGraphStore::apply_node_resize`.
+- Added runner coverage for size-only resize traces.
+- Added adapter conformance coverage for direction-aware resize traces that emit `set_node_pos`
+  before `set_node_size`.
+- Added a template node resize scenario to the built-in headless adapter suite and fixture directory
+  roundtrip tests.
+
+Behavior proven:
+
+- Fixture authors can represent target-size node resize through the high-level conformance action.
+- Runtime conformance trace records `node resize` / `set_node_size` for size-only resize.
+- Adapter conformance trace records `node resize` / `set_node_pos`, `set_node_size` for left-edge
+  resize.
+- Template `check` includes `template node resize` and still matches expected traces.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime conformance` passed, 55 tests run.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 18 tests run.
+- 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml` passed, 9 tests run.
+- 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check` passed and reported matching built-in suite traces.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

@@ -19,6 +19,10 @@ JNR-030 is complete: resize requests now carry XyFlow-style control directions, 
 position movement, left/top controls emit `SetNodePos` before `SetNodeSize`, and store planning uses
 resolved global node origin with per-node origin override support.
 
+JNR-040 is complete: conformance fixtures now expose `apply_node_resize`, the runner applies it
+through `NodeGraphStore`, adapter conformance covers direction-aware resize traces, and the headless
+adapter template includes a node resize smoke scenario.
+
 The architecture gap is specific: Jellyflow can store and transact node sizes, but runtime adapters
 do not yet have a headless resize planner. XyFlow's `XYResizer` already separates much resize math
 from React UI, so Jellyflow should capture the renderer-neutral planning part without taking on DOM
@@ -26,8 +30,8 @@ handles or renderer smoke.
 
 ## Next Task
 
-JNR-040: add conformance/template coverage for resize transactions and adapter-facing callback
-traces once the resize planner interface stabilizes.
+JNR-050: document resize runtime/adapter boundaries, record fresh evidence, and close or split
+follow-ons.
 
 ## Decisions Since Opening
 
@@ -41,6 +45,8 @@ traces once the resize planner interface stabilizes.
 - JNR-030 added direction and origin handling, but split parent/child extent and keep-aspect-ratio
   parity because exact XyFlow behavior depends on pointer start values and clamp distances, not just
   a target-size request.
+- JNR-040 uses high-level fixture action vocabulary for resize instead of raw transactions, matching
+  the adapter-facing seam adapters should call.
 - Split exact keep-aspect-ratio, parent/child extent, or NodeResizer UI parity if they broaden the
   first planner task.
 
@@ -50,14 +56,14 @@ traces once the resize planner interface stabilizes.
 
 ## Validation To Run
 
-For JNR-040:
+For JNR-050:
 
 ```bash
 cargo fmt --check
-cargo nextest run -p jellyflow-runtime conformance
-cargo nextest run -p jellyflow-runtime adapter_conformance
-cargo test --manifest-path templates/headless-adapter/Cargo.toml
-cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
+cargo nextest run -p jellyflow-runtime
+cargo clippy -p jellyflow-runtime --all-targets -- -D warnings
+jq empty docs/workstreams/jellyflow-node-resize-kernel-v1/WORKSTREAM.json docs/workstreams/jellyflow-node-resize-kernel-v1/TASKS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl
+git diff --check
 ```
 
 For lane closeout:
@@ -81,12 +87,17 @@ git diff --check
   `cargo nextest run -p jellyflow-runtime resize`, `cargo nextest run -p jellyflow-runtime
   drag_parent_expansion`, `cargo nextest run -p jellyflow-runtime --test public_surface`, and
   `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`.
+- 2026-06-02: JNR-040 added conformance/template resize coverage and passed `cargo fmt --check`,
+  `cargo nextest run -p jellyflow-runtime conformance`, `cargo nextest run -p jellyflow-runtime
+  adapter_conformance`, `cargo test --manifest-path templates/headless-adapter/Cargo.toml`,
+  `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`, and
+  `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`.
 
 ## Next Recommended Action
 
-Start JNR-040 by adding resize fixture vocabulary for the stable target-size planner:
+Start JNR-050 by updating README/runtime README and closeout docs:
 
-- accepted resize transaction trace with `set_node_size`;
-- direction/origin trace that includes `set_node_pos` before `set_node_size`;
-- explicit note that exact pointer-resize extent parity remains split until the request contract is
-  extended beyond target-size planning.
+- explain runtime owns target-size resize planning and deterministic transactions;
+- explain adapters own handles, pointer capture, raw pointer deltas, renderer UI, and pixels;
+- keep exact pointer-resize extent/keep-aspect-ratio parity as a follow-on unless adapter evidence
+  requires it now.

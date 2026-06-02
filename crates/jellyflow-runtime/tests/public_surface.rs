@@ -591,6 +591,16 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let dispatch_action = conformance::ConformanceAction::dispatch_transaction(
         GraphTransaction::new().with_label("low-level graph fixture setup"),
     );
+    let resize_action = conformance::ConformanceAction::apply_node_resize(
+        resize::NodeResizeRequest::new(
+            node_id,
+            CanvasSize {
+                width: 2.0,
+                height: 2.0,
+            },
+        )
+        .with_direction(resize::NodeResizeDirection::BottomRight),
+    );
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
@@ -607,6 +617,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         connect_action,
         reconnect_action,
         dispatch_action,
+        resize_action,
     ])
     .expect("serialize fixture actions");
     assert!(encoded_fixture_actions.is_array());

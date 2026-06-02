@@ -75,7 +75,10 @@ cargo test --manifest-path templates/headless-adapter/Cargo.toml
 cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
-Status: pending.
+Status: complete on 2026-06-02. Conformance fixtures now expose `apply_node_resize`, the runner
+executes it through `NodeGraphStore::apply_node_resize`, adapter conformance covers
+position-before-size resize traces, and the headless adapter template includes a node resize smoke
+scenario.
 
 ## M4 - Documentation And Closeout
 

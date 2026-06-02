@@ -27,6 +27,10 @@ pub(super) fn execute_action(
             }),
             "apply_node_drag",
         ),
+        ConformanceAction::ApplyNodeResize { request } => require_commit(
+            store.apply_node_resize(request.into_runtime()),
+            "apply_node_resize",
+        ),
         ConformanceAction::ApplyNodePointerDown { input } => {
             store.apply_node_pointer_down(input.into_runtime());
             Ok(())

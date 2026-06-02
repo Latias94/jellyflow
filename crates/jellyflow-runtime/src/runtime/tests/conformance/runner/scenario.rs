@@ -228,6 +228,47 @@ fn conformance_runner_executes_node_drag_parent_expansion_fixture_and_matches_tr
 }
 
 #[test]
+fn conformance_runner_executes_node_resize_fixture_and_matches_trace() {
+    let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 100.0,
+        height: 60.0,
+    });
+
+    let scenario = ConformanceScenario::new("node resize runner", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_resize(
+            NodeResizeRequest::new(
+                node_id,
+                CanvasSize {
+                    width: 140.0,
+                    height: 80.0,
+                },
+            )
+            .with_direction(NodeResizeDirection::BottomRight),
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_RESIZE_TRANSACTION_LABEL),
+                ["set_node_size"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_RESIZE_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
+
+#[test]
 fn conformance_runner_keeps_dispatch_transaction_as_low_level_graph_fixture_action() {
     let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let from = graph.nodes.get(&node_id).expect("node exists").pos;
