@@ -242,6 +242,25 @@ fn resolve_connection_target_applies_target_connectability_and_custom_validity()
 }
 
 #[test]
+fn connection_target_input_json_defaults_custom_validity_to_true() {
+    let from = handle_ref(PortDirection::Out);
+    let target = target_handle(PortDirection::In);
+    let input =
+        ConnectionTargetInput::new(from, Some(target), NodeGraphConnectionMode::Strict, true);
+    let mut encoded = serde_json::to_value(input).expect("serialize connection target input");
+    encoded
+        .as_object_mut()
+        .expect("connection target input object")
+        .remove("is_valid_connection");
+
+    let decoded: ConnectionTargetInput =
+        serde_json::from_value(encoded).expect("deserialize connection target input");
+
+    assert!(decoded.is_valid_connection);
+    assert!(resolve_connection_target(decoded).is_handle_valid);
+}
+
+#[test]
 fn resolve_connection_target_preserves_xyflow_feedback_null_when_no_handle_is_close() {
     let result = resolve_connection_target(ConnectionTargetInput::new(
         handle_ref(PortDirection::Out),

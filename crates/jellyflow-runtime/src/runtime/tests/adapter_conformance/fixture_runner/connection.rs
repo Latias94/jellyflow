@@ -31,6 +31,34 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_lifecycle() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_connection_target_policy() {
+    let (graph, source_node, target_node, out_port, in_port, _eid) = make_graph();
+    let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
+    let target = ConnectionTargetHandle::new(
+        ConnectionHandleRef::new(target_node, in_port, PortDirection::In),
+        true,
+        true,
+    );
+    let input =
+        ConnectionTargetInput::new(source, Some(target), NodeGraphConnectionMode::Strict, true);
+    let expected = ResolvedConnectionTarget {
+        target: Some(target),
+        connection: Some(ConnectionHandleConnection {
+            source,
+            target: target.handle,
+        }),
+        is_handle_valid: true,
+        feedback: ConnectionHandleValidity::Valid,
+    };
+
+    let scenario = ConformanceScenario::new("connection target policy assertion", graph)
+        .with_actions([ConformanceAction::assert_connection_target(input, expected)])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_callbacks() {
     let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");

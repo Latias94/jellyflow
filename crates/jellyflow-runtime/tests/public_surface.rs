@@ -1,4 +1,6 @@
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId, PortDirection, PortId,
+};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
@@ -358,13 +360,39 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
         keyboard_types::Code::Backspace,
     );
-    let encoded_viewport_actions = serde_json::to_value([
+    let source_handle =
+        connection::ConnectionHandleRef::new(node_id, PortId::new(), PortDirection::Out);
+    let target_handle = connection::ConnectionTargetHandle::new(
+        connection::ConnectionHandleRef::new(NodeId::new(), PortId::new(), PortDirection::In),
+        true,
+        true,
+    );
+    let connection_target_input = connection::ConnectionTargetInput::new(
+        source_handle,
+        Some(target_handle),
+        NodeGraphConnectionMode::Strict,
+        true,
+    );
+    let connection_target_action = conformance::ConformanceAction::assert_connection_target(
+        connection_target_input,
+        connection::ResolvedConnectionTarget {
+            target: Some(target_handle),
+            connection: Some(connection::ConnectionHandleConnection {
+                source: source_handle,
+                target: target_handle.handle,
+            }),
+            is_handle_valid: true,
+            feedback: connection::ConnectionHandleValidity::Valid,
+        },
+    );
+    let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
         delete_key_action,
+        connection_target_action,
     ])
-    .expect("serialize viewport fixture actions");
-    assert!(encoded_viewport_actions.is_array());
+    .expect("serialize fixture actions");
+    assert!(encoded_fixture_actions.is_array());
 
     let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)
         .with_view_state(NodeGraphViewState::default())

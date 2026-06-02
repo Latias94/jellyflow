@@ -1,3 +1,4 @@
+use crate::runtime::connection::resolve_connection_target;
 use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
@@ -31,6 +32,16 @@ pub(super) fn execute_action(
         ConformanceAction::ApplySelectionBox { input } => {
             store.apply_selection_box(*input);
             Ok(())
+        }
+        ConformanceAction::AssertConnectionTarget { input, expected } => {
+            let actual = resolve_connection_target(*input);
+            if actual == *expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "connection target resolved to {actual:?}, expected {expected:?}"
+                ))
+            }
         }
         ConformanceAction::ApplyNodeNudge { request } => store
             .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))

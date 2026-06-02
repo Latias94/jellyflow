@@ -8,6 +8,10 @@ use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
     ConformanceTraceEvent,
 };
+use crate::runtime::connection::{
+    ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectionTargetHandle, ConnectionTargetInput, ResolvedConnectionTarget,
+};
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
@@ -18,7 +22,7 @@ use crate::runtime::viewport::{
     ViewportScrollInput,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeKind};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeKind, PortDirection};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 

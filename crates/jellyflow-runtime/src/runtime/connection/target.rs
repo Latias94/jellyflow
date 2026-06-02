@@ -1,10 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 use jellyflow_core::core::PortDirection;
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::{ConnectionHandleRef, ConnectionHandleValidity, connection_handle_validity};
 
 /// Candidate target handle plus adapter-resolved connectability policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionTargetHandle {
     pub handle: ConnectionHandleRef,
     pub connectable: bool,
@@ -22,7 +24,7 @@ impl ConnectionTargetHandle {
 }
 
 /// XyFlow-shaped connection endpoints resolved from a start handle and target handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionHandleConnection {
     pub source: ConnectionHandleRef,
     pub target: ConnectionHandleRef,
@@ -45,12 +47,15 @@ impl ConnectionHandleConnection {
 }
 
 /// Input for resolving whether a target handle can complete a connection gesture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionTargetInput {
     pub from: ConnectionHandleRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ConnectionTargetHandle>,
     pub mode: NodeGraphConnectionMode,
+    #[serde(default)]
     pub is_inside_connection_radius: bool,
+    #[serde(default = "default_connection_validity")]
     pub is_valid_connection: bool,
 }
 
@@ -76,8 +81,12 @@ impl ConnectionTargetInput {
     }
 }
 
+fn default_connection_validity() -> bool {
+    true
+}
+
 /// Resolved target semantics for connection feedback and completion callbacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResolvedConnectionTarget {
     pub target: Option<ConnectionTargetHandle>,
     pub connection: Option<ConnectionHandleConnection>,

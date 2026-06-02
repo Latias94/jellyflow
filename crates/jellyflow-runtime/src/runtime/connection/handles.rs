@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
+
 use jellyflow_core::core::{CanvasPoint, CanvasRect, NodeId, PortDirection, PortId};
 
 use crate::runtime::geometry::{HandleBounds, HandlePosition, handle_center_position};
 
 /// Stable identity for a renderer handle participating in a connection gesture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionHandleRef {
     pub node: NodeId,
     pub port: PortId,
@@ -73,7 +75,8 @@ pub struct ClosestConnectionHandle {
 }
 
 /// XyFlow-compatible validity state for a connection target candidate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectionHandleValidity {
     /// A candidate handle is present and can accept the connection.
     Valid,

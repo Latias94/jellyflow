@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::AutoPanRequest;
+use crate::runtime::connection::{ConnectionTargetInput, ResolvedConnectionTarget};
 use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::events::NodeGraphGestureEvent;
 use crate::runtime::selection::SelectionBoxInput;
@@ -29,6 +30,10 @@ pub enum ConformanceAction {
     },
     ApplySelectionBox {
         input: SelectionBoxInput,
+    },
+    AssertConnectionTarget {
+        input: ConnectionTargetInput,
+        expected: ResolvedConnectionTarget,
     },
     ApplyNodeNudge {
         request: ConformanceNodeNudgeRequest,
@@ -79,6 +84,7 @@ impl ConformanceAction {
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
             Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
             Self::ApplySelectionBox { .. } => "apply_selection_box",
+            Self::AssertConnectionTarget { .. } => "assert_connection_target",
             Self::ApplyNodeNudge { .. } => "apply_node_nudge",
             Self::ApplyDeleteSelection => "apply_delete_selection",
             Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
@@ -117,6 +123,13 @@ impl ConformanceAction {
 
     pub fn apply_selection_box(input: SelectionBoxInput) -> Self {
         Self::ApplySelectionBox { input }
+    }
+
+    pub fn assert_connection_target(
+        input: ConnectionTargetInput,
+        expected: ResolvedConnectionTarget,
+    ) -> Self {
+        Self::AssertConnectionTarget { input, expected }
     }
 
     pub fn apply_node_nudge(request: NodeNudgeRequest) -> Self {
