@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Parent Expansion v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -66,7 +66,7 @@ Last updated: 2026-06-02
 
 ## M4 - Documentation And Closeout
 
-- [ ] JNPE-050 [owner=codex] [deps=JNPE-040] [scope=README.md,crates/jellyflow-runtime/README.md,docs/workstreams/jellyflow-node-drag-parent-expansion-v1]
+- [x] JNPE-050 [owner=codex] [deps=JNPE-040] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-node-drag-parent-expansion-v1]
   Goal: Document parent expansion boundaries, record fresh evidence, and close or split follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
   jellyflow-runtime --all-targets -- -D warnings; jq empty
@@ -77,5 +77,7 @@ Last updated: 2026-06-02
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: EVIDENCE_AND_GATES.md, WORKSTREAM.json, and closeout audit.
   Context: docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNPE-050 must record closeout validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. README/runtime README document parent expansion boundaries; package,
+  clippy, JSON, and diff gates passed; this workstream is closed with renderer/resize/nested
+  follow-ons deferred.
+  State: TASKS.jsonl entry JNPE-050 records closeout validation, evidence, and handoff status.

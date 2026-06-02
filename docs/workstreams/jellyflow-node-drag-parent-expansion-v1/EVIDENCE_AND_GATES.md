@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Parent Expansion v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -200,6 +200,49 @@ Fresh verification:
   passed.
 - `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`: passed, 5 matching
   scenarios.
+
+### 2026-06-02 - JNPE-050 Documentation And Closeout
+
+Scope:
+
+- `README.md`
+- `crates/jellyflow-runtime/README.md`
+- `CONTEXT.md`
+- `docs/workstreams/jellyflow-node-drag-parent-expansion-v1`
+
+Result:
+
+- README/runtime README now document parent expansion as a runtime-owned drag transaction planning
+  contract.
+- Documentation calls out adapter ownership of pointer capture, drag handles, resize handles,
+  renderer grouping UI, screenshots, and pixels.
+- `CONTEXT.md` no longer points to this workstream as active.
+- Workstream state is closed with renderer, resize, nested-cascade, and parent-relative coordinate
+  follow-ons deferred until adapter evidence requires them.
+
+Fresh verification:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime`: passed, 283 tests run, 283 passed.
+- `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+- `jq empty docs/workstreams/jellyflow-node-drag-parent-expansion-v1/WORKSTREAM.json docs/workstreams/jellyflow-node-drag-parent-expansion-v1/TASKS.jsonl docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl`: passed.
+- `git diff --check`: passed.
+
+Review:
+
+- Workstream compliance: JNPE-010 through JNPE-050 are complete, the target state is met, and ADR
+  0001/0002/0003 boundaries remain intact.
+- Code quality: parent expansion stays inside `runtime::drag`, uses existing reversible
+  `GraphOp::SetGroupRect`, keeps public request shape unchanged, and is covered through runtime,
+  conformance, adapter conformance, and template surfaces.
+- Residual risks are split as follow-ons rather than kept in this closed lane.
+
+Behavior proven:
+
+- Node drag parent expansion can be planned, applied, conformance-replayed, and smoked through the
+  external headless adapter template without renderer dependencies.
+- Left/top group expansion follows Jellyflow's canvas-space coordinate contract and does not create
+  XyFlow-style sibling compensation ops.
 
 ## Notes
 

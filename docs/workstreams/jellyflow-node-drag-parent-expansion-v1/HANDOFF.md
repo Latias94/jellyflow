@@ -1,11 +1,11 @@
 # Jellyflow Node Drag Parent Expansion v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
 
-The workstream is active. It was opened as a follow-on to the closed node drag kernel and node drag
+The workstream is closed. It was opened as a follow-on to the closed node drag kernel and node drag
 module split lanes.
 
 JNPE-010 is complete: the lane scope, non-goals, source coverage, task ledger, campaign record,
@@ -26,9 +26,13 @@ so no fixture schema change was needed. Runtime conformance, adapter conformance
 headless adapter template now cover parent expansion traces with `set_node_pos` and
 `set_group_rect`.
 
+JNPE-050 is complete: README/runtime README document runtime-owned parent expansion planning versus
+adapter-owned raw input, resize handles, renderer smoke, screenshots, and pixels. `CONTEXT.md`
+again reflects that all current workstreams are closed.
+
 ## Next Task
 
-JNPE-050: document parent expansion boundaries, record fresh evidence, and close or split follow-ons.
+None in this workstream. Follow-ons are split below.
 
 ## Decisions Since Opening
 
@@ -50,7 +54,7 @@ JNPE-050: document parent expansion boundaries, record fresh evidence, and close
 
 ## Validation To Run
 
-For JNPE-050:
+Already run for closeout:
 
 ```bash
 cargo fmt --check
@@ -79,12 +83,20 @@ git diff --check
   behavior with focused runtime tests.
 - 2026-06-02: JNPE-040 added conformance/template parent expansion traces without changing fixture
   schema.
+- 2026-06-02: JNPE-050 documented closeout boundaries and closed the workstream.
+
+## Closeout Evidence
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime` passed, 283 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+- 2026-06-02: `jq empty docs/workstreams/jellyflow-node-drag-parent-expansion-v1/WORKSTREAM.json docs/workstreams/jellyflow-node-drag-parent-expansion-v1/TASKS.jsonl docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl`
+  passed.
+- 2026-06-02: `git diff --check` passed.
 
 ## Next Recommended Action
 
-Start JNPE-050 by updating README/runtime README with:
-
-- runtime owns `expand_parent` transaction planning;
-- adapters still own pointer capture, raw input, rendering, and resize handles;
-- conformance/template coverage now includes `set_group_rect` traces;
-- remaining nested-cascade, resize, renderer, or coordinate-model work should be split or deferred.
+- Node resize parent expansion, nested parent cascading, or parent-relative coordinate semantics
+  only if adapter integration proves the v1 canvas-space drag expansion contract is insufficient.
+- Renderer smoke, screenshot, or pixel tests belong in future wgpu, egui, Fret, or other adapter
+  crates outside `jellyflow-runtime`.

@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Parent Expansion v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Why This Lane Exists
@@ -156,3 +156,12 @@ This lane can close when:
 - README/runtime README explain the parent expansion boundary;
 - fresh package, clippy, JSON, and diff gates pass;
 - renderer, resize, nested-cascade, or platform-specific follow-ons are split or deferred.
+
+## Closeout Summary
+
+Closed on 2026-06-02. `runtime::drag` now plans parent expansion through deterministic
+`SetGroupRect` ops, preserves `expand_parent = false` parent extent clamping, proves multi-parent
+ordering and left/top canvas-space sibling behavior, and exposes adapter-facing traces through the
+existing `ApplyNodeDrag` conformance action and the headless adapter template. Resize handles,
+nested parent cascading, parent-relative coordinate semantics, and renderer smoke remain follow-ons
+outside this runtime lane.

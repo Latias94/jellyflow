@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Parent Expansion v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -93,4 +93,4 @@ jq empty docs/workstreams/jellyflow-node-drag-parent-expansion-v1/WORKSTREAM.jso
 git diff --check
 ```
 
-Status: pending.
+Status: complete on 2026-06-02.

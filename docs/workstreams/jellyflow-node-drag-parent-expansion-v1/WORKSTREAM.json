@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-node-drag-parent-expansion-v1",
   "title": "Jellyflow Node Drag Parent Expansion v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl",
-  "current_task": "JNPE-050",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime drag_parent_expansion",
@@ -79,6 +79,11 @@
       "date": "2026-06-02",
       "task": "JNPE-040",
       "summary": "Added parent expansion conformance/template traces through the existing ApplyNodeDrag action without changing fixture schema."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNPE-050",
+      "summary": "Documented parent expansion boundaries, recorded closeout evidence, and closed the workstream with renderer/resize/nested follow-ons deferred."
     }
   ],
   "adr_refs": [
@@ -104,8 +109,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "next_task",
-    "next_task": "JNPE-050",
-    "notes": "Continue with JNPE-050: document parent expansion runtime/adapter boundaries, run package closeout gates, and close or split any remaining resize, nested-cascade, renderer, or coordinate-model follow-ons."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Node drag parent expansion v1 is closed. Follow-ons: node resize parent expansion, nested parent cascading, parent-relative coordinate semantics, or renderer smoke only after adapter evidence requires them."
   }
 }

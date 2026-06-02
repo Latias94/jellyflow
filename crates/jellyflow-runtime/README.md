@@ -10,7 +10,7 @@
 - undo/redo store dispatch;
 - XyFlow-style node/edge change projections under `runtime::xyflow`;
 - renderer-neutral selection-box helpers under `runtime::selection`;
-- renderer-neutral node drag planning and commit helpers under `runtime::drag`;
+- renderer-neutral node drag planning, parent expansion, and commit helpers under `runtime::drag`;
 - renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
@@ -46,7 +46,7 @@ validate behavior before rendering. The runtime crate supports that split with:
   deterministic canvas-space selection;
 - `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
   deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
-  snap-to-grid, global/per-node extents, and node-origin-aware clamping;
+  snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;
 - `runtime::viewport::{ViewportTransform, ViewportPanRequest, ViewportZoomRequest}` plus
   `NodeGraphStore::apply_viewport_pan` and `NodeGraphStore::apply_viewport_zoom` for deterministic
   drag-pan and zoom-around-pointer state changes;
@@ -86,12 +86,21 @@ write back only when every scenario executes without errors. GPU, windowing, scr
 smoke tests should live in adapter crates such as future wgpu, egui, or Fret integrations, where
 they can verify input capture, platform wiring, and rendered pixels.
 
+Drag parent expansion is runtime-owned: a child with effective `expand_parent = true` can expand
+its parent group rect through `GraphOp::SetGroupRect`, while `NodeExtent::Parent` with
+`expand_parent = false` still clamps to the current parent group rect. Jellyflow stores node
+positions in canvas space, so left/top group expansion does not add sibling compensation ops. Raw
+pointer capture, drag handles, resize handles, renderer-specific grouping UI, screenshots, and
+pixels remain adapter responsibilities.
+
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
 fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
 node drag, connect/reconnect, delete, viewport gestures, viewport animation frames, and double-click
 zoom plan or rejection assertions. Pan inertia fixtures should use the sampled-frame actions and
 rejection assertion so adapters can prove release-momentum traces without moving frame loops into
-runtime.
+runtime. Parent expansion fixtures should use `ConformanceAction::apply_node_drag`, which exercises
+the same runtime interaction boundary and records `set_group_rect` graph-commit traces when parent
+expansion occurs.
 
 The runtime crate also includes a thin renderer-free example harness for agents and CI:
 
@@ -122,9 +131,9 @@ Viewport conformance is also headless. Runtime tests cover:
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
 raw double-click detection, release velocity estimation, frame scheduling, animation and inertia
-cancellation policy, sampled-frame commits, window event loops, screenshots, and pixel assertions.
-For selection workflows, adapters may call the generic `AutoPanActivation::Always` path until a
-persisted selection-specific auto-pan toggle is justified by integration evidence.
+cancellation policy, sampled-frame commits, resize handles, window event loops, screenshots, and
+pixel assertions. For selection workflows, adapters may call the generic `AutoPanActivation::Always`
+path until a persisted selection-specific auto-pan toggle is justified by integration evidence.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};
