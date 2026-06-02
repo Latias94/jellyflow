@@ -10,7 +10,7 @@
 
 **Date**: 2026-06-02
 **Task**: Trellis bootstrap
-**Package**: jellyflow-core
+**Package**: jellyflow-runtime
 **Branch**: `main`
 
 ### Summary
@@ -105,13 +105,60 @@ Reviewed Jellyflow against the local XyFlow reference, documented headless cover
 
 ### Main Changes
 
-(Add details)
+- Added `NodePointerResizeRequest` and `NodeResizeAxis` for canvas-space pointer resize intent.
+- Added pointer resize planning math for direction deltas, min/max constraints, aspect ratio,
+  axis filtering, node origin, and `NodeExtent::{Rect, Parent}` clamps.
+- Added `NodeGraphStore::{plan_node_pointer_resize, apply_node_pointer_resize}`.
+- Added conformance action/runner support and public-surface coverage.
+- Updated the headless adapter template resize scenario to exercise pointer resize.
 
 ### Git Commits
 
 | Hash | Message |
 |------|---------|
 | `1af9007` | (see git log) |
+
+### Testing
+
+- [OK] `cargo fmt --check`
+- [OK] `cargo nextest run -p jellyflow-runtime resize`
+- [OK] `cargo nextest run -p jellyflow-runtime adapter_conformance`
+- [OK] `cargo nextest run -p jellyflow-runtime --test public_surface`
+- [OK] `cargo nextest run -p jellyflow-runtime conformance`
+- [OK] `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
+- [OK] `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- [OK] `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: Pointer resize parity
+
+**Date**: 2026-06-02
+**Task**: Pointer resize parity
+**Package**: jellyflow-core
+**Branch**: `main`
+
+### Summary
+
+Implemented headless pointer-driven node resize planning in jellyflow-runtime with store, conformance, public-surface, and headless adapter template coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `74407c3` | (see git log) |
 
 ### Testing
 
