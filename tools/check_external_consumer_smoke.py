@@ -66,8 +66,8 @@ def jellyflow_runtime_main_rs() -> str:
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
             use jellyflow_runtime::runtime::conformance::{
-                run_conformance_scenario, ConformanceAction, ConformanceScenario,
-                ConformanceSuite, ConformanceTraceEvent,
+                run_conformance_scenario, ConformanceAction, ConformanceFixtureDirectory,
+                ConformanceScenario, ConformanceSuite, ConformanceTraceEvent,
             };
             use jellyflow_runtime::runtime::fit_view::{
                 compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
@@ -145,10 +145,11 @@ def jellyflow_runtime_main_rs() -> str:
                     .expect("conformance fixture runs");
                 assert!(conformance_report.is_match(), "{conformance_report}");
 
-                let suite_path = std::env::temp_dir().join(format!(
-                    "jellyflow-external-suite-{}.json",
+                let fixture_root = std::env::temp_dir().join(format!(
+                    "jellyflow-external-fixtures-{}",
                     std::process::id()
                 ));
+                let suite_path = fixture_root.join("nested").join("suite.json");
                 let suite = ConformanceSuite::new("external adapter suite")
                     .with_scenarios([conformance_scenario]);
                 suite.save_json(&suite_path).expect("save conformance suite");
@@ -161,10 +162,22 @@ def jellyflow_runtime_main_rs() -> str:
                         .expect("load optional conformance suite")
                         .is_some()
                 );
-                std::fs::remove_file(&suite_path).expect("remove conformance suite");
+
+                let fixture_directory = ConformanceFixtureDirectory::load_json(&fixture_root)
+                    .expect("load conformance fixture directory");
+                assert_eq!(fixture_directory.file_count(), 1);
+                let directory_report = fixture_directory.run();
+                assert!(directory_report.is_match(), "{directory_report}");
+                assert_eq!(directory_report.scenario_count(), 1);
                 assert!(
-                    ConformanceSuite::load_json_if_exists(&suite_path)
-                        .expect("missing optional conformance suite")
+                    ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
+                        .expect("load optional conformance fixture directory")
+                        .is_some()
+                );
+                std::fs::remove_dir_all(&fixture_root).expect("remove conformance fixture directory");
+                assert!(
+                    ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
+                        .expect("missing optional conformance fixture directory")
                         .is_none()
                 );
 
