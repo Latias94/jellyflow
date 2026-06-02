@@ -1,5 +1,5 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId, PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, NodeId, PortDirection, PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
@@ -8,7 +8,7 @@ use jellyflow_runtime::io::{
     NodeGraphInteractionState, NodeGraphPanOnDragButtons, NodeGraphViewState,
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
-use jellyflow_runtime::rules::ConnectPlan;
+use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
     auto_pan, commit, conformance, connection, delete, drag, events, keyboard, rendering,
     selection, store, viewport, xyflow,
@@ -171,6 +171,13 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     let _: connection::ConnectionHandleIndicator = indicator;
     assert!(indicator.show_connection_indicator);
+    let _ = std::mem::size_of::<connection::ReconnectEdgeRequest>();
+    let _ = std::mem::size_of::<connection::ReconnectEdgeError>();
+    let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::reconnect_edge_transaction;
+    assert_eq!(
+        connection::RECONNECT_EDGE_TRANSACTION_LABEL,
+        "reconnect edge"
+    );
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
@@ -386,11 +393,20 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             feedback: connection::ConnectionHandleValidity::Valid,
         },
     );
+    let reconnect_action = conformance::ConformanceAction::apply_reconnect_edge(
+        connection::ReconnectEdgeRequest::new(
+            EdgeId::new(),
+            EdgeEndpoint::To,
+            PortId::new(),
+            NodeGraphConnectionMode::Strict,
+        ),
+    );
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
         delete_key_action,
         connection_target_action,
+        reconnect_action,
     ])
     .expect("serialize fixture actions");
     assert!(encoded_fixture_actions.is_array());

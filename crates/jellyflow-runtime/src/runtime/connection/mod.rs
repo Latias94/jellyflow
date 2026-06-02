@@ -6,6 +6,7 @@
 mod activation;
 mod handles;
 mod indicator;
+mod reconnect;
 mod target;
 
 pub use activation::{ConnectionDragActivationInput, connection_drag_threshold_met};
@@ -16,6 +17,10 @@ pub use handles::{
 };
 pub use indicator::{
     ConnectionHandleIndicator, ConnectionHandleIndicatorInput, resolve_connection_handle_indicator,
+};
+pub use reconnect::{
+    RECONNECT_EDGE_TRANSACTION_LABEL, ReconnectEdgeError, ReconnectEdgeRequest,
+    reconnect_edge_transaction,
 };
 pub use target::{
     ConnectionHandleConnection, ConnectionTargetHandle, ConnectionTargetInput,

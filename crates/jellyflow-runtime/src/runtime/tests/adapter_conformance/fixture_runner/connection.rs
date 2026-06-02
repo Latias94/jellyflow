@@ -120,3 +120,79 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
 
     assert_conformance_trace(&scenario);
 }
+
+#[test]
+fn adapter_conformance_fixture_runner_records_reconnect_transaction_and_callbacks() {
+    let (mut graph, _a, b, out_port, in_port, edge_id) = make_graph();
+    let next_in = insert_input_port(&mut graph, b, "in2");
+    let kind = ConnectDragKind::Reconnect {
+        edge: edge_id,
+        endpoint: EdgeEndpoint::To,
+        fixed: out_port,
+    };
+    let start = ConnectStart {
+        kind: kind.clone(),
+        mode: NodeGraphConnectionMode::Strict,
+    };
+    let start_event = NodeGraphGestureEvent::ConnectStart(start.clone());
+    let from = EdgeEndpoints {
+        from: out_port,
+        to: in_port,
+    };
+    let to = EdgeEndpoints {
+        from: out_port,
+        to: next_in,
+    };
+    let end = ConnectEnd {
+        kind,
+        mode: NodeGraphConnectionMode::Strict,
+        target: Some(next_in),
+        outcome: ConnectEndOutcome::Committed,
+    };
+    let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
+
+    let scenario = ConformanceScenario::new("reconnect gesture transaction callbacks", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::emit_gesture(start_event.clone()),
+            ConformanceAction::apply_reconnect_edge(ReconnectEdgeRequest::new(
+                edge_id,
+                EdgeEndpoint::To,
+                next_in,
+                NodeGraphConnectionMode::Strict,
+            )),
+            ConformanceAction::emit_gesture(end_event.clone()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::gesture(start_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectStart(start)),
+            ConformanceTraceEvent::graph_commit(
+                Some(RECONNECT_EDGE_TRANSACTION_LABEL),
+                ["set_edge_endpoints"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(RECONNECT_EDGE_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 0,
+                edges: 1,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
+                ConnectionChange::Reconnected {
+                    edge: edge_id,
+                    from,
+                    to,
+                },
+            )),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Reconnect {
+                edge: edge_id,
+                from,
+                to,
+            }),
+            ConformanceTraceEvent::gesture(end_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectEnd(end)),
+        ]);
+
+    assert_conformance_trace(&scenario);
+}

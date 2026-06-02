@@ -43,6 +43,10 @@ pub(super) fn execute_action(
                 ))
             }
         }
+        ConformanceAction::ApplyReconnectEdge { request } => store
+            .apply_reconnect_edge(*request)
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
         ConformanceAction::ApplyNodeNudge { request } => store
             .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))
             .map(|_| ())
