@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a temporary external Jellyflow consumer outside the Fret workspace."""
+"""Run a temporary external Jellyflow consumer outside the Fret workspace."""
 
 from __future__ import annotations
 
@@ -141,8 +141,8 @@ def jellyflow_runtime_main_rs() -> str:
                             Some(NODE_DRAG_TRANSACTION_LABEL),
                             ["set_node_pos"],
                         )]);
-                let conformance_report =
-                    run_conformance_scenario(&conformance_scenario).expect("conformance fixture runs");
+                let conformance_report = run_conformance_scenario(&conformance_scenario)
+                    .expect("conformance fixture runs");
                 assert!(conformance_report.is_match(), "{conformance_report}");
 
                 let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
@@ -256,9 +256,15 @@ def write_scenario(project_dir: Path, scenario: SmokeScenario) -> None:
     write_file(project_dir / "src/main.rs", scenario.main_rs)
 
 
-def run_cargo_check(repo_root: Path, project_dir: Path) -> None:
+def run_cargo_smoke(repo_root: Path, project_dir: Path) -> None:
     subprocess.run(
-        ["cargo", "check", "--manifest-path", str(project_dir / "Cargo.toml")],
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(project_dir / "Cargo.toml"),
+        ],
         cwd=repo_root,
         check=True,
     )
@@ -307,14 +313,14 @@ def assert_no_fret_packages(tree_output: str) -> bool:
 def run_scenario(repo_root: Path, project_dir: Path, scenario: SmokeScenario) -> bool:
     write_scenario(project_dir, scenario)
     print(f"external smoke project: {project_dir}", flush=True)
-    run_cargo_check(repo_root, project_dir)
+    run_cargo_smoke(repo_root, project_dir)
     return assert_no_fret_packages(cargo_tree(repo_root, project_dir))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a temporary Cargo project outside this workspace and check that it can "
+            "Create a temporary Cargo project outside this workspace and run a smoke binary that can "
             "consume jellyflow-core and jellyflow-runtime without fret-node or fret-core."
         )
     )
