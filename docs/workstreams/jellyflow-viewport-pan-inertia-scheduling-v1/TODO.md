@@ -1,6 +1,6 @@
 # Jellyflow Viewport Pan Inertia Scheduling v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -47,7 +47,7 @@ Last updated: 2026-06-02
 
 ## M3 - Documentation And Closeout
 
-- [ ] JPIS-040 [owner=codex] [deps=JPIS-030] [scope=README.md,crates/jellyflow-runtime/README.md,docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1]
+- [x] JPIS-040 [owner=codex] [deps=JPIS-030] [scope=README.md,crates/jellyflow-runtime/README.md,docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1]
   Goal: Document pan inertia scheduling boundaries, record fresh evidence, and close or split
   follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -59,5 +59,7 @@ Last updated: 2026-06-02
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: EVIDENCE_AND_GATES.md, WORKSTREAM.json, and closeout audit.
   Context: docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Summarize residual risks and follow-ons.
-  State: TASKS.jsonl entry JPIS-040 is verified or accepted before closeout.
+  Handoff: DONE 2026-06-02. README/runtime README document runtime-owned pan inertia planning
+  versus adapter-owned velocity estimation, frame clocks, cancellation, sampled-frame commits, and
+  renderer smoke; package and clippy gates passed; renderer-specific follow-ons are deferred.
+  State: TASKS.jsonl entry JPIS-040 records closeout validation, evidence, and handoff status.

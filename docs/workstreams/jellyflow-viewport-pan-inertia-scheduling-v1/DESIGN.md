@@ -1,6 +1,6 @@
 # Jellyflow Viewport Pan Inertia Scheduling v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Why This Lane Exists

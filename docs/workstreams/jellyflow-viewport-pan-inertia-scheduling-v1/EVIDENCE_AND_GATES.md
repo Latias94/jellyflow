@@ -1,6 +1,6 @@
 # Jellyflow Viewport Pan Inertia Scheduling v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -155,6 +155,45 @@ Fresh verification:
 - `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 16 tests run, 16 passed, 261 skipped.
 - `cargo test --manifest-path templates/headless-adapter/Cargo.toml`: passed, 7 tests run, 7 passed.
 - `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`: passed, 4 matching scenarios.
+
+### 2026-06-02 - JPIS-040 Documentation And Closeout
+
+Scope:
+
+- `README.md`
+- `crates/jellyflow-runtime/README.md`
+- `docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1`
+
+Result:
+
+- README/runtime README now document pan inertia as a runtime-owned pure planning contract.
+- Documentation calls out adapter ownership of release velocity estimation, frame clocks,
+  interruption/cancellation policy, sampled-frame commits, renderer smoke, screenshots, and pixel
+  assertions.
+- Workstream state is closed with renderer-specific follow-ons deferred outside this runtime lane.
+
+Fresh verification:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime`: passed, 277 tests run, 277 passed.
+- `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed.
+- `jq empty docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl`: passed.
+- `git diff --check`: passed.
+
+Review:
+
+- Workstream compliance: JPIS-010 through JPIS-040 are complete, the target state is met, and ADR
+  0001/0003 renderer boundaries remain intact.
+- Code quality: inertia planning and conformance replay remain deterministic, renderer-neutral, and
+  covered through public runtime/conformance surfaces.
+- Residual risks are split as follow-ons rather than kept in this closed lane.
+
+Behavior proven:
+
+- Pan inertia frames can be planned, conformance-replayed, asserted, and smoked through the external
+  headless adapter template without runtime timers or renderer dependencies.
+- README/runtime README now teach the runtime/adapter split for future wgpu, egui, Fret, or other
+  adapters.
 
 ## Notes
 

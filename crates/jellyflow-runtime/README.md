@@ -13,6 +13,7 @@
 - renderer-neutral node drag planning and commit helpers under `runtime::drag`;
 - renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
+- renderer-neutral viewport pan inertia planning under `runtime::viewport`;
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
 - fit-view math that uses Jellyflow canvas geometry;
 - renderer-neutral geometry under `runtime::geometry`, including handle endpoints, edge path
@@ -54,6 +55,10 @@ validate behavior before rendering. The runtime crate supports that split with:
   `runtime::viewport::resolve_viewport_double_click_zoom` for deterministic animation sampling and
   normalized double-click zoom planning without runtime-owned timers or raw platform event
   detection;
+- `runtime::viewport::{ViewportPanInertiaRequest, ViewportPanInertiaPlan,
+  ViewportPanInertiaFrame}` plus `runtime::viewport::plan_viewport_pan_inertia` for deterministic
+  pan inertia sampling from adapter-provided logical screen px/s release velocity and
+  `NodeGraphPanInertiaTuning`;
 - `runtime::auto_pan::{AutoPanActivation, AutoPanRequest, AutoPanPlan}` plus
   `NodeGraphStore::apply_auto_pan` for deterministic edge-proximity auto-pan frames that feed the
   normal viewport publication path;
@@ -84,7 +89,9 @@ they can verify input capture, platform wiring, and rendered pixels.
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
 fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
 node drag, connect/reconnect, delete, viewport gestures, viewport animation frames, and double-click
-zoom plan or rejection assertions.
+zoom plan or rejection assertions. Pan inertia fixtures should use the sampled-frame actions and
+rejection assertion so adapters can prove release-momentum traces without moving frame loops into
+runtime.
 
 The runtime crate also includes a thin renderer-free example harness for agents and CI:
 
@@ -110,12 +117,14 @@ Viewport conformance is also headless. Runtime tests cover:
 - fixture-runner traces for pan, zoom, auto-pan, view changes, gestures, and XyFlow-style callbacks;
 - conformance assertions for viewport animation frame sampling, sampled-frame viewport traces, and
   double-click zoom plan or rejection outcomes.
+- conformance assertions for pan inertia frame sampling, sampled-frame viewport traces, and rejected
+  below-threshold inertia plans.
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
-raw double-click detection, frame scheduling, animation cancellation policy, sampled-frame commits,
-window event loops, screenshots, and pixel assertions. For selection workflows, adapters may call
-the generic `AutoPanActivation::Always` path until a persisted selection-specific auto-pan toggle is
-justified by integration evidence.
+raw double-click detection, release velocity estimation, frame scheduling, animation and inertia
+cancellation policy, sampled-frame commits, window event loops, screenshots, and pixel assertions.
+For selection workflows, adapters may call the generic `AutoPanActivation::Always` path until a
+persisted selection-specific auto-pan toggle is justified by integration evidence.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

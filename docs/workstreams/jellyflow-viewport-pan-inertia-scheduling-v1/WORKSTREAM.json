@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-viewport-pan-inertia-scheduling-v1",
   "title": "Jellyflow Viewport Pan Inertia Scheduling v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl",
-  "current_task": "JPIS-040",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime pan_inertia",
@@ -75,6 +75,11 @@
       "date": "2026-06-02",
       "task": "JPIS-030",
       "summary": "Added conformance pan inertia frame replay actions, adapter conformance traces, and a headless adapter template smoke scenario."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JPIS-040",
+      "summary": "Documented pan inertia runtime/adapter boundaries, recorded package closeout evidence, and closed the workstream with renderer-specific follow-ons deferred."
     }
   ],
   "adr_refs": [
@@ -97,8 +102,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "continue",
-    "next_task": "JPIS-040",
-    "notes": "Continue with closeout documentation and package gates. Split a follow-on if platform-specific physics parity or renderer smoke becomes required."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Viewport pan inertia scheduling v1 is closed. Follow-ons: exact platform physics parity if adapter evidence requires it, and renderer smoke or frame-loop helpers for future wgpu, egui, Fret, or other adapters outside jellyflow-runtime."
   }
 }
