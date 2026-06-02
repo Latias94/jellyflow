@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
@@ -72,6 +72,26 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let selection_result = selection::SelectionBoxResult::default();
     assert!(selection_result.is_empty());
     let _selection_options = selection::SelectionBoxOptions::default();
+    let selection_input = selection::SelectionBoxInput::replace(CanvasRect {
+        origin: CanvasPoint::default(),
+        size: CanvasSize {
+            width: 10.0,
+            height: 10.0,
+        },
+    });
+    let selection_store = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let selection_decision = selection::resolve_selection_box(
+        &graph,
+        selection_store.lookups(),
+        selection_store.view_state(),
+        &NodeGraphInteractionState::default(),
+        selection_input,
+    );
+    assert!(selection_decision.result().is_empty());
     let _selection_modifier = selection::SelectionModifier::Additive;
     assert!(selection::selection_drag_threshold_met(
         selection::SelectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0, false),

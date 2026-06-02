@@ -14,9 +14,10 @@ use crate::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
+use crate::runtime::selection::{SelectionBoxInput, SelectionBoxOptions};
 use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeKind};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeKind};
 
 mod scenario;
 mod suite;

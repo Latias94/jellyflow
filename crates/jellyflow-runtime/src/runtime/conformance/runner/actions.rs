@@ -28,6 +28,10 @@ pub(super) fn execute_action(
             store.apply_node_pointer_down(input.into_runtime());
             Ok(())
         }
+        ConformanceAction::ApplySelectionBox { input } => {
+            store.apply_selection_box(*input);
+            Ok(())
+        }
         ConformanceAction::ApplyNodeNudge { request } => store
             .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))
             .map(|_| ())

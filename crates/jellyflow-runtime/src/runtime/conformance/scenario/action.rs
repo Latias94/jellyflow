@@ -4,6 +4,7 @@ use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::AutoPanRequest;
 use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::events::NodeGraphGestureEvent;
+use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInput};
 use crate::runtime::viewport::{
     ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPanRequest,
@@ -25,6 +26,9 @@ pub enum ConformanceAction {
     },
     ApplyNodePointerDown {
         input: ConformanceNodePointerDownInput,
+    },
+    ApplySelectionBox {
+        input: SelectionBoxInput,
     },
     ApplyNodeNudge {
         request: ConformanceNodeNudgeRequest,
@@ -74,6 +78,7 @@ impl ConformanceAction {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
             Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
+            Self::ApplySelectionBox { .. } => "apply_selection_box",
             Self::ApplyNodeNudge { .. } => "apply_node_nudge",
             Self::ApplyDeleteSelection => "apply_delete_selection",
             Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
@@ -108,6 +113,10 @@ impl ConformanceAction {
                 screen_delta,
             },
         }
+    }
+
+    pub fn apply_selection_box(input: SelectionBoxInput) -> Self {
+        Self::ApplySelectionBox { input }
     }
 
     pub fn apply_node_nudge(request: NodeNudgeRequest) -> Self {

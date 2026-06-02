@@ -6,7 +6,27 @@ use jellyflow_core::core::{CanvasRect, Graph};
 
 use super::additive::apply_additive_selection;
 use super::edges::selection_box_edges;
-use super::types::{SelectionBoxOptions, SelectionBoxResult};
+use super::types::{
+    SelectionBoxDecision, SelectionBoxInput, SelectionBoxOptions, SelectionBoxResult,
+};
+
+/// Resolves the ordered selection state for a canvas-space marquee selection gesture.
+pub fn resolve_selection_box(
+    graph: &Graph,
+    lookups: &NodeGraphLookups,
+    view_state: &NodeGraphViewState,
+    interaction: &NodeGraphInteractionState,
+    input: SelectionBoxInput,
+) -> SelectionBoxDecision {
+    SelectionBoxDecision::new(compute_selection_box(
+        graph,
+        lookups,
+        view_state,
+        interaction,
+        input.rect,
+        input.options,
+    ))
+}
 
 /// Computes the ordered selection state for a canvas-space marquee selection box.
 pub fn compute_selection_box(

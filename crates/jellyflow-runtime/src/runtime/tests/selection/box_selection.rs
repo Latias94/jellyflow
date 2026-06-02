@@ -2,7 +2,9 @@ use super::super::harness::{HarnessEvent, InteractionHarness};
 use super::support::{selection_fixture, selection_rect};
 
 use crate::io::NodeGraphViewState;
-use crate::runtime::selection::{SelectionBoxOptions, SelectionBoxResult, SelectionModifier};
+use crate::runtime::selection::{
+    SelectionBoxInput, SelectionBoxOptions, SelectionBoxResult, SelectionModifier,
+};
 
 #[test]
 fn selection_box_replaces_selection_with_policy_filtered_sorted_result() {
@@ -18,7 +20,7 @@ fn selection_box_replaces_selection_with_policy_filtered_sorted_result() {
 
     let result = harness
         .store_mut()
-        .apply_selection_box(selection_rect(), SelectionBoxOptions::default());
+        .apply_selection_box(SelectionBoxInput::replace(selection_rect()));
 
     let expected = SelectionBoxResult {
         nodes: vec![fixture.low, fixture.high],
@@ -41,13 +43,15 @@ fn selection_box_additive_mode_unions_with_existing_selection_and_sorts() {
     let mut harness =
         InteractionHarness::with_view_state("selection box additive", fixture.graph, view_state);
 
-    let result = harness.store_mut().apply_selection_box(
-        selection_rect(),
-        SelectionBoxOptions {
-            modifier: SelectionModifier::Additive,
-            ..SelectionBoxOptions::default()
-        },
-    );
+    let result = harness
+        .store_mut()
+        .apply_selection_box(SelectionBoxInput::new(
+            selection_rect(),
+            SelectionBoxOptions {
+                modifier: SelectionModifier::Additive,
+                ..SelectionBoxOptions::default()
+            },
+        ));
 
     let expected = SelectionBoxResult {
         nodes: vec![fixture.low, fixture.high, fixture.outside],
@@ -75,7 +79,7 @@ fn selection_box_skips_hidden_edges() {
 
     let result = harness
         .store_mut()
-        .apply_selection_box(selection_rect(), SelectionBoxOptions::default());
+        .apply_selection_box(SelectionBoxInput::replace(selection_rect()));
 
     let expected = SelectionBoxResult {
         nodes: vec![fixture.low, fixture.high],

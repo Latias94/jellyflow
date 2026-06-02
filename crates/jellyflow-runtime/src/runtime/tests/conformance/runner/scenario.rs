@@ -2,18 +2,22 @@ use super::*;
 use jellyflow_core::core::{EdgeId, NodeId};
 
 fn node_pointer_down_selection_trace(node_id: NodeId) -> Vec<ConformanceTraceEvent> {
+    selection_trace(vec![node_id], Vec::new())
+}
+
+fn selection_trace(nodes: Vec<NodeId>, edges: Vec<EdgeId>) -> Vec<ConformanceTraceEvent> {
     vec![
-        ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
+        ConformanceTraceEvent::selection(nodes.clone(), edges.clone(), Vec::new()),
         ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
             changes: vec![ConformanceViewChange::Selection {
-                nodes: vec![node_id],
-                edges: Vec::new(),
+                nodes: nodes.clone(),
+                edges: edges.clone(),
                 groups: Vec::new(),
             }],
         }),
         ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-            nodes: vec![node_id],
-            edges: Vec::new(),
+            nodes,
+            edges,
             groups: Vec::new(),
         }),
     ]
@@ -168,6 +172,41 @@ fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     assert!(report.is_match(), "{report}");
     assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
     assert!(report.mismatches().is_empty());
+}
+
+#[test]
+fn conformance_runner_executes_selection_box_fixture_and_matches_trace() {
+    let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
+    let view_state = node_pointer_down_view_state(other, edge_id);
+    let rect = CanvasRect {
+        origin: CanvasPoint { x: -5.0, y: -5.0 },
+        size: CanvasSize {
+            width: 20.0,
+            height: 20.0,
+        },
+    };
+
+    let scenario = ConformanceScenario::new("selection box runner", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_selection_box(
+            SelectionBoxInput::new(
+                rect,
+                SelectionBoxOptions {
+                    fallback_size: Some(CanvasSize {
+                        width: 10.0,
+                        height: 10.0,
+                    }),
+                    ..SelectionBoxOptions::default()
+                },
+            ),
+        )])
+        .with_expected_trace(selection_trace(vec![node_id], vec![edge_id]));
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
 }
 
 #[test]
