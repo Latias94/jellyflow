@@ -147,6 +147,16 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert!(drag::node_drag_threshold_met(
         drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));
+    assert_eq!(
+        drag::resolve_pointer_gesture_claim(drag::PointerGestureClaimInput::new(
+            CanvasPoint { x: 3.0, y: 4.0 },
+            false,
+            false,
+            8.0,
+            4.0,
+        )),
+        drag::PointerGestureClaim::NodeDrag
+    );
     let _drag_item = drag::NodeDragItem {
         node: NodeId::new(),
         from: CanvasPoint::default(),
