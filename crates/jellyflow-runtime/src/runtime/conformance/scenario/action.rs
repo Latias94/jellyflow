@@ -4,6 +4,7 @@ use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::AutoPanRequest;
 use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::events::NodeGraphGestureEvent;
+use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInput};
 use crate::runtime::viewport::{
     ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPanRequest,
     ViewportScrollInput, ViewportZoomRequest,
@@ -21,6 +22,9 @@ pub enum ConformanceAction {
     ApplyNodeDrag {
         node: NodeId,
         to: CanvasPoint,
+    },
+    ApplyNodePointerDown {
+        input: ConformanceNodePointerDownInput,
     },
     ApplyNodeNudge {
         request: ConformanceNodeNudgeRequest,
@@ -69,6 +73,7 @@ impl ConformanceAction {
         match self {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
             Self::ApplyNodeNudge { .. } => "apply_node_nudge",
             Self::ApplyDeleteSelection => "apply_delete_selection",
             Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
@@ -89,6 +94,20 @@ impl ConformanceAction {
 
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn apply_node_pointer_down(
+        node: NodeId,
+        multi_selection_active: bool,
+        screen_delta: CanvasPoint,
+    ) -> Self {
+        Self::ApplyNodePointerDown {
+            input: ConformanceNodePointerDownInput {
+                node,
+                multi_selection_active,
+                screen_delta,
+            },
+        }
     }
 
     pub fn apply_node_nudge(request: NodeNudgeRequest) -> Self {
@@ -191,6 +210,23 @@ pub struct ConformanceNodeNudgeRequest {
     pub direction: ConformanceNodeNudgeDirection,
     #[serde(default)]
     pub fast: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceNodePointerDownInput {
+    pub node: NodeId,
+    #[serde(default)]
+    pub multi_selection_active: bool,
+    pub screen_delta: CanvasPoint,
+}
+
+impl ConformanceNodePointerDownInput {
+    pub fn into_runtime(self) -> NodePointerDownInput {
+        NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(self.node, self.multi_selection_active),
+            self.screen_delta,
+        )
+    }
 }
 
 impl ConformanceNodeNudgeRequest {

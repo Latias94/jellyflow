@@ -24,6 +24,10 @@ pub(super) fn execute_action(
             })
             .map(|_| ())
             .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyNodePointerDown { input } => {
+            store.apply_node_pointer_down(input.into_runtime());
+            Ok(())
+        }
         ConformanceAction::ApplyNodeNudge { request } => store
             .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))
             .map(|_| ())

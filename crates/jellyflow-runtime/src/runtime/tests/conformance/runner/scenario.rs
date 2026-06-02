@@ -166,3 +166,39 @@ fn conformance_runner_reports_compact_trace_mismatches() {
     assert!(rendered.contains("wrong_op_kind"));
     assert!(rendered.contains("set_node_pos"));
 }
+
+#[test]
+fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_trace() {
+    let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
+    let mut view_state = crate::io::NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge_id], Vec::new());
+
+    let scenario = ConformanceScenario::new("node pointer down runner", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_pointer_down(
+            node_id,
+            false,
+            CanvasPoint { x: 3.0, y: 4.0 },
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Selection {
+                    nodes: vec![node_id],
+                    edges: Vec::new(),
+                    groups: Vec::new(),
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+                nodes: vec![node_id],
+                edges: Vec::new(),
+                groups: Vec::new(),
+            }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
