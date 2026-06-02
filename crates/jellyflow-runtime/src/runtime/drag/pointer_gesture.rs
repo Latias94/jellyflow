@@ -12,6 +12,7 @@ pub struct PointerGestureClaimInput {
     pub screen_delta: CanvasPoint,
     pub selection_key_pressed: bool,
     pub user_selection_active: bool,
+    pub connection_in_progress: bool,
     pub pane_click_distance: f32,
     pub node_drag_threshold: f32,
 }
@@ -21,6 +22,7 @@ impl PointerGestureClaimInput {
         screen_delta: CanvasPoint,
         selection_key_pressed: bool,
         user_selection_active: bool,
+        connection_in_progress: bool,
         pane_click_distance: f32,
         node_drag_threshold: f32,
     ) -> Self {
@@ -28,6 +30,7 @@ impl PointerGestureClaimInput {
             screen_delta,
             selection_key_pressed,
             user_selection_active,
+            connection_in_progress,
             pane_click_distance,
             node_drag_threshold,
         }
@@ -39,10 +42,15 @@ impl PointerGestureClaimInput {
 pub enum PointerGestureClaim {
     None,
     Selection,
+    Connection,
     NodeDrag,
 }
 
 pub fn resolve_pointer_gesture_claim(input: PointerGestureClaimInput) -> PointerGestureClaim {
+    if input.connection_in_progress {
+        return PointerGestureClaim::Connection;
+    }
+
     match resolve_selection_pointer_claim(SelectionPointerClaimInput::new(
         input.screen_delta,
         input.pane_click_distance,

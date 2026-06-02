@@ -1,4 +1,7 @@
 use crate::io::NodeGraphPanOnDragButtons;
+use crate::runtime::drag::{
+    PointerGestureClaim, PointerGestureClaimInput, resolve_pointer_gesture_claim,
+};
 use crate::runtime::selection::selection_modifier_blocks_viewport_drag;
 
 use super::types::{ViewportGestureContext, ViewportPointerButton};
@@ -34,6 +37,27 @@ pub(super) fn selection_modifier_claims_drag(context: ViewportGestureContext) ->
         context.selection_key_pressed,
         context.user_selection_active,
     )
+}
+
+pub(super) fn pointer_drag_claim(context: ViewportGestureContext) -> PointerGestureClaim {
+    if context.user_selection_active {
+        return PointerGestureClaim::Selection;
+    }
+
+    let claim = resolve_pointer_gesture_claim(PointerGestureClaimInput::new(
+        jellyflow_core::core::CanvasPoint { x: 0.1, y: 0.0 },
+        context.selection_key_pressed,
+        false,
+        context.connection_in_progress,
+        0.0,
+        f32::INFINITY,
+    ));
+
+    if claim == PointerGestureClaim::Selection && !selection_modifier_claims_drag(context) {
+        PointerGestureClaim::None
+    } else {
+        claim
+    }
 }
 
 pub(super) fn pan_on_drag_enabled(buttons: NodeGraphPanOnDragButtons) -> bool {

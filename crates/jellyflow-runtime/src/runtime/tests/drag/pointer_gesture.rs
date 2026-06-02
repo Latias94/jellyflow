@@ -10,6 +10,7 @@ fn pointer_gesture_claim_prioritizes_selection_before_node_drag() {
             CanvasPoint { x: 2.0, y: 0.0 },
             true,
             false,
+            false,
             8.0,
             0.0,
         )),
@@ -21,6 +22,7 @@ fn pointer_gesture_claim_prioritizes_selection_before_node_drag() {
             CanvasPoint::default(),
             false,
             true,
+            false,
             8.0,
             0.0,
         )),
@@ -35,6 +37,7 @@ fn pointer_gesture_claim_falls_back_to_node_drag_threshold() {
             CanvasPoint { x: 3.0, y: 4.0 },
             false,
             false,
+            false,
             8.0,
             4.99,
         )),
@@ -46,9 +49,25 @@ fn pointer_gesture_claim_falls_back_to_node_drag_threshold() {
             CanvasPoint { x: 3.0, y: 4.0 },
             false,
             false,
+            false,
             8.0,
             5.0,
         )),
         PointerGestureClaim::None
+    );
+}
+
+#[test]
+fn pointer_gesture_claim_gives_connection_priority_over_other_drags() {
+    assert_eq!(
+        resolve_pointer_gesture_claim(PointerGestureClaimInput::new(
+            CanvasPoint { x: 8.0, y: 0.0 },
+            true,
+            false,
+            true,
+            8.0,
+            0.0,
+        )),
+        PointerGestureClaim::Connection
     );
 }

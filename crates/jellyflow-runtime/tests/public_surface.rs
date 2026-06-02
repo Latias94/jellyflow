@@ -152,6 +152,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
             CanvasPoint { x: 3.0, y: 4.0 },
             false,
             false,
+            false,
             8.0,
             4.0,
         )),
