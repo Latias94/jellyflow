@@ -1,4 +1,5 @@
 use crate::io::NodeGraphPanOnDragButtons;
+use crate::runtime::selection::selection_modifier_blocks_viewport_drag;
 
 use super::types::{ViewportGestureContext, ViewportPointerButton};
 
@@ -26,6 +27,13 @@ pub(super) fn effective_pan_on_scroll_enabled(
     context: ViewportGestureContext,
 ) -> bool {
     pan_on_scroll || context.pan_activation_key_pressed
+}
+
+pub(super) fn selection_modifier_claims_drag(context: ViewportGestureContext) -> bool {
+    selection_modifier_blocks_viewport_drag(
+        context.selection_key_pressed,
+        context.user_selection_active,
+    )
 }
 
 pub(super) fn pan_on_drag_enabled(buttons: NodeGraphPanOnDragButtons) -> bool {

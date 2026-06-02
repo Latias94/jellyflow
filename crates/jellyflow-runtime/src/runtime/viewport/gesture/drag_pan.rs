@@ -2,7 +2,10 @@ use crate::io::NodeGraphPanInteraction;
 use crate::runtime::events::ViewportMoveKind;
 
 use super::super::transform::ViewportPanRequest;
-use super::shared::{effective_pan_on_drag_buttons, pan_button_allowed, pan_on_drag_enabled};
+use super::shared::{
+    effective_pan_on_drag_buttons, pan_button_allowed, pan_on_drag_enabled,
+    selection_modifier_claims_drag,
+};
 use super::types::{
     ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection,
 };
@@ -15,6 +18,9 @@ pub fn resolve_viewport_drag_pan_gesture(
 ) -> Result<ViewportGestureIntent, ViewportGestureRejection> {
     if context.user_selection_active {
         return Err(ViewportGestureRejection::UserSelectionActive);
+    }
+    if selection_modifier_claims_drag(context) {
+        return Err(ViewportGestureRejection::PanOnDragDisabled);
     }
     if context.connection_in_progress {
         return Err(ViewportGestureRejection::ConnectionInProgress);
