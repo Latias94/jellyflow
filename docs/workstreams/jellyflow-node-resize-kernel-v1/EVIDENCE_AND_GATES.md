@@ -90,6 +90,35 @@ Fresh verification:
 - 2026-06-02: `jq empty docs/workstreams/jellyflow-node-resize-kernel-v1/WORKSTREAM.json docs/workstreams/jellyflow-node-resize-kernel-v1/TASKS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl` passed.
 - 2026-06-02: `git diff --check` passed.
 
+### 2026-06-02 - JNR-020 Minimal Pure Resize Planner
+
+Scope: `crates/jellyflow-runtime/src/runtime/resize`, `crates/jellyflow-runtime/src/runtime/tests`,
+`crates/jellyflow-runtime/tests/public_surface.rs`
+
+Result:
+
+- Added `runtime::resize` request, constraint, item, plan, planner, and store helper surface.
+- Planned visible single-node resize requests as deterministic `SetNodeSize` transactions.
+- Added optional min/max size clamping inside the runtime planner.
+- Rejected hidden, missing, no-op, non-positive, non-finite, invalid-constraint, and contradictory
+  constraint requests.
+- Kept direction, origin, top/left position changes, extents, parent expansion, conformance schema,
+  renderer UI, raw pointer capture, and pixels out of this slice.
+
+Behavior proven:
+
+- Accepted resize commits a `node resize` labeled `SetNodeSize` transaction and graph trace.
+- Min/max constraints clamp target width/height deterministically.
+- Invalid requests produce no plan and no store commit.
+- Public surface exposes `runtime::resize` request/plan/constraint vocabulary.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime resize` passed, 3 tests run.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface` passed, 3 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

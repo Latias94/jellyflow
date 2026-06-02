@@ -11,7 +11,7 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, delete, drag, events, keyboard, rendering,
+    auto_pan, commit, conformance, connection, delete, drag, events, keyboard, rendering, resize,
     selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
@@ -207,6 +207,20 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<selection::NodePointerDownDecision>();
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();
+    let resize_request = resize::NodeResizeRequest::new(
+        NodeId::new(),
+        CanvasSize {
+            width: 1.0,
+            height: 1.0,
+        },
+    )
+    .with_constraints(resize::NodeResizeConstraints::unconstrained());
+    let _: resize::NodeResizeRequest = resize_request;
+    let _ = std::mem::size_of::<resize::NodeResizeItem>();
+    let _ = std::mem::size_of::<resize::NodeResizePlan>();
+    let _: fn(&Graph, resize::NodeResizeRequest) -> Option<resize::NodeResizePlan> =
+        resize::plan_node_resize;
+    assert_eq!(resize::NODE_RESIZE_TRANSACTION_LABEL, "node resize");
     assert_eq!(
         delete::DELETE_SELECTION_TRANSACTION_LABEL,
         "delete selection"

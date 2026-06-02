@@ -31,7 +31,9 @@ cargo nextest run -p jellyflow-runtime resize
 cargo nextest run -p jellyflow-runtime --test public_surface
 ```
 
-Status: pending.
+Status: complete on 2026-06-02. `runtime::resize` now plans single-node `SetNodeSize`
+transactions, clamps optional min/max bounds, rejects hidden/missing/no-op/invalid requests, and is
+covered through focused runtime tests plus the public surface smoke.
 
 ## M2 - Origin, Position, And Extent Constraints
 

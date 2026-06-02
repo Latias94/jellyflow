@@ -18,6 +18,7 @@ pub mod lookups;
 pub mod middleware;
 pub mod policy;
 pub mod rendering;
+pub mod resize;
 pub mod selection;
 pub mod store;
 pub mod utils;

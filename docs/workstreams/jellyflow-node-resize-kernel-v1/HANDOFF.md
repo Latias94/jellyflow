@@ -10,6 +10,11 @@ The workstream is active. It was opened after the closed node drag parent expans
 JNR-010 is complete: the lane scope, non-goals, source coverage, task ledger, campaign record,
 milestones, gate set, context manifest, and machine-readable workstream metadata are recorded.
 
+JNR-020 is complete: `runtime::resize` now exposes a renderer-neutral single-node resize request,
+constraint, item, plan, pure planner, and `NodeGraphStore` helper. The first slice emits
+deterministic `SetNodeSize` transactions, clamps optional min/max bounds, and rejects hidden,
+missing, no-op, non-positive, non-finite, invalid-constraint, and contradictory-constraint requests.
+
 The architecture gap is specific: Jellyflow can store and transact node sizes, but runtime adapters
 do not yet have a headless resize planner. XyFlow's `XYResizer` already separates much resize math
 from React UI, so Jellyflow should capture the renderer-neutral planning part without taking on DOM
@@ -17,16 +22,18 @@ handles or renderer smoke.
 
 ## Next Task
 
-JNR-020: add the first renderer-neutral node resize request/plan that emits deterministic
-`SetNodeSize` transactions for a single node with min/max bounds.
+JNR-030: extend resize planning for left/top position changes, node origin, parent extents, and
+child extent restrictions where the contract is clear.
 
 ## Decisions Since Opening
 
 - Keep resize planning in `jellyflow-runtime`; adapters own handles, raw input, rendering, and
   pixels.
-- Reuse existing `GraphOp::SetNodeSize`, with `SetNodePos` and `SetGroupRect` only when later
+- Reuse existing `GraphOp::SetNodeSize`; introduce `SetNodePos` and `SetGroupRect` only when later
   slices prove they are needed.
-- Start with public planner/store seams and focused runtime tests before adding conformance schema.
+- Public planner/store seams and focused runtime tests are in place before adding conformance schema.
+- JNR-020 intentionally did not add resize direction, node origin, extents, parent expansion, or
+  conformance fixture vocabulary.
 - Split exact keep-aspect-ratio, parent/child extent, or NodeResizer UI parity if they broaden the
   first planner task.
 
@@ -36,12 +43,12 @@ JNR-020: add the first renderer-neutral node resize request/plan that emits dete
 
 ## Validation To Run
 
-For JNR-020:
+For JNR-030:
 
 ```bash
 cargo fmt --check
 cargo nextest run -p jellyflow-runtime resize
-cargo nextest run -p jellyflow-runtime --test public_surface
+cargo nextest run -p jellyflow-runtime drag_parent_expansion
 ```
 
 For lane closeout:
@@ -58,11 +65,15 @@ git diff --check
 
 - 2026-06-02: JNR-010 opened the workstream from XyFlow `XYResizer` source evidence and current
   Jellyflow `SetNodeSize` transaction coverage.
+- 2026-06-02: JNR-020 added the minimal pure resize planner and passed `cargo fmt --check`,
+  `cargo nextest run -p jellyflow-runtime resize`, and `cargo nextest run -p jellyflow-runtime
+  --test public_surface`.
 
 ## Next Recommended Action
 
-Start JNR-020 with red tests for:
+Start JNR-030 by deciding the smallest direction/origin slice:
 
-- accepted bottom/right single-node resize producing `SetNodeSize`;
-- no-op or invalid size requests producing no plan;
-- min/max bounds clamping or rejection through the public resize planner interface.
+- bottom/right remains size-only and already works;
+- left/top should add `SetNodePos` plus `SetNodeSize`;
+- node origin and extents should be added only when tests can state the adapter-facing contract
+  clearly.

@@ -20,17 +20,17 @@ Last updated: 2026-06-02
 
 ## M1 - Minimal Pure Resize Planner
 
-- [ ] JNR-020 [owner=codex] [deps=JNR-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests]
+- [x] JNR-020 [owner=codex] [deps=JNR-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests]
   Goal: Add the first renderer-neutral node resize request/plan that emits deterministic
   `SetNodeSize` transactions for a single node with min/max bounds.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime resize; cargo nextest run -p
   jellyflow-runtime --test public_surface
   Review: review-workstream before accepting completion.
-  Evidence: focused runtime resize tests and public surface smoke if exported.
+  Evidence: `crates/jellyflow-runtime/src/runtime/resize/`, `crates/jellyflow-runtime/src/runtime/tests/resize.rs`, and `crates/jellyflow-runtime/tests/public_surface.rs`.
   Context: docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNR-020 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. Added a renderer-neutral single-node resize planner, store apply
+  helper, min/max constraints, and public surface smoke.
+  State: TASKS.jsonl entry JNR-020 records DONE with validation and evidence.
 
 ## M2 - Origin, Position, And Extent Constraints
 

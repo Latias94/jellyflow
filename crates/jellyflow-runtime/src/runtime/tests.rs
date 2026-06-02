@@ -9,6 +9,7 @@ mod harness;
 mod keyboard;
 mod lookups;
 mod rendering;
+mod resize;
 mod selection;
 mod store;
 mod utils;
