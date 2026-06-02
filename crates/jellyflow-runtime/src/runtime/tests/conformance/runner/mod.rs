@@ -15,7 +15,11 @@ use crate::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::selection::{SelectionBoxInput, SelectionBoxOptions};
-use crate::runtime::viewport::{ViewportPanRequest, ViewportZoomRequest};
+use crate::runtime::viewport::{
+    ViewportAnimationEasing, ViewportAnimationFrame, ViewportAnimationOptions,
+    ViewportAnimationPlan, ViewportAnimationRequest, ViewportDoubleClickZoomInput,
+    ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
+};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeKind};
 

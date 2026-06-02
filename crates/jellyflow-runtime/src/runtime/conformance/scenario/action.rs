@@ -10,8 +10,9 @@ use crate::runtime::events::NodeGraphGestureEvent;
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInput};
 use crate::runtime::viewport::{
-    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPanRequest,
-    ViewportScrollInput, ViewportZoomRequest,
+    ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
+    ViewportDoubleClickZoomInput, ViewportDragPanInput, ViewportGestureContext,
+    ViewportGestureRejection, ViewportPanRequest, ViewportScrollInput, ViewportZoomRequest,
 };
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
@@ -65,6 +66,18 @@ pub enum ConformanceAction {
     ApplyViewportZoom {
         request: ViewportZoomRequest,
     },
+    AssertViewportAnimationFrame {
+        request: ViewportAnimationRequest,
+        elapsed_seconds: f32,
+        expected: ViewportAnimationFrame,
+    },
+    AssertViewportDoubleClickZoom {
+        input: ViewportDoubleClickZoomInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected: Option<ViewportAnimationPlan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_rejection: Option<ViewportGestureRejection>,
+    },
     ApplyViewportScrollGesture {
         context: ViewportGestureContext,
         input: ViewportScrollInput,
@@ -107,6 +120,8 @@ impl ConformanceAction {
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
+            Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
+            Self::AssertViewportDoubleClickZoom { .. } => "assert_viewport_double_click_zoom",
             Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
             Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
             Self::SetViewport { .. } => "set_viewport",
@@ -185,6 +200,40 @@ impl ConformanceAction {
 
     pub fn apply_viewport_zoom(request: ViewportZoomRequest) -> Self {
         Self::ApplyViewportZoom { request }
+    }
+
+    pub fn assert_viewport_animation_frame(
+        request: ViewportAnimationRequest,
+        elapsed_seconds: f32,
+        expected: ViewportAnimationFrame,
+    ) -> Self {
+        Self::AssertViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        }
+    }
+
+    pub fn assert_viewport_double_click_zoom(
+        input: ViewportDoubleClickZoomInput,
+        expected: ViewportAnimationPlan,
+    ) -> Self {
+        Self::AssertViewportDoubleClickZoom {
+            input,
+            expected: Some(expected),
+            expect_rejection: None,
+        }
+    }
+
+    pub fn expect_viewport_double_click_zoom_rejected(
+        input: ViewportDoubleClickZoomInput,
+        rejection: ViewportGestureRejection,
+    ) -> Self {
+        Self::AssertViewportDoubleClickZoom {
+            input,
+            expected: None,
+            expect_rejection: Some(rejection),
+        }
     }
 
     pub fn apply_viewport_scroll_gesture(

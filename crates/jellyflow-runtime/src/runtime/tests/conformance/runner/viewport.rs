@@ -215,3 +215,93 @@ fn conformance_runner_rejects_viewport_drag_pan_when_connection_claims_pointer()
     assert!(report.is_match(), "{report}");
     assert!(report.actual_trace().is_empty());
 }
+
+#[test]
+fn conformance_runner_asserts_viewport_animation_frame_without_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).unwrap();
+    let to = ViewportTransform::new(CanvasPoint { x: 100.0, y: -50.0 }, 3.0).unwrap();
+    let expected = ViewportAnimationFrame {
+        elapsed_seconds: 0.5,
+        progress: 0.25,
+        eased_progress: 0.0625,
+        transform: ViewportTransform::new(CanvasPoint { x: 6.25, y: -3.125 }, 1.125).unwrap(),
+        done: false,
+    };
+
+    let scenario = ConformanceScenario::new("viewport animation frame", graph)
+        .with_actions([ConformanceAction::assert_viewport_animation_frame(
+            ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(2.0)),
+            0.5,
+            expected,
+        )])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}
+
+#[test]
+fn conformance_runner_asserts_double_click_zoom_plan_without_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let current = ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0).unwrap();
+    let anchor = CanvasPoint { x: 120.0, y: 60.0 };
+    let input = ViewportDoubleClickZoomInput::new(
+        current,
+        anchor,
+        2.0,
+        0.5,
+        3.0,
+        ViewportAnimationOptions::new(0.2),
+    );
+    let target = ViewportTransform::new(CanvasPoint { x: -10.0, y: 10.0 }, 3.0).unwrap();
+    let expected = ViewportAnimationPlan {
+        from: current,
+        to: target,
+        duration_seconds: 0.2,
+        easing: ViewportAnimationEasing::CubicInOut,
+    };
+
+    let scenario = ConformanceScenario::new("viewport double-click zoom", graph)
+        .with_actions([ConformanceAction::assert_viewport_double_click_zoom(
+            input, expected,
+        )])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}
+
+#[test]
+fn conformance_runner_asserts_double_click_zoom_rejection_without_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.zoom_on_double_click = false;
+    let current = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+
+    let scenario = ConformanceScenario::new("viewport double-click zoom rejection", graph)
+        .with_editor_config(editor_config)
+        .with_actions([
+            ConformanceAction::expect_viewport_double_click_zoom_rejected(
+                ViewportDoubleClickZoomInput::new(
+                    current,
+                    CanvasPoint { x: 10.0, y: 10.0 },
+                    2.0,
+                    0.5,
+                    4.0,
+                    ViewportAnimationOptions::new(0.2),
+                ),
+                ViewportGestureRejection::DoubleClickZoomDisabled,
+            ),
+        ])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}

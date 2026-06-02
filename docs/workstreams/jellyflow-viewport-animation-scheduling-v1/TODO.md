@@ -48,15 +48,17 @@ Last updated: 2026-06-02
 
 ## M3 - Conformance Trace Integration
 
-- [ ] JVAS-040 [owner=codex] [deps=JVAS-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance]
+- [x] JVAS-040 [owner=codex] [deps=JVAS-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance]
   Goal: Let conformance fixtures assert viewport animation plans and double-click zoom traces
   without renderer or timer dependencies.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo nextest
-  run -p jellyflow-runtime adapter_conformance
+  run -p jellyflow-runtime adapter_conformance; cargo nextest run -p jellyflow-runtime --test
+  public_surface
   Review: review-workstream before accepting completion.
   Evidence: fixture-runner traces for viewport animation planning.
   Context: docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Keep frame-loop helpers and renderer smoke in adapter crates.
+  Handoff: DONE 2026-06-02. Conformance fixtures can assert viewport animation frames and
+  double-click zoom plan/rejection outcomes without timers, frame loops, or renderer dependencies.
   State: TASKS.jsonl entry JVAS-040 records owner, scope, validation, evidence, and handoff status.
 
 ## M4 - Documentation And Closeout

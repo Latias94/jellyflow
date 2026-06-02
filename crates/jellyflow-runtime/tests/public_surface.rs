@@ -404,6 +404,42 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             ),
             viewport::ViewportGestureRejection::ConnectionInProgress,
         );
+    let viewport_animation_action = conformance::ConformanceAction::assert_viewport_animation_frame(
+        viewport::ViewportAnimationRequest::new(
+            viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+            viewport::ViewportTransform::new(CanvasPoint { x: 10.0, y: 0.0 }, 2.0)
+                .expect("viewport"),
+            viewport::ViewportAnimationOptions::new(1.0),
+        ),
+        0.5,
+        viewport::ViewportAnimationFrame {
+            elapsed_seconds: 0.5,
+            progress: 0.5,
+            eased_progress: 0.5,
+            transform: viewport::ViewportTransform::new(CanvasPoint { x: 5.0, y: 0.0 }, 1.5)
+                .expect("viewport"),
+            done: false,
+        },
+    );
+    let viewport_double_click_action =
+        conformance::ConformanceAction::assert_viewport_double_click_zoom(
+            viewport::ViewportDoubleClickZoomInput::new(
+                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+                CanvasPoint { x: 10.0, y: 10.0 },
+                2.0,
+                0.5,
+                4.0,
+                viewport::ViewportAnimationOptions::new(0.2),
+            ),
+            viewport::ViewportAnimationPlan {
+                from: viewport::ViewportTransform::new(CanvasPoint::default(), 1.0)
+                    .expect("viewport"),
+                to: viewport::ViewportTransform::new(CanvasPoint { x: -5.0, y: -5.0 }, 2.0)
+                    .expect("viewport"),
+                duration_seconds: 0.2,
+                easing: viewport::ViewportAnimationEasing::CubicInOut,
+            },
+        );
     let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
         keyboard_types::Code::Backspace,
     );
@@ -454,6 +490,8 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
+        viewport_animation_action,
+        viewport_double_click_action,
         delete_key_action,
         connection_target_action,
         connect_action,

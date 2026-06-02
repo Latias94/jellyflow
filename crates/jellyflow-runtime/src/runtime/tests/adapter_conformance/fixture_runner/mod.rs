@@ -19,8 +19,10 @@ use crate::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
 };
 use crate::runtime::viewport::{
-    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton,
-    ViewportScrollInput,
+    ViewportAnimationFrame, ViewportAnimationOptions, ViewportAnimationPlan,
+    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
+    ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton, ViewportScrollInput,
+    ViewportTransform,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, EdgeKind, PortDirection};

@@ -123,3 +123,52 @@ fn adapter_conformance_fixture_runner_checks_viewport_gesture_rejections() {
 
     assert_conformance_trace(&scenario);
 }
+
+#[test]
+fn adapter_conformance_fixture_runner_asserts_viewport_animation_plans() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).unwrap();
+    let to = ViewportTransform::new(CanvasPoint { x: 100.0, y: -50.0 }, 3.0).unwrap();
+    let expected_frame = ViewportAnimationFrame {
+        elapsed_seconds: 0.5,
+        progress: 0.25,
+        eased_progress: 0.0625,
+        transform: ViewportTransform::new(CanvasPoint { x: 6.25, y: -3.125 }, 1.125).unwrap(),
+        done: false,
+    };
+
+    let double_click_current =
+        ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0).unwrap();
+    let anchor = CanvasPoint { x: 120.0, y: 60.0 };
+    let double_click_target =
+        ViewportTransform::new(CanvasPoint { x: -10.0, y: 10.0 }, 3.0).unwrap();
+    let expected_plan = ViewportAnimationPlan {
+        from: double_click_current,
+        to: double_click_target,
+        duration_seconds: 0.2,
+        easing: crate::runtime::viewport::ViewportAnimationEasing::CubicInOut,
+    };
+
+    let scenario = ConformanceScenario::new("viewport animation planning", graph)
+        .with_actions([
+            ConformanceAction::assert_viewport_animation_frame(
+                ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(2.0)),
+                0.5,
+                expected_frame,
+            ),
+            ConformanceAction::assert_viewport_double_click_zoom(
+                ViewportDoubleClickZoomInput::new(
+                    double_click_current,
+                    anchor,
+                    2.0,
+                    0.5,
+                    3.0,
+                    ViewportAnimationOptions::new(0.2),
+                ),
+                expected_plan,
+            ),
+        ])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}

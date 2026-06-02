@@ -66,6 +66,8 @@ cargo nextest run -p jellyflow-runtime conformance
 cargo nextest run -p jellyflow-runtime adapter_conformance
 ```
 
+Status: complete on 2026-06-02.
+
 ## M4 - Documentation And Closeout
 
 Exit criteria:

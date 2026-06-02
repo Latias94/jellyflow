@@ -154,6 +154,43 @@ Behavior proven:
 - Invalid factor and non-finite anchor inputs reject deterministically.
 - Public surface smoke covers the new input and resolver.
 
+### 2026-06-02 - JVAS-040 Conformance Trace Integration
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs`
+- `crates/jellyflow-runtime/src/runtime/conformance/runner/actions.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/conformance/runner/viewport.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/viewport.rs`
+- `crates/jellyflow-runtime/tests/public_surface.rs`
+
+Commands:
+
+```bash
+cargo fmt --check
+cargo nextest run -p jellyflow-runtime conformance
+cargo nextest run -p jellyflow-runtime adapter_conformance
+cargo nextest run -p jellyflow-runtime --test public_surface
+```
+
+Result:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime conformance`: passed, 43 tests run, 43 passed.
+- `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 14 tests run, 14 passed.
+- `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 3 tests run, 3 passed.
+
+Behavior proven:
+
+- Conformance fixtures can assert sampled viewport animation frames without owning timers or
+  renderer frame loops.
+- Conformance fixtures can assert accepted double-click zoom animation plans against current
+  runtime interaction policy.
+- Conformance fixtures can assert expected double-click zoom rejections.
+- Adapter conformance fixtures can use the same vocabulary while keeping expected render traces
+  empty for pure planning checks.
+- Public surface smoke covers the new serde-friendly conformance action vocabulary.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

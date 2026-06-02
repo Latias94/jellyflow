@@ -3,8 +3,9 @@ use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::{
-    ViewportGestureIntent, ViewportGestureRejection, resolve_viewport_drag_pan_gesture,
-    resolve_viewport_scroll_gesture,
+    ViewportAnimationPlan, ViewportGestureIntent, ViewportGestureRejection,
+    plan_viewport_animation_with_options, resolve_viewport_double_click_zoom,
+    resolve_viewport_drag_pan_gesture, resolve_viewport_scroll_gesture,
 };
 
 use super::super::scenario::ConformanceAction;
@@ -73,6 +74,34 @@ pub(super) fn execute_action(
             .apply_viewport_zoom(*request)
             .map(|_| ())
             .ok_or_else(|| "viewport zoom request was rejected".to_owned()),
+        ConformanceAction::AssertViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        } => {
+            let plan = plan_viewport_animation_with_options(*request)
+                .ok_or_else(|| "viewport animation request was rejected".to_owned())?;
+            let actual = plan
+                .frame_at(*elapsed_seconds)
+                .ok_or_else(|| "viewport animation frame was rejected".to_owned())?;
+            if actual == *expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "viewport animation frame resolved to {actual:?}, expected {expected:?}"
+                ))
+            }
+        }
+        ConformanceAction::AssertViewportDoubleClickZoom {
+            input,
+            expected,
+            expect_rejection,
+        } => {
+            let interaction = store.resolved_interaction_state();
+            let result =
+                resolve_viewport_double_click_zoom(&interaction.zoom_interaction(), *input);
+            assert_viewport_double_click_zoom_result(result, *expected, *expect_rejection)
+        }
         ConformanceAction::ApplyViewportScrollGesture {
             context,
             input,
@@ -113,6 +142,39 @@ pub(super) fn execute_action(
             store.emit_gesture(event.clone());
             Ok(())
         }
+    }
+}
+
+fn assert_viewport_double_click_zoom_result(
+    result: Result<ViewportAnimationPlan, ViewportGestureRejection>,
+    expected: Option<ViewportAnimationPlan>,
+    expect_rejection: Option<ViewportGestureRejection>,
+) -> Result<(), String> {
+    match (result, expected, expect_rejection) {
+        (Ok(actual), Some(expected), None) if actual == expected => Ok(()),
+        (Ok(actual), Some(expected), None) => Err(format!(
+            "viewport double-click zoom resolved to {actual:?}, expected {expected:?}"
+        )),
+        (Ok(actual), None, Some(expected_rejection)) => Err(format!(
+            "viewport double-click zoom was accepted as {actual:?}, expected rejection {expected_rejection:?}"
+        )),
+        (Err(actual), None, Some(expected)) if actual == expected => Ok(()),
+        (Err(actual), None, Some(expected)) => Err(format!(
+            "viewport double-click zoom rejected with {actual:?}, expected {expected:?}"
+        )),
+        (Err(actual), Some(_), None) => Err(format!(
+            "viewport double-click zoom was rejected: {actual:?}"
+        )),
+        (Ok(actual), None, None) => Err(format!(
+            "viewport double-click zoom accepted as {actual:?}, but no expected plan was provided"
+        )),
+        (Err(actual), None, None) => Err(format!(
+            "viewport double-click zoom was rejected: {actual:?}, but no expected rejection was provided"
+        )),
+        (_, Some(_), Some(_)) => Err(
+            "viewport double-click zoom action cannot expect both a plan and a rejection"
+                .to_owned(),
+        ),
     }
 }
 

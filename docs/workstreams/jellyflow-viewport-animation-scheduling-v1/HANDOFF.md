@@ -19,15 +19,19 @@ JVAS-030 is complete: normalized double-click zoom input now resolves to anchore
 animation plans, respects `zoom_on_double_click`, uses existing min/max zoom clamp behavior, and
 rejects invalid normalized input without adding raw platform event handling.
 
+JVAS-040 is complete: conformance fixtures now expose renderer-free assertions for sampled viewport
+animation frames and double-click zoom plan or rejection outcomes. The adapter conformance fixture
+runner can use the same assertions while leaving render traces empty for pure planning checks.
+
 ## Active Task
 
-- Task ID: JVAS-040
+- Task ID: JVAS-050
 - Owner: codex
-- Files: `crates/jellyflow-runtime/src/runtime/conformance`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance`
-- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime conformance`; `cargo nextest run -p jellyflow-runtime adapter_conformance`
+- Files: `README.md`, `crates/jellyflow-runtime/README.md`, `docs/workstreams/jellyflow-viewport-animation-scheduling-v1`
+- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`; `jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl`; `git diff --check`
 - Status: NEEDS_CONTEXT
-- Review: review-workstream before accepting completion
-- Evidence: fixture-runner traces for viewport animation planning
+- Review: review-workstream and verify-rust-workstream before closeout
+- Evidence: README/runtime README guidance, closeout audit, and fresh package gates
 
 ## Decisions Since Opening
 
@@ -50,5 +54,5 @@ rejects invalid normalized input without adding raw platform event handling.
 
 ## Next Recommended Action
 
-- Implement JVAS-040: conformance fixtures should assert viewport animation planning and
-  double-click zoom traces without timers or renderer dependencies.
+- Implement JVAS-050: document viewport animation scheduling boundaries, run package closeout
+  gates, and close or split follow-ons.
