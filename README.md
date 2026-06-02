@@ -111,8 +111,9 @@ This repository was created by a history-preserving path-filtered extraction fro
 Fret commit is recorded in `JELLYFLOW_SOURCE_COMMIT.txt`, and the filter command is recorded in
 `docs/extraction/EXTRACTION_RECORD_2026-05-30.md`.
 
-Crates.io publishing is intentionally blocked until package metadata, CI, package lists, and
-publish dry-runs are verified.
+Crates.io publishing remains gated by release-readiness checks. See
+`docs/releasing/CRATES_IO.md` for the CI gates, package list checks, dry-run caveats, and publish
+order.
 
 ## Validation
 

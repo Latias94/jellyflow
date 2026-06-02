@@ -111,6 +111,8 @@ codex:
 
 # Auto-detected monorepo packages
 packages:
+  repository:
+    path: .
   jellyflow-core:
     path: crates/jellyflow-core
   jellyflow-runtime:

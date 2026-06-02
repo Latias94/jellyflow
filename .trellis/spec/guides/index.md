@@ -29,6 +29,8 @@ instead of silently coding around it.
 
 - Read the task `prd.md`; read `design.md` and `implement.md` when present.
 - Read the relevant package index under `.trellis/spec/<package>/backend/`.
+- For repository-level CI, package metadata, or release documentation, read
+  `.trellis/spec/repository/backend/release-readiness.md`.
 - Read ADRs referenced by the touched boundary.
 - Use `rg` before adding a helper, enum variant, config field, conformance action,
   or public re-export.
