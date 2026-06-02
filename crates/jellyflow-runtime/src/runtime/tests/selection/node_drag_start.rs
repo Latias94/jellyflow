@@ -2,9 +2,12 @@ use super::super::fixtures::make_graph;
 use super::super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
+use crate::runtime::drag::PointerGestureClaim;
 use crate::runtime::selection::{
-    NodeDragStartSelectionAction, NodeDragStartSelectionInput, resolve_node_drag_start_selection,
+    NodeDragStartSelectionAction, NodeDragStartSelectionInput, NodePointerDownDecision,
+    NodePointerDownInput, resolve_node_drag_start_selection, resolve_node_pointer_down,
 };
+use jellyflow_core::core::CanvasPoint;
 
 #[test]
 fn node_drag_start_selection_selects_unselected_node_by_default() {
@@ -115,5 +118,55 @@ fn node_drag_start_selection_does_not_select_non_selectable_or_hidden_nodes() {
             NodeDragStartSelectionInput::new(node, false),
         ),
         NodeDragStartSelectionAction::Unchanged,
+    );
+}
+
+#[test]
+fn node_pointer_down_combines_selection_and_drag_readiness() {
+    let (graph, node, other, _, _, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge], Vec::new());
+
+    let decision = resolve_node_pointer_down(
+        &graph,
+        &view_state,
+        &NodeGraphInteractionState::default(),
+        NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(node, false),
+            CanvasPoint { x: 3.0, y: 4.0 },
+        ),
+    );
+
+    assert_eq!(
+        decision,
+        NodePointerDownDecision::new(
+            NodeDragStartSelectionAction::SelectOnly(node),
+            PointerGestureClaim::NodeDrag,
+        )
+    );
+}
+
+#[test]
+fn node_pointer_down_keeps_drag_unclaimed_without_threshold_crossing() {
+    let (graph, node, other, _, _, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge], Vec::new());
+
+    let decision = resolve_node_pointer_down(
+        &graph,
+        &view_state,
+        &NodeGraphInteractionState::default(),
+        NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(node, false),
+            CanvasPoint::default(),
+        ),
+    );
+
+    assert_eq!(
+        decision,
+        NodePointerDownDecision::new(
+            NodeDragStartSelectionAction::SelectOnly(node),
+            PointerGestureClaim::None,
+        )
     );
 }

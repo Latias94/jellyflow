@@ -163,6 +163,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
         from: CanvasPoint::default(),
         to: CanvasPoint::default(),
     };
+    let _ = std::mem::size_of::<selection::NodePointerDownDecision>();
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();
     assert_eq!(

@@ -1,6 +1,10 @@
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
+use crate::runtime::drag::{
+    PointerGestureClaim, PointerGestureClaimInput, resolve_pointer_gesture_claim,
+};
 use crate::runtime::policy::resolve_node_interaction_policy;
 use crate::runtime::store::NodeGraphStore;
+use jellyflow_core::core::CanvasPoint;
 use jellyflow_core::core::{EdgeId, Graph, GroupId, NodeId};
 
 use super::types::SelectionModifier;
@@ -42,6 +46,38 @@ pub enum NodeDragStartSelectionAction {
     Add(NodeId),
     /// Remove the dragged node from the existing node selection.
     Remove(NodeId),
+}
+
+/// Combined decision for a node pointer-down that may update selection and enable node dragging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodePointerDownDecision {
+    pub selection: NodeDragStartSelectionAction,
+    pub drag_claim: PointerGestureClaim,
+}
+
+impl NodePointerDownDecision {
+    pub fn new(selection: NodeDragStartSelectionAction, drag_claim: PointerGestureClaim) -> Self {
+        Self {
+            selection,
+            drag_claim,
+        }
+    }
+}
+
+/// Input for resolving the first node pointer-down decision.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodePointerDownInput {
+    pub selection: NodeDragStartSelectionInput,
+    pub screen_delta: CanvasPoint,
+}
+
+impl NodePointerDownInput {
+    pub fn new(selection: NodeDragStartSelectionInput, screen_delta: CanvasPoint) -> Self {
+        Self {
+            selection,
+            screen_delta,
+        }
+    }
 }
 
 impl NodeDragStartSelectionAction {
@@ -134,6 +170,30 @@ pub fn resolve_node_drag_start_selection(
     }
 }
 
+/// Resolves the first headless decision for a node pointer-down.
+///
+/// This keeps the existing XyFlow-compatible selection side effect while also exposing whether the
+/// pointer state should proceed toward node dragging or is still unclaimed.
+pub fn resolve_node_pointer_down(
+    graph: &Graph,
+    view_state: &NodeGraphViewState,
+    interaction: &NodeGraphInteractionState,
+    input: NodePointerDownInput,
+) -> NodePointerDownDecision {
+    let selection =
+        resolve_node_drag_start_selection(graph, view_state, interaction, input.selection);
+    let drag_claim = resolve_pointer_gesture_claim(PointerGestureClaimInput::new(
+        input.screen_delta,
+        input.selection.modifier.additive(),
+        false,
+        false,
+        interaction.node_drag_interaction().node_drag_threshold,
+        interaction.node_drag_interaction().node_drag_threshold,
+    ));
+
+    NodePointerDownDecision::new(selection, drag_claim)
+}
+
 impl NodeGraphStore {
     /// Applies XyFlow-compatible selection behavior for a node-drag start.
     pub fn apply_node_drag_start_selection(
@@ -147,5 +207,14 @@ impl NodeGraphStore {
             self.set_selection(nodes, edges, groups);
         }
         action
+    }
+
+    /// Resolves the node pointer-down decision against current graph, selection, and interaction.
+    pub fn resolve_node_pointer_down(
+        &self,
+        input: NodePointerDownInput,
+    ) -> NodePointerDownDecision {
+        let interaction = self.resolved_interaction_state();
+        resolve_node_pointer_down(self.graph(), self.view_state(), &interaction, input)
     }
 }

@@ -15,7 +15,8 @@ mod types;
 pub use activation::{SelectionDragActivationInput, selection_drag_threshold_met};
 pub use compute::compute_selection_box;
 pub use node_drag_start::{
-    NodeDragStartSelectionAction, NodeDragStartSelectionInput, resolve_node_drag_start_selection,
+    NodeDragStartSelectionAction, NodeDragStartSelectionInput, NodePointerDownDecision,
+    NodePointerDownInput, resolve_node_drag_start_selection, resolve_node_pointer_down,
 };
 pub use pointer_claim::{
     SelectionPointerClaim, SelectionPointerClaimInput, resolve_selection_pointer_claim,
