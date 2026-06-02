@@ -6,11 +6,11 @@ use crate::runtime::events::{
     ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::xyflow::callbacks::{
-    ConnectionChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
-    NodeGraphViewCallbacks, SelectionChange,
+    ConnectionChange, DeleteChange, EdgeConnection, NodeGraphCommitCallbacks,
+    NodeGraphGestureCallbacks, NodeGraphViewCallbacks, SelectionChange,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{CanvasPoint, EdgeId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId, StickyNoteId};
 use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::scenario::{
@@ -57,6 +57,33 @@ impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
     fn on_edges_change(&mut self, changes: &[EdgeChange]) {
         self.push(ConformanceCallbackEvent::EdgesChange {
             count: changes.len(),
+        });
+    }
+
+    fn on_nodes_delete(&mut self, nodes: &[NodeId]) {
+        self.push(ConformanceCallbackEvent::NodesDelete { count: nodes.len() });
+    }
+
+    fn on_edges_delete(&mut self, edges: &[EdgeId]) {
+        self.push(ConformanceCallbackEvent::EdgesDelete { count: edges.len() });
+    }
+
+    fn on_groups_delete(&mut self, groups: &[GroupId]) {
+        self.push(ConformanceCallbackEvent::GroupsDelete {
+            count: groups.len(),
+        });
+    }
+
+    fn on_sticky_notes_delete(&mut self, notes: &[StickyNoteId]) {
+        self.push(ConformanceCallbackEvent::StickyNotesDelete { count: notes.len() });
+    }
+
+    fn on_delete(&mut self, change: DeleteChange) {
+        self.push(ConformanceCallbackEvent::Delete {
+            nodes: change.nodes().len(),
+            edges: change.edges().len(),
+            groups: change.groups().len(),
+            sticky_notes: change.sticky_notes().len(),
         });
     }
 

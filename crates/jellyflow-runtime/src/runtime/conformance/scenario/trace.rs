@@ -111,6 +111,24 @@ pub enum ConformanceCallbackEvent {
     EdgesChange {
         count: usize,
     },
+    NodesDelete {
+        count: usize,
+    },
+    EdgesDelete {
+        count: usize,
+    },
+    GroupsDelete {
+        count: usize,
+    },
+    StickyNotesDelete {
+        count: usize,
+    },
+    Delete {
+        nodes: usize,
+        edges: usize,
+        groups: usize,
+        sticky_notes: usize,
+    },
     ConnectionChange(ConnectionChange),
     Connect(EdgeConnection),
     Disconnect(EdgeConnection),

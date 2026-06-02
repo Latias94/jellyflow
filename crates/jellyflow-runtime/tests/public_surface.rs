@@ -314,9 +314,15 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             ),
             viewport::ViewportGestureRejection::ConnectionInProgress,
         );
-    let encoded_viewport_actions =
-        serde_json::to_value([viewport_scroll_action, viewport_reject_action])
-            .expect("serialize viewport fixture actions");
+    let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
+        keyboard_types::Code::Backspace,
+    );
+    let encoded_viewport_actions = serde_json::to_value([
+        viewport_scroll_action,
+        viewport_reject_action,
+        delete_key_action,
+    ])
+    .expect("serialize viewport fixture actions");
     assert!(encoded_viewport_actions.is_array());
 
     let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)

@@ -23,6 +23,14 @@ pub(super) fn execute_action(
             })
             .map(|_| ())
             .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyDeleteSelection => store
+            .apply_delete_selection()
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyDeleteSelectionForKey { key } => store
+            .apply_delete_selection_for_key(key.0)
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
         ConformanceAction::ApplyAutoPan { request } => store
             .apply_auto_pan(*request)
             .map(|_| ())

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::AutoPanRequest;
 use crate::runtime::events::NodeGraphGestureEvent;
 use crate::runtime::viewport::{
@@ -8,6 +9,7 @@ use crate::runtime::viewport::{
 };
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
+use keyboard_types::Code as KeyCode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -18,6 +20,10 @@ pub enum ConformanceAction {
     ApplyNodeDrag {
         node: NodeId,
         to: CanvasPoint,
+    },
+    ApplyDeleteSelection,
+    ApplyDeleteSelectionForKey {
+        key: NodeGraphKeyCode,
     },
     ApplyAutoPan {
         request: AutoPanRequest,
@@ -59,6 +65,8 @@ impl ConformanceAction {
         match self {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::ApplyDeleteSelection => "apply_delete_selection",
+            Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
@@ -76,6 +84,16 @@ impl ConformanceAction {
 
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn apply_delete_selection() -> Self {
+        Self::ApplyDeleteSelection
+    }
+
+    pub fn apply_delete_selection_for_key(key: KeyCode) -> Self {
+        Self::ApplyDeleteSelectionForKey {
+            key: NodeGraphKeyCode(key),
+        }
     }
 
     pub fn apply_auto_pan(request: AutoPanRequest) -> Self {
