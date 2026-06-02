@@ -11,8 +11,9 @@ use crate::runtime::drag::{
     NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection, NodeNudgeRequest,
 };
 use crate::runtime::events::{
-    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
-    ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
+    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome,
+    NodeResizeStart, NodeResizeUpdate, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
+    ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,

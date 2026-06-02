@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::runtime::events::{
-    ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, ViewChange, ViewportMove,
-    ViewportMoveEnd, ViewportMoveStart,
+    ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeResizeEnd,
+    NodeResizeStart, NodeResizeUpdate, ViewChange, ViewportMove, ViewportMoveEnd,
+    ViewportMoveStart,
 };
 use crate::runtime::xyflow::callbacks::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeGraphCommitCallbacks,
@@ -170,6 +171,18 @@ where
 
     fn on_node_drag_end(&mut self, ev: NodeDragEnd) {
         self.push(ConformanceCallbackEvent::NodeDragEnd(ev));
+    }
+
+    fn on_node_resize_start(&mut self, ev: NodeResizeStart) {
+        self.push(ConformanceCallbackEvent::NodeResizeStart(ev));
+    }
+
+    fn on_node_resize(&mut self, ev: NodeResizeUpdate) {
+        self.push(ConformanceCallbackEvent::NodeResize(ev));
+    }
+
+    fn on_node_resize_end(&mut self, ev: NodeResizeEnd) {
+        self.push(ConformanceCallbackEvent::NodeResizeEnd(ev));
     }
 
     fn on_connect_start(&mut self, ev: ConnectStart) {

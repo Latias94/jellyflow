@@ -23,6 +23,7 @@ pub use traits::{
 };
 pub use types::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
-    NodeDragUpdate, SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
-    ViewportMoveKind, ViewportMoveStart,
+    NodeDragUpdate, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
+    SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind,
+    ViewportMoveStart,
 };

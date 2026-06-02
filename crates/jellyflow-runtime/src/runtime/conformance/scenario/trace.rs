@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
-    NodeGraphStoreEvent, ViewChange, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
+    NodeGraphStoreEvent, NodeResizeEnd, NodeResizeStart, NodeResizeUpdate, ViewChange,
+    ViewportMove, ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
@@ -187,6 +188,9 @@ pub enum ConformanceCallbackEvent {
     NodeDragStart(NodeDragStart),
     NodeDrag(NodeDragUpdate),
     NodeDragEnd(NodeDragEnd),
+    NodeResizeStart(NodeResizeStart),
+    NodeResize(NodeResizeUpdate),
+    NodeResizeEnd(NodeResizeEnd),
     ViewportMoveStart(ViewportMoveStart),
     ViewportMove(ViewportMove),
     ViewportMoveEnd(ViewportMoveEnd),

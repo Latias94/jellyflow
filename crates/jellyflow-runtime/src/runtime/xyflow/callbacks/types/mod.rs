@@ -9,4 +9,7 @@ pub use self::gesture::{
     ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 pub use self::selection::SelectionChange;
-pub use crate::runtime::events::{NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeDragUpdate};
+pub use crate::runtime::events::{
+    NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeDragUpdate, NodeResizeEnd,
+    NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
+};

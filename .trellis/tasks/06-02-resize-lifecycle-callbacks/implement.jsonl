@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared implementation thinking guides and Trellis spec navigation."}
+{"file": ".trellis/spec/jellyflow-runtime/backend/index.md", "reason": "Runtime package boundaries and required pre-development checklist."}
+{"file": ".trellis/spec/jellyflow-runtime/backend/directory-structure.md", "reason": "Placement rules for events, xyflow callbacks, conformance, tests, and public APIs."}
+{"file": ".trellis/spec/jellyflow-runtime/backend/quality-guidelines.md", "reason": "Validation and headless dependency guardrails for runtime changes."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Adapter testing and renderer boundary for conformance/template work."}
+{"file": "docs/adr/0004-resize-containment-and-lifecycle-boundary.md", "reason": "Accepted resize lifecycle boundary and deferred containment decisions."}
+{"file": "docs/reviews/xyflow-gap-2026-06-02.md", "reason": "Source-backed XyFlow parity gap context for resize lifecycle callbacks."}
+{"file": ".trellis/tasks/archive/2026-06/06-02-pointer-resize-parity/research.md", "reason": "Prior pointer resize evidence and scope exclusions this task builds on."}
+{"file": ".trellis/tasks/06-02-resize-lifecycle-callbacks/research.md", "reason": "Task-specific evidence and implementation implications."}

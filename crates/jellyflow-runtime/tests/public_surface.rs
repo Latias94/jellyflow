@@ -408,6 +408,31 @@ fn explicit_modules_expose_their_owned_surfaces() {
         outcome: events::NodeDragEndOutcome::NoOp,
     };
     let _gesture = events::NodeGraphGestureEvent::NodeDragUpdate(drag_update);
+    let resize_start = events::NodeResizeStart {
+        node: NodeId::new(),
+        direction: resize::NodeResizeDirection::BottomRight,
+        pointer: CanvasPoint::default(),
+    };
+    let resize_update = events::NodeResizeUpdate {
+        node: resize_start.node,
+        direction: resize_start.direction,
+        pointer: CanvasPoint { x: 2.0, y: 3.0 },
+        position: CanvasPoint::default(),
+        size: CanvasSize {
+            width: 4.0,
+            height: 5.0,
+        },
+    };
+    let resize_end = events::NodeResizeEnd {
+        node: resize_start.node,
+        direction: resize_start.direction,
+        pointer: resize_update.pointer,
+        outcome: events::NodeResizeEndOutcome::Committed,
+    };
+    let _resize_start_event = events::NodeGraphGestureEvent::NodeResizeStart(resize_start.clone());
+    let _resize_update_event =
+        events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
+    let _resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
 
     let _module_store = store::NodeGraphStore::new(
         graph.clone(),
@@ -450,6 +475,10 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
     let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();
+    let _ = std::mem::size_of::<xyflow::NodeResizeStart>();
+    let _ = std::mem::size_of::<xyflow::NodeResizeUpdate>();
+    let _ = std::mem::size_of::<xyflow::NodeResizeEnd>();
+    let _ = std::mem::size_of::<xyflow::NodeResizeEndOutcome>();
 }
 
 #[test]
@@ -467,6 +496,31 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         nodes: vec![node_id],
         pointer: target,
     };
+    let resize_start = events::NodeResizeStart {
+        node: node_id,
+        direction: resize::NodeResizeDirection::BottomRight,
+        pointer: CanvasPoint { x: 1.0, y: 1.0 },
+    };
+    let resize_update = events::NodeResizeUpdate {
+        node: node_id,
+        direction: resize::NodeResizeDirection::BottomRight,
+        pointer: CanvasPoint { x: 2.0, y: 3.0 },
+        position: CanvasPoint::default(),
+        size: CanvasSize {
+            width: 2.0,
+            height: 3.0,
+        },
+    };
+    let resize_end = events::NodeResizeEnd {
+        node: node_id,
+        direction: resize::NodeResizeDirection::BottomRight,
+        pointer: resize_update.pointer,
+        outcome: events::NodeResizeEndOutcome::Committed,
+    };
+    let resize_start_event = events::NodeGraphGestureEvent::NodeResizeStart(resize_start.clone());
+    let resize_update_event =
+        events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
+    let resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
     let viewport_scroll_action = conformance::ConformanceAction::apply_viewport_scroll_gesture(
         viewport::ViewportGestureContext::idle(),
         viewport::ViewportScrollInput::new(
@@ -669,6 +723,12 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             resize::NodeResizeDirection::BottomRight,
         ),
     );
+    let resize_start_gesture_action =
+        conformance::ConformanceAction::emit_gesture(resize_start_event.clone());
+    let resize_update_gesture_action =
+        conformance::ConformanceAction::emit_gesture(resize_update_event.clone());
+    let resize_end_gesture_action =
+        conformance::ConformanceAction::emit_gesture(resize_end_event.clone());
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
@@ -689,9 +749,28 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         dispatch_action,
         resize_action,
         pointer_resize_action,
+        resize_start_gesture_action,
+        resize_update_gesture_action,
+        resize_end_gesture_action,
     ])
     .expect("serialize fixture actions");
     assert!(encoded_fixture_actions.is_array());
+    let encoded_resize_trace = serde_json::to_value([
+        conformance::ConformanceTraceEvent::gesture(resize_start_event.clone()),
+        conformance::ConformanceTraceEvent::callback(
+            conformance::ConformanceCallbackEvent::NodeResizeStart(resize_start.clone()),
+        ),
+        conformance::ConformanceTraceEvent::gesture(resize_update_event.clone()),
+        conformance::ConformanceTraceEvent::callback(
+            conformance::ConformanceCallbackEvent::NodeResize(resize_update.clone()),
+        ),
+        conformance::ConformanceTraceEvent::gesture(resize_end_event.clone()),
+        conformance::ConformanceTraceEvent::callback(
+            conformance::ConformanceCallbackEvent::NodeResizeEnd(resize_end),
+        ),
+    ])
+    .expect("serialize resize trace events");
+    assert!(encoded_resize_trace.is_array());
 
     let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)
         .with_view_state(NodeGraphViewState::default())

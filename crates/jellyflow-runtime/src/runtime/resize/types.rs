@@ -1,6 +1,7 @@
 use crate::node_origin::normalize_node_origin;
 use jellyflow_core::core::{CanvasPoint, CanvasSize, NodeId};
 use jellyflow_core::ops::GraphTransaction;
+use serde::{Deserialize, Serialize};
 
 /// Default transaction label used for committed node resize updates.
 pub const NODE_RESIZE_TRANSACTION_LABEL: &str = "node resize";
@@ -70,7 +71,8 @@ impl Default for NodeResizeContext {
 }
 
 /// XyFlow-style resize control direction.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeResizeDirection {
     Top,
     TopRight,

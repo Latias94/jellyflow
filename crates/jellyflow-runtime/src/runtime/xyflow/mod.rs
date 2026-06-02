@@ -18,9 +18,10 @@ pub use apply::{ApplyChangesReport, apply_edge_changes, apply_graph_changes, app
 pub use callbacks::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
     NodeDragUpdate, NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
-    NodeGraphViewCallbacks, SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
-    ViewportMoveKind, ViewportMoveStart, connection_changes_from_transaction,
-    delete_changes_from_transaction, install_callbacks,
+    NodeGraphViewCallbacks, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
+    SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind,
+    ViewportMoveStart, connection_changes_from_transaction, delete_changes_from_transaction,
+    install_callbacks,
 };
 pub use changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch,

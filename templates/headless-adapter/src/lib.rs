@@ -15,8 +15,9 @@ use jellyflow_runtime::runtime::conformance::{
 use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::events::{
-    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
-    ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
+    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome,
+    NodeResizeStart, NodeResizeUpdate, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
+    ViewportMoveKind, ViewportMoveStart,
 };
 use jellyflow_runtime::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection,
@@ -190,6 +191,33 @@ fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
 fn node_resize_scenario() -> ConformanceScenario {
     let node_id = NodeId::from_u128(4);
     let graph = graph_with_node(node_id);
+    let direction = NodeResizeDirection::BottomRight;
+    let start_pointer = CanvasPoint { x: 230.0, y: 140.0 };
+    let current_pointer = CanvasPoint { x: 250.0, y: 150.0 };
+    let start = NodeResizeStart {
+        node: node_id,
+        direction,
+        pointer: start_pointer,
+    };
+    let update = NodeResizeUpdate {
+        node: node_id,
+        direction,
+        pointer: current_pointer,
+        position: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 240.0,
+            height: 130.0,
+        },
+    };
+    let end = NodeResizeEnd {
+        node: node_id,
+        direction,
+        pointer: current_pointer,
+        outcome: NodeResizeEndOutcome::Committed,
+    };
+    let start_event = NodeGraphGestureEvent::NodeResizeStart(start.clone());
+    let update_event = NodeGraphGestureEvent::NodeResizeUpdate(update.clone());
+    let end_event = NodeGraphGestureEvent::NodeResizeEnd(end.clone());
 
     ConformanceScenario::new("template node resize", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
@@ -204,12 +232,15 @@ fn node_resize_scenario() -> ConformanceScenario {
                 )
                 .with_direction(NodeResizeDirection::BottomRight),
             ),
+            ConformanceAction::emit_gesture(start_event.clone()),
             ConformanceAction::apply_node_pointer_resize(NodePointerResizeRequest::new(
                 node_id,
-                CanvasPoint { x: 230.0, y: 140.0 },
-                CanvasPoint { x: 250.0, y: 150.0 },
-                NodeResizeDirection::BottomRight,
+                start_pointer,
+                current_pointer,
+                direction,
             )),
+            ConformanceAction::emit_gesture(update_event.clone()),
+            ConformanceAction::emit_gesture(end_event.clone()),
         ])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
@@ -224,6 +255,8 @@ fn node_resize_scenario() -> ConformanceScenario {
                 edges: 0,
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+            ConformanceTraceEvent::gesture(start_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResizeStart(start)),
             ConformanceTraceEvent::graph_commit(
                 Some(NODE_RESIZE_TRANSACTION_LABEL),
                 ["set_node_size"],
@@ -236,6 +269,10 @@ fn node_resize_scenario() -> ConformanceScenario {
                 edges: 0,
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+            ConformanceTraceEvent::gesture(update_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResize(update)),
+            ConformanceTraceEvent::gesture(end_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResizeEnd(end)),
         ])
 }
 
