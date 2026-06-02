@@ -13,9 +13,8 @@ use jellyflow_runtime::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use jellyflow_runtime::runtime::viewport::{
-    ViewportAnimationEasing, ViewportAnimationFrame, ViewportAnimationOptions,
-    ViewportAnimationPlan, ViewportAnimationRequest, ViewportDoubleClickZoomInput,
-    ViewportPanRequest, ViewportTransform,
+    ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
+    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanRequest, ViewportTransform,
 };
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
@@ -160,14 +159,8 @@ fn viewport_animation_scenario() -> ConformanceScenario {
         .expect("valid viewport");
     let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0)
         .expect("valid viewport");
-    let expected_frame = ViewportAnimationFrame {
-        elapsed_seconds: 0.5,
-        progress: 0.5,
-        eased_progress: 0.5,
-        transform: ViewportTransform::new(CanvasPoint { x: 40.0, y: -20.0 }, 1.5)
-            .expect("valid viewport"),
-        done: false,
-    };
+    let sampled_pan = CanvasPoint { x: 40.0, y: -20.0 };
+    let sampled_zoom = 1.5;
 
     let double_click_current =
         ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0)
@@ -183,11 +176,11 @@ fn viewport_animation_scenario() -> ConformanceScenario {
     };
 
     ConformanceScenario::new("template viewport animation", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
         .with_actions([
-            ConformanceAction::assert_viewport_animation_frame(
+            ConformanceAction::apply_viewport_animation_frame(
                 ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
                 0.5,
-                expected_frame,
             ),
             ConformanceAction::assert_viewport_double_click_zoom(
                 ViewportDoubleClickZoomInput::new(
@@ -201,7 +194,19 @@ fn viewport_animation_scenario() -> ConformanceScenario {
                 expected_plan,
             ),
         ])
-        .with_expected_trace([])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(sampled_pan, sampled_zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: sampled_pan,
+                    zoom: sampled_zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: sampled_pan,
+                zoom: sampled_zoom,
+            }),
+        ])
 }
 
 fn graph_with_node(node_id: NodeId) -> Graph {

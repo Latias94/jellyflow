@@ -74,6 +74,18 @@ pub(super) fn execute_action(
             .apply_viewport_zoom(*request)
             .map(|_| ())
             .ok_or_else(|| "viewport zoom request was rejected".to_owned()),
+        ConformanceAction::ApplyViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+        } => {
+            let plan = plan_viewport_animation_with_options(*request)
+                .ok_or_else(|| "viewport animation request was rejected".to_owned())?;
+            let frame = plan
+                .frame_at(*elapsed_seconds)
+                .ok_or_else(|| "viewport animation frame was rejected".to_owned())?;
+            store.set_viewport(frame.transform.pan, frame.transform.zoom);
+            Ok(())
+        }
         ConformanceAction::AssertViewportAnimationFrame {
             request,
             elapsed_seconds,

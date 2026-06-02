@@ -172,3 +172,28 @@ fn adapter_conformance_fixture_runner_asserts_viewport_animation_plans() {
 
     assert_conformance_trace(&scenario);
 }
+
+#[test]
+fn adapter_conformance_fixture_runner_applies_viewport_animation_frames() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).unwrap();
+    let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0).unwrap();
+    let pan = CanvasPoint { x: 40.0, y: -20.0 };
+    let zoom = 1.5;
+
+    let scenario = ConformanceScenario::new("viewport animation frame apply", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_viewport_animation_frame(
+            ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
+            0.5,
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(pan, zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport { pan, zoom }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange { pan, zoom }),
+        ]);
+
+    assert_conformance_trace(&scenario);
+}

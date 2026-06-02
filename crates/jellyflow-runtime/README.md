@@ -108,8 +108,8 @@ Viewport conformance is also headless. Runtime tests cover:
 - `NodeGraphStore` view-state publication for viewport intent;
 - viewport move gesture callback ordering;
 - fixture-runner traces for pan, zoom, auto-pan, view changes, gestures, and XyFlow-style callbacks;
-- conformance assertions for viewport animation frame sampling and double-click zoom plan or
-  rejection outcomes that produce no render trace by themselves.
+- conformance assertions for viewport animation frame sampling, sampled-frame viewport traces, and
+  double-click zoom plan or rejection outcomes.
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
 raw double-click detection, frame scheduling, animation cancellation policy, sampled-frame commits,

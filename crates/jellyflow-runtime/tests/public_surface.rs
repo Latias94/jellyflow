@@ -421,6 +421,16 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             done: false,
         },
     );
+    let apply_viewport_animation_action =
+        conformance::ConformanceAction::apply_viewport_animation_frame(
+            viewport::ViewportAnimationRequest::new(
+                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+                viewport::ViewportTransform::new(CanvasPoint { x: 10.0, y: 0.0 }, 2.0)
+                    .expect("viewport"),
+                viewport::ViewportAnimationOptions::new(1.0),
+            ),
+            0.5,
+        );
     let viewport_double_click_action =
         conformance::ConformanceAction::assert_viewport_double_click_zoom(
             viewport::ViewportDoubleClickZoomInput::new(
@@ -491,6 +501,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_scroll_action,
         viewport_reject_action,
         viewport_animation_action,
+        apply_viewport_animation_action,
         viewport_double_click_action,
         delete_key_action,
         connection_target_action,

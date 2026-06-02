@@ -66,6 +66,10 @@ pub enum ConformanceAction {
     ApplyViewportZoom {
         request: ViewportZoomRequest,
     },
+    ApplyViewportAnimationFrame {
+        request: ViewportAnimationRequest,
+        elapsed_seconds: f32,
+    },
     AssertViewportAnimationFrame {
         request: ViewportAnimationRequest,
         elapsed_seconds: f32,
@@ -120,6 +124,7 @@ impl ConformanceAction {
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
+            Self::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
             Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
             Self::AssertViewportDoubleClickZoom { .. } => "assert_viewport_double_click_zoom",
             Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
@@ -200,6 +205,16 @@ impl ConformanceAction {
 
     pub fn apply_viewport_zoom(request: ViewportZoomRequest) -> Self {
         Self::ApplyViewportZoom { request }
+    }
+
+    pub fn apply_viewport_animation_frame(
+        request: ViewportAnimationRequest,
+        elapsed_seconds: f32,
+    ) -> Self {
+        Self::ApplyViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+        }
     }
 
     pub fn assert_viewport_animation_frame(

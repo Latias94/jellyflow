@@ -6,7 +6,7 @@ use crate::rules::EdgeEndpoint;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
-    ConformanceTraceEvent,
+    ConformanceTraceEvent, ConformanceViewChange,
 };
 use crate::runtime::connection::{
     CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest, ConnectionHandleConnection,
