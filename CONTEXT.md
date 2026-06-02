@@ -50,6 +50,8 @@ runtime traces before adding renderer smoke tests.
 - Use `runtime::selection` and `NodeGraphStore::apply_selection_box` for canvas-space selection.
 - Use `runtime::drag`, `NodeGraphStore::plan_node_drag`, and `NodeGraphStore::apply_node_drag` for
   deterministic node drag behavior.
+- Use `runtime::delete`, `runtime::keyboard`, and `NodeGraphStore::apply_delete_selection_for_key`
+  for deterministic selection deletion after adapters normalize platform key input.
 - Use `runtime::viewport` and store viewport helpers for drag-pan and zoom-around-pointer behavior.
 - Use `runtime::auto_pan` and `NodeGraphStore::apply_auto_pan` for deterministic auto-pan frames.
 - Use `runtime::geometry` for handle endpoints, edge paths, and numeric hit testing.
@@ -93,7 +95,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the existing workstreams are closed. Verify current state with:
+audits, and handoffs. At this update, the active workstream is
+`docs/workstreams/jellyflow-delete-contract-v1/`, which promotes existing runtime delete selection
+helpers into a documented adapter conformance/template contract. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -139,8 +143,8 @@ Do not move persisted fields out of `Graph` without a new ADR-backed schema migr
   insufficient.
 - Real spatial indexing behind `NodeGraphSpatialIndexTuning` after adapter workloads show linear
   scans are too slow.
-- Delete planner ownership if runtime should plan deletion eligibility instead of leaving it to
-  adapters.
+- Async pre-delete or confirmation-dialog parity only after adapter evidence proves normalized
+  `runtime::delete`/`runtime::keyboard` calls are insufficient.
 - Renderer smoke harnesses in future adapter crates.
 - Schema migration only after policy facade usage proves which persisted fields should leave
   `jellyflow_core::core::Graph`.

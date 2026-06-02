@@ -1,0 +1,12 @@
+{"file":"CONTEXT.md","reason":"Project architecture vocabulary, current workstream state, headless runtime boundary, validation commands, and follow-on navigation."}
+{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","reason":"Accepted crate boundary that keeps renderer and Fret adapter work outside Jellyflow headless crates."}
+{"file":"docs/adr/0002-jellyflow-model-policy-boundary.md","reason":"Accepted policy ownership decision and old delete planner follow-up context."}
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Accepted testing boundary: adapter feel first through headless conformance, renderer smoke outside runtime."}
+{"file":"docs/workstreams/jellyflow-model-policy-boundary-v1/HANDOFF.md","reason":"Prior lane handoff that named delete planner ownership as a follow-on."}
+{"file":"repo-ref/xyflow/packages/system/src/utils/graph.ts","reason":"XyFlow source for deletable filtering, cascaded edges, and onBeforeDelete behavior."}
+{"file":"repo-ref/xyflow/packages/react/src/hooks/useReactFlow.ts","reason":"XyFlow React source for deleteElements callback ordering and deleted element return payload."}
+{"file":"repo-ref/xyflow/packages/react/src/hooks/useGlobalKeyHandler.ts","reason":"XyFlow React source for keyboard delete routing from selected elements to deleteElements."}
+{"file":"crates/jellyflow-runtime/src/runtime/delete/mod.rs","reason":"Current renderer-neutral delete selection seam to preserve and document."}
+{"file":"crates/jellyflow-runtime/src/runtime/keyboard/mod.rs","reason":"Current renderer-neutral keyboard intent seam to preserve and document."}
+{"file":"crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs","reason":"Existing high-level delete conformance action vocabulary."}
+{"file":"templates/headless-adapter/README.md","reason":"Template adapter contract documentation for consumers."}

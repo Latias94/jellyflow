@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-delete-contract-v1",
+  "title": "Jellyflow Delete Contract v1",
+  "status": "active",
+  "updated": "2026-06-02",
+  "scope_kind": "execution",
+  "follow_on_of": [
+    "jellyflow-model-policy-boundary-v1",
+    "jellyflow-conformance-fixtures-v1",
+    "jellyflow-adapter-template-v1"
+  ],
+  "problem": "Jellyflow has renderer-neutral delete selection helpers, but stale follow-on navigation and missing template smoke coverage keep delete behavior from being a first-class adapter contract.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/TODO.md"
+    },
+    {
+      "role": "tasks",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/TASKS.jsonl"
+    },
+    {
+      "role": "campaigns",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/CAMPAIGNS.jsonl"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-delete-contract-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl",
+  "current_task": "JDC-020",
+  "gates": [
+    "cargo fmt --check",
+    "cargo nextest run -p jellyflow-runtime conformance",
+    "cargo nextest run -p jellyflow-runtime adapter_conformance",
+    "cargo test --manifest-path templates/headless-adapter/Cargo.toml",
+    "cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check",
+    "cargo nextest run -p jellyflow-runtime",
+    "cargo clippy -p jellyflow-runtime --all-targets -- -D warnings",
+    "jq empty docs/workstreams/jellyflow-delete-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-delete-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-02",
+      "task": "JDC-010",
+      "summary": "Opened the delete contract lane from XyFlow delete source evidence, current Jellyflow delete helpers, and stale model-policy follow-on navigation."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md",
+    "docs/adr/0002-jellyflow-model-policy-boundary.md",
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [
+    "repo-ref/xyflow/packages/system/src/utils/graph.ts",
+    "repo-ref/xyflow/packages/react/src/hooks/useReactFlow.ts",
+    "repo-ref/xyflow/packages/react/src/hooks/useGlobalKeyHandler.ts",
+    "crates/jellyflow-runtime/src/runtime/delete/mod.rs",
+    "crates/jellyflow-runtime/src/runtime/keyboard/mod.rs",
+    "crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs"
+  ],
+  "capability_tags": [
+    "delete",
+    "keyboard",
+    "conformance",
+    "adapter-template",
+    "headless-runtime",
+    "xyflow-feel"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "next_task",
+    "next_task": "JDC-020",
+    "notes": "Continue with JDC-020: add template adapter delete smoke coverage through high-level conformance action vocabulary. Keep DOM key handling, async pre-delete hooks, renderer UI, screenshots, and pixels out of scope."
+  }
+}
