@@ -195,18 +195,28 @@ pub fn resolve_node_pointer_down(
 }
 
 impl NodeGraphStore {
+    /// Applies the selection portion of a node pointer-down decision.
+    pub fn apply_node_pointer_down(
+        &mut self,
+        input: NodePointerDownInput,
+    ) -> NodePointerDownDecision {
+        let interaction = self.resolved_interaction_state();
+        let decision =
+            resolve_node_pointer_down(self.graph(), self.view_state(), &interaction, input);
+        if let Some((nodes, edges, groups)) = decision.selection.selection_after(self.view_state())
+        {
+            self.set_selection(nodes, edges, groups);
+        }
+        decision
+    }
+
     /// Applies XyFlow-compatible selection behavior for a node-drag start.
     pub fn apply_node_drag_start_selection(
         &mut self,
         input: NodeDragStartSelectionInput,
     ) -> NodeDragStartSelectionAction {
-        let interaction = self.resolved_interaction_state();
-        let action =
-            resolve_node_drag_start_selection(self.graph(), self.view_state(), &interaction, input);
-        if let Some((nodes, edges, groups)) = action.selection_after(self.view_state()) {
-            self.set_selection(nodes, edges, groups);
-        }
-        action
+        self.apply_node_pointer_down(NodePointerDownInput::new(input, CanvasPoint::default()))
+            .selection
     }
 
     /// Resolves the node pointer-down decision against current graph, selection, and interaction.

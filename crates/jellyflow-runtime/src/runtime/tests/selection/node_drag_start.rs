@@ -170,3 +170,28 @@ fn node_pointer_down_keeps_drag_unclaimed_without_threshold_crossing() {
         )
     );
 }
+
+#[test]
+fn store_apply_node_pointer_down_updates_selection_and_returns_decision() {
+    let (graph, node, other, _, _, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge], Vec::new());
+
+    let mut harness =
+        InteractionHarness::with_view_state("node pointer down store facade", graph, view_state);
+    let decision = harness
+        .store_mut()
+        .apply_node_pointer_down(NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(node, false),
+            CanvasPoint { x: 3.0, y: 4.0 },
+        ));
+
+    assert_eq!(
+        decision,
+        NodePointerDownDecision::new(
+            NodeDragStartSelectionAction::SelectOnly(node),
+            PointerGestureClaim::NodeDrag,
+        )
+    );
+    harness.assert_events(&[HarnessEvent::selection(vec![node], Vec::new(), Vec::new())]);
+}
