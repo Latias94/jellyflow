@@ -93,7 +93,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the existing workstreams are closed. Verify current state with:
+audits, and handoffs. At this update, the active workstream is
+`docs/workstreams/jellyflow-node-drag-parent-expansion-v1/`, which deepens runtime node drag by
+planning parent group expansion for XyFlow-like `expandParent` behavior. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -129,10 +131,10 @@ Do not move persisted fields out of `Graph` without a new ADR-backed schema migr
 
 ## Likely Follow-On Lanes
 
-- Parent expansion/group resizing behavior for node drag if adapter UX needs it.
+- Continue `jellyflow-node-drag-parent-expansion-v1`: parent expansion/group resizing behavior for
+  node drag.
 - Selection-specific auto-pan policy only after integration evidence proves the generic kernel is
   insufficient.
-- Viewport animation/smoothing, pan inertia, or double-click zoom as headless scheduling contracts.
 - Real spatial indexing behind `NodeGraphSpatialIndexTuning` after adapter workloads show linear
   scans are too slow.
 - Delete planner ownership if runtime should plan deletion eligibility instead of leaving it to
