@@ -13,8 +13,8 @@ The initial package split is intentionally small:
   persistence file types without project-path policy, fit-view math, renderer-neutral selection
   helpers, renderer-neutral node dragging with parent expansion planning, renderer-neutral viewport
   pan/zoom, renderer-neutral viewport animation planning, renderer-neutral viewport pan inertia
-  planning, renderer-neutral auto-pan, renderer-neutral geometry, and public headless conformance
-  fixtures.
+  planning, renderer-neutral auto-pan, renderer-neutral node resize planning, renderer-neutral
+  geometry, and public headless conformance fixtures.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -64,6 +64,9 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
 - `runtime::drag` turns canvas-space node drag intent into deterministic drag items and normal
   `SetNodePos` transactions, including selection co-dragging, snap-to-grid, extents, node origin,
   parent group expansion through `SetGroupRect`, and renderer-neutral gesture payloads;
+- `runtime::resize` turns normalized target-size node resize intent into deterministic
+  `SetNodeSize` transactions, and emits position-before-size transactions for left/top controls
+  using the same node-origin semantics as the rest of the runtime;
 - `runtime::viewport` turns normalized drag-pan and zoom-around-pointer intent into deterministic
   viewport transforms, while `NodeGraphStore` publishes those changes through the same view-state
   event path used by direct viewport updates;
@@ -83,10 +86,10 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   actual headless traces back into golden files through the `conformance_harness` example for
   aggregate pre-render conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, node drag, node drag parent
-  expansion, viewport, viewport animation planning, pan inertia replay, double-click zoom, and
-  auto-pan behavior before any renderer-specific smoke tests are written;
+  expansion, node resize, viewport, viewport animation planning, pan inertia replay, double-click
+  zoom, and auto-pan behavior before any renderer-specific smoke tests are written;
 - `templates/headless-adapter` is a copyable external adapter skeleton that runs node-drag, node
-  drag parent expansion, viewport, viewport animation, and pan inertia conformance with
+  drag parent expansion, node resize, viewport, viewport animation, and pan inertia conformance with
   `cargo --manifest-path` before adding renderer smoke tests;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the
   public Jellyflow runtime APIs.

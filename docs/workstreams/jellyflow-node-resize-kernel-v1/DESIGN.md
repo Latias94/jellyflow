@@ -1,6 +1,6 @@
 # Jellyflow Node Resize Kernel v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Why This Lane Exists
@@ -135,3 +135,7 @@ This lane can close when:
 - docs teach the runtime/adapter split;
 - fresh package, clippy, JSON, and diff gates pass;
 - renderer and platform follow-ons are split or deferred.
+
+Closed on 2026-06-02. Target-size resize planning, direction/origin handling, conformance coverage,
+template coverage, and runtime/adapter documentation are complete. Exact pointer-resize extent and
+keep-aspect-ratio parity is split until adapter evidence requires a pointer-session request.

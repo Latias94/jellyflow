@@ -11,6 +11,7 @@
 - XyFlow-style node/edge change projections under `runtime::xyflow`;
 - renderer-neutral selection-box helpers under `runtime::selection`;
 - renderer-neutral node drag planning, parent expansion, and commit helpers under `runtime::drag`;
+- renderer-neutral node resize planning and commit helpers under `runtime::resize`;
 - renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
@@ -47,6 +48,9 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
   deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
   snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;
+- `NodeGraphStore::plan_node_resize`, `NodeGraphStore::apply_node_resize`, and `runtime::resize`
+  for deterministic target-size node resizing with min/max bounds, XyFlow-style control directions,
+  node-origin-aware position updates for left/top controls, and normal graph transactions;
 - `runtime::viewport::{ViewportTransform, ViewportPanRequest, ViewportZoomRequest}` plus
   `NodeGraphStore::apply_viewport_pan` and `NodeGraphStore::apply_viewport_zoom` for deterministic
   drag-pan and zoom-around-pointer state changes;
@@ -93,14 +97,24 @@ positions in canvas space, so left/top group expansion does not add sibling comp
 pointer capture, drag handles, resize handles, renderer-specific grouping UI, screenshots, and
 pixels remain adapter responsibilities.
 
+Resize target-size planning is runtime-owned: adapters provide normalized canvas-space
+`NodeResizeRequest` values, and the runtime produces `node resize` transactions from existing
+`GraphOp::SetNodeSize` and, for left/top controls, `GraphOp::SetNodePos`. Adapters still own resize
+handle UI, raw pointer capture, pointer start/delta lifecycle, cursor policy, renderer feedback,
+and pixels. Exact XyFlow pointer-resize extent and keep-aspect-ratio parity should be implemented
+through a future pointer-resize session request if adapter evidence needs it; it is intentionally
+not modeled as a renderer or DOM dependency in `jellyflow-runtime`.
+
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
 fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
-node drag, connect/reconnect, delete, viewport gestures, viewport animation frames, and double-click
-zoom plan or rejection assertions. Pan inertia fixtures should use the sampled-frame actions and
-rejection assertion so adapters can prove release-momentum traces without moving frame loops into
-runtime. Parent expansion fixtures should use `ConformanceAction::apply_node_drag`, which exercises
-the same runtime interaction boundary and records `set_group_rect` graph-commit traces when parent
-expansion occurs.
+node drag, node resize, connect/reconnect, delete, viewport gestures, viewport animation frames,
+and double-click zoom plan or rejection assertions. Pan inertia fixtures should use the sampled-frame
+actions and rejection assertion so adapters can prove release-momentum traces without moving frame
+loops into runtime. Parent expansion fixtures should use `ConformanceAction::apply_node_drag`, which
+exercises the same runtime interaction boundary and records `set_group_rect` graph-commit traces
+when parent expansion occurs. Resize fixtures should use `ConformanceAction::apply_node_resize`,
+which exercises the same runtime interaction boundary and records `set_node_size` or
+`set_node_pos` plus `set_node_size` graph-commit traces.
 
 The runtime crate also includes a thin renderer-free example harness for agents and CI:
 

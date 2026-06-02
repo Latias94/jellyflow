@@ -1,6 +1,6 @@
 # Jellyflow Node Resize Kernel v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -193,6 +193,35 @@ Fresh verification:
 - 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml` passed, 9 tests run.
 - 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check` passed and reported matching built-in suite traces.
 - 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+
+### 2026-06-02 - JNR-050 Documentation And Closeout
+
+Scope: `README.md`, `crates/jellyflow-runtime/README.md`, `CONTEXT.md`,
+`docs/workstreams/jellyflow-node-resize-kernel-v1`
+
+Result:
+
+- Documented `runtime::resize` in the root and runtime README interaction contracts.
+- Documented the runtime/adapter split for target-size resize planning versus pointer capture,
+  resize handles, renderer feedback, screenshots, and pixels.
+- Kept exact pointer-resize parent/child extent and keep-aspect-ratio parity split until adapter
+  evidence needs a pointer-session request.
+- Closed workstream metadata, task ledger, campaign record, handoff, and closeout audit.
+
+Behavior proven:
+
+- All runtime resize, direction/origin, conformance, adapter conformance, and template behavior
+  remains covered by the package closeout gate.
+- Headless crates still avoid renderer, DOM, d3, wgpu, egui, Fret, screenshot, and pixel
+  dependencies.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime` passed, 291 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+- 2026-06-02: `jq empty docs/workstreams/jellyflow-node-resize-kernel-v1/WORKSTREAM.json docs/workstreams/jellyflow-node-resize-kernel-v1/TASKS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl` passed.
+- 2026-06-02: `git diff --check` passed.
 
 ## Notes
 

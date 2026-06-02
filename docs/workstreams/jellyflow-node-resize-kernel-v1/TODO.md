@@ -1,6 +1,6 @@
 # Jellyflow Node Resize Kernel v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -65,7 +65,7 @@ Last updated: 2026-06-02
 
 ## M4 - Documentation And Closeout
 
-- [ ] JNR-050 [owner=codex] [deps=JNR-040] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-node-resize-kernel-v1]
+- [x] JNR-050 [owner=codex] [deps=JNR-040] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-node-resize-kernel-v1]
   Goal: Document resize runtime/adapter boundaries, record fresh evidence, and close or split
   follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -75,7 +75,11 @@ Last updated: 2026-06-02
   docs/workstreams/jellyflow-node-resize-kernel-v1/CAMPAIGNS.jsonl
   docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl; git diff --check
   Review: review-workstream and verify-rust-workstream before closeout.
-  Evidence: EVIDENCE_AND_GATES.md, WORKSTREAM.json, and closeout audit.
+  Evidence: `README.md`, `crates/jellyflow-runtime/README.md`,
+  `docs/workstreams/jellyflow-node-resize-kernel-v1/EVIDENCE_AND_GATES.md`,
+  `docs/workstreams/jellyflow-node-resize-kernel-v1/WORKSTREAM.json`, and
+  `docs/workstreams/jellyflow-node-resize-kernel-v1/CLOSEOUT_AUDIT_2026-06-02.md`.
   Context: docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNR-050 must record closeout validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Documented resize runtime/adapter boundaries, recorded closeout
+  verification, split exact pointer-resize extent parity, and closed the workstream.
+  State: TASKS.jsonl entry JNR-050 records DONE with closeout validation and evidence.

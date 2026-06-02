@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-node-resize-kernel-v1",
   "title": "Jellyflow Node Resize Kernel v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl",
-  "current_task": "JNR-050",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime resize",
@@ -80,6 +80,11 @@
       "date": "2026-06-02",
       "task": "JNR-040",
       "summary": "Added apply_node_resize conformance action vocabulary, runner support, adapter conformance resize traces, and template node resize smoke coverage."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNR-050",
+      "summary": "Documented runtime/adapter resize boundaries, recorded closeout evidence, split exact pointer-resize extent parity, and closed the workstream."
     }
   ],
   "adr_refs": [
@@ -104,8 +109,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "next_task",
-    "next_task": "JNR-050",
-    "notes": "Continue with JNR-050: document resize runtime/adapter boundaries, record closeout evidence, close or split follow-ons, and run package closeout gates. Keep DOM handles, renderer UI, raw pointer capture, screenshots, and pixels out of scope."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Workstream closed on 2026-06-02. Follow-on: exact pointer-resize session parity for parent/child extent clamps and keep-aspect-ratio behavior only after adapter evidence proves the target-size resize contract is insufficient."
   }
 }

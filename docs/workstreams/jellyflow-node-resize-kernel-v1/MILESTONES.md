@@ -1,6 +1,6 @@
 # Jellyflow Node Resize Kernel v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -98,4 +98,6 @@ jq empty docs/workstreams/jellyflow-node-resize-kernel-v1/WORKSTREAM.json docs/w
 git diff --check
 ```
 
-Status: pending.
+Status: complete on 2026-06-02. README/runtime README document runtime-owned target-size resize
+planning, adapter-owned pointer/rendering work, and the pointer-resize extent/keep-aspect-ratio
+follow-on split. Workstream evidence and machine-readable state are closed with fresh package gates.
