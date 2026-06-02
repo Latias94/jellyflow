@@ -1,0 +1,4 @@
+{"file": "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md", "reason": "Check that the ADR preserves headless crate boundaries."}
+{"file": "docs/adr/0002-jellyflow-model-policy-boundary.md", "reason": "Check that the ADR preserves the current Graph v1 model boundary."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Check lifecycle callback placement against runtime/conformance boundaries."}
+{"file": "docs/reviews/xyflow-gap-2026-06-02.md", "reason": "Check that the ADR addresses the documented XyFlow resize gap."}

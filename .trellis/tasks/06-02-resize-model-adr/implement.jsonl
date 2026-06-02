@@ -1,0 +1,5 @@
+{"file": "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md", "reason": "Headless crate boundary for resize model decisions."}
+{"file": "docs/adr/0002-jellyflow-model-policy-boundary.md", "reason": "Current Graph v1 model and policy ownership decision."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Runtime/xyflow/conformance boundary for adapter-facing behavior."}
+{"file": "docs/reviews/xyflow-gap-2026-06-02.md", "reason": "XyFlow parity gap review that motivates the ADR."}
+{"file": ".trellis/tasks/archive/2026-06/06-02-pointer-resize-parity/research.md", "reason": "Task-specific resize model evidence and scope implications."}
