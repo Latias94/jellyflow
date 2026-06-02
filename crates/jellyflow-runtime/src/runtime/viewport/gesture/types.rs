@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::events::ViewportMoveKind;
+use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::CanvasPoint;
 
 use super::super::transform::{ViewportPanRequest, ViewportZoomRequest};
@@ -113,6 +114,13 @@ impl ViewportGestureIntent {
     pub fn move_kind(&self) -> ViewportMoveKind {
         match self {
             Self::Pan { kind, .. } | Self::Zoom { kind, .. } => *kind,
+        }
+    }
+
+    pub fn apply_to_store(self, store: &mut NodeGraphStore) -> bool {
+        match self {
+            Self::Pan { request, .. } => store.apply_viewport_pan(request).is_some(),
+            Self::Zoom { request, .. } => store.apply_viewport_zoom(request).is_some(),
         }
     }
 }

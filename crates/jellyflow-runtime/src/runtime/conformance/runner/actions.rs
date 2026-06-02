@@ -120,14 +120,16 @@ fn apply_viewport_gesture_intent(
     store: &mut NodeGraphStore,
     intent: ViewportGestureIntent,
 ) -> Result<(), String> {
-    match intent {
-        ViewportGestureIntent::Pan { request, .. } => store
-            .apply_viewport_pan(request)
-            .map(|_| ())
-            .ok_or_else(|| "viewport pan gesture request was rejected".to_owned()),
-        ViewportGestureIntent::Zoom { request, .. } => store
-            .apply_viewport_zoom(request)
-            .map(|_| ())
-            .ok_or_else(|| "viewport zoom gesture request was rejected".to_owned()),
+    if intent.apply_to_store(store) {
+        Ok(())
+    } else {
+        match intent {
+            ViewportGestureIntent::Pan { .. } => {
+                Err("viewport pan gesture request was rejected".to_owned())
+            }
+            ViewportGestureIntent::Zoom { .. } => {
+                Err("viewport zoom gesture request was rejected".to_owned())
+            }
+        }
     }
 }
