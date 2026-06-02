@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl",
-  "current_task": "JPIS-020",
+  "current_task": "JPIS-030",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime pan_inertia",
@@ -65,6 +65,11 @@
       "date": "2026-06-02",
       "task": "JPIS-010",
       "summary": "Opened the pan inertia scheduling workstream from smooth viewport follow-ons with existing tuning and PanInertia event coverage."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JPIS-020",
+      "summary": "Added renderer-neutral viewport pan inertia planner primitives, focused runtime tests, and public surface coverage."
     }
   ],
   "adr_refs": [
@@ -88,7 +93,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "continue",
-    "next_task": "JPIS-020",
-    "notes": "Continue with a pure pan inertia planner that consumes adapter-provided release velocity and existing tuning. Split a follow-on if platform-specific physics parity or renderer smoke becomes required."
+    "next_task": "JPIS-030",
+    "notes": "Continue by replaying sampled pan inertia frames through conformance fixtures and the headless adapter template while keeping velocity estimation and frame loops outside runtime. Split a follow-on if platform-specific physics parity or renderer smoke becomes required."
   }
 }

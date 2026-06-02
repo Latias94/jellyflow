@@ -32,6 +32,8 @@ cargo nextest run -p jellyflow-runtime pan_inertia
 cargo nextest run -p jellyflow-runtime --test public_surface
 ```
 
+Status: complete on 2026-06-02.
+
 ## M2 - Conformance And Template Integration
 
 Exit criteria:

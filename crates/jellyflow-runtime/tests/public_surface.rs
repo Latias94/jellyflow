@@ -5,7 +5,8 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
 use jellyflow_runtime::io::{
     GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
-    NodeGraphInteractionState, NodeGraphPanOnDragButtons, NodeGraphViewState,
+    NodeGraphInteractionState, NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons,
+    NodeGraphViewState,
 };
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
@@ -257,6 +258,23 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<viewport::ViewportAnimationEasing>();
     let _ = std::mem::size_of::<viewport::ViewportAnimationPlan>();
     let _ = std::mem::size_of::<viewport::ViewportAnimationFrame>();
+    let inertia_plan =
+        viewport::plan_viewport_pan_inertia(viewport::ViewportPanInertiaRequest::new(
+            transform,
+            CanvasPoint { x: 500.0, y: 0.0 },
+            NodeGraphPanInertiaTuning {
+                enabled: true,
+                decay_per_s: 2.0,
+                min_speed: 100.0,
+                max_speed: 1000.0,
+            },
+        ))
+        .expect("pan inertia plan");
+    let inertia_frame = inertia_plan.frame_at(0.25).expect("pan inertia frame");
+    assert!(!inertia_frame.done);
+    let _ = std::mem::size_of::<viewport::ViewportPanInertiaRequest>();
+    let _ = std::mem::size_of::<viewport::ViewportPanInertiaPlan>();
+    let _ = std::mem::size_of::<viewport::ViewportPanInertiaFrame>();
     let interaction_state = NodeGraphInteractionState::default();
     let double_click_plan = viewport::resolve_viewport_double_click_zoom(
         &interaction_state.zoom_interaction(),

@@ -17,7 +17,7 @@ Last updated: 2026-06-02
 
 ## M1 - Pure Inertia Planner
 
-- [ ] JPIS-020 [owner=codex] [deps=JPIS-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JPIS-020 [owner=codex] [deps=JPIS-010] [scope=crates/jellyflow-runtime/src/runtime/viewport,crates/jellyflow-runtime/src/runtime/tests/viewport,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add renderer-neutral pan inertia request/plan/frame primitives that convert normalized
   screen velocity and tuning into deterministic viewport pan frames.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime pan_inertia; cargo
@@ -25,8 +25,9 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: focused viewport pan inertia tests and public surface smoke.
   Context: docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Keep velocity estimation, timers, cancellation, and renderer smoke in adapters.
-  State: TASKS.jsonl entry JPIS-020 records owner, scope, validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Runtime now exposes a pure pan inertia planner; keep velocity
+  estimation, timers, cancellation, and renderer smoke in adapters.
+  State: TASKS.jsonl entry JPIS-020 records completion, validation, evidence, and handoff status.
 
 ## M2 - Conformance And Template Integration
 

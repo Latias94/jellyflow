@@ -11,15 +11,20 @@ scheduling, and adapter template lanes.
 JPIS-010 is complete: the lane scope, non-goals, source coverage, task ledger, campaign record,
 milestones, gate set, context manifest, and machine-readable workstream metadata are recorded.
 
+JPIS-020 is complete: `runtime::viewport` now exposes a renderer-neutral pan inertia request,
+plan, frame, and planner. The planner samples adapter-provided logical screen px/s release velocity
+with exponential decay, clamps initial speed, rejects invalid tuning/input, and converts screen
+displacement to canvas pan by current zoom.
+
 ## Active Task
 
-- Task ID: JPIS-020
+- Task ID: JPIS-030
 - Owner: codex
-- Files: `crates/jellyflow-runtime/src/runtime/viewport`, `crates/jellyflow-runtime/src/runtime/tests/viewport`, `crates/jellyflow-runtime/tests/public_surface.rs`
-- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime pan_inertia`; `cargo nextest run -p jellyflow-runtime --test public_surface`
+- Files: `crates/jellyflow-runtime/src/runtime/conformance`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance`, `templates/headless-adapter`
+- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime conformance`; `cargo nextest run -p jellyflow-runtime adapter_conformance`; `cargo test --manifest-path templates/headless-adapter/Cargo.toml`; `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
 - Status: NEEDS_CONTEXT
 - Review: review-workstream before accepting completion
-- Evidence: focused runtime tests for pan inertia planning
+- Evidence: conformance/template inertia traces through normal view-state publication
 
 ## Decisions Since Opening
 
@@ -35,6 +40,6 @@ milestones, gate set, context manifest, and machine-readable workstream metadata
 
 ## Next Recommended Action
 
-- Implement JPIS-020: add pure pan inertia planner/frame types under `runtime::viewport` with
-  focused tests for enabled/disabled tuning, velocity clamp, exponential damping, stop threshold,
-  invalid input, and public surface exposure.
+- Implement JPIS-030: extend conformance fixtures and the headless adapter template so sampled
+  inertia frames replay through the normal view-state publication path without moving frame loops
+  into runtime.
