@@ -101,7 +101,7 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(RECONNECT_EDGE_TRANSACTION_LABEL),
-        &["set_edge_endpoints"],
+        ["set_edge_endpoints"],
     )]);
 }
 
@@ -134,7 +134,7 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
     assert_eq!(deleted.nodes(), &[node_id]);
     assert_eq!(deleted.edges(), &[edge_id]);
     harness.assert_events(&[
-        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), &["remove_node"]),
+        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_node"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
     ]);
 }

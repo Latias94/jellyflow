@@ -21,10 +21,10 @@ pub use reports::{
     ConformanceRunError, ConformanceRunReport, ConformanceSuiteReport, ConformanceTraceMismatch,
 };
 pub use runner::{ConformanceRunner, run_conformance_scenario, run_conformance_suite};
+#[cfg(test)]
+pub(crate) use scenario::ConformanceCallbackTraceRecorder;
 pub use scenario::{
     CONFORMANCE_FIXTURE_SCHEMA_VERSION, ConformanceAction, ConformanceCallbackEvent,
     ConformanceScenario, ConformanceSetup, ConformanceSuite, ConformanceTraceConfig,
     ConformanceTraceEvent, ConformanceViewChange,
 };
-#[cfg(test)]
-pub(crate) use scenario::{ConformanceCallbackTraceRecorder, ConformanceCallbackTraceSink};

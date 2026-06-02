@@ -65,7 +65,7 @@ fn single_node_drag_commits_set_node_pos_transaction_and_trace() {
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
-        &["set_node_pos"],
+        ["set_node_pos"],
     )]);
 }
 

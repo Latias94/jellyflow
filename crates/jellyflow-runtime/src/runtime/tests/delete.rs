@@ -42,7 +42,7 @@ fn delete_selection_commits_selected_node_and_clears_stale_view_state() {
     assert!(harness.store().view_state().draw_order.is_empty());
     assert!(harness.store().view_state().edge_draw_order.is_empty());
     harness.assert_events(&[
-        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), &["remove_node"]),
+        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_node"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
     ]);
 }
@@ -65,7 +65,7 @@ fn delete_selection_can_remove_selected_edge_only() {
     assert!(harness.store().graph().nodes.contains_key(&b));
     assert!(!harness.store().graph().edges.contains_key(&edge));
     harness.assert_events(&[
-        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), &["remove_edge"]),
+        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_edge"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
     ]);
 }
@@ -180,7 +180,7 @@ fn graph_commit_sanitizes_selection_even_for_direct_transactions() {
     assert!(harness.store().view_state().draw_order.is_empty());
     assert!(harness.store().view_state().edge_draw_order.is_empty());
     harness.assert_events(&[
-        HarnessEvent::graph_commit(Some("external delete"), &["remove_node"]),
+        HarnessEvent::graph_commit(Some("external delete"), ["remove_node"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
     ]);
 }

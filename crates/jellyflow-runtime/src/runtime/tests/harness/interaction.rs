@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::io::NodeGraphViewState;
-use crate::runtime::conformance::ConformanceCallbackTraceRecorder;
+use crate::runtime::conformance::{ConformanceCallbackTraceRecorder, ConformanceTraceEvent};
 use crate::runtime::events::{NodeGraphGestureEvent, SubscriptionToken};
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 use crate::runtime::xyflow::callbacks::install_callbacks;
@@ -10,13 +10,11 @@ use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
 use super::super::fixtures::default_editor_config;
-use super::events::HarnessEvent;
-use super::recorder::HarnessCallbackTraceSink;
 
 pub(in crate::runtime::tests) struct InteractionHarness {
     scenario: String,
     store: NodeGraphStore,
-    events: Rc<RefCell<Vec<HarnessEvent>>>,
+    events: Rc<RefCell<Vec<ConformanceTraceEvent>>>,
     _token: SubscriptionToken,
 }
 
@@ -36,13 +34,13 @@ impl InteractionHarness {
         let token = store.subscribe(move |event| {
             event_trace
                 .borrow_mut()
-                .push(HarnessEvent::from_store_event(event));
+                .push(ConformanceTraceEvent::from_store_event(event));
         });
         let gesture_trace = events.clone();
         store.subscribe_gesture_with_token(token, move |event| {
             gesture_trace
                 .borrow_mut()
-                .push(HarnessEvent::Gesture(event));
+                .push(ConformanceTraceEvent::Gesture(event));
         });
 
         Self {
@@ -64,9 +62,7 @@ impl InteractionHarness {
     pub(in crate::runtime::tests) fn install_callback_trace(&mut self) -> SubscriptionToken {
         install_callbacks(
             &mut self.store,
-            ConformanceCallbackTraceRecorder::new(HarnessCallbackTraceSink::new(
-                self.events.clone(),
-            )),
+            ConformanceCallbackTraceRecorder::new(self.events.clone()),
         )
     }
 
@@ -94,7 +90,7 @@ impl InteractionHarness {
         self.store.emit_gesture(event);
     }
 
-    pub(in crate::runtime::tests) fn assert_events(&self, expected: &[HarnessEvent]) {
+    pub(in crate::runtime::tests) fn assert_events(&self, expected: &[ConformanceTraceEvent]) {
         let actual = self.events.borrow();
         assert_eq!(
             actual.as_slice(),

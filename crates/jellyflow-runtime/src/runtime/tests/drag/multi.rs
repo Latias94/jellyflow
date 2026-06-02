@@ -104,7 +104,7 @@ fn multi_selection_drag_moves_primary_and_selected_nodes_with_sorted_ops() {
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
-        &["set_node_pos", "set_node_pos", "set_node_pos"],
+        ["set_node_pos", "set_node_pos", "set_node_pos"],
     )]);
 }
 
@@ -236,7 +236,7 @@ fn keyboard_nudge_moves_selected_draggable_nodes_with_screen_step() {
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_NUDGE_TRANSACTION_LABEL),
-        &["set_node_pos", "set_node_pos"],
+        ["set_node_pos", "set_node_pos"],
     )]);
 }
 

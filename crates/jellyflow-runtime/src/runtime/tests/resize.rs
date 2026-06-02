@@ -66,7 +66,7 @@ fn single_node_resize_commits_set_node_size_transaction_and_trace() {
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_RESIZE_TRANSACTION_LABEL),
-        &["set_node_size"],
+        ["set_node_size"],
     )]);
 }
 

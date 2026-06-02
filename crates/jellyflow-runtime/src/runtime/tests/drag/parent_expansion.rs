@@ -66,7 +66,7 @@ fn drag_parent_expansion_keeps_parent_extent_clamp_when_disabled() {
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
-        &["set_node_pos"],
+        ["set_node_pos"],
     )]);
 }
 
@@ -152,7 +152,7 @@ fn drag_parent_expansion_expands_parent_group_when_enabled() {
     assert_eq!(harness.store().graph().nodes[&child].pos, target);
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
-        &["set_node_pos", "set_group_rect"],
+        ["set_node_pos", "set_group_rect"],
     )]);
 }
 
@@ -336,6 +336,6 @@ fn drag_parent_expansion_left_top_preserves_absolute_sibling_positions_without_c
     assert_eq!(harness.store().graph().nodes[&sibling].pos, sibling_pos);
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
-        &["set_node_pos", "set_group_rect"],
+        ["set_node_pos", "set_group_rect"],
     )]);
 }

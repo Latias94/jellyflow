@@ -29,11 +29,14 @@ pub enum ConformanceTraceEvent {
 impl ConformanceTraceEvent {
     pub fn graph_commit(
         label: Option<impl Into<String>>,
-        op_kinds: impl IntoIterator<Item = impl Into<String>>,
+        op_kinds: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Self {
         Self::GraphCommitted {
             label: label.map(Into::into),
-            op_kinds: op_kinds.into_iter().map(Into::into).collect(),
+            op_kinds: op_kinds
+                .into_iter()
+                .map(|kind| kind.as_ref().to_owned())
+                .collect(),
         }
     }
 
