@@ -1,4 +1,8 @@
 use super::*;
+use crate::io::NodeGraphPanOnDragButtons;
+use crate::runtime::viewport::{
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton,
+};
 
 #[test]
 fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
@@ -141,4 +145,39 @@ fn conformance_runner_records_auto_pan_fixture_and_callbacks() {
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
 
     assert!(report.is_match(), "{report}");
+}
+
+#[test]
+fn conformance_runner_rejects_viewport_drag_pan_when_selection_modifier_claims_pointer() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.pan_on_drag = NodeGraphPanOnDragButtons {
+        left: true,
+        middle: false,
+        right: false,
+    };
+
+    let scenario =
+        ConformanceScenario::new("viewport selection modifier suppresses drag pan", graph)
+            .with_editor_config(editor_config)
+            .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+            .with_actions([
+                ConformanceAction::expect_viewport_drag_pan_gesture_rejected(
+                    ViewportGestureContext {
+                        selection_key_pressed: true,
+                        ..ViewportGestureContext::idle()
+                    },
+                    ViewportDragPanInput::new(
+                        ViewportPointerButton::Left,
+                        CanvasPoint { x: 10.0, y: 4.0 },
+                    ),
+                    ViewportGestureRejection::PanOnDragDisabled,
+                ),
+            ])
+            .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
 }
