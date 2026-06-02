@@ -68,6 +68,11 @@ def jellyflow_runtime_main_rs() -> str:
             use jellyflow_runtime::runtime::fit_view::{
                 compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
             };
+            use jellyflow_runtime::runtime::conformance::{
+                run_conformance_scenario, ConformanceAction, ConformanceScenario,
+                ConformanceTraceEvent,
+            };
+            use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
             use jellyflow_runtime::runtime::geometry::{
                 bezier_edge_path, edge_path_contains_point, edge_position, BezierEdgeOptions,
                 EdgeEndpointInput, EdgeHitTestOptions, HandleBounds, HandlePosition,
@@ -79,7 +84,9 @@ def jellyflow_runtime_main_rs() -> str:
                     kind: NodeKindKey::new(kind),
                     kind_version: 1,
                     pos: CanvasPoint { x, y },
+                    origin: None,
                     selectable: None,
+                    focusable: None,
                     draggable: None,
                     connectable: None,
                     deletable: None,
@@ -123,6 +130,20 @@ def jellyflow_runtime_main_rs() -> str:
                     .expect("store dispatch succeeds");
                 assert_eq!(outcome.committed().ops.len(), 1);
                 assert_eq!(store.graph().nodes[&node_id].pos, CanvasPoint { x: 32.0, y: 48.0 });
+
+                let conformance_scenario =
+                    ConformanceScenario::new("external node drag fixture", store.graph().clone())
+                        .with_actions([ConformanceAction::apply_node_drag(
+                            node_id,
+                            CanvasPoint { x: 96.0, y: 128.0 },
+                        )])
+                        .with_expected_trace([ConformanceTraceEvent::graph_commit(
+                            Some(NODE_DRAG_TRANSACTION_LABEL),
+                            ["set_node_pos"],
+                        )]);
+                let conformance_report =
+                    run_conformance_scenario(&conformance_scenario).expect("conformance fixture runs");
+                assert!(conformance_report.is_match(), "{conformance_report}");
 
                 let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
                     CanvasRect {
