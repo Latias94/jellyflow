@@ -5,6 +5,7 @@ use crate::io::NodeGraphViewState;
 use crate::runtime::selection::{
     SelectionBoxInput, SelectionBoxOptions, SelectionBoxResult, SelectionModifier,
 };
+use jellyflow_core::core::CanvasPoint;
 
 #[test]
 fn selection_box_replaces_selection_with_policy_filtered_sorted_result() {
@@ -84,6 +85,34 @@ fn selection_box_skips_hidden_edges() {
     let expected = SelectionBoxResult {
         nodes: vec![fixture.low, fixture.high],
         edges: vec![fixture.connected_outside_edge],
+        groups: Vec::new(),
+    };
+    assert_eq!(result, expected);
+    harness.assert_events(&[HarnessEvent::selection(
+        expected.nodes,
+        expected.edges,
+        expected.groups,
+    )]);
+}
+
+#[test]
+fn selection_box_input_from_drag_normalizes_reverse_drag_rect() {
+    let fixture = selection_fixture();
+    let rect = selection_rect();
+    let start = CanvasPoint {
+        x: rect.origin.x + rect.size.width,
+        y: rect.origin.y + rect.size.height,
+    };
+    let input = SelectionBoxInput::replace_from_drag(start, rect.origin);
+    assert_eq!(input.rect, rect);
+
+    let mut harness = InteractionHarness::new("selection box reverse drag", fixture.graph);
+
+    let result = harness.store_mut().apply_selection_box(input);
+
+    let expected = SelectionBoxResult {
+        nodes: vec![fixture.low, fixture.high],
+        edges: vec![fixture.connected_edge, fixture.connected_outside_edge],
         groups: Vec::new(),
     };
     assert_eq!(result, expected);

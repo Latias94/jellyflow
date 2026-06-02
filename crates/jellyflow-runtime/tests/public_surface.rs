@@ -79,6 +79,11 @@ fn explicit_modules_expose_their_owned_surfaces() {
             height: 10.0,
         },
     });
+    let reverse_drag_selection_input = selection::SelectionBoxInput::replace_from_drag(
+        CanvasPoint { x: 10.0, y: 10.0 },
+        CanvasPoint::default(),
+    );
+    assert_eq!(reverse_drag_selection_input.rect, selection_input.rect);
     let selection_store = NodeGraphStore::new(
         graph.clone(),
         NodeGraphViewState::default(),

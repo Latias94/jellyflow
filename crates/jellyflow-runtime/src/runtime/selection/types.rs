@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use jellyflow_core::core::{CanvasRect, CanvasSize, EdgeId, GroupId, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, GroupId, NodeId};
 
 /// Modifier state that controls whether a selection gesture adds to existing selection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,8 +41,20 @@ impl SelectionBoxInput {
         Self { rect, options }
     }
 
+    pub fn from_drag(
+        start: CanvasPoint,
+        current: CanvasPoint,
+        options: SelectionBoxOptions,
+    ) -> Self {
+        Self::new(normalized_drag_rect(start, current), options)
+    }
+
     pub fn replace(rect: CanvasRect) -> Self {
         Self::new(rect, SelectionBoxOptions::default())
+    }
+
+    pub fn replace_from_drag(start: CanvasPoint, current: CanvasPoint) -> Self {
+        Self::from_drag(start, current, SelectionBoxOptions::default())
     }
 
     pub fn additive(rect: CanvasRect) -> Self {
@@ -53,6 +65,29 @@ impl SelectionBoxInput {
                 ..SelectionBoxOptions::default()
             },
         )
+    }
+
+    pub fn additive_from_drag(start: CanvasPoint, current: CanvasPoint) -> Self {
+        Self::from_drag(
+            start,
+            current,
+            SelectionBoxOptions {
+                modifier: SelectionModifier::Additive,
+                ..SelectionBoxOptions::default()
+            },
+        )
+    }
+}
+
+fn normalized_drag_rect(start: CanvasPoint, current: CanvasPoint) -> CanvasRect {
+    let min_x = start.x.min(current.x);
+    let min_y = start.y.min(current.y);
+    CanvasRect {
+        origin: CanvasPoint { x: min_x, y: min_y },
+        size: CanvasSize {
+            width: (start.x - current.x).abs(),
+            height: (start.y - current.y).abs(),
+        },
     }
 }
 
