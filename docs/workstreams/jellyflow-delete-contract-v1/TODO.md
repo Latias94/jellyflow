@@ -20,7 +20,7 @@ Last updated: 2026-06-02
 
 ## M1 - Template Delete Smoke
 
-- [ ] JDC-020 [owner=codex] [deps=JDC-010] [scope=templates/headless-adapter,crates/jellyflow-runtime/src/runtime/tests]
+- [x] JDC-020 [owner=codex] [deps=JDC-010] [scope=templates/headless-adapter,crates/jellyflow-runtime/src/runtime/tests]
   Goal: Add a template adapter delete selection scenario that uses `apply_delete_selection_for_key`
   and proves commit, XyFlow-style delete callbacks, and selection cleanup trace ordering.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo
@@ -28,12 +28,13 @@ Last updated: 2026-06-02
   templates/headless-adapter/Cargo.toml; cargo run --manifest-path templates/headless-adapter/Cargo.toml
   -- check
   Review: review-workstream before accepting completion.
-  Evidence: `templates/headless-adapter/src/lib.rs`,
-  `crates/jellyflow-runtime/src/runtime/tests/conformance/runner/scenario.rs`, and
+  Evidence: `templates/headless-adapter/Cargo.toml`, `templates/headless-adapter/README.md`,
+  `templates/headless-adapter/src/lib.rs`, `templates/headless-adapter/tests/conformance.rs`, and
   `docs/workstreams/jellyflow-delete-contract-v1/EVIDENCE_AND_GATES.md`.
   Context: docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JDC-020 must record DONE with validation and evidence.
+  Handoff: DONE 2026-06-02. Added the template delete selection scenario, single-scenario smoke,
+  Backspace key action, 7-scenario suite assertions, and template README coverage.
+  State: TASKS.jsonl entry JDC-020 records DONE with validation and evidence.
 
 ## M2 - Documentation And Closeout
 

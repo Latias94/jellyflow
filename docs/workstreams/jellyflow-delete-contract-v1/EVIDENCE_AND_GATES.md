@@ -80,6 +80,35 @@ Fresh verification:
 - 2026-06-02: `jq empty docs/workstreams/jellyflow-delete-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-delete-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-delete-contract-v1/CONTEXT.jsonl` passed.
 - 2026-06-02: `git diff --check` passed.
 
+### 2026-06-02 - JDC-020 Template Delete Smoke
+
+Scope: `templates/headless-adapter`, `docs/workstreams/jellyflow-delete-contract-v1`
+
+Result:
+
+- Added a template `delete selection` scenario to the built-in headless adapter suite.
+- Added `run_delete_selection_smoke` as a single-scenario template smoke helper.
+- Used `ConformanceAction::apply_delete_selection_for_key` with Backspace, matching XyFlow-style
+  key-bound delete flow after adapter input normalization.
+- Added a connected node/edge fixture so deleting the selected node proves cascaded edge deletion,
+  disconnect callbacks, delete callbacks, and selection cleanup.
+- Updated template README and suite assertions from 6 to 7 scenarios.
+
+Behavior proven:
+
+- Template delete trace records `delete selection` / `remove_node`.
+- XyFlow-style callbacks record node/edge changes, disconnect, nodes/edges delete, combined delete,
+  and empty selection change.
+- Runtime conformance and adapter conformance delete behavior still pass.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime conformance` passed, 55 tests run.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime adapter_conformance` passed, 18 tests run.
+- 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml` passed, 10 tests run.
+- 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check` passed and reported matching built-in suite traces.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

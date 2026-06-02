@@ -23,7 +23,9 @@ Exit criteria:
 - expected trace includes delete commit, XyFlow-style delete callbacks, and selection cleanup;
 - focused conformance/template gates pass.
 
-Status: pending.
+Status: complete on 2026-06-02. The template suite now has 7 scenarios including delete selection;
+the delete scenario uses `apply_delete_selection_for_key`, records the `delete selection` commit,
+XyFlow-style delete/disconnect callbacks, and selection cleanup trace events.
 
 ## M2 - Documentation And Closeout
 

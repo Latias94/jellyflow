@@ -1,16 +1,18 @@
 use std::path::Path;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeExtent, NodeId,
-    NodeKindKey,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Group, GroupId,
+    Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    PortKind,
 };
-use jellyflow_runtime::io::NodeGraphPanInertiaTuning;
+use jellyflow_runtime::io::{NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
     ConformanceFixtureDirectoryApprovalReport, ConformanceFixtureDirectoryReport,
     ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
     ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
 };
+use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
@@ -24,6 +26,7 @@ use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanInertiaRequest,
     ViewportPanRequest, ViewportTransform, plan_viewport_pan_inertia,
 };
+use jellyflow_runtime::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template")
@@ -31,6 +34,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
             node_drag_scenario(),
             node_drag_parent_expansion_scenario(),
             node_resize_scenario(),
+            delete_selection_scenario(),
             viewport_pan_scenario(),
             viewport_animation_scenario(),
             viewport_pan_inertia_scenario(),
@@ -74,6 +78,13 @@ pub fn run_node_drag_parent_expansion_smoke() -> Result<ConformanceRunReport, St
 pub fn run_node_resize_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(&node_resize_scenario())
         .map_err(|err| err.to_string())
+}
+
+pub fn run_delete_selection_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &delete_selection_scenario(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
@@ -188,6 +199,65 @@ fn node_resize_scenario() -> ConformanceScenario {
                 edges: 0,
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ])
+}
+
+fn delete_selection_scenario() -> ConformanceScenario {
+    let node_id = NodeId::from_u128(5);
+    let sibling_id = NodeId::from_u128(6);
+    let out_port = PortId::from_u128(50);
+    let in_port = PortId::from_u128(60);
+    let edge_id = EdgeId::from_u128(500);
+    let graph = graph_with_connected_nodes(node_id, sibling_id, out_port, in_port, edge_id);
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![node_id], vec![edge_id], Vec::new());
+    let disconnected = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
+
+    ConformanceScenario::new("template delete selection", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_delete_selection_for_key(
+            keyboard_types::Code::Backspace,
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(DELETE_SELECTION_TRANSACTION_LABEL),
+                ["remove_node"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(DELETE_SELECTION_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 1,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
+                ConnectionChange::Disconnected(disconnected),
+            )),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Disconnect(disconnected)),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesDelete { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesDelete { count: 1 }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Delete {
+                nodes: 1,
+                edges: 1,
+                groups: 0,
+                sticky_notes: 0,
+            }),
+            ConformanceTraceEvent::selection(Vec::new(), Vec::new(), Vec::new()),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Selection {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                    groups: Vec::new(),
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                groups: Vec::new(),
+            }),
         ])
 }
 
@@ -369,30 +439,115 @@ fn graph_with_node(node_id: NodeId) -> Graph {
     let mut graph = Graph::new(GraphId::from_u128(1));
     graph.nodes.insert(
         node_id,
-        Node {
-            kind: NodeKindKey::new("template.node"),
-            kind_version: 1,
-            pos: CanvasPoint { x: 10.0, y: 20.0 },
-            origin: None,
-            selectable: None,
-            focusable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: Some(CanvasSize {
+        template_node(
+            CanvasPoint { x: 10.0, y: 20.0 },
+            Vec::new(),
+            Some(CanvasSize {
                 width: 160.0,
                 height: 80.0,
             }),
-            hidden: false,
-            collapsed: false,
-            ports: Vec::new(),
+        ),
+    );
+    graph
+}
+
+fn graph_with_connected_nodes(
+    source_id: NodeId,
+    target_id: NodeId,
+    out_port: PortId,
+    in_port: PortId,
+    edge_id: EdgeId,
+) -> Graph {
+    let mut graph = Graph::new(GraphId::from_u128(2));
+    graph.nodes.insert(
+        source_id,
+        template_node(
+            CanvasPoint { x: 10.0, y: 20.0 },
+            vec![out_port],
+            Some(CanvasSize {
+                width: 160.0,
+                height: 80.0,
+            }),
+        ),
+    );
+    graph.nodes.insert(
+        target_id,
+        template_node(
+            CanvasPoint { x: 260.0, y: 20.0 },
+            vec![in_port],
+            Some(CanvasSize {
+                width: 160.0,
+                height: 80.0,
+            }),
+        ),
+    );
+    graph.ports.insert(
+        out_port,
+        Port {
+            node: source_id,
+            key: PortKey::new("out"),
+            dir: PortDirection::Out,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
             data: serde_json::Value::Null,
         },
     );
+    graph.ports.insert(
+        in_port,
+        Port {
+            node: target_id,
+            key: PortKey::new("in"),
+            dir: PortDirection::In,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Single,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        },
+    );
+    graph.edges.insert(
+        edge_id,
+        Edge {
+            kind: EdgeKind::Data,
+            from: out_port,
+            to: in_port,
+            hidden: false,
+            selectable: None,
+            focusable: None,
+            interaction_width: None,
+            deletable: None,
+            reconnectable: None,
+        },
+    );
     graph
+}
+
+fn template_node(pos: CanvasPoint, ports: Vec<PortId>, size: Option<CanvasSize>) -> Node {
+    Node {
+        kind: NodeKindKey::new("template.node"),
+        kind_version: 1,
+        pos,
+        origin: None,
+        selectable: None,
+        focusable: None,
+        draggable: None,
+        connectable: None,
+        deletable: None,
+        parent: None,
+        extent: None,
+        expand_parent: None,
+        size,
+        hidden: false,
+        collapsed: false,
+        ports,
+        data: serde_json::Value::Null,
+    }
 }
 
 fn graph_with_parent_expanding_node(node_id: NodeId, parent_id: GroupId) -> Graph {
@@ -432,7 +587,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 6);
+        assert_eq!(report.scenario_count(), 7);
     }
 
     #[test]
@@ -453,6 +608,13 @@ mod tests {
     #[test]
     fn node_resize_smoke_runs_as_single_scenario() {
         let report = run_node_resize_smoke().expect("node resize scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn delete_selection_smoke_runs_as_single_scenario() {
+        let report = run_delete_selection_smoke().expect("delete selection scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -485,7 +647,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 6);
+        assert_eq!(report.scenario_count(), 7);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

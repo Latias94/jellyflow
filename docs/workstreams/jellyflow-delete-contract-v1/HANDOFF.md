@@ -7,6 +7,10 @@ Last updated: 2026-06-02
 
 JDC-010 is complete: the lane is open and source coverage is recorded.
 
+JDC-020 is complete: the headless adapter template now includes a delete selection scenario using
+`apply_delete_selection_for_key(Backspace)`, a single-scenario smoke helper, 7-scenario suite
+assertions, and README coverage.
+
 Jellyflow already has the core runtime behavior:
 
 - `runtime::delete` exposes `plan_delete_selection`, key-bound planning, transaction builders, and
@@ -17,14 +21,13 @@ Jellyflow already has the core runtime behavior:
 - focused runtime tests already cover node deletion, edge deletion, key gates, policy rejection,
   empty selection no-op, and stale view-state cleanup.
 
-The first gap is template coverage: `templates/headless-adapter` currently demonstrates drag,
-resize, viewport, viewport animation, and pan inertia, but not delete selection.
+The remaining gap is documentation/closeout: root/runtime docs should present delete as a
+first-class runtime interaction contract, and stale follow-on navigation should be cleared.
 
 ## Next Task
 
-JDC-020: add a template adapter delete selection scenario that uses
-`ConformanceAction::apply_delete_selection_for_key`, expects the delete commit and XyFlow-style
-callbacks, and proves selection cleanup in the trace.
+JDC-030: document delete runtime/adapter boundaries, record closeout evidence, and close or split
+follow-ons.
 
 ## Decisions Since Opening
 
@@ -34,10 +37,12 @@ callbacks, and proves selection cleanup in the trace.
   before calling Jellyflow.
 - Keep DOM key handling outside runtime. Runtime accepts normalized `KeyboardIntent` or direct
   delete-selection calls.
+- JDC-020 added explicit `keyboard-types` to the external template because the template now models
+  adapter-owned key-code normalization directly.
 
 ## Validation To Run
 
-For JDC-020:
+JDC-020 passed:
 
 ```bash
 cargo fmt --check
@@ -47,7 +52,7 @@ cargo test --manifest-path templates/headless-adapter/Cargo.toml
 cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
-For closeout:
+For JDC-030 closeout:
 
 ```bash
 cargo nextest run -p jellyflow-runtime
@@ -58,6 +63,9 @@ git diff --check
 
 ## Next Recommended Action
 
-Start JDC-020 in `templates/headless-adapter/src/lib.rs`. Add a delete scenario with one selected
-node and its connected edge, then expect graph commit, node/edge changes, delete callbacks, and
-selection cleanup trace events.
+Start JDC-030 by updating README/runtime README and closeout docs:
+
+- explain runtime owns selection delete planning and deterministic transactions;
+- explain adapters own platform key capture, focus/input suppression, confirmation dialogs, and
+  async pre-delete hooks;
+- keep renderer smoke and pixel checks in adapter crates.
