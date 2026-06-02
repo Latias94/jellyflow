@@ -110,6 +110,37 @@ Fresh verification:
 - Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime visible_node_render_order`
 - Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface`
 
+### 2026-06-02 - VRO-030 Conformance And Template Coverage
+
+Scope: `crates/jellyflow-runtime/src/runtime/conformance`,
+`crates/jellyflow-runtime/src/runtime/tests`, `templates/headless-adapter`
+
+Result:
+
+- Added `ConformanceAction::AssertVisibleNodeRenderOrder`.
+- Added runner execution that compares `NodeGraphStore::visible_node_render_order(viewport_size)`
+  with expected ordered ids.
+- Added runtime conformance and adapter-conformance fixture tests.
+- Added public surface serde coverage for the new fixture action.
+- Added a visible-node-render-order scenario to the headless adapter template suite, increasing the
+  built-in suite from 8 to 9 scenarios.
+
+Behavior proven:
+
+- conformance fixtures can assert ordered visible node ids without renderer traces;
+- adapter conformance can run the same assertion through the fixture runner;
+- the template adapter suite can save/check a suite containing both visible ids and ordered visible
+  node render order assertions;
+- the CLI `check` command reports the ordered visible-node scenario as an empty-trace assertion.
+
+Fresh verification:
+
+- Passed 2026-06-02: `cargo fmt --check`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime conformance`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime adapter_conformance`
+- Passed 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
+- Passed 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

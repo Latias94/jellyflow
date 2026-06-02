@@ -510,6 +510,14 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         },
         [node_id],
     );
+    let visible_node_render_order_action =
+        conformance::ConformanceAction::assert_visible_node_render_order(
+            CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+            [node_id],
+        );
     let inertia_request = viewport::ViewportPanInertiaRequest::new(
         viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
         CanvasPoint { x: 500.0, y: 0.0 },
@@ -636,6 +644,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,
         visible_node_ids_action,
+        visible_node_render_order_action,
         apply_viewport_pan_inertia_action,
         apply_viewport_pan_inertia_frames_action,
         assert_viewport_pan_inertia_action,

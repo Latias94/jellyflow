@@ -220,6 +220,19 @@ pub(super) fn execute_action(
                 ))
             }
         }
+        ConformanceAction::AssertVisibleNodeRenderOrder {
+            viewport_size,
+            expected,
+        } => {
+            let actual = store.visible_node_render_order(*viewport_size);
+            if actual.as_slice() == expected.as_slice() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "visible node render order resolved to {actual:?}, expected {expected:?}"
+                ))
+            }
+        }
         ConformanceAction::SetSelection {
             nodes,
             edges,

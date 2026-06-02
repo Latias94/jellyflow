@@ -127,6 +127,10 @@ pub enum ConformanceAction {
         viewport_size: CanvasSize,
         expected: Vec<NodeId>,
     },
+    AssertVisibleNodeRenderOrder {
+        viewport_size: CanvasSize,
+        expected: Vec<NodeId>,
+    },
     SetSelection {
         nodes: Vec<NodeId>,
         edges: Vec<EdgeId>,
@@ -166,6 +170,7 @@ impl ConformanceAction {
             Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
             Self::SetViewport { .. } => "set_viewport",
             Self::AssertVisibleNodeIds { .. } => "assert_visible_node_ids",
+            Self::AssertVisibleNodeRenderOrder { .. } => "assert_visible_node_render_order",
             Self::SetSelection { .. } => "set_selection",
             Self::EmitGesture { .. } => "emit_gesture",
         }
@@ -394,6 +399,16 @@ impl ConformanceAction {
         expected: impl IntoIterator<Item = NodeId>,
     ) -> Self {
         Self::AssertVisibleNodeIds {
+            viewport_size,
+            expected: expected.into_iter().collect(),
+        }
+    }
+
+    pub fn assert_visible_node_render_order(
+        viewport_size: CanvasSize,
+        expected: impl IntoIterator<Item = NodeId>,
+    ) -> Self {
+        Self::AssertVisibleNodeRenderOrder {
             viewport_size,
             expected: expected.into_iter().collect(),
         }

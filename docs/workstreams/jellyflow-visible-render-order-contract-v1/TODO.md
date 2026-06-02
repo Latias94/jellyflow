@@ -36,7 +36,7 @@ Last updated: 2026-06-02
 
 ## M2 - Conformance And Template Coverage
 
-- [ ] VRO-030 [owner=codex] [deps=VRO-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests,templates/headless-adapter]
+- [x] VRO-030 [owner=codex] [deps=VRO-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests,templates/headless-adapter]
   Goal: Add conformance and template smoke coverage that lets adapters assert ordered visible node
   ids before renderer-specific smoke tests.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo
@@ -46,8 +46,9 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: conformance action/runner tests, adapter conformance traces, template scenario.
   Context: docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl.
-  Handoff: Final status must be DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT.
-  State: TASKS.jsonl entry VRO-030 records owner, scope, validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Added `assert_visible_node_render_order` to conformance fixtures and
+  expanded the headless adapter template suite to 9 scenarios.
+  State: TASKS.jsonl entry VRO-030 records DONE with validation and evidence.
 
 ## M3 - Documentation And Closeout
 

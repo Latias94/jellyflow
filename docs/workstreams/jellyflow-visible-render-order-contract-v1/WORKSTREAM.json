@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl",
-  "current_task": "VRO-030",
+  "current_task": "VRO-040",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime visible_node_render_order",
@@ -69,6 +69,11 @@
       "date": "2026-06-02",
       "task": "VRO-020",
       "summary": "Added runtime::rendering visible node render order planning and NodeGraphStore::visible_node_render_order using existing visible-node culling plus node render order semantics."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "VRO-030",
+      "summary": "Added assert_visible_node_render_order conformance action, runner checks, adapter conformance coverage, and a nine-scenario headless adapter template suite."
     }
   ],
   "adr_refs": [
@@ -94,7 +99,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "continue",
-    "next_task": "VRO-030",
-    "notes": "Continue with conformance/template coverage for ordered visible node ids. Split follow-ons if scope expands into visible edge culling, full scene render plans, renderer smoke harnesses, or spatial indexing."
+    "next_task": "VRO-040",
+    "notes": "Continue with documentation, final evidence, and closeout. Split follow-ons if scope expands into visible edge culling, full scene render plans, renderer smoke harnesses, or spatial indexing."
   }
 }

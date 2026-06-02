@@ -44,6 +44,44 @@ fn adapter_conformance_fixture_runner_asserts_visible_node_ids() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_visible_node_render_order() {
+    let (mut graph, node_id, outside, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
+    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
+    outside_node.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let partial = NodeId::new();
+    let mut partial_node = graph.nodes.get(&node_id).expect("node exists").clone();
+    partial_node.pos = CanvasPoint { x: 95.0, y: 0.0 };
+    partial_node.ports.clear();
+    graph.nodes.insert(partial, partial_node);
+    let mut view_state = crate::io::NodeGraphViewState {
+        draw_order: vec![outside, node_id, partial],
+        ..crate::io::NodeGraphViewState::default()
+    };
+    view_state.set_selection(vec![node_id], Vec::new(), Vec::new());
+
+    let scenario = ConformanceScenario::new("visible node render order", graph)
+        .with_view_state(view_state)
+        .with_actions([ConformanceAction::assert_visible_node_render_order(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [partial, node_id],
+        )])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_auto_pan_frame() {
     let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let mut editor_config = crate::io::NodeGraphEditorConfig::default();

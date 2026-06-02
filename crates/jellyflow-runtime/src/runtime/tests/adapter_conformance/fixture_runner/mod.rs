@@ -29,7 +29,7 @@ use crate::runtime::viewport::{
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Group, GroupId, NodeExtent,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Group, GroupId, NodeExtent, NodeId,
     PortDirection,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;

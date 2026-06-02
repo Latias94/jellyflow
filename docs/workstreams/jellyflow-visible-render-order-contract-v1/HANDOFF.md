@@ -5,25 +5,22 @@ Last updated: 2026-06-02
 
 ## Current State
 
-VRO-020 is complete. The runtime now exposes ordered visible node ids through
-`runtime::rendering::resolve_visible_node_render_order` and
-`NodeGraphStore::visible_node_render_order(viewport_size)`.
+VRO-030 is complete. Ordered visible node ids are now available through runtime/store APIs and
+through `ConformanceAction::assert_visible_node_render_order`.
 
-The helper composes existing visible-node culling and node render-order semantics inside
-`runtime::rendering`, so adapters do not have to duplicate hidden-node filtering, draw order, or
-selected-node elevation logic.
+The headless adapter template suite now has 9 scenarios, including:
+
+- `template visible node ids`;
+- `template visible node render order`.
 
 ## Next Task
 
-VRO-030:
+VRO-040:
 
-- add a conformance action for asserting ordered visible node ids;
-- add runner checks and focused conformance tests;
-- add adapter-conformance/template coverage;
-- run `cargo fmt --check`, `cargo nextest run -p jellyflow-runtime conformance`, `cargo nextest
-  run -p jellyflow-runtime adapter_conformance`, `cargo test --manifest-path
-  templates/headless-adapter/Cargo.toml`, and `cargo run --manifest-path
-  templates/headless-adapter/Cargo.toml -- check`.
+- document the ordered visible-node render helper in root/runtime docs;
+- update `CONTEXT.md` with the closed lane and follow-ons;
+- run final package, clippy, metadata, and diff gates;
+- close `WORKSTREAM.json`, `TODO.md`, `TASKS.jsonl`, `EVIDENCE_AND_GATES.md`, and this handoff.
 
 ## Guardrails
 

@@ -37,6 +37,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
             delete_selection_scenario(),
             viewport_pan_scenario(),
             visible_node_ids_scenario(),
+            visible_node_render_order_scenario(),
             viewport_animation_scenario(),
             viewport_pan_inertia_scenario(),
         ])
@@ -98,6 +99,13 @@ pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
 pub fn run_visible_node_ids_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
         &visible_node_ids_scenario(),
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn run_visible_node_render_order_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &visible_node_render_order_scenario(),
     )
     .map_err(|err| err.to_string())
 }
@@ -364,6 +372,62 @@ fn visible_node_ids_scenario() -> ConformanceScenario {
                 height: 100.0,
             },
             [inside, partial],
+        )])
+        .with_expected_trace([])
+}
+
+fn visible_node_render_order_scenario() -> ConformanceScenario {
+    let selected = NodeId::from_u128(73);
+    let partial = NodeId::from_u128(74);
+    let outside = NodeId::from_u128(75);
+    let mut graph = Graph::new(GraphId::from_u128(14));
+    graph.nodes.insert(
+        selected,
+        template_node(
+            CanvasPoint { x: 0.0, y: 0.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+    graph.nodes.insert(
+        partial,
+        template_node(
+            CanvasPoint { x: 95.0, y: 0.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+    graph.nodes.insert(
+        outside,
+        template_node(
+            CanvasPoint { x: 180.0, y: 0.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+    let mut view_state = NodeGraphViewState {
+        draw_order: vec![outside, selected, partial],
+        ..NodeGraphViewState::default()
+    };
+    view_state.set_selection(vec![selected], Vec::new(), Vec::new());
+
+    ConformanceScenario::new("template visible node render order", graph)
+        .with_view_state(view_state)
+        .with_actions([ConformanceAction::assert_visible_node_render_order(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [partial, selected],
         )])
         .with_expected_trace([])
 }
@@ -645,7 +709,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 8);
+        assert_eq!(report.scenario_count(), 9);
     }
 
     #[test]
@@ -692,6 +756,14 @@ mod tests {
     }
 
     #[test]
+    fn visible_node_render_order_smoke_runs_as_single_scenario() {
+        let report = run_visible_node_render_order_smoke()
+            .expect("visible node render order scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
     fn viewport_pan_inertia_smoke_runs_as_single_scenario() {
         let report =
             run_viewport_pan_inertia_smoke().expect("viewport pan inertia scenario runs");
@@ -712,7 +784,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 8);
+        assert_eq!(report.scenario_count(), 9);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {
