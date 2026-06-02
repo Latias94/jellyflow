@@ -205,6 +205,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert!(delete::delete_selection_transaction(&delete_plan).is_none());
     let _ = std::mem::size_of::<delete::DeleteSelectionError>();
     let _ = std::mem::size_of::<keyboard::KeyboardIntent>();
+    let _ = std::mem::size_of::<keyboard::KeyboardActionError>();
     let _ = std::mem::size_of::<keyboard::KeyboardActionOutcome>();
     let _ = std::mem::size_of::<keyboard::KeyboardDeleteAction>();
 

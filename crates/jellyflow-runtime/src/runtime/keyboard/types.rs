@@ -1,7 +1,8 @@
-use crate::runtime::store::DispatchOutcome;
 use keyboard_types::Code as KeyCode;
 
+use crate::runtime::delete::DeleteSelectionError;
 use crate::runtime::drag::NodeNudgeRequest;
+use crate::runtime::store::{DispatchError, DispatchOutcome};
 
 /// High-level keyboard intent handled by the headless runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,15 @@ pub enum KeyboardActionOutcome {
         request: NodeNudgeRequest,
         dispatch: DispatchOutcome,
     },
+}
+
+/// Error returned when a keyboard intent fails while routing to its runtime action.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyboardActionError {
+    #[error("delete selection keyboard action failed: {0}")]
+    DeleteSelection(#[from] DeleteSelectionError),
+    #[error("nudge selection keyboard action failed: {0}")]
+    NudgeSelection(#[from] DispatchError),
 }
 
 impl KeyboardActionOutcome {

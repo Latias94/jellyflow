@@ -6,4 +6,4 @@
 mod store;
 mod types;
 
-pub use types::{KeyboardActionOutcome, KeyboardDeleteAction, KeyboardIntent};
+pub use types::{KeyboardActionError, KeyboardActionOutcome, KeyboardDeleteAction, KeyboardIntent};
