@@ -5,7 +5,7 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as a follow-on to the closed interaction harness lane.
+The workstream is closed. It was opened as a follow-on to the closed interaction harness lane.
 
 JND-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.

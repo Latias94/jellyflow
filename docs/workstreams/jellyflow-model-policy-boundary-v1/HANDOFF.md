@@ -5,7 +5,7 @@ Last updated: 2026-05-30
 
 ## Current State
 
-This lane is open as a follow-on to `jellyflow-runtime-public-surface-v1`.
+This lane is closed. It was opened as a follow-on to `jellyflow-runtime-public-surface-v1`.
 
 The public-surface lane closed with an explicit follow-on candidate for model-layer policy cleanup.
 Initial inspection shows `jellyflow_core::core::{Node, Port, Edge}` stores a mix of semantic graph

@@ -5,8 +5,8 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as a follow-on to the closed conformance fixture lane and the node drag
-kernel lane.
+The workstream is closed. It was opened as a follow-on to the closed conformance fixture lane and
+the node drag kernel lane.
 
 JVI-010 is complete: the lane scope, non-goals, source coverage, task ledger, machine-readable task
 state, draft campaign, milestones, gate set, context manifest, and workstream metadata are recorded.

@@ -5,9 +5,9 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as a follow-on to the conformance fixture and auto-pan lanes. Existing
-`ConformanceScenario` and `run_conformance_scenario` APIs can replay a single scenario; this lane
-adds a public suite-level helper for adapter crates.
+The workstream is closed. It was opened as a follow-on to the conformance fixture and auto-pan
+lanes. Existing `ConformanceScenario` and `run_conformance_scenario` APIs can replay a single
+scenario; this lane adds a public suite-level helper for adapter crates.
 
 JACR-010 is complete: workstream docs, task ledger, campaign record, gates, and context manifest are
 created.

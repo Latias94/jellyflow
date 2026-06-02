@@ -5,8 +5,8 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as the next fearless-refactor lane after the closed runtime public-surface and
-model-policy lanes.
+The workstream is closed. It was opened as the next fearless-refactor lane after the closed runtime
+public-surface and model-policy lanes.
 
 JGS-010 is complete: the lane scope, non-goals, source coverage, task ledger, milestones, gate set,
 context manifest, and machine-readable workstream metadata are recorded.

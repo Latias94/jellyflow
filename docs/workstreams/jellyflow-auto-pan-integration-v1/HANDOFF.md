@@ -5,7 +5,8 @@ Last updated: 2026-06-01
 
 ## Current State
 
-The workstream is open as a follow-on to the closed node drag and viewport interaction lanes.
+The workstream is closed. It was opened as a follow-on to the closed node drag and viewport
+interaction lanes.
 Jellyflow already has public `runtime::viewport` pan/zoom helpers and store publication; auto-pan
 should feed that path rather than introduce a second viewport mutation mechanism.
 
