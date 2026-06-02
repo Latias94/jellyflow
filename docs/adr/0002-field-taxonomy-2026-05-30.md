@@ -1,4 +1,4 @@
-# JPB-020 - Field Taxonomy
+# ADR 0002 Field Taxonomy
 
 Date: 2026-05-30
 
@@ -95,9 +95,9 @@ ADR 0002 accepts an additive v1 boundary:
 | `NodeGraphRuntimeTuning` | Runtime tuning | Performance/cache/spatial index settings, not graph semantics. |
 | `NodeGraphInteractionState` | Resolved global policy state | Input to runtime policy facade. |
 
-## Policy Resolution Rules For JPB-030
+## Policy Resolution Rules For Follow-On Work
 
-The next task should implement these as pure runtime helpers:
+The next policy task should implement these as pure runtime helpers:
 
 - Node selection: `node.selectable.unwrap_or(state.elements_selectable)`.
 - Node drag: `node.draggable.unwrap_or(state.nodes_draggable)`.
@@ -115,6 +115,6 @@ The next task should implement these as pure runtime helpers:
 
 ## Non-Decisions
 
-- No field is moved out of `Graph` in JPB-020.
-- No graph file version is changed in JPB-020.
-- No behavior enforcement is changed until JPB-040.
+- No field is moved out of `Graph` in the ADR 0002 taxonomy.
+- No graph file version is changed in the ADR 0002 taxonomy.
+- No behavior enforcement is changed by this taxonomy.

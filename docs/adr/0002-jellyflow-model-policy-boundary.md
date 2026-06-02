@@ -45,7 +45,7 @@ versioned migration plan exists.
 ## Field Taxonomy
 
 The detailed field inventory lives in
-`docs/workstreams/jellyflow-model-policy-boundary-v1/JPB-020_FIELD_TAXONOMY_2026-05-30.md`.
+`docs/adr/0002-field-taxonomy-2026-05-30.md`.
 
 The summary taxonomy is:
 

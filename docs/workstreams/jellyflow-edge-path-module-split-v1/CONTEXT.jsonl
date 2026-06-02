@@ -1,4 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Keeps edge path behavior headless and renderer-free."}
-{"file":"docs/workstreams/jellyflow-geometry-spatial-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records shipped edge path and hit-test behavior that this split must preserve."}
-{"file":"docs/workstreams/jellyflow-conformance-schema-runner-split-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the newest behavior-preserving private facade split and closeout pattern."}
-{"file":"docs/workstreams/jellyflow-node-drag-module-split-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides a recent module split pattern for preserving public re-exports."}

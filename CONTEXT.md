@@ -95,21 +95,14 @@ cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-core` or
 `jellyflow-runtime` to prove headless behavior.
 
-## Workstream State
+## Trellis Task State
 
-Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the visible-render-order contract workstream is closed; it
-built on the visible-elements contract by promoting ordered visible node ids into a headless
-runtime/store/conformance/template contract for adapters. Verify current state with:
+The old `docs/workstreams/jellyflow-*` lane system has been removed. New medium
+or cross-crate changes should use Trellis tasks under `.trellis/tasks/`; small
+documentation or local cleanup can stay direct when the Trellis workflow allows
+it.
 
-```text
-for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
-```
-
-Open a new workstream for medium or cross-crate changes. Use a direct task for small documentation
-or local refactor cleanups.
-
-Closed lane themes include:
+Historical closed-lane themes that shaped the current codebase include:
 
 - runtime public-surface cleanup and XyFlow compatibility isolation;
 - model policy boundary and `runtime::policy`;
@@ -134,7 +127,7 @@ Preserve intentional compatibility surfaces that support adapter behavior:
 - keep low-level conformance transaction dispatch as a documented fixture escape hatch;
 - keep renderer/platform work outside the headless crates.
 
-Good fearless-refactor candidates are accidental pass-through modules, stale workstream metadata,
+Good fearless-refactor candidates are accidental pass-through modules, stale legacy metadata,
 duplicated pure runtime math, private modules with too-wide public surfaces, and test fixtures that
 can move from implementation detail tests to public contract tests.
 

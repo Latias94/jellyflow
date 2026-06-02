@@ -95,8 +95,8 @@ Evidence:
 - `ecosystem/fret-node/src/{core,types,interaction}/mod.rs`
 - `ecosystem/fret-node/src/ops/mod.rs`
 - `ecosystem/fret-node/src/{io,profile,rules,schema,runtime}/mod.rs`
-- `docs/workstreams/jellyflow-package-split-v1/`
-- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
-- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
-- `docs/workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
-- `tools/check_jellyflow_external_smoke.py`
+- `docs/history/fret-workstreams/jellyflow-package-split-v1/`
+- `docs/history/fret-workstreams/jellyflow-standalone-readiness-v1/JSR-015_FRET_CORE_DETACHMENT_2026-05-30.md`
+- `docs/history/fret-workstreams/jellyflow-standalone-readiness-v1/JSR-020_EXTERNAL_SMOKE_2026-05-30.md`
+- `docs/history/fret-workstreams/jellyflow-standalone-readiness-v1/JSR-030_REPOSITORY_PUBLISHING_POLICY_2026-05-30.md`
+- `tools/check_external_consumer_smoke.py`

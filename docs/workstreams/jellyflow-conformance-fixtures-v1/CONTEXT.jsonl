@@ -1,7 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Governs renderer-free adapter conformance fixtures and keeps wgpu/egui/Fret smoke tests outside core/runtime."}
-{"file":"docs/workstreams/jellyflow-interaction-harness-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records the private harness, normalized trace language, adapter conformance strategy, and public fixture follow-on."}
-{"file":"docs/workstreams/jellyflow-node-drag-kernel-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records shipped drag behavior and the follow-on decision to stabilize public fixture format."}
-{"file":"docs/workstreams/jellyflow-runtime-public-surface-v1/CLOSEOUT_AUDIT_2026-05-30.md","reason":"Guides public runtime API exposure and smoke coverage discipline."}
-{"file":"crates/jellyflow-runtime/src/runtime/tests/harness.rs","reason":"Current private interaction harness and normalized trace event recorder."}
-{"file":"crates/jellyflow-runtime/src/runtime/tests/adapter_conformance.rs","reason":"Current connect, drag, view, delete, reconnect, and geometry conformance scenarios to convert."}
-{"file":"crates/jellyflow-runtime/tests/public_surface.rs","reason":"Public API smoke test that should cover new fixture vocabulary exports."}

@@ -1,7 +1,0 @@
-{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","reason":"Defines renderer-free Jellyflow core/runtime crate ownership and adapter separation."}
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Defines how XyFlow feel should be tested through headless runtime and adapter conformance contracts without adding wgpu or renderer dependencies."}
-{"file":"docs/workstreams/jellyflow-viewport-interaction-kernel-v1/HANDOFF.md","reason":"Previous viewport kernel workstream context and shipped viewport math behavior."}
-{"file":"docs/workstreams/jellyflow-auto-pan-integration-v1/HANDOFF.md","reason":"Auto-pan integration context and viewport event publication expectations."}
-{"file":"docs/workstreams/jellyflow-interaction-harness-v1/HANDOFF.md","reason":"Interaction harness callback trace expectations."}
-{"file":"docs/workstreams/jellyflow-conformance-fixture-discovery-v1/HANDOFF.md","reason":"Conformance fixture discovery and file-backed harness expectations."}
-{"file":"docs/workstreams/jellyflow-viewport-gesture-policy-v1/DESIGN.md","reason":"Current lane problem, target state, scope, and assumptions."}

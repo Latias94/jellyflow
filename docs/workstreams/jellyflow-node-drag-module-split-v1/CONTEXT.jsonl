@@ -1,5 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Keeps node drag behavior headless and renderer-free."}
-{"file":"docs/workstreams/jellyflow-node-drag-kernel-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records shipped node drag behavior and named follow-ons that must remain out of scope."}
-{"file":"docs/workstreams/jellyflow-conformance-module-split-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides the immediate module-facade split pattern to mirror."}
-{"file":"docs/workstreams/jellyflow-auto-pan-integration-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records auto-pan as separate behavior that must not be mixed into drag module split."}
-{"file":"docs/workstreams/jellyflow-conformance-cli-harness-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides latest conformance harness evidence for public API preservation."}

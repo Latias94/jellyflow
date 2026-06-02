@@ -1,5 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Governs renderer-free adapter conformance and keeps renderer smoke tests outside runtime."}
-{"file":"docs/workstreams/jellyflow-conformance-file-fixtures-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides file-backed ConformanceSuite load/save context."}
-{"file":"docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Provides directory discovery and path-aware fixture set context."}
-{"file":"README.md","reason":"Root interaction testing strategy to update at closeout."}
-{"file":"crates/jellyflow-runtime/README.md","reason":"Runtime crate conformance contract and adapter guidance to update at closeout."}

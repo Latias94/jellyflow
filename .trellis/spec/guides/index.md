@@ -11,8 +11,8 @@ When facts conflict, use this order:
 1. The current task artifacts define the immediate scope and acceptance criteria.
 2. Accepted ADRs in `docs/adr/` define architecture decisions.
 3. `CONTEXT.md` is the high-signal navigation summary.
-4. Closed workstreams in `docs/workstreams/` and `docs/history/fret-workstreams/`
-   provide evidence and prior tradeoffs.
+4. Preserved history under `docs/history/` and ADR companion notes provide
+   prior evidence and tradeoffs.
 5. Source code, tests, and crate READMEs show the current implementation.
 
 If a task request conflicts with an accepted ADR, stop and plan the ADR change
@@ -37,6 +37,6 @@ instead of silently coding around it.
 
 ## Legacy Workstream Rule
 
-Do not convert closed legacy workstreams into Trellis tasks. Treat them as
-historical evidence and link them from new Trellis task artifacts when they
-explain a boundary, gate, or follow-on.
+Do not recreate the old `WORKSTREAM.json` lane system. New work uses Trellis
+tasks under `.trellis/tasks/`; long-lived conventions go into `.trellis/spec/`;
+architecture decisions go into `docs/adr/`.

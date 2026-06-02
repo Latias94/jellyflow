@@ -1,5 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Keeps conformance behavior headless and renderer-free."}
-{"file":"docs/workstreams/jellyflow-conformance-cli-harness-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records the latest conformance harness consumer of public conformance APIs."}
-{"file":"docs/workstreams/jellyflow-conformance-golden-approval-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records approval/write-back semantics that must remain unchanged."}
-{"file":"docs/workstreams/jellyflow-conformance-fixture-discovery-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records deterministic fixture directory discovery behavior that must remain unchanged."}
-{"file":"docs/workstreams/jellyflow-adapter-conformance-runner-v1/CLOSEOUT_AUDIT_2026-06-01.md","reason":"Records suite runner and report behavior that must remain unchanged."}

@@ -1,38 +1,30 @@
-# Legacy Workstream Evidence
+# Removed Legacy Workstreams
 
-This directory contains the pre-Trellis Jellyflow workstream system. These
-workstreams are historical evidence, not active Trellis tasks.
+The pre-Trellis Jellyflow workstream lane directories were removed after the
+Trellis bootstrap. New work should use Trellis tasks under `.trellis/tasks/`.
 
-## Migration Policy
+## Current Policy
 
-- Keep closed workstreams in this directory so their design decisions, gates,
-  evidence logs, and handoffs remain reviewable.
-- Do not bulk-convert closed workstreams into `.trellis/tasks/`.
-- New work should use Trellis tasks under `.trellis/tasks/`.
-- New Trellis task artifacts should cite relevant legacy files when prior
-  evidence constrains the scope:
-  - `DESIGN.md` for design intent and tradeoffs;
-  - `TODO.md` and `TASKS.jsonl` for executed task order;
-  - `EVIDENCE_AND_GATES.md` for validation history;
-  - `HANDOFF.md` for final state and follow-ons;
-  - `WORKSTREAM.json` for machine-readable status, references, tags, and gates.
+- Do not recreate the old `WORKSTREAM.json` / `TODO.md` / `EVIDENCE_AND_GATES.md`
+  lane system for new work.
+- Use `.trellis/tasks/` for new requirements, planning, execution state, and
+  archived task records.
+- Use `.trellis/spec/` for durable coding conventions and architecture guardrails
+  that future agents must load.
+- Use accepted ADRs in `docs/adr/` for architecture decisions.
+- Use `CONTEXT.md` as the high-signal navigation summary.
 
-## Status Check
+## Preserved History
 
-Use this command to inspect legacy workstream status:
+Extraction-era workstream history that still supports ADR 0001 remains under
+`docs/history/fret-workstreams/`.
 
-```bash
-for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status, .title // .name // ""] | @tsv' "$f"; done
+The field taxonomy that supported ADR 0002 was promoted out of the deleted
+workstream tree into:
+
+```text
+docs/adr/0002-field-taxonomy-2026-05-30.md
 ```
 
-At Trellis bootstrap time, the visible `docs/workstreams/*/WORKSTREAM.json`
-entries were closed. Future medium or cross-crate work should open a fresh
-Trellis task and link the relevant closed workstream as evidence instead of
-resuming the old lane in place.
-
-## Source Priority
-
-Accepted ADRs in `docs/adr/` outrank legacy workstream notes. `CONTEXT.md`
-summarizes the current state, while legacy workstreams explain how the project
-arrived there. If an old workstream appears to conflict with an accepted ADR or
-current source code, treat it as historical context and plan an explicit update.
+All other removed `docs/workstreams/jellyflow-*` lane files remain recoverable
+from git history if a future archaeology task needs them.

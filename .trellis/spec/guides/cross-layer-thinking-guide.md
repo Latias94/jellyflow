@@ -43,14 +43,14 @@ Then map every affected layer:
   migration plan.
 - Adding an adapter-facing behavior without conformance coverage.
 - Adding a renderer smoke test as the first proof of headless behavior.
-- Treating a closed workstream as an active task instead of historical evidence.
+- Recreating the old workstream lane system instead of using Trellis tasks.
 
 ## Legacy Workstream Migration
 
-Closed workstreams under `docs/workstreams/` remain evidence. A new Trellis task
-should cite the relevant old `DESIGN.md`, `EVIDENCE_AND_GATES.md`, `HANDOFF.md`,
-and `WORKSTREAM.json` in its planning artifacts when prior work constrains the
-new scope. Do not copy all closed workstreams into `.trellis/tasks/`.
+The old `docs/workstreams/jellyflow-*` lane directories were removed after
+Trellis bootstrap. A new Trellis task should cite accepted ADRs, `CONTEXT.md`,
+source code, tests, and preserved history under `docs/history/` when prior work
+constrains scope. Do not recreate `WORKSTREAM.json` / `TODO.md` lane artifacts.
 
 ## Verification
 

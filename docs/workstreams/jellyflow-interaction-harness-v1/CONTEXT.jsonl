@@ -1,9 +1,0 @@
-{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","reason":"Governs renderer-free adapter conformance fixtures and keeps wgpu/egui/Fret smoke tests outside core/runtime."}
-{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","reason":"Defines the headless Jellyflow boundary and renderer/platform dependency limits."}
-{"file":"docs/adr/0002-jellyflow-model-policy-boundary.md","reason":"Keeps persisted policy/layout fields in Graph for v1 and routes behavior through runtime policy."}
-{"file":"docs/workstreams/jellyflow-geometry-spatial-v1/HANDOFF.md","reason":"Records the shipped geometry/path/hit-test surface that future interaction fixtures should consume."}
-{"file":"docs/workstreams/jellyflow-runtime-public-surface-v1/HANDOFF.md","reason":"Records canonical runtime public-surface decisions and compatibility boundaries."}
-{"file":"docs/workstreams/jellyflow-model-policy-boundary-v1/HANDOFF.md","reason":"Records policy-resolution direction and schema non-goals for this lane."}
-{"file":"repo-ref/xyflow/packages/system/src/xydrag/","reason":"Behavior reference for later drag fixture semantics; deferred for JIH-020."}
-{"file":"repo-ref/xyflow/packages/system/src/xyhandle/","reason":"Behavior reference for later connect/reconnect fixture semantics; deferred for JIH-020."}
-{"file":"repo-ref/xyflow/packages/system/src/xypanzoom/","reason":"Behavior reference for later pan/zoom fixture semantics; deferred for JIH-020."}
