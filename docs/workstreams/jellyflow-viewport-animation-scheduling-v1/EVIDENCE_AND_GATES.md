@@ -1,6 +1,6 @@
 # Jellyflow Viewport Animation Scheduling v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -190,6 +190,51 @@ Behavior proven:
 - Adapter conformance fixtures can use the same vocabulary while keeping expected render traces
   empty for pure planning checks.
 - Public surface smoke covers the new serde-friendly conformance action vocabulary.
+
+### 2026-06-02 - JVAS-050 Documentation And Closeout
+
+Scope:
+
+- `README.md`
+- `crates/jellyflow-runtime/README.md`
+- `crates/jellyflow-runtime/src/runtime/viewport/animation.rs`
+- `docs/workstreams/jellyflow-viewport-animation-scheduling-v1`
+
+Commands:
+
+```bash
+cargo fmt --check
+cargo nextest run -p jellyflow-runtime
+cargo clippy -p jellyflow-runtime --all-targets -- -D warnings
+jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl
+git diff --check
+```
+
+Result:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime`: passed, 266 tests run, 266 passed.
+- `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`: passed after deriving
+  `Default` for `ViewportAnimationEasing`.
+- `jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl`: passed.
+- `git diff --check`: passed.
+
+Review:
+
+- `review-workstream` self-review found no blocking findings.
+- Workstream compliance: JVAS-010 through JVAS-050 are complete, the target state is met, and ADR
+  0001/0003 renderer boundaries remain intact.
+- Code quality: animation planning remains deterministic, renderer-neutral, and tested through
+  public runtime/conformance seams.
+- Residual risks are split as follow-ons rather than kept in this closed lane.
+
+Behavior proven:
+
+- README/runtime README now explain runtime-owned animation planning versus adapter-owned clocks,
+  raw input, cancellation policy, sampled-frame commits, renderer smoke, screenshots, and pixel
+  assertions.
+- Runtime package tests and clippy pass with the final closeout code.
+- Workstream metadata is machine-readable and the diff has no whitespace errors.
 
 ## Notes
 

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-viewport-animation-scheduling-v1",
   "title": "Jellyflow Viewport Animation Scheduling v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl",
-  "current_task": "JVAS-050",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime viewport_animation",
@@ -79,6 +79,11 @@
       "date": "2026-06-02",
       "task": "JVAS-040",
       "summary": "Added conformance actions and runner assertions for viewport animation frames plus double-click zoom plan and rejection outcomes."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JVAS-050",
+      "summary": "Documented viewport animation scheduling boundaries, recorded closeout evidence, fixed the clippy-derived default lint, and closed the workstream with follow-ons split."
     }
   ],
   "adr_refs": [
@@ -100,8 +105,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "continue",
-    "next_task": "JVAS-050",
-    "notes": "Continue with the pure viewport animation planner while the renderer-free boundary and existing viewport math remain stable. Split a follow-on if exact d3 interpolateZoom parity, pan inertia, or adapter renderer smoke becomes required."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Viewport animation scheduling v1 is closed. Follow-ons: exact d3 interpolateZoom parity if needed, pan inertia scheduling, and adapter frame-loop or renderer smoke helpers outside jellyflow-runtime."
   }
 }

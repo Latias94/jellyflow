@@ -12,7 +12,8 @@ The initial package split is intentionally small:
   rules, schema/profile pipeline, explicit `runtime::xyflow` compatibility projections,
   persistence file types without project-path policy, fit-view math, renderer-neutral selection
   helpers, renderer-neutral node dragging, renderer-neutral viewport pan/zoom, renderer-neutral
-  auto-pan, renderer-neutral geometry, and public headless conformance fixtures.
+  viewport animation planning, renderer-neutral auto-pan, renderer-neutral geometry, and public
+  headless conformance fixtures.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -65,6 +66,9 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
 - `runtime::viewport` turns normalized drag-pan and zoom-around-pointer intent into deterministic
   viewport transforms, while `NodeGraphStore` publishes those changes through the same view-state
   event path used by direct viewport updates;
+- `runtime::viewport` also exposes renderer-neutral viewport animation request/plan/frame types and
+  double-click zoom planning, while adapters keep ownership of frame clocks, cancellation policy,
+  pointer double-click detection, and actual store commits for sampled frames;
 - `runtime::auto_pan` turns pointer-edge proximity and elapsed frame time into deterministic
   viewport pan frames, while adapters keep ownership of pointer capture and frame scheduling;
 - `runtime::conformance` defines reusable fixture scenarios and a runner that drive a real
@@ -73,8 +77,9 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   suites, save them as JSON golden fixtures, discover fixture directories, and explicitly approve
   actual headless traces back into golden files through the `conformance_harness` example for
   aggregate pre-render conformance reports;
-- runtime adapter-conformance tests use those fixtures for connect, node drag, viewport, and
-  auto-pan behavior before any renderer-specific smoke tests are written;
+- runtime adapter-conformance tests use those fixtures for connect, node drag, viewport, viewport
+  animation planning, double-click zoom, and auto-pan behavior before any renderer-specific smoke
+  tests are written;
 - `templates/headless-adapter` is a copyable external adapter skeleton that runs node-drag and
   viewport conformance with `cargo --manifest-path` before adding renderer smoke tests;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the

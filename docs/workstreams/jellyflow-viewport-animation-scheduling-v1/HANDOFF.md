@@ -1,12 +1,12 @@
 # Jellyflow Viewport Animation Scheduling v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
 
-The workstream is open as a follow-on to the closed viewport interaction, viewport gesture policy,
-and auto-pan lanes.
+The workstream is closed. It was opened as a follow-on to the closed viewport interaction, viewport
+gesture policy, and auto-pan lanes.
 
 JVAS-010 is complete: the lane scope, non-goals, source coverage, task ledger, campaign record,
 milestones, gate set, context manifest, and machine-readable workstream metadata are recorded.
@@ -23,15 +23,13 @@ JVAS-040 is complete: conformance fixtures now expose renderer-free assertions f
 animation frames and double-click zoom plan or rejection outcomes. The adapter conformance fixture
 runner can use the same assertions while leaving render traces empty for pure planning checks.
 
-## Active Task
+JVAS-050 is complete: README/runtime README document viewport animation scheduling boundaries,
+closeout evidence is recorded, the clippy-derived default lint was fixed, and this workstream is
+closed with follow-ons split.
 
-- Task ID: JVAS-050
-- Owner: codex
-- Files: `README.md`, `crates/jellyflow-runtime/README.md`, `docs/workstreams/jellyflow-viewport-animation-scheduling-v1`
-- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`; `jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl`; `git diff --check`
-- Status: NEEDS_CONTEXT
-- Review: review-workstream and verify-rust-workstream before closeout
-- Evidence: README/runtime README guidance, closeout audit, and fresh package gates
+## Next Task
+
+None in this workstream. Follow-ons are split below.
 
 ## Decisions Since Opening
 
@@ -54,5 +52,17 @@ runner can use the same assertions while leaving render traces empty for pure pl
 
 ## Next Recommended Action
 
-- Implement JVAS-050: document viewport animation scheduling boundaries, run package closeout
-  gates, and close or split follow-ons.
+- Exact d3 `interpolateZoom` parity if adapter integration proves the current transform
+  interpolation is not close enough.
+- Pan inertia scheduling as a separate runtime/adapter contract.
+- Adapter frame-loop helpers or renderer smoke tests for future wgpu, egui, Fret, or other
+  integrations outside `jellyflow-runtime`.
+
+## Closeout Evidence
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime` passed, 266 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+- 2026-06-02: `jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl`
+  passed.
+- 2026-06-02: `git diff --check` passed.

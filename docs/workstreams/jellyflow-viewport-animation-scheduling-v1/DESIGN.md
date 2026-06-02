@@ -1,6 +1,6 @@
 # Jellyflow Viewport Animation Scheduling v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Why This Lane Exists
@@ -125,3 +125,19 @@ This lane can close when:
 - README/runtime README explain adapter/runtime responsibilities;
 - evidence gates pass with fresh command output;
 - remaining inertia, exact d3 smooth interpolation, or renderer smoke work is split or deferred.
+
+## Closeout Summary
+
+Closed on 2026-06-02. Jellyflow now has renderer-neutral viewport animation request/options/easing,
+plan, and frame primitives; normalized double-click zoom planning; conformance assertions for
+animation frames and double-click zoom plan or rejection outcomes; public-surface smoke coverage;
+and README/runtime README guidance that keeps timers, cancellation policy, raw platform input,
+renderer smoke, screenshots, and pixel assertions in adapter crates.
+
+Deferred follow-ons:
+
+- exact d3 `interpolateZoom` parity if adapter evidence shows the current transform interpolation
+  is not close enough;
+- pan inertia scheduling as a separate runtime/adapter contract;
+- adapter frame-loop helpers or renderer smoke tests for future wgpu, egui, Fret, or other
+  integrations outside `jellyflow-runtime`.

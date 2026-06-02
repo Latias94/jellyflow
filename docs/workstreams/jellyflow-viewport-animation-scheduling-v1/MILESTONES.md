@@ -1,6 +1,6 @@
 # Jellyflow Viewport Animation Scheduling v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -85,3 +85,5 @@ cargo clippy -p jellyflow-runtime --all-targets -- -D warnings
 jq empty docs/workstreams/jellyflow-viewport-animation-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-animation-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl
 git diff --check
 ```
+
+Status: complete on 2026-06-02.

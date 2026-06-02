@@ -5,17 +5,12 @@ use jellyflow_core::core::CanvasPoint;
 use super::transform::ViewportTransform;
 
 /// Built-in easing modes for renderer-neutral viewport animation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewportAnimationEasing {
+    #[default]
     CubicInOut,
     Linear,
-}
-
-impl Default for ViewportAnimationEasing {
-    fn default() -> Self {
-        Self::CubicInOut
-    }
 }
 
 impl ViewportAnimationEasing {

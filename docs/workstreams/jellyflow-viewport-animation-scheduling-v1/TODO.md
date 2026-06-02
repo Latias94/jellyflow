@@ -1,6 +1,6 @@
 # Jellyflow Viewport Animation Scheduling v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -63,7 +63,7 @@ Last updated: 2026-06-02
 
 ## M4 - Documentation And Closeout
 
-- [ ] JVAS-050 [owner=codex] [deps=JVAS-040] [scope=README.md,crates/jellyflow-runtime/README.md,docs/workstreams/jellyflow-viewport-animation-scheduling-v1]
+- [x] JVAS-050 [owner=codex] [deps=JVAS-040] [scope=README.md,crates/jellyflow-runtime/README.md,docs/workstreams/jellyflow-viewport-animation-scheduling-v1]
   Goal: Document viewport animation scheduling boundaries, record fresh evidence, and close or
   split follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -75,5 +75,7 @@ Last updated: 2026-06-02
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: EVIDENCE_AND_GATES.md, WORKSTREAM.json, and closeout audit.
   Context: docs/workstreams/jellyflow-viewport-animation-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Summarize residual risks and follow-ons.
-  State: TASKS.jsonl entry JVAS-050 is verified or accepted before closeout.
+  Handoff: DONE 2026-06-02. README/runtime README document runtime-owned animation planning versus
+  adapter-owned clocks, cancellation, raw input, and renderer smoke; closeout evidence is recorded;
+  follow-ons are deferred outside this lane.
+  State: TASKS.jsonl entry JVAS-050 records closeout validation, evidence, and handoff status.
