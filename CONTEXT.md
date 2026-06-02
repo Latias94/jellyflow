@@ -97,9 +97,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the visible-elements contract workstream is closed; it
-promoted XyFlow-style `onlyRenderVisibleElements` node filtering into a headless runtime/store
-contract and conformance/template smoke. Verify current state with:
+audits, and handoffs. At this update, the visible-render-order contract workstream is active; it
+builds on the closed visible-elements contract by promoting ordered visible node ids into a
+headless runtime/store/conformance contract for adapters. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done

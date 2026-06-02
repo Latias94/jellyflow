@@ -1,0 +1,9 @@
+{"file":"CONTEXT.md","role":"repo_context","required":true,"reason":"Headless runtime boundary, follow-on lanes, and validation commands."}
+{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","role":"adr","required":true,"reason":"Confirms Fret/UI compatibility wrappers belong outside headless crates."}
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","role":"adr","required":true,"reason":"Confirms XyFlow feel should be tested through headless contracts before renderer smoke."}
+{"file":"docs/workstreams/jellyflow-visible-elements-contract-v1/DESIGN.md","role":"prior_workstream","required":true,"reason":"Defines the visible-node contract this lane composes with render order."}
+{"file":"docs/workstreams/jellyflow-visible-elements-contract-v1/EVIDENCE_AND_GATES.md","role":"evidence","required":true,"reason":"Documents current visible-node behavior and validation coverage."}
+{"file":"docs/workstreams/jellyflow-visible-render-order-contract-v1/DESIGN.md","role":"design","required":true,"reason":"Target state, scope, non-goals, and architecture direction for this lane."}
+{"file":"docs/workstreams/jellyflow-visible-render-order-contract-v1/TODO.md","role":"task_ledger","required":true,"reason":"Human-readable task ledger and acceptance criteria."}
+{"file":"docs/workstreams/jellyflow-visible-render-order-contract-v1/TASKS.jsonl","role":"task_state","required":true,"reason":"Machine-readable task state for execution and review."}
+{"file":"docs/workstreams/jellyflow-visible-render-order-contract-v1/EVIDENCE_AND_GATES.md","role":"gates","required":true,"reason":"Fresh validation command evidence and closeout anchors."}
