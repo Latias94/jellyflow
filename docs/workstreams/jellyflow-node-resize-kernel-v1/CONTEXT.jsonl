@@ -1,0 +1,15 @@
+{"file":"CONTEXT.md","role":"project_context","required":true,"reason":"Summarizes Jellyflow boundaries, testing strategy, and current workstream state."}
+{"file":"docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md","role":"adr","required":true,"reason":"Keeps Fret and renderer-specific integration outside the headless crates."}
+{"file":"docs/adr/0002-jellyflow-model-policy-boundary.md","role":"adr","required":true,"reason":"Keeps persisted size and policy fields in Graph for v1."}
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","role":"adr","required":true,"reason":"Defines layered headless testing before renderer smoke."}
+{"file":"docs/workstreams/jellyflow-node-drag-kernel-v1/HANDOFF.md","role":"prior_workstream","required":true,"reason":"Provides the interaction-kernel precedent and renderer-free drag contract."}
+{"file":"docs/workstreams/jellyflow-node-drag-parent-expansion-v1/HANDOFF.md","role":"prior_workstream","required":true,"reason":"Records parent expansion and canvas-space coordinate decisions relevant to resize."}
+{"file":"repo-ref/xyflow/packages/system/src/xyresizer/types.ts","role":"reference_source","required":true,"reason":"Defines resize params, control positions, and public direction vocabulary."}
+{"file":"repo-ref/xyflow/packages/system/src/xyresizer/utils.ts","role":"reference_source","required":true,"reason":"Defines XyFlow resize dimension, min/max, extent, child extent, and keep-aspect math."}
+{"file":"repo-ref/xyflow/packages/system/src/xyresizer/XYResizer.ts","role":"reference_source","required":true,"reason":"Shows XyFlow runtime resize lifecycle and parent/child extent collection."}
+{"file":"repo-ref/xyflow/packages/react/src/additional-components/NodeResizer/NodeResizeControl.tsx","role":"reference_source","required":false,"reason":"Shows React adapter UI ownership around the system resizer."}
+{"file":"crates/jellyflow-core/src/ops/transaction/op.rs","role":"source_reference","required":true,"reason":"Existing SetNodeSize, SetNodePos, and SetGroupRect operations."}
+{"file":"crates/jellyflow-runtime/src/runtime/xyflow/transaction/nodes.rs","role":"source_reference","required":true,"reason":"Existing XyFlow NodeChange::Size to SetNodeSize conversion."}
+{"file":"crates/jellyflow-runtime/src/runtime/xyflow/projection/node_graph/nodes.rs","role":"source_reference","required":true,"reason":"Existing SetNodeSize projection to XyFlow-shaped node changes."}
+{"file":"README.md","role":"docs","required":false,"reason":"Root adapter testing guidance to update near closeout."}
+{"file":"crates/jellyflow-runtime/README.md","role":"docs","required":false,"reason":"Runtime adapter guidance to update near closeout."}

@@ -93,7 +93,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the existing workstreams are closed. Verify current state with:
+audits, and handoffs. At this update, the active workstream is
+`docs/workstreams/jellyflow-node-resize-kernel-v1/`, which adds a renderer-neutral node resize
+planner from XyFlow `XYResizer` source evidence. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -129,8 +131,9 @@ Do not move persisted fields out of `Graph` without a new ADR-backed schema migr
 
 ## Likely Follow-On Lanes
 
-- Node resize parent expansion, nested parent cascading, or parent-relative coordinate semantics
-  only after adapter evidence proves the v1 canvas-space drag expansion contract is insufficient.
+- Continue `jellyflow-node-resize-kernel-v1`: renderer-neutral node resize planning.
+- Nested parent cascading or parent-relative coordinate semantics only after adapter evidence proves
+  the v1 canvas-space drag/resize contracts are insufficient.
 - Selection-specific auto-pan policy only after integration evidence proves the generic kernel is
   insufficient.
 - Real spatial indexing behind `NodeGraphSpatialIndexTuning` after adapter workloads show linear
