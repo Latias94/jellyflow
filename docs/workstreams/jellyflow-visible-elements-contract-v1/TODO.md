@@ -1,6 +1,6 @@
 # Jellyflow Visible Elements Contract v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -51,7 +51,7 @@ Last updated: 2026-06-02
 
 ## M3 - Documentation And Closeout
 
-- [ ] JVE-040 [owner=codex] [deps=JVE-030] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-visible-elements-contract-v1]
+- [x] JVE-040 [owner=codex] [deps=JVE-030] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-visible-elements-contract-v1]
   Goal: Document visible node runtime/adapter boundaries, record fresh evidence, and close or split
   visible edge/spatial-index follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -64,5 +64,6 @@ Last updated: 2026-06-02
   Evidence: README.md, crates/jellyflow-runtime/README.md, CONTEXT.md, EVIDENCE_AND_GATES.md,
   WORKSTREAM.json, and closeout audit.
   Context: docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JVE-040 must record closeout validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Runtime/docs closeout recorded visible-node boundaries and split
+  visible edge culling plus real spatial indexing into follow-ons.
+  State: TASKS.jsonl entry JVE-040 records closeout validation, evidence, and closed handoff.

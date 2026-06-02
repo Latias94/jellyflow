@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-visible-elements-contract-v1",
   "title": "Jellyflow Visible Elements Contract v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl",
-  "current_task": "JVE-040",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime visible_node",
@@ -74,6 +74,11 @@
       "date": "2026-06-02",
       "task": "JVE-030",
       "summary": "Added assert_visible_node_ids conformance action, runner checks, adapter conformance coverage, and an eight-scenario headless adapter template suite including visible node ids."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JVE-040",
+      "summary": "Documented visible-node runtime/store/conformance boundaries, recorded closeout gates, split visible edge culling and real spatial indexing follow-ons, and closed the workstream."
     }
   ],
   "adr_refs": [
@@ -101,8 +106,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "next_task",
-    "next_task": "JVE-040",
-    "notes": "Continue with JVE-040: document visible node runtime/adapter boundaries, record closeout evidence, and keep visible edge culling plus real spatial index backends as follow-ons."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Workstream closed on 2026-06-02. Follow-ons: visible edge culling only after adapter evidence settles endpoint/path/AABB semantics; real spatial indexing behind NodeGraphSpatialIndexTuning only after visible-node contract or adapter workloads show linear scans are too slow."
   }
 }

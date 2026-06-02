@@ -1,6 +1,6 @@
 # Jellyflow Visible Elements Contract v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -47,4 +47,6 @@ Exit criteria:
   culling as follow-ons;
 - package, clippy, JSON, and diff gates pass.
 
-Status: pending.
+Status: complete on 2026-06-02. Root/runtime docs describe visible-node runtime and adapter
+boundaries, `CONTEXT.md` records the closed workstream, and closeout gates passed. Visible edge
+culling and real spatial indexing remain follow-ons.

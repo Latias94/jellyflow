@@ -54,6 +54,8 @@ runtime traces before adding renderer smoke tests.
   for deterministic selection deletion after adapters normalize platform key input.
 - Use `runtime::viewport` and store viewport helpers for drag-pan and zoom-around-pointer behavior.
 - Use `runtime::auto_pan` and `NodeGraphStore::apply_auto_pan` for deterministic auto-pan frames.
+- Use `runtime::rendering` and `NodeGraphStore::visible_node_ids` for renderer-neutral render order
+  and XyFlow-style visible-node culling before adapter rendering.
 - Use `runtime::geometry` for handle endpoints, edge paths, and numeric hit testing.
 - Use `runtime::policy` for effective node, port, and edge interaction policy.
 - Use `runtime::xyflow` only for XyFlow-shaped compatibility vocabulary: node/edge changes,
@@ -95,10 +97,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the active workstream is
-`docs/workstreams/jellyflow-visible-elements-contract-v1/`, which promotes XyFlow-style
-`onlyRenderVisibleElements` node filtering into a headless runtime/store contract. Verify current
-state with:
+audits, and handoffs. At this update, the visible-elements contract workstream is closed; it
+promoted XyFlow-style `onlyRenderVisibleElements` node filtering into a headless runtime/store
+contract and conformance/template smoke. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -117,6 +118,8 @@ Closed lane themes include:
 - conformance module splits, fixture format, golden approval, CLI harness, fixture discovery, and
   file-backed fixture loading;
 - adapter conformance suite runner and copyable headless adapter template;
+- visible node id planning through `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
+  `ConformanceAction::assert_visible_node_ids`;
 - runtime test surface/module split cleanup.
 
 ## Refactor Guardrails
@@ -142,8 +145,9 @@ Do not move persisted fields out of `Graph` without a new ADR-backed schema migr
   the v1 canvas-space drag/resize contracts are insufficient.
 - Selection-specific auto-pan policy only after integration evidence proves the generic kernel is
   insufficient.
-- Real spatial indexing behind `NodeGraphSpatialIndexTuning` after adapter workloads show linear
-  scans are too slow.
+- Visible edge culling only after adapter evidence settles endpoint/path/AABB semantics.
+- Real spatial indexing behind `NodeGraphSpatialIndexTuning` after visible-node contract or adapter
+  workloads show linear scans are too slow.
 - Async pre-delete or confirmation-dialog parity only after adapter evidence proves normalized
   `runtime::delete`/`runtime::keyboard` calls are insufficient.
 - Renderer smoke harnesses in future adapter crates.

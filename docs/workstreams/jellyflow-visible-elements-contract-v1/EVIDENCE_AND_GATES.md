@@ -1,6 +1,6 @@
 # Jellyflow Visible Elements Contract v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Smallest Current Repro
@@ -147,6 +147,33 @@ Fresh verification:
 - Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface`
 - Passed 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
 - Passed 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- Passed 2026-06-02: `jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-elements-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl`
+- Passed 2026-06-02: `git diff --check`
+
+### 2026-06-02 - JVE-040 Documentation And Closeout
+
+Scope: `README.md`, `crates/jellyflow-runtime/README.md`, `CONTEXT.md`,
+`docs/workstreams/jellyflow-visible-elements-contract-v1`
+
+Result:
+
+- Documented visible-node runtime/store boundaries in root and runtime READMEs.
+- Documented `ConformanceAction::assert_visible_node_ids` as a pre-render adapter assertion.
+- Updated `CONTEXT.md` to mark the visible-elements contract workstream closed.
+- Split visible edge culling and real spatial indexing into explicit follow-ons.
+- Closed machine-readable workstream state.
+
+Behavior proven:
+
+- runtime package tests still pass with visible-node runtime and conformance coverage;
+- clippy reports no runtime warnings under `-D warnings`;
+- workstream metadata remains valid JSON and diff-clean.
+
+Fresh verification:
+
+- Passed 2026-06-02: `cargo fmt --check`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime`
+- Passed 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`
 - Passed 2026-06-02: `jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-elements-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl`
 - Passed 2026-06-02: `git diff --check`
 

@@ -1,12 +1,13 @@
 # Jellyflow Visible Elements Contract v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
 
-JVE-010, JVE-020, and JVE-030 are complete: the lane is open, source coverage is recorded, the
-runtime visible node id contract exists, and conformance/template smoke can assert it.
+JVE-010, JVE-020, JVE-030, and JVE-040 are complete: the visible-elements contract lane is closed.
+The runtime visible node id contract exists, conformance/template smoke can assert it, and root
+documentation records the adapter boundary.
 
 Jellyflow now exposes the adapter-facing visible-node seam:
 
@@ -24,13 +25,11 @@ JVE-030 added:
 - runtime conformance and adapter-conformance fixture coverage;
 - a headless adapter template visible-node scenario.
 
-The remaining work is documentation, closeout evidence, and explicit follow-on split for visible
-edge ids plus real spatial indexing.
+The remaining gaps are intentionally split follow-ons.
 
 ## Next Task
 
-JVE-040: document visible node runtime/adapter boundaries, record fresh evidence, and close or split
-visible edge/spatial-index follow-ons.
+None. This workstream is closed.
 
 ## Decisions Since Opening
 
@@ -44,6 +43,9 @@ visible edge/spatial-index follow-ons.
   helpers instead of creating a separate `runtime::visible` module.
 - Model visible-node conformance as an assertion action with no trace output, because the behavior
   is a renderer planning query rather than a mutating interaction.
+- Keep visible edge culling out of v1 until adapter evidence settles endpoint/path/AABB semantics.
+- Keep real spatial indexing behind `NodeGraphSpatialIndexTuning` as a future backend, not part of
+  this contract, until workloads show the current linear scan is too slow.
 
 ## Validation To Run
 
@@ -76,8 +78,9 @@ jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json
 git diff --check
 ```
 
+JVE-040 passed these closeout gates on 2026-06-02.
+
 ## Next Recommended Action
 
-Start JVE-040 by updating README/runtime README/CONTEXT, then run the closeout package and metadata
-gates. Keep visible edge ids and real spatial indexing as explicit follow-ons rather than broadening
-this v1 contract.
+Open a follow-on only if adapter evidence needs visible edge culling or real spatial indexing.
+Renderer smoke remains in adapter crates.
