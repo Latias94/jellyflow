@@ -15,6 +15,10 @@ constraint, item, plan, pure planner, and `NodeGraphStore` helper. The first sli
 deterministic `SetNodeSize` transactions, clamps optional min/max bounds, and rejects hidden,
 missing, no-op, non-positive, non-finite, invalid-constraint, and contradictory-constraint requests.
 
+JNR-030 is complete: resize requests now carry XyFlow-style control directions, plans expose
+position movement, left/top controls emit `SetNodePos` before `SetNodeSize`, and store planning uses
+resolved global node origin with per-node origin override support.
+
 The architecture gap is specific: Jellyflow can store and transact node sizes, but runtime adapters
 do not yet have a headless resize planner. XyFlow's `XYResizer` already separates much resize math
 from React UI, so Jellyflow should capture the renderer-neutral planning part without taking on DOM
@@ -22,8 +26,8 @@ handles or renderer smoke.
 
 ## Next Task
 
-JNR-030: extend resize planning for left/top position changes, node origin, parent extents, and
-child extent restrictions where the contract is clear.
+JNR-040: add conformance/template coverage for resize transactions and adapter-facing callback
+traces once the resize planner interface stabilizes.
 
 ## Decisions Since Opening
 
@@ -34,6 +38,9 @@ child extent restrictions where the contract is clear.
 - Public planner/store seams and focused runtime tests are in place before adding conformance schema.
 - JNR-020 intentionally did not add resize direction, node origin, extents, parent expansion, or
   conformance fixture vocabulary.
+- JNR-030 added direction and origin handling, but split parent/child extent and keep-aspect-ratio
+  parity because exact XyFlow behavior depends on pointer start values and clamp distances, not just
+  a target-size request.
 - Split exact keep-aspect-ratio, parent/child extent, or NodeResizer UI parity if they broaden the
   first planner task.
 
@@ -43,12 +50,14 @@ child extent restrictions where the contract is clear.
 
 ## Validation To Run
 
-For JNR-030:
+For JNR-040:
 
 ```bash
 cargo fmt --check
-cargo nextest run -p jellyflow-runtime resize
-cargo nextest run -p jellyflow-runtime drag_parent_expansion
+cargo nextest run -p jellyflow-runtime conformance
+cargo nextest run -p jellyflow-runtime adapter_conformance
+cargo test --manifest-path templates/headless-adapter/Cargo.toml
+cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
 For lane closeout:
@@ -68,12 +77,16 @@ git diff --check
 - 2026-06-02: JNR-020 added the minimal pure resize planner and passed `cargo fmt --check`,
   `cargo nextest run -p jellyflow-runtime resize`, and `cargo nextest run -p jellyflow-runtime
   --test public_surface`.
+- 2026-06-02: JNR-030 added direction/origin resize planning and passed `cargo fmt --check`,
+  `cargo nextest run -p jellyflow-runtime resize`, `cargo nextest run -p jellyflow-runtime
+  drag_parent_expansion`, `cargo nextest run -p jellyflow-runtime --test public_surface`, and
+  `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`.
 
 ## Next Recommended Action
 
-Start JNR-030 by deciding the smallest direction/origin slice:
+Start JNR-040 by adding resize fixture vocabulary for the stable target-size planner:
 
-- bottom/right remains size-only and already works;
-- left/top should add `SetNodePos` plus `SetNodeSize`;
-- node origin and extents should be added only when tests can state the adapter-facing contract
-  clearly.
+- accepted resize transaction trace with `set_node_size`;
+- direction/origin trace that includes `set_node_pos` before `set_node_size`;
+- explicit note that exact pointer-resize extent parity remains split until the request contract is
+  extended beyond target-size planning.

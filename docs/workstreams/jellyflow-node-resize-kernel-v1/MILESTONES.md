@@ -51,7 +51,11 @@ cargo nextest run -p jellyflow-runtime resize
 cargo nextest run -p jellyflow-runtime drag_parent_expansion
 ```
 
-Status: pending.
+Status: complete on 2026-06-02. Direction-aware resize planning now emits position-before-size
+transactions for left/top controls, uses the store's resolved node-origin fallback, honors
+per-node origin overrides, and keeps the previous drag parent-expansion behavior green. Parent/child
+extent and keep-aspect-ratio parity are split because exact XyFlow behavior depends on pointer
+start values and clamp distances not represented by the current target-size request.
 
 ## M3 - Conformance And Template Integration
 

@@ -216,10 +216,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
     )
     .with_constraints(resize::NodeResizeConstraints::unconstrained());
     let _: resize::NodeResizeRequest = resize_request;
+    let _: resize::NodeResizeRequest =
+        resize_request.with_direction(resize::NodeResizeDirection::BottomRight);
+    let _: resize::NodeResizeContext = resize::NodeResizeContext::new((0.5, 0.5));
+    let _ = std::mem::size_of::<resize::NodeResizeDirection>();
     let _ = std::mem::size_of::<resize::NodeResizeItem>();
     let _ = std::mem::size_of::<resize::NodeResizePlan>();
     let _: fn(&Graph, resize::NodeResizeRequest) -> Option<resize::NodeResizePlan> =
         resize::plan_node_resize;
+    let _: fn(
+        &Graph,
+        resize::NodeResizeContext,
+        resize::NodeResizeRequest,
+    ) -> Option<resize::NodeResizePlan> = resize::plan_node_resize_with_context;
     assert_eq!(resize::NODE_RESIZE_TRANSACTION_LABEL, "node resize");
     assert_eq!(
         delete::DELETE_SELECTION_TRANSACTION_LABEL,

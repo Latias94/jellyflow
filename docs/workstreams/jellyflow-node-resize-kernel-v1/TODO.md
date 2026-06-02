@@ -34,17 +34,18 @@ Last updated: 2026-06-02
 
 ## M2 - Origin, Position, And Extent Constraints
 
-- [ ] JNR-030 [owner=codex] [deps=JNR-020] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests]
+- [x] JNR-030 [owner=codex] [deps=JNR-020] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests]
   Goal: Extend resize planning for left/top position changes, node origin, parent extents, and
   child extent restrictions where the contract is clear.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime resize; cargo nextest run -p
   jellyflow-runtime drag_parent_expansion
   Review: review-workstream before accepting completion.
-  Evidence: focused origin/extent resize tests or split decisions.
+  Evidence: `crates/jellyflow-runtime/src/runtime/resize/`, `crates/jellyflow-runtime/src/runtime/tests/resize.rs`, and `docs/workstreams/jellyflow-node-resize-kernel-v1/EVIDENCE_AND_GATES.md`.
   Context: docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNR-030 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. Added XyFlow-style resize directions, position updates for left/top
+  controls, node-origin fallback/override handling, and an evidence-backed split decision for
+  parent/child extent and keep-aspect-ratio parity.
+  State: TASKS.jsonl entry JNR-030 records DONE with validation, evidence, and split decision.
 
 ## M3 - Conformance And Template Integration
 

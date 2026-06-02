@@ -7,8 +7,8 @@ mod planner;
 mod store;
 mod types;
 
-pub use planner::plan_node_resize;
+pub use planner::{plan_node_resize, plan_node_resize_with_context};
 pub use types::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeConstraints, NodeResizeItem, NodeResizePlan,
-    NodeResizeRequest,
+    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeConstraints, NodeResizeContext, NodeResizeDirection,
+    NodeResizeItem, NodeResizePlan, NodeResizeRequest,
 };

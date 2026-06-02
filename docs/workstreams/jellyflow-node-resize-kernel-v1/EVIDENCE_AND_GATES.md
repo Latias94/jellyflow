@@ -119,6 +119,48 @@ Fresh verification:
 - 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface` passed, 3 tests run.
 - 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
 
+### 2026-06-02 - JNR-030 Direction And Origin Resize Planning
+
+Scope: `crates/jellyflow-runtime/src/runtime/resize`, `crates/jellyflow-runtime/src/runtime/tests/resize.rs`,
+`crates/jellyflow-runtime/tests/public_surface.rs`
+
+Result:
+
+- Added XyFlow-style `NodeResizeDirection` vocabulary for top/right/bottom/left/corner controls.
+- Added `NodeResizeContext` and a context-aware planner so store planning can use the resolved
+  `node_origin` fallback.
+- Planned left/top controls as position-before-size transactions using existing `SetNodePos` and
+  `SetNodeSize` ops.
+- Preserved graph-only `plan_node_resize` with the default `(0.0, 0.0)` origin.
+- Added focused tests for left-edge position updates, global origin fallback, and per-node origin
+  override behavior.
+
+Split decision:
+
+- Parent/child extent and keep-aspect-ratio parity remain split out of this task. XyFlow's
+  `getDimensionsAfterResize` resolves them from pointer start values, pointer deltas, extent clamp
+  distances, and child extents. Jellyflow's current resize request is a target-size request; adding
+  exact extent parity here would either invent a pointer lifecycle or silently misrepresent clamp
+  behavior. The next stable step is conformance/template coverage for the current target-size
+  planner, then a dedicated pointer-resize session request if adapter evidence needs exact
+  `XYResizer` parity.
+
+Behavior proven:
+
+- `Left` resize emits `SetNodePos` before `SetNodeSize`.
+- Store resize planning uses global `node_origin` fallback.
+- Per-node `Node.origin` overrides the global fallback.
+- Drag parent expansion tests still pass after adding resize position planning.
+- Public surface exposes direction and context-aware resize planner vocabulary.
+
+Fresh verification:
+
+- 2026-06-02: `cargo fmt --check` passed.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime resize` passed, 6 tests run.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime drag_parent_expansion` passed, 6 tests run.
+- 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface` passed, 3 tests run.
+- 2026-06-02: `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings` passed.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

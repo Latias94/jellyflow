@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-resize-kernel-v1/CONTEXT.jsonl",
-  "current_task": "JNR-030",
+  "current_task": "JNR-040",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime resize",
@@ -70,6 +70,11 @@
       "date": "2026-06-02",
       "task": "JNR-020",
       "summary": "Added runtime::resize single-node SetNodeSize planning, min/max clamping, store apply support, focused tests, and public surface coverage."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNR-030",
+      "summary": "Added direction-aware resize position planning, node-origin fallback/override handling, public surface coverage, and split parent/child extent parity with evidence."
     }
   ],
   "adr_refs": [
@@ -95,7 +100,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "next_task",
-    "next_task": "JNR-030",
-    "notes": "Continue with JNR-030: extend resize planning for left/top position changes, node origin, parent extents, and child extent restrictions where the contract is clear. Keep DOM handles, renderer UI, raw pointer capture, screenshots, and pixels out of scope."
+    "next_task": "JNR-040",
+    "notes": "Continue with JNR-040: add conformance/template coverage for the stable target-size resize planner and document that exact pointer-resize extent parity remains split until adapter evidence needs it. Keep DOM handles, renderer UI, raw pointer capture, screenshots, and pixels out of scope."
   }
 }

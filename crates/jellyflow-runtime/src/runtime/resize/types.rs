@@ -1,4 +1,5 @@
-use jellyflow_core::core::{CanvasSize, NodeId};
+use crate::node_origin::normalize_node_origin;
+use jellyflow_core::core::{CanvasPoint, CanvasSize, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
 /// Default transaction label used for committed node resize updates.
@@ -47,6 +48,75 @@ impl NodeResizeConstraints {
     }
 }
 
+/// Runtime context for interpreting node resize geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeResizeContext {
+    /// Fallback node origin used when a node has no per-node origin override.
+    pub node_origin: (f32, f32),
+}
+
+impl NodeResizeContext {
+    pub fn new(node_origin: (f32, f32)) -> Self {
+        Self {
+            node_origin: normalize_node_origin(node_origin),
+        }
+    }
+}
+
+impl Default for NodeResizeContext {
+    fn default() -> Self {
+        Self::new((0.0, 0.0))
+    }
+}
+
+/// XyFlow-style resize control direction.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeResizeDirection {
+    Top,
+    TopRight,
+    Right,
+    #[default]
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+    TopLeft,
+}
+
+impl NodeResizeDirection {
+    pub(super) fn is_horizontal(self) -> bool {
+        matches!(
+            self,
+            Self::TopRight
+                | Self::Right
+                | Self::BottomRight
+                | Self::BottomLeft
+                | Self::Left
+                | Self::TopLeft
+        )
+    }
+
+    pub(super) fn is_vertical(self) -> bool {
+        matches!(
+            self,
+            Self::Top
+                | Self::TopRight
+                | Self::BottomRight
+                | Self::Bottom
+                | Self::BottomLeft
+                | Self::TopLeft
+        )
+    }
+
+    pub(super) fn affects_x(self) -> bool {
+        matches!(self, Self::BottomLeft | Self::Left | Self::TopLeft)
+    }
+
+    pub(super) fn affects_y(self) -> bool {
+        matches!(self, Self::Top | Self::TopRight | Self::TopLeft)
+    }
+}
+
 /// Canvas-space request for resizing one node to an explicit size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeResizeRequest {
@@ -56,6 +126,8 @@ pub struct NodeResizeRequest {
     pub to: CanvasSize,
     /// Optional min/max bounds applied before planning.
     pub constraints: NodeResizeConstraints,
+    /// Resize control direction that determines affected axes and position updates.
+    pub direction: NodeResizeDirection,
 }
 
 impl NodeResizeRequest {
@@ -64,11 +136,17 @@ impl NodeResizeRequest {
             node,
             to,
             constraints: NodeResizeConstraints::default(),
+            direction: NodeResizeDirection::default(),
         }
     }
 
     pub fn with_constraints(mut self, constraints: NodeResizeConstraints) -> Self {
         self.constraints = constraints;
+        self
+    }
+
+    pub fn with_direction(mut self, direction: NodeResizeDirection) -> Self {
+        self.direction = direction;
         self
     }
 }
@@ -93,6 +171,10 @@ pub struct NodeResizePlan {
     pub from: Option<CanvasSize>,
     /// Planned explicit node size.
     pub to: CanvasSize,
+    /// Current node position.
+    pub from_pos: CanvasPoint,
+    /// Planned node position.
+    pub to_pos: CanvasPoint,
     items: Vec<NodeResizeItem>,
     transaction: GraphTransaction,
 }
@@ -102,12 +184,16 @@ impl NodeResizePlan {
         node: NodeId,
         from: Option<CanvasSize>,
         to: CanvasSize,
+        from_pos: CanvasPoint,
+        to_pos: CanvasPoint,
         transaction: GraphTransaction,
     ) -> Self {
         Self {
             node,
             from,
             to,
+            from_pos,
+            to_pos,
             items: vec![NodeResizeItem { node, from, to }],
             transaction,
         }

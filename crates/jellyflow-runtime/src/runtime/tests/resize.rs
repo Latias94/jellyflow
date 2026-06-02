@@ -1,10 +1,13 @@
 use super::harness::{HarnessEvent, InteractionHarness};
 
+use crate::io::NodeGraphNodeOrigin;
 use crate::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeConstraints, NodeResizeItem, NodeResizeRequest,
-    plan_node_resize,
+    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeConstraints, NodeResizeDirection, NodeResizeItem,
+    NodeResizeRequest, plan_node_resize,
 };
-use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey, NodeOrigin,
+};
 use jellyflow_core::ops::GraphOp;
 
 #[test]
@@ -117,6 +120,112 @@ fn single_node_resize_clamps_to_min_and_max_bounds() {
             },
         }],
     );
+}
+
+#[test]
+fn left_edge_resize_moves_node_position_before_size_change() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("left edge node resize", fixture.graph);
+    let target = CanvasSize {
+        width: 140.0,
+        height: 60.0,
+    };
+
+    let plan = harness
+        .store()
+        .plan_node_resize(
+            NodeResizeRequest::new(fixture.enabled, target)
+                .with_direction(NodeResizeDirection::Left),
+        )
+        .expect("left resize plan");
+
+    assert_eq!(plan.from_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert_eq!(plan.to_pos, CanvasPoint { x: -30.0, y: 20.0 });
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [
+                GraphOp::SetNodePos {
+                    id: pos_id,
+                    from: pos_from,
+                    to: pos_to,
+                },
+                GraphOp::SetNodeSize {
+                    id: size_id,
+                    from: size_from,
+                    to: size_to,
+                },
+            ]
+                if *pos_id == fixture.enabled
+                    && *pos_from == CanvasPoint { x: 10.0, y: 20.0 }
+                    && *pos_to == CanvasPoint { x: -30.0, y: 20.0 }
+                    && *size_id == fixture.enabled
+                    && *size_from == Some(CanvasSize { width: 100.0, height: 60.0 })
+                    && *size_to == Some(target)
+        ),
+        "left resize should move position before setting size: {:#?}",
+        plan.transaction().ops(),
+    );
+}
+
+#[test]
+fn top_left_resize_uses_store_node_origin_fallback() {
+    let fixture = resize_fixture();
+    let mut harness =
+        InteractionHarness::new("top left node resize origin fallback", fixture.graph);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.node_origin = NodeGraphNodeOrigin { x: 0.5, y: 0.5 };
+    });
+
+    let plan = harness
+        .store()
+        .plan_node_resize(
+            NodeResizeRequest::new(
+                fixture.enabled,
+                CanvasSize {
+                    width: 140.0,
+                    height: 80.0,
+                },
+            )
+            .with_direction(NodeResizeDirection::TopLeft),
+        )
+        .expect("top left resize plan");
+
+    assert_eq!(plan.from_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert_eq!(plan.to_pos, CanvasPoint { x: -10.0, y: 10.0 });
+}
+
+#[test]
+fn top_left_resize_uses_node_origin_override() {
+    let mut fixture = resize_fixture();
+    fixture
+        .graph
+        .nodes
+        .get_mut(&fixture.enabled)
+        .unwrap()
+        .origin = Some(NodeOrigin { x: 1.0, y: 1.0 });
+    let mut harness =
+        InteractionHarness::new("top left node resize origin override", fixture.graph);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.node_origin = NodeGraphNodeOrigin { x: 0.5, y: 0.5 };
+    });
+
+    let plan = harness
+        .store()
+        .plan_node_resize(
+            NodeResizeRequest::new(
+                fixture.enabled,
+                CanvasSize {
+                    width: 140.0,
+                    height: 80.0,
+                },
+            )
+            .with_direction(NodeResizeDirection::TopLeft),
+        )
+        .expect("top left resize plan");
+
+    assert_eq!(plan.from_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert_eq!(plan.to_pos, CanvasPoint { x: 10.0, y: 20.0 });
 }
 
 #[test]
