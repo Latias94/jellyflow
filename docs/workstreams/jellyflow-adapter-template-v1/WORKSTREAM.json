@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-adapter-template-v1",
   "title": "Jellyflow Adapter Template v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": "jellyflow-adapter-conformance-runner-v1",
@@ -42,7 +42,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl",
-  "current_task": "JAT-040",
+  "current_task": null,
   "gates": [
     "cargo test --manifest-path templates/headless-adapter/Cargo.toml",
     "cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check",
@@ -67,6 +67,11 @@
       "date": "2026-06-02",
       "task": "JAT-030",
       "summary": "Wired the template into external smoke checks and documented template commands in root/runtime docs."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JAT-040",
+      "summary": "Closed the adapter template lane after workspace, template, smoke, no-Fret, JSON, format, and diff gates passed."
     }
   ],
   "adr_refs": [
@@ -82,8 +87,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "continue",
-    "next_task": "JAT-040",
-    "notes": "Run closeout gates and close the lane if no renderer-specific scope is pulled in. Split wgpu, egui, Fret, screenshot, and pixel work into adapter-specific lanes."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Adapter template v1 is closed. Follow-ons: renderer-specific wgpu/egui/Fret adapter smoke lanes, committed golden JSON fixture assets for adapter repos when needed, and broader gesture-family templates after those kernels exist."
   }
 }

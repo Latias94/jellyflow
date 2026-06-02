@@ -1,6 +1,6 @@
 # Jellyflow Adapter Template v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -41,10 +41,11 @@ Last updated: 2026-06-02
 
 ## M3 - Closeout
 
-- [ ] JAT-040 [owner=codex] [deps=JAT-030] [scope=docs/workstreams/jellyflow-adapter-template-v1]
+- [x] JAT-040 [owner=codex] [deps=JAT-030] [scope=docs/workstreams/jellyflow-adapter-template-v1]
   Goal: Record final evidence, close the lane, and split remaining adapter or renderer follow-ons.
   Validation: `cargo fmt --check`; `cargo nextest run --workspace`; template cargo gates;
   external smoke/no-Fret gates; `jq empty` for workstream JSON/JSONL; `git diff --check`
   Review: review-workstream and verify-rust-workstream before closeout.
   Evidence: `docs/workstreams/jellyflow-adapter-template-v1/EVIDENCE_AND_GATES.md`
-  Handoff: Summarize next adapter-specific work in `HANDOFF.md`.
+  Handoff: DONE 2026-06-02. Recorded closeout audit, final evidence, residual risks, and
+  renderer-specific follow-ons.

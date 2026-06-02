@@ -1,15 +1,17 @@
 # Jellyflow Adapter Template v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Required Gates
 
 - `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
 - `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- `cargo nextest run --workspace`
 - `python3 tools/check_external_consumer_smoke.py`
 - `python3 tools/check_no_fret_dependencies.py`
 - `cargo fmt --check`
+- `cargo fmt --manifest-path templates/headless-adapter/Cargo.toml --check`
 - `jq empty docs/workstreams/jellyflow-adapter-template-v1/WORKSTREAM.json docs/workstreams/jellyflow-adapter-template-v1/TASKS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl`
 - `git diff --check`
 
@@ -65,6 +67,37 @@ Commands:
 - `python3 tools/check_external_consumer_smoke.py`: passed for the temporary project and template.
 - `python3 tools/check_no_fret_dependencies.py`: passed.
 - `git diff --check`: passed.
+
+### 2026-06-02 - JAT-040 Closeout
+
+Claim: The adapter template lane is ready to close.
+
+Review:
+
+- Workstream compliance: no blocking findings. JAT-010 through JAT-040 are complete, target state
+  is met, ADR 0003 renderer boundary is preserved, and renderer-specific work is split as
+  follow-ons.
+- Code quality: no blocking findings. The template is outside the workspace, uses public APIs,
+  proves behavior through conformance reports, and the smoke script checks dependency trees for
+  Fret packages.
+- Residual risk: the template is headless only and does not prove any renderer event loop,
+  screenshot, or pixel behavior.
+
+Verification:
+
+- `cargo nextest run --workspace`: passed with 334 tests.
+- `cargo test --manifest-path templates/headless-adapter/Cargo.toml`: passed with 5 tests.
+- `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`: passed and printed a
+  matching suite report.
+- `python3 tools/check_external_consumer_smoke.py`: passed for the temporary project and template.
+- `python3 tools/check_no_fret_dependencies.py`: passed.
+- `cargo fmt --check`: passed.
+- `cargo fmt --manifest-path templates/headless-adapter/Cargo.toml --check`: passed.
+- `jq empty docs/workstreams/jellyflow-adapter-template-v1/WORKSTREAM.json docs/workstreams/jellyflow-adapter-template-v1/TASKS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl`: passed.
+- `git diff --check`: passed.
+
+REVIEW_RESULT: PASS
+VERIFY_RESULT: PASS
 
 ## Review Notes
 

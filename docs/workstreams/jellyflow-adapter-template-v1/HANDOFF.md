@@ -1,16 +1,15 @@
 # Jellyflow Adapter Template v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
 
-JAT-010, JAT-020, and JAT-030 are complete. The workstream is open from the closed adapter
-conformance runner lane's follow-on list.
+JAT-010 through JAT-040 are complete. The workstream is closed.
 
 ## Current Task
 
-JAT-040: record final evidence, close the lane, and split renderer-specific follow-ons.
+None.
 
 ## Context To Read
 
@@ -37,4 +36,13 @@ JAT-040: record final evidence, close the lane, and split renderer-specific foll
 
 ## Next Likely Step
 
-Run JAT-040 closeout gates, then close this workstream if no renderer-specific work is pulled in.
+Open a new adapter-specific renderer smoke lane if wgpu, egui, Fret, screenshot, or pixel behavior
+needs implementation. Keep those dependencies outside `jellyflow-core` and `jellyflow-runtime`.
+
+## Follow-Ons
+
+- Renderer-specific smoke lanes for future `jellyflow-wgpu`, `jellyflow-egui`, or Fret adapters.
+- Committed golden JSON fixture assets in downstream adapter repos if programmatic template
+  scenarios are not enough.
+- Broader gesture-family templates after parent expansion, double-click zoom, or pan inertia
+  kernels exist.

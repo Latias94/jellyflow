@@ -1,6 +1,6 @@
 # Jellyflow Adapter Template v1 - Milestones
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
