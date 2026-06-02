@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "slug": "jellyflow-adapter-template-v1",
+  "title": "Jellyflow Adapter Template v1",
+  "status": "active",
+  "updated": "2026-06-02",
+  "scope_kind": "execution",
+  "follow_on_of": "jellyflow-adapter-conformance-runner-v1",
+  "problem": "Jellyflow needs a copyable external adapter template that proves headless conformance before renderer-specific smoke tests.",
+  "authoritative_docs": [
+    {
+      "role": "design",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/DESIGN.md"
+    },
+    {
+      "role": "execution",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/TODO.md"
+    },
+    {
+      "role": "task_state",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/TASKS.jsonl"
+    },
+    {
+      "role": "campaign_state",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/CAMPAIGNS.jsonl"
+    },
+    {
+      "role": "milestones",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/MILESTONES.md"
+    },
+    {
+      "role": "gates",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/EVIDENCE_AND_GATES.md"
+    },
+    {
+      "role": "context_manifest",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl"
+    },
+    {
+      "role": "handoff",
+      "path": "docs/workstreams/jellyflow-adapter-template-v1/HANDOFF.md"
+    }
+  ],
+  "context_manifest": "docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl",
+  "current_task": "JAT-040",
+  "gates": [
+    "cargo test --manifest-path templates/headless-adapter/Cargo.toml",
+    "cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check",
+    "python3 tools/check_external_consumer_smoke.py",
+    "python3 tools/check_no_fret_dependencies.py",
+    "cargo fmt --check",
+    "jq empty docs/workstreams/jellyflow-adapter-template-v1/WORKSTREAM.json docs/workstreams/jellyflow-adapter-template-v1/TASKS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-adapter-template-v1/CONTEXT.jsonl",
+    "git diff --check"
+  ],
+  "evidence": [
+    {
+      "date": "2026-06-02",
+      "task": "JAT-010",
+      "summary": "Opened adapter template workstream from JACR follow-ons with ADR 0003 renderer-free constraints."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JAT-020",
+      "summary": "Added non-workspace headless adapter template with node-drag and viewport conformance scenarios, CLI, and tests."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JAT-030",
+      "summary": "Wired the template into external smoke checks and documented template commands in root/runtime docs."
+    }
+  ],
+  "adr_refs": [
+    "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md"
+  ],
+  "architecture_refs": [],
+  "capability_tags": [
+    "adapter-testing",
+    "conformance",
+    "headless-runtime",
+    "external-consumer",
+    "xyflow-feel"
+  ],
+  "lane_slug": null,
+  "continue_policy": {
+    "default_action": "continue",
+    "next_task": "JAT-040",
+    "notes": "Run closeout gates and close the lane if no renderer-specific scope is pulled in. Split wgpu, egui, Fret, screenshot, and pixel work into adapter-specific lanes."
+  }
+}

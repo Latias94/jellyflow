@@ -293,26 +293,44 @@ def write_scenario(project_dir: Path, scenario: SmokeScenario) -> None:
 
 
 def run_cargo_smoke(repo_root: Path, project_dir: Path) -> None:
-    subprocess.run(
-        [
-            "cargo",
-            "run",
-            "--quiet",
-            "--manifest-path",
-            str(project_dir / "Cargo.toml"),
-        ],
+    run_cargo_manifest(repo_root, project_dir / "Cargo.toml")
+
+
+def run_cargo_manifest(
+    repo_root: Path,
+    manifest_path: Path,
+    extra_args: list[str] | None = None,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        "cargo",
+        "run",
+        "--quiet",
+        "--manifest-path",
+        str(manifest_path),
+    ]
+    if extra_args:
+        command.extend(["--", *extra_args])
+    return subprocess.run(
+        command,
         cwd=repo_root,
         check=True,
+        capture_output=capture_output,
+        text=capture_output,
     )
 
 
 def cargo_tree(repo_root: Path, project_dir: Path) -> str:
+    return cargo_tree_for_manifest(repo_root, project_dir / "Cargo.toml")
+
+
+def cargo_tree_for_manifest(repo_root: Path, manifest_path: Path) -> str:
     tree = subprocess.run(
         [
             "cargo",
             "tree",
             "--manifest-path",
-            str(project_dir / "Cargo.toml"),
+            str(manifest_path),
             "--prefix",
             "none",
         ],
@@ -353,6 +371,25 @@ def run_scenario(repo_root: Path, project_dir: Path, scenario: SmokeScenario) ->
     return assert_no_fret_packages(cargo_tree(repo_root, project_dir))
 
 
+def run_template_adapter_smoke(repo_root: Path) -> bool:
+    template_manifest = repo_root / "templates/headless-adapter/Cargo.toml"
+    print(f"headless adapter template smoke: {template_manifest.parent}", flush=True)
+    result = run_cargo_manifest(
+        repo_root,
+        template_manifest,
+        ["check"],
+        capture_output=True,
+    )
+    if '"scenario_reports"' not in result.stdout:
+        print(
+            "headless adapter template did not print a suite report",
+            file=sys.stderr,
+        )
+        return False
+    print("headless adapter template check produced a suite report")
+    return assert_no_fret_packages(cargo_tree_for_manifest(repo_root, template_manifest))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -376,6 +413,7 @@ def main() -> int:
         for scenario in scenarios:
             project_dir = scenario_project_dir(temp_root, scenario, len(scenarios))
             ok = run_scenario(repo_root, project_dir, scenario) and ok
+        ok = run_template_adapter_smoke(repo_root) and ok
         return 0 if ok else 1
     finally:
         if args.keep:

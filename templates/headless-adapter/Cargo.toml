@@ -1,0 +1,14 @@
+[package]
+name = "jellyflow-headless-adapter-template"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[workspace]
+
+[dependencies]
+jellyflow-core = { path = "../../crates/jellyflow-core" }
+jellyflow-runtime = { path = "../../crates/jellyflow-runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

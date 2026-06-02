@@ -48,6 +48,8 @@ cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example geometry_edge
 cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
 cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
+cargo test --manifest-path templates/headless-adapter/Cargo.toml
+cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
 ## Interaction Testing Strategy
@@ -73,6 +75,8 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   aggregate pre-render conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, node drag, viewport, and
   auto-pan behavior before any renderer-specific smoke tests are written;
+- `templates/headless-adapter` is a copyable external adapter skeleton that runs node-drag and
+  viewport conformance with `cargo --manifest-path` before adding renderer smoke tests;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the
   public Jellyflow runtime APIs.
 

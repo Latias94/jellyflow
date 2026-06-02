@@ -1,0 +1,7 @@
+{"file":"docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md","role":"architecture_decision","required":true,"reason":"Keeps renderer smoke tests outside headless crates and defines adapter conformance layering."}
+{"file":"README.md","role":"public_docs","required":true,"reason":"Explains Jellyflow's public package boundary and interaction testing strategy."}
+{"file":"crates/jellyflow-runtime/README.md","role":"runtime_docs","required":true,"reason":"Documents runtime conformance fixtures, fixture directories, approval, and renderer boundaries."}
+{"file":"docs/workstreams/jellyflow-adapter-conformance-runner-v1/CLOSEOUT_AUDIT_2026-06-01.md","role":"related_workstream","required":true,"reason":"Lists external adapter crate templates as a follow-on after suite runners."}
+{"file":"docs/workstreams/jellyflow-conformance-file-fixtures-v1/WORKSTREAM.json","role":"related_workstream","required":true,"reason":"Records JSON-backed fixture helpers that templates should consume."}
+{"file":"docs/workstreams/jellyflow-conformance-fixture-discovery-v1/WORKSTREAM.json","role":"related_workstream","required":true,"reason":"Records fixture directory discovery behavior that templates should expose."}
+{"file":"docs/workstreams/jellyflow-conformance-golden-approval-v1/WORKSTREAM.json","role":"related_workstream","required":true,"reason":"Records approval helpers that future template fixture assets can use."}
