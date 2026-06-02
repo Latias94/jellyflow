@@ -1,6 +1,6 @@
 # Jellyflow Node Drag Kernel v1 - Evidence And Gates
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Smallest Current Repro

@@ -1,6 +1,6 @@
 # Jellyflow Viewport Gesture Policy v1
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-01
 
 ## Why This Lane Exists
