@@ -52,15 +52,3 @@ pub fn resolve_selection_pointer_claim(input: SelectionPointerClaimInput) -> Sel
 
     SelectionPointerClaim::Unclaimed
 }
-
-pub fn selection_modifier_blocks_viewport_drag(
-    selection_key_pressed: bool,
-    user_selection_active: bool,
-) -> bool {
-    resolve_selection_pointer_claim(SelectionPointerClaimInput::new(
-        CanvasPoint { x: 0.1, y: 0.0 },
-        0.0,
-        selection_key_pressed,
-        user_selection_active,
-    )) == SelectionPointerClaim::SelectionMayClaimDrag
-}

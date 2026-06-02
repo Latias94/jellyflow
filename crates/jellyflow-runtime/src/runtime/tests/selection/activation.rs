@@ -1,7 +1,6 @@
 use crate::runtime::selection::{
     SelectionDragActivationInput, SelectionPointerClaim, SelectionPointerClaimInput,
     resolve_selection_pointer_claim, selection_drag_threshold_met,
-    selection_modifier_blocks_viewport_drag,
 };
 use jellyflow_core::core::CanvasPoint;
 
@@ -103,7 +102,31 @@ fn selection_pointer_claim_distinguishes_possible_and_active_marquee_ownership()
         )),
         SelectionPointerClaim::SelectionOwnsDrag
     );
-    assert!(selection_modifier_blocks_viewport_drag(true, false));
-    assert!(!selection_modifier_blocks_viewport_drag(false, false));
-    assert!(!selection_modifier_blocks_viewport_drag(true, true));
+    assert_eq!(
+        resolve_selection_pointer_claim(SelectionPointerClaimInput::new(
+            CanvasPoint { x: 0.1, y: 0.0 },
+            0.0,
+            true,
+            false,
+        )),
+        SelectionPointerClaim::SelectionMayClaimDrag
+    );
+    assert_eq!(
+        resolve_selection_pointer_claim(SelectionPointerClaimInput::new(
+            CanvasPoint { x: 0.1, y: 0.0 },
+            0.0,
+            false,
+            false,
+        )),
+        SelectionPointerClaim::Unclaimed
+    );
+    assert_eq!(
+        resolve_selection_pointer_claim(SelectionPointerClaimInput::new(
+            CanvasPoint { x: 0.1, y: 0.0 },
+            0.0,
+            true,
+            true,
+        )),
+        SelectionPointerClaim::SelectionOwnsDrag
+    );
 }

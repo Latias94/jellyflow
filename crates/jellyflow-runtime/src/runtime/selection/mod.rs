@@ -20,6 +20,5 @@ pub use node_drag_start::{
 };
 pub use pointer_claim::{
     SelectionPointerClaim, SelectionPointerClaimInput, resolve_selection_pointer_claim,
-    selection_modifier_blocks_viewport_drag,
 };
 pub use types::{SelectionBoxOptions, SelectionBoxResult, SelectionModifier};
