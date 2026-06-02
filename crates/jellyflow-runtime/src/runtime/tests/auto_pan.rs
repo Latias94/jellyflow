@@ -145,3 +145,34 @@ fn store_auto_pan_publishes_viewport_changes() {
     assert_eq!(outcome.transform.pan, outcome.plan.screen_delta);
     harness.assert_events(&[HarnessEvent::viewport(outcome.transform.pan, 1.0)]);
 }
+
+#[test]
+fn auto_pan_plan_applies_through_store_viewport_path() {
+    let (graph, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut harness = InteractionHarness::new("auto-pan plan applies viewport", graph);
+    let plan = compute_auto_pan(
+        &NodeGraphAutoPanTuning {
+            speed: 100.0,
+            margin: 20.0,
+            ..NodeGraphAutoPanTuning::default()
+        },
+        AutoPanRequest::new(
+            AutoPanActivation::Always,
+            CanvasPoint { x: 190.0, y: 50.0 },
+            CanvasSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            1.0,
+        ),
+    )
+    .expect("auto-pan frame");
+
+    let transform = plan
+        .apply_to_store(harness.store_mut())
+        .expect("viewport pan");
+
+    assert_eq!(transform.pan, plan.screen_delta);
+    assert_eq!(transform.zoom, 1.0);
+    harness.assert_events(&[HarnessEvent::viewport(plan.screen_delta, 1.0)]);
+}

@@ -70,6 +70,10 @@ impl AutoPanPlan {
     pub fn viewport_pan_request(self) -> ViewportPanRequest {
         ViewportPanRequest::new(self.screen_delta)
     }
+
+    pub fn apply_to_store(self, store: &mut NodeGraphStore) -> Option<ViewportTransform> {
+        store.apply_viewport_pan(self.viewport_pan_request())
+    }
 }
 
 /// Store-applied auto-pan result.
@@ -150,7 +154,7 @@ impl NodeGraphStore {
     pub fn apply_auto_pan(&mut self, request: AutoPanRequest) -> Option<AutoPanOutcome> {
         let interaction = self.resolved_interaction_state();
         let plan = compute_auto_pan(&interaction.auto_pan, request)?;
-        let transform = self.apply_viewport_pan(plan.viewport_pan_request())?;
+        let transform = plan.apply_to_store(self)?;
         Some(AutoPanOutcome { plan, transform })
     }
 }
