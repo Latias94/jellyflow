@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn conformance_runner_executes_keyboard_nudge_fixture_and_matches_trace() {
+    let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut view_state = crate::io::NodeGraphViewState::default();
+    view_state.set_selection(vec![node_id], Vec::new(), Vec::new());
+    view_state.zoom = 2.0;
+
+    let scenario = ConformanceScenario::new("keyboard nudge runner", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_nudge(NodeNudgeRequest {
+            direction: NodeNudgeDirection::Right,
+            fast: false,
+        })])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_NUDGE_TRANSACTION_LABEL),
+                ["set_node_pos"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_NUDGE_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
+
+#[test]
 fn conformance_runner_executes_delete_selection_fixture_and_matches_trace() {
     let (graph, node_id, _b, out_port, in_port, edge_id) = make_graph();
     let mut view_state = crate::io::NodeGraphViewState::default();

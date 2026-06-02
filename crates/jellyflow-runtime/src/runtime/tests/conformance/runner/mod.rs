@@ -7,7 +7,9 @@ use crate::runtime::conformance::{
     run_conformance_suite,
 };
 use crate::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
-use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
+use crate::runtime::drag::{
+    NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection, NodeNudgeRequest,
+};
 use crate::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
