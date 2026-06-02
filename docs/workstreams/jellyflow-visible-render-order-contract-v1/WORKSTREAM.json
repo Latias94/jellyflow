@@ -2,7 +2,7 @@
   "schema_version": 1,
   "slug": "jellyflow-visible-render-order-contract-v1",
   "title": "Jellyflow Visible Render Order Contract v1",
-  "status": "active",
+  "status": "closed",
   "updated": "2026-06-02",
   "scope_kind": "execution",
   "follow_on_of": [
@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl",
-  "current_task": "VRO-040",
+  "current_task": null,
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime visible_node_render_order",
@@ -74,6 +74,11 @@
       "date": "2026-06-02",
       "task": "VRO-030",
       "summary": "Added assert_visible_node_render_order conformance action, runner checks, adapter conformance coverage, and a nine-scenario headless adapter template suite."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "VRO-040",
+      "summary": "Documented ordered visible-node render runtime/store/conformance boundaries, recorded closeout gates, split broader render-plan follow-ons, and closed the workstream."
     }
   ],
   "adr_refs": [
@@ -98,8 +103,8 @@
   ],
   "lane_slug": null,
   "continue_policy": {
-    "default_action": "continue",
-    "next_task": "VRO-040",
-    "notes": "Continue with documentation, final evidence, and closeout. Split follow-ons if scope expands into visible edge culling, full scene render plans, renderer smoke harnesses, or spatial indexing."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "Workstream closed on 2026-06-02. Follow-ons: visible edge culling only after endpoint/path/AABB semantics settle; full scene render plans or render batches only after adapter evidence proves ordered visible node ids plus existing group/edge order helpers are insufficient; renderer smoke harnesses stay in future adapter crates; real spatial indexing stays behind NodeGraphSpatialIndexTuning until workloads show linear scans are too slow."
   }
 }

@@ -16,7 +16,8 @@
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
-- renderer-neutral render ordering and visible-node id planning under `runtime::rendering`;
+- renderer-neutral render ordering, visible-node id planning, and visible-node render-order
+  planning under `runtime::rendering`;
 - renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
   `runtime::keyboard`;
 - fit-view math that uses Jellyflow canvas geometry;
@@ -73,9 +74,11 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::auto_pan::{AutoPanActivation, AutoPanRequest, AutoPanPlan}` plus
   `NodeGraphStore::apply_auto_pan` for deterministic edge-proximity auto-pan frames that feed the
   normal viewport publication path;
-- `runtime::rendering::{VisibleNodeIdsRequest, resolve_visible_node_ids}` plus
-  `NodeGraphStore::visible_node_ids` for XyFlow-style visible node culling from current viewport
-  transform, logical viewport size, node-origin policy, and `only_render_visible_elements` tuning;
+- `runtime::rendering::{VisibleNodeIdsRequest, resolve_visible_node_ids,
+  resolve_visible_node_render_order}` plus `NodeGraphStore::visible_node_ids` and
+  `NodeGraphStore::visible_node_render_order` for XyFlow-style visible node culling and paint order
+  from current viewport transform, logical viewport size, node-origin policy, draw order,
+  selected-node elevation, and `only_render_visible_elements` tuning;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -127,13 +130,16 @@ fixture escape hatch; adapter feel fixtures should prefer interaction-specific a
 node drag, node resize, connect/reconnect, delete, viewport gestures, viewport animation frames,
 and double-click zoom plan or rejection assertions. Visible-node fixtures should use
 `ConformanceAction::assert_visible_node_ids`, which asserts `NodeGraphStore::visible_node_ids`
-without producing renderer traces. Pan inertia fixtures should use the sampled-frame actions and
-rejection assertion so adapters can prove release-momentum traces without moving frame loops into
-runtime. Parent expansion fixtures should use `ConformanceAction::apply_node_drag`, which exercises
-the same runtime interaction boundary and records `set_group_rect` graph-commit traces when parent
-expansion occurs. Resize fixtures should use `ConformanceAction::apply_node_resize`, which
-exercises the same runtime interaction boundary and records `set_node_size` or `set_node_pos` plus
-`set_node_size` graph-commit traces. Delete fixtures should use
+without producing renderer traces. Pre-render paint-order fixtures should use
+`ConformanceAction::assert_visible_node_render_order`, which asserts
+`NodeGraphStore::visible_node_render_order` without producing renderer traces. Pan inertia fixtures
+should use the sampled-frame actions and rejection assertion so adapters can prove release-momentum
+traces without moving frame loops into runtime. Parent expansion fixtures should use
+`ConformanceAction::apply_node_drag`, which exercises the same runtime interaction boundary and
+records `set_group_rect` graph-commit traces when parent expansion occurs. Resize fixtures should
+use `ConformanceAction::apply_node_resize`, which exercises the same runtime interaction boundary
+and records `set_node_size` or `set_node_pos` plus `set_node_size` graph-commit traces. Delete
+fixtures should use
 `ConformanceAction::apply_delete_selection` or `apply_delete_selection_for_key`, which records
 `remove_node` or `remove_edge` graph commits, XyFlow-style delete/disconnect callbacks, and
 selection cleanup traces.
@@ -164,7 +170,8 @@ Viewport conformance is also headless. Runtime tests cover:
   double-click zoom plan or rejection outcomes.
 - conformance assertions for pan inertia frame sampling, sampled-frame viewport traces, and rejected
   below-threshold inertia plans.
-- conformance assertions for visible node ids before renderer-specific culling or draw batching.
+- conformance assertions for visible node ids and visible node render order before
+  renderer-specific culling or draw batching.
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
 raw double-click detection, release velocity estimation, frame scheduling, animation and inertia

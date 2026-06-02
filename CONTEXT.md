@@ -54,8 +54,9 @@ runtime traces before adding renderer smoke tests.
   for deterministic selection deletion after adapters normalize platform key input.
 - Use `runtime::viewport` and store viewport helpers for drag-pan and zoom-around-pointer behavior.
 - Use `runtime::auto_pan` and `NodeGraphStore::apply_auto_pan` for deterministic auto-pan frames.
-- Use `runtime::rendering` and `NodeGraphStore::visible_node_ids` for renderer-neutral render order
-  and XyFlow-style visible-node culling before adapter rendering.
+- Use `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
+  `NodeGraphStore::visible_node_render_order` for renderer-neutral render order and XyFlow-style
+  visible-node culling before adapter rendering.
 - Use `runtime::geometry` for handle endpoints, edge paths, and numeric hit testing.
 - Use `runtime::policy` for effective node, port, and edge interaction policy.
 - Use `runtime::xyflow` only for XyFlow-shaped compatibility vocabulary: node/edge changes,
@@ -97,9 +98,9 @@ Do not add `wgpu`, egui, Fret, screenshot, or pixel dependencies to `jellyflow-c
 ## Workstream State
 
 Workstreams live under `docs/workstreams/`. They own durable lane evidence, task ledgers, closeout
-audits, and handoffs. At this update, the visible-render-order contract workstream is active; it
-builds on the closed visible-elements contract by promoting ordered visible node ids into a
-headless runtime/store/conformance contract for adapters. Verify current state with:
+audits, and handoffs. At this update, the visible-render-order contract workstream is closed; it
+built on the visible-elements contract by promoting ordered visible node ids into a headless
+runtime/store/conformance/template contract for adapters. Verify current state with:
 
 ```text
 for f in docs/workstreams/*/WORKSTREAM.json; do jq -r '[input_filename, .status] | @tsv' "$f"; done
@@ -120,6 +121,9 @@ Closed lane themes include:
 - adapter conformance suite runner and copyable headless adapter template;
 - visible node id planning through `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
   `ConformanceAction::assert_visible_node_ids`;
+- ordered visible node render planning through `runtime::rendering`,
+  `NodeGraphStore::visible_node_render_order`, and
+  `ConformanceAction::assert_visible_node_render_order`;
 - runtime test surface/module split cleanup.
 
 ## Refactor Guardrails
@@ -146,6 +150,8 @@ Do not move persisted fields out of `Graph` without a new ADR-backed schema migr
 - Selection-specific auto-pan policy only after integration evidence proves the generic kernel is
   insufficient.
 - Visible edge culling only after adapter evidence settles endpoint/path/AABB semantics.
+- Full scene render plans or render batches only after adapter evidence proves ordered visible
+  node ids plus existing group/edge order helpers are insufficient.
 - Real spatial indexing behind `NodeGraphSpatialIndexTuning` after visible-node contract or adapter
   workloads show linear scans are too slow.
 - Async pre-delete or confirmation-dialog parity only after adapter evidence proves normalized

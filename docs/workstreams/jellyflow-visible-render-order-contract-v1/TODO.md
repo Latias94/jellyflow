@@ -1,6 +1,6 @@
 # Jellyflow Visible Render Order Contract v1 - TODO
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## M0 - Scope And Evidence Freeze
@@ -52,7 +52,7 @@ Last updated: 2026-06-02
 
 ## M3 - Documentation And Closeout
 
-- [ ] VRO-040 [owner=codex] [deps=VRO-030] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-visible-render-order-contract-v1]
+- [x] VRO-040 [owner=codex] [deps=VRO-030] [scope=README.md,crates/jellyflow-runtime/README.md,CONTEXT.md,docs/workstreams/jellyflow-visible-render-order-contract-v1]
   Goal: Document visible render order runtime/adapter boundaries, record fresh evidence, and close
   or split full render-plan follow-ons.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime; cargo clippy -p
@@ -65,6 +65,7 @@ Last updated: 2026-06-02
   Evidence: README.md, crates/jellyflow-runtime/README.md, CONTEXT.md, EVIDENCE_AND_GATES.md,
   WORKSTREAM.json.
   Context: docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl.
-  Handoff: Split follow-ons if the scope expands into visible edge culling, full scene render
-  plans, renderer smoke harnesses, or spatial indexing.
-  State: TASKS.jsonl entry VRO-040 records closeout validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Runtime/docs closeout recorded ordered visible-node render boundaries
+  and split visible edge culling, full scene render plans, renderer harnesses, and spatial indexing
+  into follow-ons.
+  State: TASKS.jsonl entry VRO-040 records closeout validation, evidence, and closed handoff.

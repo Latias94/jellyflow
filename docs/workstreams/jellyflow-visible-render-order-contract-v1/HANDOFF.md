@@ -1,26 +1,32 @@
 # Jellyflow Visible Render Order Contract v1 - Handoff
 
-Status: Active
+Status: Closed
 Last updated: 2026-06-02
 
 ## Current State
 
-VRO-030 is complete. Ordered visible node ids are now available through runtime/store APIs and
-through `ConformanceAction::assert_visible_node_render_order`.
+The workstream is closed.
 
-The headless adapter template suite now has 9 scenarios, including:
+Delivered contract:
 
-- `template visible node ids`;
-- `template visible node render order`.
+- `runtime::rendering::resolve_visible_node_render_order`;
+- `NodeGraphStore::visible_node_render_order(viewport_size)`;
+- `ConformanceAction::assert_visible_node_render_order`;
+- headless adapter template scenario `template visible node render order`.
 
-## Next Task
+The helper composes existing visible-node culling and node render-order semantics inside
+`runtime::rendering`, so adapters do not have to duplicate hidden-node filtering, draw order,
+selected-node elevation, or `only_render_visible_elements` behavior.
 
-VRO-040:
+## Follow-Ons
 
-- document the ordered visible-node render helper in root/runtime docs;
-- update `CONTEXT.md` with the closed lane and follow-ons;
-- run final package, clippy, metadata, and diff gates;
-- close `WORKSTREAM.json`, `TODO.md`, `TASKS.jsonl`, `EVIDENCE_AND_GATES.md`, and this handoff.
+- Visible edge culling only after adapter evidence settles endpoint/path/AABB semantics.
+- Full scene render plans or render batches only after adapter evidence proves ordered visible node
+  ids plus existing group/edge order helpers are insufficient.
+- Renderer smoke harnesses stay in future adapter crates such as `jellyflow-wgpu`,
+  `jellyflow-egui`, or `jellyflow-fret`.
+- Real spatial indexing stays behind `NodeGraphSpatialIndexTuning` until visible-node workloads
+  show linear scans are too slow.
 
 ## Guardrails
 
