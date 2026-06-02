@@ -82,6 +82,11 @@
       "date": "2026-05-30",
       "task": "JPB-060",
       "summary": "Closed the lane. Final fmt, workspace nextest, workspace clippy, dependency-boundary, external-smoke, JSON, and diff checks passed."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "navigation-reconcile",
+      "summary": "Reconciled closed-lane follow-on navigation after jellyflow-delete-contract-v1 completed delete selection ownership; schema migration remains a CONTEXT-level follow-on."
     }
   ],
   "adr_refs": [
@@ -89,11 +94,8 @@
     "docs/adr/0002-jellyflow-model-policy-boundary.md"
   ],
   "continue_policy": {
-    "default_action": "start_follow_on",
-    "follow_on_candidates": [
-      "jellyflow-delete-planner-policy-v1",
-      "jellyflow-graph-schema-policy-migration-v1"
-    ],
-    "notes": "This model-policy boundary lane is closed. Start a separate lane for delete planner ownership or persisted schema migration."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "This model-policy boundary lane is closed. Delete planner ownership was superseded by jellyflow-delete-contract-v1; persisted schema migration remains a likely follow-on in CONTEXT.md and should open as a separate lane only with schema evidence."
   }
 }

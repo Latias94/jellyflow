@@ -1,7 +1,7 @@
 # Jellyflow Runtime Public Surface v1 - Handoff
 
 Status: Closed
-Last updated: 2026-05-30
+Last updated: 2026-06-02
 
 ## Current State
 
@@ -27,6 +27,10 @@ selector/subscription handling, and view/config mutation are now private store s
 JRP-060 is complete: public README wording now names the explicit runtime surface, review and
 verification evidence is recorded, and final gates passed.
 
+Follow-on navigation was reconciled on 2026-06-02. The original model-layer policy cleanup and
+geometry/spatial extraction candidates were handled by later closed workstreams; current follow-ons
+live in `CONTEXT.md`.
+
 ## Final Gates
 
 - `cargo fmt --check`: passed.
@@ -45,6 +49,7 @@ verification evidence is recorded, and final gates passed.
 - Moved XyFlow compatibility under `jellyflow_runtime::runtime::xyflow`.
 - Split `jellyflow_runtime::io` implementation modules and removed `.fret` path policy.
 - Split `NodeGraphStore` internals under private `runtime::store::{dispatch,events,subscriptions,view}` modules.
+- Reconciled closed-lane follow-on navigation after later policy and geometry lanes closed.
 
 ## Blockers
 
@@ -52,7 +57,5 @@ verification evidence is recorded, and final gates passed.
 
 ## Follow-On Candidates
 
-- Model-layer policy cleanup if semantic graph, layout, and interaction policy need sharper
-  ownership boundaries.
-- Geometry/spatial extraction only after at least two Rust adapters need the same pure contract.
 - Downstream migration notes if consumers already depend on removed `jellyflow_runtime::{core,interaction,ops,types}` paths.
+  No such consumer evidence is known in this repository.

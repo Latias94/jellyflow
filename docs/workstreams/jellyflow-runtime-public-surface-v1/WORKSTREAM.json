@@ -71,17 +71,19 @@
       "date": "2026-05-30",
       "task": "JRP-060",
       "summary": "Updated public docs, ran review/verification closeout, and passed fmt, workspace nextest, workspace clippy, dependency-boundary, and external-consumer smoke gates."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "navigation-reconcile",
+      "summary": "Reconciled closed-lane follow-on navigation after model policy, geometry/spatial, and downstream public-surface cleanup lanes closed."
     }
   ],
   "adr_refs": [
     "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md"
   ],
   "continue_policy": {
-    "default_action": "start_follow_on",
-    "follow_on_candidates": [
-      "model-layer-policy-cleanup",
-      "geometry-spatial-extraction"
-    ],
-    "notes": "This public-surface lane is closed. Start a new workstream for model-layer policy migration, geometry/spatial extraction, or downstream migration docs if needed."
+    "default_action": "closed",
+    "next_task": null,
+    "notes": "This public-surface lane is closed. Model-layer policy cleanup and geometry/spatial extraction were handled by later closed workstreams; use CONTEXT.md for current follow-on navigation."
   }
 }

@@ -1,7 +1,7 @@
 # Jellyflow Model Policy Boundary v1 - Handoff
 
 Status: Closed
-Last updated: 2026-05-30
+Last updated: 2026-06-02
 
 ## Current State
 
@@ -18,9 +18,10 @@ JPB-020 is complete: ADR 0002 accepts an additive v1 boundary. Existing persiste
 JPB-030 is complete: `runtime::policy` exposes pure node, port, and edge interaction policy
 resolution from per-element overrides plus `NodeGraphInteractionState`.
 
-JPB-040 is complete with a named concern: connect/reconnect planners now route through
-`runtime::policy`, but delete enforcement was not changed because runtime has no delete planner path
-yet. `runtime::policy` exposes node/edge `deletable` state for adapters.
+JPB-040 is complete with a historical named concern: connect/reconnect planners routed through
+`runtime::policy`, while delete enforcement was split because runtime had no delete planner path at
+the time. That concern is now superseded by `jellyflow-delete-contract-v1`, which closed on
+2026-06-02 and promoted `runtime::delete` / `runtime::keyboard` as the headless delete contract.
 
 JPB-050 is complete: public README wording and XyFlow module docs point effective interaction policy
 resolution to `runtime::policy` and keep XyFlow naming in the compatibility module.
@@ -57,6 +58,7 @@ JPB-060 is complete: final gates passed and the lane is closed.
 - Updated README and `runtime::xyflow` docs to make `runtime::policy` the canonical policy
   resolution entry point.
 - Closed the lane after final gates.
+- Reconciled follow-on navigation on 2026-06-02 after the delete contract lane closed.
 
 ## Blockers
 
@@ -64,8 +66,6 @@ JPB-060 is complete: final gates passed and the lane is closed.
 
 ## Follow-On Candidates
 
-- Open a delete-planner lane if runtime should own deletion eligibility and delete transaction
-  planning instead of leaving it to adapters.
 - Open a schema-migration lane only after policy facade usage proves which persisted fields should
   leave `jellyflow_core::core::Graph`.
 - Keep geometry/spatial extraction separate until at least two Rust adapters need the same pure
