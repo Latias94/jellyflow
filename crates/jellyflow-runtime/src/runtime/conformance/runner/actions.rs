@@ -3,9 +3,10 @@ use crate::runtime::drag::NodeDragRequest;
 use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::{
-    ViewportAnimationPlan, ViewportGestureIntent, ViewportGestureRejection,
-    plan_viewport_animation_with_options, resolve_viewport_double_click_zoom,
-    resolve_viewport_drag_pan_gesture, resolve_viewport_scroll_gesture,
+    ViewportAnimationPlan, ViewportGestureIntent, ViewportGestureRejection, ViewportPanInertiaPlan,
+    plan_viewport_animation_with_options, plan_viewport_pan_inertia,
+    resolve_viewport_double_click_zoom, resolve_viewport_drag_pan_gesture,
+    resolve_viewport_scroll_gesture,
 };
 
 use super::super::scenario::ConformanceAction;
@@ -115,6 +116,55 @@ pub(super) fn execute_action(
                 ))
             }
         }
+        ConformanceAction::ApplyViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+        } => {
+            let plan = plan_viewport_pan_inertia(request.clone())
+                .ok_or_else(|| "viewport pan inertia request was rejected".to_owned())?;
+            apply_viewport_pan_inertia_frame(store, plan, *elapsed_seconds)?;
+            Ok(())
+        }
+        ConformanceAction::ApplyViewportPanInertiaFrames {
+            request,
+            elapsed_seconds,
+        } => {
+            if elapsed_seconds.is_empty() {
+                return Err("viewport pan inertia frame list was empty".to_owned());
+            }
+            let plan = plan_viewport_pan_inertia(request.clone())
+                .ok_or_else(|| "viewport pan inertia request was rejected".to_owned())?;
+            for elapsed_seconds in elapsed_seconds {
+                apply_viewport_pan_inertia_frame(store, plan, *elapsed_seconds)?;
+            }
+            Ok(())
+        }
+        ConformanceAction::AssertViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        } => {
+            let plan = plan_viewport_pan_inertia(request.clone())
+                .ok_or_else(|| "viewport pan inertia request was rejected".to_owned())?;
+            let actual = plan
+                .frame_at(*elapsed_seconds)
+                .ok_or_else(|| "viewport pan inertia frame was rejected".to_owned())?;
+            if actual == *expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "viewport pan inertia frame resolved to {actual:?}, expected {expected:?}"
+                ))
+            }
+        }
+        ConformanceAction::ExpectViewportPanInertiaRejected { request } => {
+            match plan_viewport_pan_inertia(request.clone()) {
+                Some(actual) => Err(format!(
+                    "viewport pan inertia was accepted as {actual:?}, expected rejection"
+                )),
+                None => Ok(()),
+            }
+        }
         ConformanceAction::AssertViewportDoubleClickZoom {
             input,
             expected,
@@ -176,6 +226,18 @@ fn apply_viewport_animation_frame(
     let frame = plan
         .frame_at(elapsed_seconds)
         .ok_or_else(|| "viewport animation frame was rejected".to_owned())?;
+    store.set_viewport(frame.transform.pan, frame.transform.zoom);
+    Ok(())
+}
+
+fn apply_viewport_pan_inertia_frame(
+    store: &mut NodeGraphStore,
+    plan: ViewportPanInertiaPlan,
+    elapsed_seconds: f32,
+) -> Result<(), String> {
+    let frame = plan
+        .frame_at(elapsed_seconds)
+        .ok_or_else(|| "viewport pan inertia frame was rejected".to_owned())?;
     store.set_viewport(frame.transform.pan, frame.transform.zoom);
     Ok(())
 }

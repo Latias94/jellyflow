@@ -6,10 +6,10 @@ Last updated: 2026-06-02
 ## Smallest Current Repro
 
 ```bash
-cargo nextest run -p jellyflow-runtime conformance
+cargo nextest run -p jellyflow-runtime
 ```
 
-JPIS-020 has added focused pan inertia tests. JPIS-030 should now prove conformance/template replay.
+JPIS-020 and JPIS-030 are complete. JPIS-040 should now run package and closeout gates.
 
 ## Gate Set
 
@@ -55,6 +55,9 @@ git diff --check
 - `docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/MILESTONES.md`
 - `crates/jellyflow-runtime/src/io/tuning/pan_inertia.rs`
 - `crates/jellyflow-runtime/src/runtime/events/viewport.rs`
+- `crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs`
+- `crates/jellyflow-runtime/src/runtime/conformance/runner/actions.rs`
+- `templates/headless-adapter/src/lib.rs`
 
 ## Evidence Log
 
@@ -111,6 +114,47 @@ Fresh verification:
 - `cargo fmt --check`: passed.
 - `cargo nextest run -p jellyflow-runtime pan_inertia`: passed, 3 tests run, 3 passed, 270 skipped.
 - `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 3 tests run, 3 passed.
+
+### 2026-06-02 - JPIS-030 Conformance And Template Inertia Replay
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs`
+- `crates/jellyflow-runtime/src/runtime/conformance/runner/actions.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/conformance/runner/viewport.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/viewport.rs`
+- `crates/jellyflow-runtime/tests/public_surface.rs`
+- `templates/headless-adapter/src/lib.rs`
+- `templates/headless-adapter/tests/conformance.rs`
+- `templates/headless-adapter/README.md`
+
+Result:
+
+- Added conformance actions for applying one pan inertia frame, applying a frame sequence,
+  asserting a sampled frame, and expecting a rejected inertia plan.
+- Runner actions now call the pure pan inertia planner and publish accepted frames through
+  `store.set_viewport`, preserving normal view-state and xyflow callback traces.
+- Adapter conformance covers accepted frame replay, rejected below-threshold velocity, and the
+  resulting viewport trace/callback ordering.
+- The headless adapter template built-in suite now includes a fourth smoke scenario for sampled
+  pan inertia before any renderer-specific smoke.
+
+Behavior proven:
+
+- Fixture runner rejects missing pan inertia frame sequences before planning.
+- Valid inertia frame sequences publish `ViewChanged`, `ViewChange`, and `ViewportChange` traces.
+- Rejected inertia plans can be asserted without producing trace events.
+- Template CLI `check` reports four matching scenarios, including `template viewport pan inertia`.
+
+Fresh verification:
+
+- Red check: `cargo nextest run -p jellyflow-runtime adapter_conformance_fixture_runner_applies_viewport_pan_inertia_frames` failed before implementation because the conformance action constructors did not exist.
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime --test public_surface`: passed, 3 tests run, 3 passed.
+- `cargo nextest run -p jellyflow-runtime conformance`: passed, 51 tests run, 51 passed, 226 skipped.
+- `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 16 tests run, 16 passed, 261 skipped.
+- `cargo test --manifest-path templates/headless-adapter/Cargo.toml`: passed, 7 tests run, 7 passed.
+- `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`: passed, 4 matching scenarios.
 
 ## Notes
 

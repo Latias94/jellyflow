@@ -12,7 +12,8 @@ use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInpu
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
     ViewportDoubleClickZoomInput, ViewportDragPanInput, ViewportGestureContext,
-    ViewportGestureRejection, ViewportPanRequest, ViewportScrollInput, ViewportZoomRequest,
+    ViewportGestureRejection, ViewportPanInertiaFrame, ViewportPanInertiaRequest,
+    ViewportPanRequest, ViewportScrollInput, ViewportZoomRequest,
 };
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
@@ -79,6 +80,22 @@ pub enum ConformanceAction {
         elapsed_seconds: f32,
         expected: ViewportAnimationFrame,
     },
+    ApplyViewportPanInertiaFrame {
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: f32,
+    },
+    ApplyViewportPanInertiaFrames {
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: Vec<f32>,
+    },
+    AssertViewportPanInertiaFrame {
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: f32,
+        expected: ViewportPanInertiaFrame,
+    },
+    ExpectViewportPanInertiaRejected {
+        request: ViewportPanInertiaRequest,
+    },
     AssertViewportDoubleClickZoom {
         input: ViewportDoubleClickZoomInput,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,6 +148,10 @@ impl ConformanceAction {
             Self::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
             Self::ApplyViewportAnimationFrames { .. } => "apply_viewport_animation_frames",
             Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
+            Self::ApplyViewportPanInertiaFrame { .. } => "apply_viewport_pan_inertia_frame",
+            Self::ApplyViewportPanInertiaFrames { .. } => "apply_viewport_pan_inertia_frames",
+            Self::AssertViewportPanInertiaFrame { .. } => "assert_viewport_pan_inertia_frame",
+            Self::ExpectViewportPanInertiaRejected { .. } => "expect_viewport_pan_inertia_rejected",
             Self::AssertViewportDoubleClickZoom { .. } => "assert_viewport_double_click_zoom",
             Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
             Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
@@ -242,6 +263,42 @@ impl ConformanceAction {
             elapsed_seconds,
             expected,
         }
+    }
+
+    pub fn apply_viewport_pan_inertia_frame(
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: f32,
+    ) -> Self {
+        Self::ApplyViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+        }
+    }
+
+    pub fn apply_viewport_pan_inertia_frames(
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: impl IntoIterator<Item = f32>,
+    ) -> Self {
+        Self::ApplyViewportPanInertiaFrames {
+            request,
+            elapsed_seconds: elapsed_seconds.into_iter().collect(),
+        }
+    }
+
+    pub fn assert_viewport_pan_inertia_frame(
+        request: ViewportPanInertiaRequest,
+        elapsed_seconds: f32,
+        expected: ViewportPanInertiaFrame,
+    ) -> Self {
+        Self::AssertViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        }
+    }
+
+    pub fn expect_viewport_pan_inertia_rejected(request: ViewportPanInertiaRequest) -> Self {
+        Self::ExpectViewportPanInertiaRejected { request }
     }
 
     pub fn assert_viewport_double_click_zoom(

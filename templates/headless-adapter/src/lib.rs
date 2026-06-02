@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_runtime::io::NodeGraphPanInertiaTuning;
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
     ConformanceFixtureDirectoryApprovalReport, ConformanceFixtureDirectoryReport,
@@ -14,7 +15,8 @@ use jellyflow_runtime::runtime::events::{
 };
 use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
-    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanRequest, ViewportTransform,
+    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanInertiaRequest,
+    ViewportPanRequest, ViewportTransform, plan_viewport_pan_inertia,
 };
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
@@ -23,6 +25,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
             node_drag_scenario(),
             viewport_pan_scenario(),
             viewport_animation_scenario(),
+            viewport_pan_inertia_scenario(),
         ])
 }
 
@@ -56,6 +59,13 @@ pub fn run_node_drag_smoke() -> Result<ConformanceRunReport, String> {
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
         &viewport_animation_scenario(),
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn run_viewport_pan_inertia_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &viewport_pan_inertia_scenario(),
     )
     .map_err(|err| err.to_string())
 }
@@ -220,6 +230,64 @@ fn viewport_animation_scenario() -> ConformanceScenario {
         ])
 }
 
+fn viewport_pan_inertia_scenario() -> ConformanceScenario {
+    let graph = Graph::new(GraphId::from_u128(12));
+    let tuning = NodeGraphPanInertiaTuning {
+        enabled: true,
+        decay_per_s: 2.0,
+        min_speed: 100.0,
+        max_speed: 1000.0,
+    };
+    let request = ViewportPanInertiaRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 2.0).expect("valid viewport"),
+        CanvasPoint { x: 1000.0, y: 0.0 },
+        tuning.clone(),
+    );
+    let plan = plan_viewport_pan_inertia(request.clone()).expect("inertia plan");
+    let mid = plan.frame_at(0.5).expect("mid inertia frame");
+    let terminal = plan.terminal_frame().expect("terminal inertia frame");
+
+    ConformanceScenario::new("template viewport pan inertia", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::apply_viewport_pan_inertia_frames(
+                request,
+                [0.5, plan.duration_seconds],
+            ),
+            ConformanceAction::expect_viewport_pan_inertia_rejected(
+                ViewportPanInertiaRequest::new(
+                    ViewportTransform::new(CanvasPoint::default(), 1.0).expect("valid viewport"),
+                    CanvasPoint { x: 50.0, y: 0.0 },
+                    tuning,
+                ),
+            ),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(mid.transform.pan, mid.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: mid.transform.pan,
+                    zoom: mid.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: mid.transform.pan,
+                zoom: mid.transform.zoom,
+            }),
+            ConformanceTraceEvent::viewport(terminal.transform.pan, terminal.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: terminal.transform.pan,
+                    zoom: terminal.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: terminal.transform.pan,
+                zoom: terminal.transform.zoom,
+            }),
+        ])
+}
+
 fn graph_with_node(node_id: NodeId) -> Graph {
     let mut graph = Graph::new(GraphId::from_u128(1));
     graph.nodes.insert(
@@ -260,7 +328,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 3);
+        assert_eq!(report.scenario_count(), 4);
     }
 
     #[test]
@@ -278,6 +346,14 @@ mod tests {
     }
 
     #[test]
+    fn viewport_pan_inertia_smoke_runs_as_single_scenario() {
+        let report =
+            run_viewport_pan_inertia_smoke().expect("viewport pan inertia scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
     fn saved_suite_can_be_checked_as_fixture_directory() {
         let root = temp_fixture_dir("roundtrip");
         std::fs::create_dir_all(&root).expect("create fixture directory");
@@ -290,7 +366,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 3);
+        assert_eq!(report.scenario_count(), 4);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

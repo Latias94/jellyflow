@@ -46,7 +46,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl",
-  "current_task": "JPIS-030",
+  "current_task": "JPIS-040",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime pan_inertia",
@@ -70,6 +70,11 @@
       "date": "2026-06-02",
       "task": "JPIS-020",
       "summary": "Added renderer-neutral viewport pan inertia planner primitives, focused runtime tests, and public surface coverage."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JPIS-030",
+      "summary": "Added conformance pan inertia frame replay actions, adapter conformance traces, and a headless adapter template smoke scenario."
     }
   ],
   "adr_refs": [
@@ -93,7 +98,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "continue",
-    "next_task": "JPIS-030",
-    "notes": "Continue by replaying sampled pan inertia frames through conformance fixtures and the headless adapter template while keeping velocity estimation and frame loops outside runtime. Split a follow-on if platform-specific physics parity or renderer smoke becomes required."
+    "next_task": "JPIS-040",
+    "notes": "Continue with closeout documentation and package gates. Split a follow-on if platform-specific physics parity or renderer smoke becomes required."
   }
 }

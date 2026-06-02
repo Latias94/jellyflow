@@ -1,7 +1,8 @@
 use super::*;
-use crate::io::NodeGraphPanOnDragButtons;
+use crate::io::{NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons};
 use crate::runtime::viewport::{
-    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton,
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureRejection,
+    ViewportPanInertiaRequest, ViewportPointerButton, plan_viewport_pan_inertia,
 };
 
 fn viewport_drag_rejection_scenario(
@@ -331,6 +332,125 @@ fn conformance_runner_rejects_empty_viewport_animation_frame_sequence() {
     assert_eq!(err.scenario, "empty viewport animation frame sequence");
     assert_eq!(err.action_index, 0);
     assert_eq!(err.action_kind, "apply_viewport_animation_frames");
+    assert!(err.message.contains("frame list was empty"));
+}
+
+#[test]
+fn conformance_runner_applies_viewport_pan_inertia_frames_with_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let request = ViewportPanInertiaRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 2.0).unwrap(),
+        CanvasPoint { x: 1000.0, y: 0.0 },
+        NodeGraphPanInertiaTuning {
+            enabled: true,
+            decay_per_s: 2.0,
+            min_speed: 100.0,
+            max_speed: 1000.0,
+        },
+    );
+    let plan = plan_viewport_pan_inertia(request.clone()).expect("inertia plan");
+    let mid = plan.frame_at(0.5).expect("mid inertia frame");
+    let terminal = plan.terminal_frame().expect("terminal inertia frame");
+
+    let scenario = ConformanceScenario::new("viewport pan inertia frame sequence", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_viewport_pan_inertia_frames(
+            request,
+            [0.5, plan.duration_seconds],
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(mid.transform.pan, mid.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: mid.transform.pan,
+                    zoom: mid.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: mid.transform.pan,
+                zoom: mid.transform.zoom,
+            }),
+            ConformanceTraceEvent::viewport(terminal.transform.pan, terminal.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: terminal.transform.pan,
+                    zoom: terminal.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: terminal.transform.pan,
+                zoom: terminal.transform.zoom,
+            }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
+fn conformance_runner_asserts_and_rejects_viewport_pan_inertia_without_trace() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let tuning = NodeGraphPanInertiaTuning {
+        enabled: true,
+        decay_per_s: 2.0,
+        min_speed: 100.0,
+        max_speed: 1000.0,
+    };
+    let request = ViewportPanInertiaRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
+        CanvasPoint { x: 500.0, y: 0.0 },
+        tuning.clone(),
+    );
+    let expected = plan_viewport_pan_inertia(request.clone())
+        .expect("inertia plan")
+        .frame_at(0.25)
+        .expect("inertia frame");
+
+    let scenario = ConformanceScenario::new("viewport pan inertia assertion", graph)
+        .with_actions([
+            ConformanceAction::assert_viewport_pan_inertia_frame(request, 0.25, expected),
+            ConformanceAction::expect_viewport_pan_inertia_rejected(
+                ViewportPanInertiaRequest::new(
+                    ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
+                    CanvasPoint { x: 50.0, y: 0.0 },
+                    tuning,
+                ),
+            ),
+        ])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}
+
+#[test]
+fn conformance_runner_rejects_empty_viewport_pan_inertia_frame_sequence() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let request = ViewportPanInertiaRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
+        CanvasPoint { x: 500.0, y: 0.0 },
+        NodeGraphPanInertiaTuning {
+            enabled: true,
+            decay_per_s: 2.0,
+            min_speed: 100.0,
+            max_speed: 1000.0,
+        },
+    );
+
+    let scenario = ConformanceScenario::new("empty viewport pan inertia frame sequence", graph)
+        .with_actions([ConformanceAction::apply_viewport_pan_inertia_frames(
+            request,
+            Vec::<f32>::new(),
+        )]);
+
+    let err = run_conformance_scenario(&scenario).expect_err("empty frame sequence should error");
+
+    assert_eq!(err.scenario, "empty viewport pan inertia frame sequence");
+    assert_eq!(err.action_index, 0);
+    assert_eq!(err.action_kind, "apply_viewport_pan_inertia_frames");
     assert!(err.message.contains("frame list was empty"));
 }
 

@@ -459,6 +459,49 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             ),
             [0.5, 1.0],
         );
+    let inertia_request = viewport::ViewportPanInertiaRequest::new(
+        viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+        CanvasPoint { x: 500.0, y: 0.0 },
+        NodeGraphPanInertiaTuning {
+            enabled: true,
+            decay_per_s: 2.0,
+            min_speed: 100.0,
+            max_speed: 1000.0,
+        },
+    );
+    let inertia_frame = viewport::plan_viewport_pan_inertia(inertia_request.clone())
+        .expect("inertia plan")
+        .frame_at(0.25)
+        .expect("inertia frame");
+    let apply_viewport_pan_inertia_action =
+        conformance::ConformanceAction::apply_viewport_pan_inertia_frame(
+            inertia_request.clone(),
+            0.25,
+        );
+    let apply_viewport_pan_inertia_frames_action =
+        conformance::ConformanceAction::apply_viewport_pan_inertia_frames(
+            inertia_request.clone(),
+            [0.25, 0.5],
+        );
+    let assert_viewport_pan_inertia_action =
+        conformance::ConformanceAction::assert_viewport_pan_inertia_frame(
+            inertia_request,
+            0.25,
+            inertia_frame,
+        );
+    let expect_viewport_pan_inertia_rejected_action =
+        conformance::ConformanceAction::expect_viewport_pan_inertia_rejected(
+            viewport::ViewportPanInertiaRequest::new(
+                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+                CanvasPoint { x: 50.0, y: 0.0 },
+                NodeGraphPanInertiaTuning {
+                    enabled: true,
+                    decay_per_s: 2.0,
+                    min_speed: 100.0,
+                    max_speed: 1000.0,
+                },
+            ),
+        );
     let viewport_double_click_action =
         conformance::ConformanceAction::assert_viewport_double_click_zoom(
             viewport::ViewportDoubleClickZoomInput::new(
@@ -531,6 +574,10 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_animation_action,
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,
+        apply_viewport_pan_inertia_action,
+        apply_viewport_pan_inertia_frames_action,
+        assert_viewport_pan_inertia_action,
+        expect_viewport_pan_inertia_rejected_action,
         viewport_double_click_action,
         delete_key_action,
         connection_target_action,

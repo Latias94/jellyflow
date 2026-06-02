@@ -16,15 +16,19 @@ plan, frame, and planner. The planner samples adapter-provided logical screen px
 with exponential decay, clamps initial speed, rejects invalid tuning/input, and converts screen
 displacement to canvas pan by current zoom.
 
+JPIS-030 is complete: conformance fixtures can apply and assert pan inertia frames, rejected
+inertia plans can be fixture-asserted, adapter conformance proves view-state/callback trace replay,
+and the headless adapter template includes a built-in pan inertia smoke scenario.
+
 ## Active Task
 
-- Task ID: JPIS-030
+- Task ID: JPIS-040
 - Owner: codex
-- Files: `crates/jellyflow-runtime/src/runtime/conformance`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance`, `templates/headless-adapter`
-- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime conformance`; `cargo nextest run -p jellyflow-runtime adapter_conformance`; `cargo test --manifest-path templates/headless-adapter/Cargo.toml`; `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- Files: `README.md`, `crates/jellyflow-runtime/README.md`, `docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1`
+- Validation: `cargo fmt --check`; `cargo nextest run -p jellyflow-runtime`; `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`; `jq empty docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/WORKSTREAM.json docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/TASKS.jsonl docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl`; `git diff --check`
 - Status: NEEDS_CONTEXT
-- Review: review-workstream before accepting completion
-- Evidence: conformance/template inertia traces through normal view-state publication
+- Review: review-workstream and verify-rust-workstream before closeout
+- Evidence: README/runtime README boundary notes, closeout evidence, and machine-readable state
 
 ## Decisions Since Opening
 
@@ -40,6 +44,5 @@ displacement to canvas pan by current zoom.
 
 ## Next Recommended Action
 
-- Implement JPIS-030: extend conformance fixtures and the headless adapter template so sampled
-  inertia frames replay through the normal view-state publication path without moving frame loops
-  into runtime.
+- Implement JPIS-040: document pan inertia ownership boundaries, run package and clippy gates, then
+  close or split remaining renderer-specific follow-ons.

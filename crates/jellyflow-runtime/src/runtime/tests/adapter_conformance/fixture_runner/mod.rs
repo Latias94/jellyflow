@@ -1,7 +1,7 @@
 use super::super::fixtures::make_graph;
 use super::support::{assert_conformance_trace, insert_input_port};
 
-use crate::io::{NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};
+use crate::io::{NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};
 use crate::rules::EdgeEndpoint;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
@@ -21,8 +21,8 @@ use crate::runtime::events::{
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationOptions, ViewportAnimationPlan,
     ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
-    ViewportGestureContext, ViewportGestureRejection, ViewportPointerButton, ViewportScrollInput,
-    ViewportTransform,
+    ViewportGestureContext, ViewportGestureRejection, ViewportPanInertiaRequest,
+    ViewportPointerButton, ViewportScrollInput, ViewportTransform, plan_viewport_pan_inertia,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, EdgeKind, PortDirection};

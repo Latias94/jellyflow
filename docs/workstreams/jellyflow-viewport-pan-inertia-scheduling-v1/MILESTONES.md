@@ -52,6 +52,8 @@ cargo test --manifest-path templates/headless-adapter/Cargo.toml
 cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
+Status: complete on 2026-06-02.
+
 ## M3 - Documentation And Closeout
 
 Exit criteria:

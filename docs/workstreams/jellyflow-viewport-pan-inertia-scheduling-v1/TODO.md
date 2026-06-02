@@ -31,7 +31,7 @@ Last updated: 2026-06-02
 
 ## M2 - Conformance And Template Integration
 
-- [ ] JPIS-030 [owner=codex] [deps=JPIS-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
+- [x] JPIS-030 [owner=codex] [deps=JPIS-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
   Goal: Let conformance fixtures and the headless adapter template replay sampled inertia frames
   through the normal view-state publication path.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo nextest
@@ -41,8 +41,9 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: conformance/template inertia traces.
   Context: docs/workstreams/jellyflow-viewport-pan-inertia-scheduling-v1/CONTEXT.jsonl.
-  Handoff: Keep adapter frame loops outside runtime.
-  State: TASKS.jsonl entry JPIS-030 records owner, scope, validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Conformance fixtures and the adapter template now replay sampled
+  inertia frames through view-state publication while frame loops remain outside runtime.
+  State: TASKS.jsonl entry JPIS-030 records completion, validation, evidence, and handoff status.
 
 ## M3 - Documentation And Closeout
 

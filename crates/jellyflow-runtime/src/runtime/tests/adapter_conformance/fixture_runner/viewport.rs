@@ -214,3 +214,64 @@ fn adapter_conformance_fixture_runner_applies_viewport_animation_frames() {
 
     assert_conformance_trace(&scenario);
 }
+
+#[test]
+fn adapter_conformance_fixture_runner_applies_viewport_pan_inertia_frames() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let tuning = NodeGraphPanInertiaTuning {
+        enabled: true,
+        decay_per_s: 2.0,
+        min_speed: 100.0,
+        max_speed: 1000.0,
+    };
+    let request = ViewportPanInertiaRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 2.0).unwrap(),
+        CanvasPoint { x: 1000.0, y: 0.0 },
+        tuning.clone(),
+    );
+    let plan = plan_viewport_pan_inertia(request.clone()).expect("inertia plan");
+    let mid = plan.frame_at(0.5).expect("mid inertia frame");
+    let terminal = plan.terminal_frame().expect("terminal inertia frame");
+
+    let scenario = ConformanceScenario::new("viewport pan inertia frame apply", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::apply_viewport_pan_inertia_frames(
+                request,
+                [0.5, plan.duration_seconds],
+            ),
+            ConformanceAction::expect_viewport_pan_inertia_rejected(
+                ViewportPanInertiaRequest::new(
+                    ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap(),
+                    CanvasPoint { x: 50.0, y: 0.0 },
+                    tuning,
+                ),
+            ),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(mid.transform.pan, mid.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: mid.transform.pan,
+                    zoom: mid.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: mid.transform.pan,
+                zoom: mid.transform.zoom,
+            }),
+            ConformanceTraceEvent::viewport(terminal.transform.pan, terminal.transform.zoom),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: terminal.transform.pan,
+                    zoom: terminal.transform.zoom,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: terminal.transform.pan,
+                zoom: terminal.transform.zoom,
+            }),
+        ]);
+
+    assert_conformance_trace(&scenario);
+}
