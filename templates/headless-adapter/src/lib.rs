@@ -12,11 +12,19 @@ use jellyflow_runtime::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd,
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
-use jellyflow_runtime::runtime::viewport::ViewportPanRequest;
+use jellyflow_runtime::runtime::viewport::{
+    ViewportAnimationEasing, ViewportAnimationFrame, ViewportAnimationOptions,
+    ViewportAnimationPlan, ViewportAnimationRequest, ViewportDoubleClickZoomInput,
+    ViewportPanRequest, ViewportTransform,
+};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template")
-        .with_scenarios([node_drag_scenario(), viewport_pan_scenario()])
+        .with_scenarios([
+            node_drag_scenario(),
+            viewport_pan_scenario(),
+            viewport_animation_scenario(),
+        ])
 }
 
 pub fn check_builtin_suite() -> ConformanceSuiteReport {
@@ -44,6 +52,13 @@ pub fn approve_fixture_directory(
 pub fn run_node_drag_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(&node_drag_scenario())
         .map_err(|err| err.to_string())
+}
+
+pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &viewport_animation_scenario(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn node_drag_scenario() -> ConformanceScenario {
@@ -139,6 +154,56 @@ fn viewport_pan_scenario() -> ConformanceScenario {
         ])
 }
 
+fn viewport_animation_scenario() -> ConformanceScenario {
+    let graph = Graph::new(GraphId::from_u128(11));
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0)
+        .expect("valid viewport");
+    let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0)
+        .expect("valid viewport");
+    let expected_frame = ViewportAnimationFrame {
+        elapsed_seconds: 0.5,
+        progress: 0.5,
+        eased_progress: 0.5,
+        transform: ViewportTransform::new(CanvasPoint { x: 40.0, y: -20.0 }, 1.5)
+            .expect("valid viewport"),
+        done: false,
+    };
+
+    let double_click_current =
+        ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0)
+            .expect("valid viewport");
+    let double_click_target =
+        ViewportTransform::new(CanvasPoint { x: -10.0, y: 10.0 }, 3.0)
+            .expect("valid viewport");
+    let expected_plan = ViewportAnimationPlan {
+        from: double_click_current,
+        to: double_click_target,
+        duration_seconds: 0.2,
+        easing: ViewportAnimationEasing::CubicInOut,
+    };
+
+    ConformanceScenario::new("template viewport animation", graph)
+        .with_actions([
+            ConformanceAction::assert_viewport_animation_frame(
+                ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
+                0.5,
+                expected_frame,
+            ),
+            ConformanceAction::assert_viewport_double_click_zoom(
+                ViewportDoubleClickZoomInput::new(
+                    double_click_current,
+                    CanvasPoint { x: 120.0, y: 60.0 },
+                    2.0,
+                    0.5,
+                    3.0,
+                    ViewportAnimationOptions::new(0.2),
+                ),
+                expected_plan,
+            ),
+        ])
+        .with_expected_trace([])
+}
+
 fn graph_with_node(node_id: NodeId) -> Graph {
     let mut graph = Graph::new(GraphId::from_u128(1));
     graph.nodes.insert(
@@ -179,12 +244,19 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 2);
+        assert_eq!(report.scenario_count(), 3);
     }
 
     #[test]
     fn node_drag_smoke_runs_as_single_scenario() {
         let report = run_node_drag_smoke().expect("node drag scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn viewport_animation_smoke_runs_as_single_scenario() {
+        let report = run_viewport_animation_smoke().expect("viewport animation scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -202,7 +274,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 2);
+        assert_eq!(report.scenario_count(), 3);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {
