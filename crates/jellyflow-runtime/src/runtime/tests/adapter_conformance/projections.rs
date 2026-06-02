@@ -2,44 +2,41 @@ use super::super::fixtures::make_graph;
 use super::super::harness::{HarnessEvent, InteractionHarness};
 use super::support::{assert_conformance_trace, insert_input_port};
 
+use crate::rules::EdgeEndpoint;
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
     ConformanceTraceEvent,
+};
+use crate::runtime::connection::{
+    CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest, RECONNECT_EDGE_TRANSACTION_LABEL,
+    ReconnectEdgeRequest,
 };
 use crate::runtime::xyflow::callbacks::{
     ConnectionChange, EdgeConnection, connection_changes_from_transaction,
     delete_changes_from_transaction,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{Edge, EdgeId, EdgeKind};
+use jellyflow_core::core::{EdgeId, EdgeKind};
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};
 
 #[test]
 fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
-    let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
-    let edge_id = EdgeId::new();
-    let edge = Edge {
-        kind: EdgeKind::Data,
-        from: out_port,
-        to: in_port,
-        hidden: false,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
-    };
+    let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
+    let next_in = insert_input_port(&mut graph, b, "in2");
+    let edge_id = EdgeId::from_u128(301);
 
-    let tx = GraphTransaction::from_ops([GraphOp::AddEdge { id: edge_id, edge }])
-        .with_label("adapter connect");
-    let connection = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
+    let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
     let scenario = ConformanceScenario::new("connect dispatches patch and projection", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([ConformanceAction::dispatch_transaction(tx)])
+        .with_actions([ConformanceAction::apply_connect_edge(
+            ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
+                .with_edge_id(edge_id),
+        )])
         .with_expected_trace([
-            ConformanceTraceEvent::graph_commit(Some("adapter connect"), ["add_edge"]),
+            ConformanceTraceEvent::graph_commit(Some(CONNECT_EDGE_TRANSACTION_LABEL), ["add_edge"]),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some("adapter connect".to_owned()),
+                label: Some(CONNECT_EDGE_TRANSACTION_LABEL.to_owned()),
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
                 nodes: 0,
@@ -69,15 +66,16 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
         to: next_in,
     };
 
-    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
-        id: edge_id,
-        from,
-        to,
-    }])
-    .with_label("adapter reconnect");
     let outcome = harness
-        .dispatch_transaction(&tx)
-        .expect("dispatch reconnect");
+        .store_mut()
+        .apply_reconnect_edge(ReconnectEdgeRequest::new(
+            edge_id,
+            EdgeEndpoint::To,
+            next_in,
+            NodeGraphConnectionMode::Strict,
+        ))
+        .expect("dispatch reconnect")
+        .expect("reconnect should commit");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
     let connection_changes = connection_changes_from_transaction(outcome.committed());
 
@@ -100,7 +98,7 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
         "reconnect should preserve edge id and expose old/new endpoints",
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
-        Some("adapter reconnect"),
+        Some(RECONNECT_EDGE_TRANSACTION_LABEL),
         &["set_edge_endpoints"],
     )]);
 }
