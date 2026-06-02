@@ -48,3 +48,37 @@ Initialized Trellis workflow files, replaced placeholder specs with Jellyflow-sp
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Release readiness audit
+
+**Date**: 2026-06-02
+**Task**: Release readiness audit
+**Package**: jellyflow-core
+**Branch**: `main`
+
+### Summary
+
+Added minimal CI, crates.io release-readiness docs, repository-level Trellis release spec, and archived evidence for release-readiness-audit.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `21c7f46` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
