@@ -26,3 +26,5 @@ pub use scenario::{
     ConformanceScenario, ConformanceSetup, ConformanceSuite, ConformanceTraceConfig,
     ConformanceTraceEvent, ConformanceViewChange,
 };
+#[cfg(test)]
+pub(crate) use scenario::{ConformanceCallbackTraceRecorder, ConformanceCallbackTraceSink};

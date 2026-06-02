@@ -36,6 +36,16 @@ fn viewport_move_gesture_lifecycle_dispatches_xyflow_callbacks_in_order() {
         HarnessEvent::gesture(NodeGraphGestureEvent::ViewportMoveStart(start)),
         HarnessEvent::callback(HarnessCallbackEvent::ViewportMoveStart(start)),
         HarnessEvent::viewport(CanvasPoint { x: 12.0, y: -6.0 }, 1.0),
+        HarnessEvent::callback(HarnessCallbackEvent::ViewChange {
+            changes: vec![ConformanceViewChange::Viewport {
+                pan: CanvasPoint { x: 12.0, y: -6.0 },
+                zoom: 1.0,
+            }],
+        }),
+        HarnessEvent::callback(HarnessCallbackEvent::ViewportChange {
+            pan: CanvasPoint { x: 12.0, y: -6.0 },
+            zoom: 1.0,
+        }),
         HarnessEvent::gesture(NodeGraphGestureEvent::ViewportMove(update)),
         HarnessEvent::callback(HarnessCallbackEvent::ViewportMove(update)),
         HarnessEvent::gesture(NodeGraphGestureEvent::ViewportMoveEnd(end)),

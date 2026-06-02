@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::io::NodeGraphViewState;
+use crate::runtime::conformance::ConformanceCallbackTraceRecorder;
 use crate::runtime::events::{NodeGraphGestureEvent, SubscriptionToken};
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 use crate::runtime::xyflow::callbacks::install_callbacks;
@@ -10,7 +11,7 @@ use jellyflow_core::ops::GraphTransaction;
 
 use super::super::fixtures::default_editor_config;
 use super::events::HarnessEvent;
-use super::recorder::CallbackTraceRecorder;
+use super::recorder::HarnessCallbackTraceSink;
 
 pub(in crate::runtime::tests) struct InteractionHarness {
     scenario: String,
@@ -63,7 +64,9 @@ impl InteractionHarness {
     pub(in crate::runtime::tests) fn install_callback_trace(&mut self) -> SubscriptionToken {
         install_callbacks(
             &mut self.store,
-            CallbackTraceRecorder::new(self.events.clone()),
+            ConformanceCallbackTraceRecorder::new(HarnessCallbackTraceSink::new(
+                self.events.clone(),
+            )),
         )
     }
 

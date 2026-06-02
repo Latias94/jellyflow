@@ -4,8 +4,9 @@ use std::rc::Rc;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::xyflow::callbacks::install_callbacks;
 
-use super::super::scenario::{ConformanceTraceConfig, ConformanceTraceEvent};
-use super::callbacks::CallbackTraceRecorder;
+use super::super::scenario::{
+    ConformanceCallbackTraceRecorder, ConformanceTraceConfig, ConformanceTraceEvent,
+};
 
 pub(super) fn install_trace_recorders(
     store: &mut NodeGraphStore,
@@ -33,6 +34,6 @@ pub(super) fn install_trace_recorders(
     }
 
     if config.record_xyflow_callbacks {
-        let _ = install_callbacks(&mut *store, CallbackTraceRecorder::new(trace));
+        let _ = install_callbacks(&mut *store, ConformanceCallbackTraceRecorder::new(trace));
     }
 }

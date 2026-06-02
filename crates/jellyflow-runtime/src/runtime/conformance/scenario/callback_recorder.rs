@@ -13,28 +13,41 @@ use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId, StickyNoteId};
 use jellyflow_core::ops::EdgeEndpoints;
 
-use super::super::scenario::{
-    ConformanceCallbackEvent, ConformanceTraceEvent, ConformanceViewChange,
-};
+use super::{ConformanceCallbackEvent, ConformanceTraceEvent, ConformanceViewChange};
 
-#[derive(Clone)]
-pub(super) struct CallbackTraceRecorder {
-    trace: Rc<RefCell<Vec<ConformanceTraceEvent>>>,
+pub(crate) trait ConformanceCallbackTraceSink: Clone + 'static {
+    fn push_callback(&self, event: ConformanceCallbackEvent);
 }
 
-impl CallbackTraceRecorder {
-    pub(super) fn new(trace: Rc<RefCell<Vec<ConformanceTraceEvent>>>) -> Self {
-        Self { trace }
-    }
-
-    fn push(&self, event: ConformanceCallbackEvent) {
-        self.trace
-            .borrow_mut()
+impl ConformanceCallbackTraceSink for Rc<RefCell<Vec<ConformanceTraceEvent>>> {
+    fn push_callback(&self, event: ConformanceCallbackEvent) {
+        self.borrow_mut()
             .push(ConformanceTraceEvent::Callback(event));
     }
 }
 
-impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
+#[derive(Clone)]
+pub(crate) struct ConformanceCallbackTraceRecorder<S> {
+    sink: S,
+}
+
+impl<S> ConformanceCallbackTraceRecorder<S>
+where
+    S: ConformanceCallbackTraceSink,
+{
+    pub(crate) fn new(sink: S) -> Self {
+        Self { sink }
+    }
+
+    fn push(&self, event: ConformanceCallbackEvent) {
+        self.sink.push_callback(event);
+    }
+}
+
+impl<S> NodeGraphCommitCallbacks for ConformanceCallbackTraceRecorder<S>
+where
+    S: ConformanceCallbackTraceSink,
+{
     fn on_graph_commit(&mut self, patch: &crate::runtime::commit::NodeGraphPatch) {
         self.push(ConformanceCallbackEvent::GraphCommit {
             label: patch.transaction().label().map(str::to_owned),
@@ -104,7 +117,10 @@ impl NodeGraphCommitCallbacks for CallbackTraceRecorder {
     }
 }
 
-impl NodeGraphViewCallbacks for CallbackTraceRecorder {
+impl<S> NodeGraphViewCallbacks for ConformanceCallbackTraceRecorder<S>
+where
+    S: ConformanceCallbackTraceSink,
+{
     fn on_view_change(&mut self, changes: &[ViewChange]) {
         self.push(ConformanceCallbackEvent::ViewChange {
             changes: changes
@@ -128,7 +144,10 @@ impl NodeGraphViewCallbacks for CallbackTraceRecorder {
     }
 }
 
-impl NodeGraphGestureCallbacks for CallbackTraceRecorder {
+impl<S> NodeGraphGestureCallbacks for ConformanceCallbackTraceRecorder<S>
+where
+    S: ConformanceCallbackTraceSink,
+{
     fn on_move_start(&mut self, ev: ViewportMoveStart) {
         self.push(ConformanceCallbackEvent::ViewportMoveStart(ev));
     }

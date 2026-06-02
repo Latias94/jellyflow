@@ -7,7 +7,6 @@ use super::reports::{ConformanceRunError, ConformanceRunReport, ConformanceSuite
 use super::scenario::{ConformanceScenario, ConformanceSuite};
 
 mod actions;
-mod callbacks;
 mod trace;
 
 use actions::execute_action;

@@ -4,6 +4,7 @@ use crate::io::{
     NodeGraphInteractionState, NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons,
     NodeGraphPanOnScrollMode,
 };
+use crate::runtime::conformance::ConformanceViewChange;
 use crate::runtime::events::{
     NodeGraphGestureEvent, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind,
     ViewportMoveStart,
