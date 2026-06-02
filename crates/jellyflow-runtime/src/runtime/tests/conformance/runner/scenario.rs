@@ -202,3 +202,75 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
     assert!(report.is_match(), "{report}");
     assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
 }
+
+#[test]
+fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
+    let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
+    let mut view_state = crate::io::NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge_id], Vec::new());
+
+    let start = NodeDragStart {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+    };
+    let start_event = NodeGraphGestureEvent::NodeDragStart(start.clone());
+
+    let target = CanvasPoint { x: 32.0, y: 16.0 };
+    let update = NodeDragUpdate {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: target,
+    };
+    let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
+
+    let scenario = ConformanceScenario::new("node pointer down drag chain", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::apply_node_pointer_down(
+                node_id,
+                false,
+                CanvasPoint { x: 3.0, y: 4.0 },
+            ),
+            ConformanceAction::emit_gesture(start_event.clone()),
+            ConformanceAction::apply_node_drag(node_id, target),
+            ConformanceAction::emit_gesture(update_event.clone()),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Selection {
+                    nodes: vec![node_id],
+                    edges: Vec::new(),
+                    groups: Vec::new(),
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+                nodes: vec![node_id],
+                edges: Vec::new(),
+                groups: Vec::new(),
+            }),
+            ConformanceTraceEvent::gesture(start_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start)),
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_DRAG_TRANSACTION_LABEL),
+                ["set_node_pos"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+            ConformanceTraceEvent::gesture(update_event),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update)),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
