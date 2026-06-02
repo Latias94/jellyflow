@@ -1,11 +1,7 @@
+pub(in crate::runtime::tests) use crate::runtime::conformance::ConformanceCallbackEvent as HarnessCallbackEvent;
 use crate::runtime::conformance::{ConformanceTraceEvent, ConformanceViewChange};
-use crate::runtime::events::{
-    ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
-    NodeGraphStoreEvent, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
-};
-use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
+use crate::runtime::events::{NodeGraphGestureEvent, NodeGraphStoreEvent};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
-use jellyflow_core::ops::EdgeEndpoints;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::runtime::tests) enum HarnessEvent {
@@ -84,39 +80,6 @@ impl HarnessEvent {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(in crate::runtime::tests) enum HarnessCallbackEvent {
-    GraphCommit {
-        label: Option<String>,
-    },
-    NodeEdgeChanges {
-        nodes: usize,
-        edges: usize,
-    },
-    NodesChange {
-        count: usize,
-    },
-    EdgesChange {
-        count: usize,
-    },
-    ConnectionChange(ConnectionChange),
-    Connect(EdgeConnection),
-    Disconnect(EdgeConnection),
-    Reconnect {
-        edge: EdgeId,
-        from: EdgeEndpoints,
-        to: EdgeEndpoints,
-    },
-    NodeDragStart(NodeDragStart),
-    NodeDrag(NodeDragUpdate),
-    NodeDragEnd(NodeDragEnd),
-    ViewportMoveStart(ViewportMoveStart),
-    ViewportMove(ViewportMove),
-    ViewportMoveEnd(ViewportMoveEnd),
-    ConnectStart(ConnectStart),
-    ConnectEnd(ConnectEnd),
 }
 
 #[derive(Debug, Clone, PartialEq)]
