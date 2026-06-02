@@ -181,3 +181,37 @@ fn conformance_runner_rejects_viewport_drag_pan_when_selection_modifier_claims_p
     assert!(report.is_match(), "{report}");
     assert!(report.actual_trace().is_empty());
 }
+
+#[test]
+fn conformance_runner_rejects_viewport_drag_pan_when_connection_claims_pointer() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.pan_on_drag = NodeGraphPanOnDragButtons {
+        left: false,
+        middle: false,
+        right: true,
+    };
+
+    let scenario = ConformanceScenario::new("viewport connection suppresses drag pan", graph)
+        .with_editor_config(editor_config)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::expect_viewport_drag_pan_gesture_rejected(
+                ViewportGestureContext {
+                    connection_in_progress: true,
+                    ..ViewportGestureContext::idle()
+                },
+                ViewportDragPanInput::new(
+                    ViewportPointerButton::Right,
+                    CanvasPoint { x: 10.0, y: 4.0 },
+                ),
+                ViewportGestureRejection::ConnectionInProgress,
+            ),
+        ])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}
