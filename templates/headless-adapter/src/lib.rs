@@ -36,6 +36,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
             node_resize_scenario(),
             delete_selection_scenario(),
             viewport_pan_scenario(),
+            visible_node_ids_scenario(),
             viewport_animation_scenario(),
             viewport_pan_inertia_scenario(),
         ])
@@ -90,6 +91,13 @@ pub fn run_delete_selection_smoke() -> Result<ConformanceRunReport, String> {
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
         &viewport_animation_scenario(),
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn run_visible_node_ids_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &visible_node_ids_scenario(),
     )
     .map_err(|err| err.to_string())
 }
@@ -308,6 +316,56 @@ fn viewport_pan_scenario() -> ConformanceScenario {
             ConformanceTraceEvent::gesture(end_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMoveEnd(end)),
         ])
+}
+
+fn visible_node_ids_scenario() -> ConformanceScenario {
+    let inside = NodeId::from_u128(70);
+    let partial = NodeId::from_u128(71);
+    let outside = NodeId::from_u128(72);
+    let mut graph = Graph::new(GraphId::from_u128(13));
+    graph.nodes.insert(
+        inside,
+        template_node(
+            CanvasPoint { x: 0.0, y: 0.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+    graph.nodes.insert(
+        partial,
+        template_node(
+            CanvasPoint { x: 95.0, y: 95.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+    graph.nodes.insert(
+        outside,
+        template_node(
+            CanvasPoint { x: 180.0, y: 0.0 },
+            Vec::new(),
+            Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            }),
+        ),
+    );
+
+    ConformanceScenario::new("template visible node ids", graph)
+        .with_actions([ConformanceAction::assert_visible_node_ids(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [inside, partial],
+        )])
+        .with_expected_trace([])
 }
 
 fn viewport_animation_scenario() -> ConformanceScenario {
@@ -587,7 +645,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 7);
+        assert_eq!(report.scenario_count(), 8);
     }
 
     #[test]
@@ -627,6 +685,13 @@ mod tests {
     }
 
     #[test]
+    fn visible_node_ids_smoke_runs_as_single_scenario() {
+        let report = run_visible_node_ids_smoke().expect("visible node ids scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
     fn viewport_pan_inertia_smoke_runs_as_single_scenario() {
         let report =
             run_viewport_pan_inertia_smoke().expect("viewport pan inertia scenario runs");
@@ -647,7 +712,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 7);
+        assert_eq!(report.scenario_count(), 8);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

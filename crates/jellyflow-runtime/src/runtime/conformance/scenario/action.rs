@@ -123,6 +123,10 @@ pub enum ConformanceAction {
         pan: CanvasPoint,
         zoom: f32,
     },
+    AssertVisibleNodeIds {
+        viewport_size: CanvasSize,
+        expected: Vec<NodeId>,
+    },
     SetSelection {
         nodes: Vec<NodeId>,
         edges: Vec<EdgeId>,
@@ -161,6 +165,7 @@ impl ConformanceAction {
             Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
             Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
             Self::SetViewport { .. } => "set_viewport",
+            Self::AssertVisibleNodeIds { .. } => "assert_visible_node_ids",
             Self::SetSelection { .. } => "set_selection",
             Self::EmitGesture { .. } => "emit_gesture",
         }
@@ -382,6 +387,16 @@ impl ConformanceAction {
 
     pub fn set_viewport(pan: CanvasPoint, zoom: f32) -> Self {
         Self::SetViewport { pan, zoom }
+    }
+
+    pub fn assert_visible_node_ids(
+        viewport_size: CanvasSize,
+        expected: impl IntoIterator<Item = NodeId>,
+    ) -> Self {
+        Self::AssertVisibleNodeIds {
+            viewport_size,
+            expected: expected.into_iter().collect(),
+        }
     }
 
     pub fn set_selection(

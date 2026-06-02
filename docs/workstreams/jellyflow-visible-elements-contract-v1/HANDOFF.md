@@ -5,8 +5,8 @@ Last updated: 2026-06-02
 
 ## Current State
 
-JVE-010 and JVE-020 are complete: the lane is open, source coverage is recorded, and the runtime
-visible node id contract exists.
+JVE-010, JVE-020, and JVE-030 are complete: the lane is open, source coverage is recorded, the
+runtime visible node id contract exists, and conformance/template smoke can assert it.
 
 Jellyflow now exposes the adapter-facing visible-node seam:
 
@@ -17,13 +17,20 @@ Jellyflow now exposes the adapter-facing visible-node seam:
 - `NodeGraphStore::visible_node_ids(viewport_size)` reads current view-state transform and resolved
   rendering interaction, including `only_render_visible_elements`.
 
-The remaining seam is adapter-facing conformance/template coverage that can assert visible node ids
-before renderer-specific smoke tests.
+JVE-030 added:
+
+- `ConformanceAction::AssertVisibleNodeIds`;
+- runner comparison against `NodeGraphStore::visible_node_ids(viewport_size)`;
+- runtime conformance and adapter-conformance fixture coverage;
+- a headless adapter template visible-node scenario.
+
+The remaining work is documentation, closeout evidence, and explicit follow-on split for visible
+edge ids plus real spatial indexing.
 
 ## Next Task
 
-JVE-030: add conformance and template smoke coverage that lets adapters assert visible node ids
-before renderer-specific smoke tests.
+JVE-040: document visible node runtime/adapter boundaries, record fresh evidence, and close or split
+visible edge/spatial-index follow-ons.
 
 ## Decisions Since Opening
 
@@ -35,6 +42,8 @@ before renderer-specific smoke tests.
   same contract.
 - Land the visible-node API in `runtime::rendering` beside existing renderer-neutral render-order
   helpers instead of creating a separate `runtime::visible` module.
+- Model visible-node conformance as an assertion action with no trace output, because the behavior
+  is a renderer planning query rather than a mutating interaction.
 
 ## Validation To Run
 
@@ -56,6 +65,8 @@ cargo test --manifest-path templates/headless-adapter/Cargo.toml
 cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
+These JVE-030 commands passed on 2026-06-02.
+
 For closeout:
 
 ```bash
@@ -67,5 +78,6 @@ git diff --check
 
 ## Next Recommended Action
 
-Start JVE-030 by adding a conformance action/assertion for visible node ids, then wire the template
-adapter smoke scenario to use the same contract.
+Start JVE-040 by updating README/runtime README/CONTEXT, then run the closeout package and metadata
+gates. Keep visible edge ids and real spatial indexing as explicit follow-ons rather than broadening
+this v1 contract.

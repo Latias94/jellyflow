@@ -17,6 +17,33 @@ fn adapter_conformance_fixture_runner_records_viewport_and_selection_ordering() 
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_visible_node_ids() {
+    let (mut graph, node_id, outside, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
+    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
+    outside_node.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+
+    let scenario = ConformanceScenario::new("visible node ids", graph)
+        .with_actions([ConformanceAction::assert_visible_node_ids(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [node_id],
+        )])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_auto_pan_frame() {
     let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let mut editor_config = crate::io::NodeGraphEditorConfig::default();

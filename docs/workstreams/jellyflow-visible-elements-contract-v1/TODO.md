@@ -35,7 +35,7 @@ Last updated: 2026-06-02
 
 ## M2 - Conformance And Template Coverage
 
-- [ ] JVE-030 [owner=codex] [deps=JVE-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests,templates/headless-adapter]
+- [x] JVE-030 [owner=codex] [deps=JVE-020] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests,templates/headless-adapter]
   Goal: Add conformance and template smoke coverage that lets adapters assert visible node ids
   before renderer-specific smoke tests.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo
@@ -45,8 +45,9 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: conformance action/runner tests, adapter conformance traces, template scenario.
   Context: docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JVE-030 must record DONE with validation and evidence.
+  Handoff: DONE 2026-06-02. Added `assert_visible_node_ids` to conformance fixtures and the
+  headless adapter template suite.
+  State: TASKS.jsonl entry JVE-030 records DONE with validation and evidence.
 
 ## M3 - Documentation And Closeout
 

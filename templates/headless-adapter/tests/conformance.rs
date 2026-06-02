@@ -7,7 +7,7 @@ fn template_adapter_conformance_suite_matches() {
     let report = adapter_smoke_suite().run();
 
     assert!(report.is_match(), "{report}");
-    assert_eq!(report.scenario_count(), 7);
+    assert_eq!(report.scenario_count(), 8);
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn template_adapter_fixture_directory_matches() {
 
     assert!(report.is_match(), "{report}");
     assert_eq!(report.file_count(), 1);
-    assert_eq!(report.scenario_count(), 7);
+    assert_eq!(report.scenario_count(), 8);
 }
 
 fn temp_fixture_dir() -> std::path::PathBuf {

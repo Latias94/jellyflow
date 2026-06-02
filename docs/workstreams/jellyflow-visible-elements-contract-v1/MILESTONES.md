@@ -35,7 +35,8 @@ Exit criteria:
 - template adapter suite includes a visible node smoke scenario;
 - focused conformance/template gates pass.
 
-Status: pending.
+Status: complete on 2026-06-02. `assert_visible_node_ids` is available in conformance fixtures and
+the headless adapter template suite includes a visible-node scenario.
 
 ## M3 - Documentation And Closeout
 

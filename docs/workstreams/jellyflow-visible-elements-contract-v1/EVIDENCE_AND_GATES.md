@@ -117,6 +117,39 @@ Fresh verification:
   `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`, because JVE-020's approved
   gate is the focused visible-node runtime contract plus public surface smoke.
 
+### 2026-06-02 - JVE-030 Conformance And Template Coverage
+
+Scope: `crates/jellyflow-runtime/src/runtime/conformance`,
+`crates/jellyflow-runtime/src/runtime/tests`, `templates/headless-adapter`
+
+Result:
+
+- Added `ConformanceAction::AssertVisibleNodeIds`.
+- Added runner execution that compares `NodeGraphStore::visible_node_ids(viewport_size)` with
+  expected ids.
+- Added runtime conformance and adapter-conformance fixture tests.
+- Added a visible-node scenario to the headless adapter template suite, increasing the built-in
+  suite from 7 to 8 scenarios.
+- Added public surface serde coverage for the new fixture action.
+
+Behavior proven:
+
+- conformance fixtures can assert visible node ids without renderer traces;
+- adapter conformance can run the same assertion through the fixture runner;
+- the template adapter suite can save/check a suite containing the visible-node assertion;
+- the CLI `check` command reports the visible-node scenario as an empty-trace assertion.
+
+Fresh verification:
+
+- Passed 2026-06-02: `cargo fmt --check`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime conformance`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime adapter_conformance`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface`
+- Passed 2026-06-02: `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
+- Passed 2026-06-02: `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- Passed 2026-06-02: `jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-elements-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl`
+- Passed 2026-06-02: `git diff --check`
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.
