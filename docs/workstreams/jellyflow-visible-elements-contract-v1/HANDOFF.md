@@ -5,22 +5,25 @@ Last updated: 2026-06-02
 
 ## Current State
 
-JVE-010 is complete: the lane is open and source coverage is recorded.
+JVE-010 and JVE-020 are complete: the lane is open, source coverage is recorded, and the runtime
+visible node id contract exists.
 
-Jellyflow already has most implementation pieces:
+Jellyflow now exposes the adapter-facing visible-node seam:
 
-- `runtime::utils::get_nodes_inside` performs deterministic linear node queries with sorted output.
-- `runtime::viewport::ViewportTransform` converts screen coordinates to canvas coordinates.
-- `NodeGraphInteractionState::rendering_interaction` exposes `only_render_visible_elements` and
-  spatial tuning.
+- `runtime::rendering::VisibleNodeIdsRequest` carries transform, logical viewport size, culling
+  policy, node-origin fallback, and optional fallback size.
+- `runtime::rendering::resolve_visible_node_ids` performs deterministic visible-node planning on
+  top of `runtime::utils::get_nodes_inside`.
+- `NodeGraphStore::visible_node_ids(viewport_size)` reads current view-state transform and resolved
+  rendering interaction, including `only_render_visible_elements`.
 
-The missing seam is an adapter-facing runtime/store contract that combines those pieces like
-XyFlow's `useVisibleNodeIds`.
+The remaining seam is adapter-facing conformance/template coverage that can assert visible node ids
+before renderer-specific smoke tests.
 
 ## Next Task
 
-JVE-020: add a renderer-neutral visible node id planner and store helper using viewport transform,
-logical viewport size, node-origin policy, and `only_render_visible_elements`.
+JVE-030: add conformance and template smoke coverage that lets adapters assert visible node ids
+before renderer-specific smoke tests.
 
 ## Decisions Since Opening
 
@@ -30,15 +33,27 @@ logical viewport size, node-origin policy, and `only_render_visible_elements`.
   fallback is too slow.
 - Use the current runtime linear scan as the behavior baseline so a future index can swap behind the
   same contract.
+- Land the visible-node API in `runtime::rendering` beside existing renderer-neutral render-order
+  helpers instead of creating a separate `runtime::visible` module.
 
 ## Validation To Run
 
-For JVE-020:
+JVE-020 passed:
 
 ```bash
 cargo fmt --check
 cargo nextest run -p jellyflow-runtime visible_node
 cargo nextest run -p jellyflow-runtime --test public_surface
+```
+
+For JVE-030:
+
+```bash
+cargo fmt --check
+cargo nextest run -p jellyflow-runtime conformance
+cargo nextest run -p jellyflow-runtime adapter_conformance
+cargo test --manifest-path templates/headless-adapter/Cargo.toml
+cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
 For closeout:
@@ -52,9 +67,5 @@ git diff --check
 
 ## Next Recommended Action
 
-Start JVE-020 by adding a small runtime visible module. The first tests should prove:
-
-- culling disabled returns all non-hidden node ids;
-- culling enabled returns partially visible node ids for the current viewport;
-- invalid viewport size or transform returns no visible nodes instead of panicking;
-- store helper reads `only_render_visible_elements` from resolved runtime tuning.
+Start JVE-030 by adding a conformance action/assertion for visible node ids, then wire the template
+adapter smoke scenario to use the same contract.

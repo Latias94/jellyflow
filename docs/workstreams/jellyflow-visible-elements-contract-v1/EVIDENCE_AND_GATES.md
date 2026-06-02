@@ -84,6 +84,39 @@ Fresh verification:
   - `jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-elements-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl`
   - `git diff --check`
 
+### 2026-06-02 - JVE-020 Visible Node Runtime Contract
+
+Scope: `crates/jellyflow-runtime/src/runtime`, `crates/jellyflow-runtime/src/runtime/tests`,
+`crates/jellyflow-runtime/tests/public_surface.rs`
+
+Result:
+
+- Added `runtime::rendering::VisibleNodeIdsRequest`.
+- Added `runtime::rendering::resolve_visible_node_ids` using the existing deterministic
+  `get_nodes_inside` linear scan.
+- Added `NodeGraphStore::visible_node_ids(viewport_size)` using current view-state transform,
+  resolved `only_render_visible_elements`, and node-origin fallback.
+- Added runtime and public surface tests.
+
+Behavior proven:
+
+- culling enabled returns partially visible, non-hidden nodes for the current viewport;
+- culling disabled returns all non-hidden node ids deterministically;
+- invalid viewport size returns an empty list instead of panicking;
+- store helper reads runtime tuning and node-origin config;
+- unsized nodes enter culling only when a fallback size is supplied.
+
+Fresh verification:
+
+- Passed 2026-06-02: `cargo fmt --check`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime visible_node`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface`
+- Passed 2026-06-02: `jq empty docs/workstreams/jellyflow-visible-elements-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-elements-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl`
+- Passed 2026-06-02: `git diff --check`
+- Deferred until JVE-040 closeout: full `cargo nextest run -p jellyflow-runtime` and
+  `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`, because JVE-020's approved
+  gate is the focused visible-node runtime contract plus public surface smoke.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

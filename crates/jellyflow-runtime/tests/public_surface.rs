@@ -390,6 +390,17 @@ fn explicit_modules_expose_their_owned_surfaces() {
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
+    let visible_request = rendering::VisibleNodeIdsRequest::new(
+        transform,
+        CanvasSize {
+            width: 100.0,
+            height: 80.0,
+        },
+    );
+    let visible_ids =
+        rendering::resolve_visible_node_ids(selection_store.lookups(), visible_request);
+    assert!(visible_ids.is_empty());
+    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> = NodeGraphStore::visible_node_ids;
     let render_order = rendering::resolve_node_render_order(
         &graph,
         &NodeGraphViewState::default(),

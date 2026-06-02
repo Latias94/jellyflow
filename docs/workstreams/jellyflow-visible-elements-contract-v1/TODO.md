@@ -20,16 +20,18 @@ Last updated: 2026-06-02
 
 ## M1 - Visible Node Runtime Contract
 
-- [ ] JVE-020 [owner=codex] [deps=JVE-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] JVE-020 [owner=codex] [deps=JVE-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add a renderer-neutral visible node id planner and store helper using viewport transform,
   logical viewport size, node-origin policy, and `only_render_visible_elements`.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime visible_node; cargo nextest
   run -p jellyflow-runtime --test public_surface
   Review: review-workstream before accepting completion.
-  Evidence: runtime visible module, store helper, runtime tests, public surface smoke.
+  Evidence: `runtime::rendering::VisibleNodeIdsRequest`, `resolve_visible_node_ids`,
+  `NodeGraphStore::visible_node_ids`, rendering tests, public surface smoke.
   Context: docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JVE-020 must record DONE with validation and evidence.
+  Handoff: DONE 2026-06-02. Visible node ids landed in `runtime::rendering` beside render-order
+  helpers, with deterministic linear lookup behavior and store tuning integration.
+  State: TASKS.jsonl entry JVE-020 records DONE with validation and evidence.
 
 ## M2 - Conformance And Template Coverage
 

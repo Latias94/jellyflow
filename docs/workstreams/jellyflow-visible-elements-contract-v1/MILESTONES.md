@@ -24,7 +24,8 @@ Exit criteria:
 - culling enabled returns partially visible node ids from viewport bounds;
 - public surface smoke proves the module is externally reachable.
 
-Status: pending.
+Status: complete on 2026-06-02. Implementation landed in `runtime::rendering` beside existing
+renderer-neutral render-order helpers.
 
 ## M2 - Conformance And Template Coverage
 

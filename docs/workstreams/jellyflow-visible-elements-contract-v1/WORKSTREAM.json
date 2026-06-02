@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-visible-elements-contract-v1/CONTEXT.jsonl",
-  "current_task": "JVE-020",
+  "current_task": "JVE-030",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime visible_node",
@@ -64,6 +64,11 @@
       "date": "2026-06-02",
       "task": "JVE-010",
       "summary": "Opened the visible elements contract lane from XyFlow onlyRenderVisibleElements source evidence, current Jellyflow get_nodes_inside behavior, and deferred spatial-index follow-ons."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JVE-020",
+      "summary": "Added runtime::rendering visible node id planning and NodeGraphStore::visible_node_ids using viewport transform, node-origin config, only_render_visible_elements tuning, and existing get_nodes_inside behavior."
     }
   ],
   "adr_refs": [
@@ -74,6 +79,7 @@
     "repo-ref/xyflow/packages/react/src/hooks/useVisibleNodeIds.ts",
     "repo-ref/xyflow/packages/system/src/utils/graph.ts",
     "repo-ref/xyflow/packages/react/src/types/component-props.ts",
+    "crates/jellyflow-runtime/src/runtime/rendering.rs",
     "crates/jellyflow-runtime/src/runtime/utils/bounds.rs",
     "crates/jellyflow-runtime/src/runtime/viewport/transform.rs",
     "crates/jellyflow-runtime/src/io/config/state/views/rendering.rs"
@@ -89,7 +95,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "next_task",
-    "next_task": "JVE-020",
-    "notes": "Continue with JVE-020: add a renderer-neutral visible node id planner and store helper. Keep visible edge culling, real spatial index backends, renderer UI, screenshots, and pixels out of scope."
+    "next_task": "JVE-030",
+    "notes": "Continue with JVE-030: add conformance and template smoke coverage for adapter-facing visible node id assertions. Keep visible edge culling, real spatial index backends, renderer UI, screenshots, and pixels out of scope."
   }
 }
