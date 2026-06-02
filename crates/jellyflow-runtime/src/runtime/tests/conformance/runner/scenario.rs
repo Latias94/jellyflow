@@ -232,6 +232,20 @@ fn conformance_runner_reports_compact_trace_mismatches() {
 }
 
 #[test]
+fn conformance_runner_errors_when_mutating_action_produces_no_commit() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let scenario = ConformanceScenario::new("empty delete runner", graph)
+        .with_actions([ConformanceAction::apply_delete_selection()]);
+
+    let err = run_conformance_scenario(&scenario).expect_err("empty delete should error");
+
+    assert_eq!(err.scenario, "empty delete runner");
+    assert_eq!(err.action_index, 0);
+    assert_eq!(err.action_kind, "apply_delete_selection");
+    assert!(err.message.contains("produced no commit"));
+}
+
+#[test]
 fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_trace() {
     let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
     let view_state = node_pointer_down_view_state(other, edge_id);

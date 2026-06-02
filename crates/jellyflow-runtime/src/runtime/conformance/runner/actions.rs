@@ -18,13 +18,13 @@ pub(super) fn execute_action(
             .dispatch_transaction(transaction)
             .map(|_| ())
             .map_err(|err| err.to_string()),
-        ConformanceAction::ApplyNodeDrag { node, to } => store
-            .apply_node_drag(NodeDragRequest {
+        ConformanceAction::ApplyNodeDrag { node, to } => require_commit(
+            store.apply_node_drag(NodeDragRequest {
                 node: *node,
                 to: *to,
-            })
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
+            }),
+            "apply_node_drag",
+        ),
         ConformanceAction::ApplyNodePointerDown { input } => {
             store.apply_node_pointer_down(input.into_runtime());
             Ok(())
@@ -43,26 +43,24 @@ pub(super) fn execute_action(
                 ))
             }
         }
-        ConformanceAction::ApplyConnectEdge { request } => store
-            .apply_connect_edge(*request)
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
-        ConformanceAction::ApplyReconnectEdge { request } => store
-            .apply_reconnect_edge(*request)
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
-        ConformanceAction::ApplyNodeNudge { request } => store
-            .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
-        ConformanceAction::ApplyDeleteSelection => store
-            .apply_keyboard_intent(KeyboardIntent::DeleteSelection)
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
-        ConformanceAction::ApplyDeleteSelectionForKey { key } => store
-            .apply_keyboard_intent(KeyboardIntent::DeleteSelectionForKey(key.0))
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyConnectEdge { request } => {
+            require_commit(store.apply_connect_edge(*request), "apply_connect_edge")
+        }
+        ConformanceAction::ApplyReconnectEdge { request } => {
+            require_commit(store.apply_reconnect_edge(*request), "apply_reconnect_edge")
+        }
+        ConformanceAction::ApplyNodeNudge { request } => require_commit(
+            store.apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime())),
+            "apply_node_nudge",
+        ),
+        ConformanceAction::ApplyDeleteSelection => require_commit(
+            store.apply_keyboard_intent(KeyboardIntent::DeleteSelection),
+            "apply_delete_selection",
+        ),
+        ConformanceAction::ApplyDeleteSelectionForKey { key } => require_commit(
+            store.apply_keyboard_intent(KeyboardIntent::DeleteSelectionForKey(key.0)),
+            "apply_delete_selection_for_key",
+        ),
         ConformanceAction::ApplyAutoPan { request } => store
             .apply_auto_pan(*request)
             .map(|_| ())
@@ -115,6 +113,17 @@ pub(super) fn execute_action(
             store.emit_gesture(event.clone());
             Ok(())
         }
+    }
+}
+
+fn require_commit<T, E: ToString>(
+    result: Result<Option<T>, E>,
+    action: &'static str,
+) -> Result<(), String> {
+    match result {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!("{action} produced no commit")),
+        Err(err) => Err(err.to_string()),
     }
 }
 
