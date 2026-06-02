@@ -223,3 +223,44 @@ Added ADR 0004 to keep Jellyflow resize containment group-based, defer XyFlow no
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Resize lifecycle callbacks
+
+**Date**: 2026-06-02
+**Task**: Resize lifecycle callbacks
+**Package**: jellyflow-runtime
+**Branch**: `main`
+
+### Summary
+
+Added headless resize start/update/end gesture events, XyFlow callback projection, conformance trace coverage, and headless adapter template smoke coverage.
+
+### Main Changes
+
+- Added `NodeResizeStart`, `NodeResizeUpdate`, `NodeResizeEnd`, and `NodeResizeEndOutcome` gesture payloads.
+- Projected resize lifecycle gestures through `NodeGraphGestureCallbacks` and conformance callback traces.
+- Added conformance/public-surface coverage and updated the headless adapter template resize smoke scenario.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `01a1576` | (see git log) |
+
+### Testing
+
+- [OK] `cargo fmt --check`
+- [OK] `cargo nextest run -p jellyflow-runtime conformance_runner_executes_node_resize_lifecycle_fixture_and_matches_trace`
+- [OK] `cargo nextest run -p jellyflow-runtime conformance_module_exposes_serde_friendly_headless_fixture_vocabulary explicit_modules_expose_their_owned_surfaces`
+- [OK] `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
+- [OK] `cargo nextest run -p jellyflow-runtime resize`
+- [OK] `python3 .trellis/scripts/task.py validate .trellis/tasks/06-02-resize-lifecycle-callbacks`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

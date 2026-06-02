@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-06-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~225 | Active |
+| `journal-1.md` | ~259 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-06-02 | Resize lifecycle callbacks | `01a1576` | `main` |
 | 5 | 2026-06-02 | Resize containment ADR | `f5dddf3` | `main` |
 | 4 | 2026-06-02 | Pointer resize parity | `74407c3` | `main` |
 | 3 | 2026-06-02 | XyFlow gap review | `1af9007` | `main` |
