@@ -65,12 +65,12 @@ def jellyflow_runtime_main_rs() -> str:
                 Node, NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
-            use jellyflow_runtime::runtime::fit_view::{
-                compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
-            };
             use jellyflow_runtime::runtime::conformance::{
                 run_conformance_scenario, ConformanceAction, ConformanceScenario,
-                ConformanceTraceEvent,
+                ConformanceSuite, ConformanceTraceEvent,
+            };
+            use jellyflow_runtime::runtime::fit_view::{
+                compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
             };
             use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
             use jellyflow_runtime::runtime::geometry::{
@@ -144,6 +144,29 @@ def jellyflow_runtime_main_rs() -> str:
                 let conformance_report = run_conformance_scenario(&conformance_scenario)
                     .expect("conformance fixture runs");
                 assert!(conformance_report.is_match(), "{conformance_report}");
+
+                let suite_path = std::env::temp_dir().join(format!(
+                    "jellyflow-external-suite-{}.json",
+                    std::process::id()
+                ));
+                let suite = ConformanceSuite::new("external adapter suite")
+                    .with_scenarios([conformance_scenario]);
+                suite.save_json(&suite_path).expect("save conformance suite");
+                let loaded_suite =
+                    ConformanceSuite::load_json(&suite_path).expect("load conformance suite");
+                let suite_report = loaded_suite.run();
+                assert!(suite_report.is_match(), "{suite_report}");
+                assert!(
+                    ConformanceSuite::load_json_if_exists(&suite_path)
+                        .expect("load optional conformance suite")
+                        .is_some()
+                );
+                std::fs::remove_file(&suite_path).expect("remove conformance suite");
+                assert!(
+                    ConformanceSuite::load_json_if_exists(&suite_path)
+                        .expect("missing optional conformance suite")
+                        .is_none()
+                );
 
                 let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
                     CanvasRect {
