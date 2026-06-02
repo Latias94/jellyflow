@@ -2,7 +2,7 @@ use super::super::harness::{HarnessEvent, InteractionHarness};
 use super::support::{selection_fixture, selection_rect};
 
 use crate::io::NodeGraphViewState;
-use crate::runtime::selection::{SelectionBoxOptions, SelectionBoxResult};
+use crate::runtime::selection::{SelectionBoxOptions, SelectionBoxResult, SelectionModifier};
 
 #[test]
 fn selection_box_replaces_selection_with_policy_filtered_sorted_result() {
@@ -44,7 +44,7 @@ fn selection_box_additive_mode_unions_with_existing_selection_and_sorts() {
     let result = harness.store_mut().apply_selection_box(
         selection_rect(),
         SelectionBoxOptions {
-            additive: true,
+            modifier: SelectionModifier::Additive,
             ..SelectionBoxOptions::default()
         },
     );

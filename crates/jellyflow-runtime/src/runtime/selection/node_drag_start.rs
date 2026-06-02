@@ -3,19 +3,29 @@ use crate::runtime::policy::resolve_node_interaction_policy;
 use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{EdgeId, Graph, GroupId, NodeId};
 
+use super::types::SelectionModifier;
+
 /// Input for resolving the selection side-effect of starting a node drag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeDragStartSelectionInput {
     pub node: NodeId,
-    pub multi_selection_active: bool,
+    pub modifier: SelectionModifier,
 }
 
 impl NodeDragStartSelectionInput {
     pub fn new(node: NodeId, multi_selection_active: bool) -> Self {
         Self {
             node,
-            multi_selection_active,
+            modifier: if multi_selection_active {
+                SelectionModifier::Additive
+            } else {
+                SelectionModifier::Replace
+            },
         }
+    }
+
+    pub fn with_modifier(node: NodeId, modifier: SelectionModifier) -> Self {
+        Self { node, modifier }
     }
 }
 
@@ -99,7 +109,7 @@ pub fn resolve_node_drag_start_selection(
     let selectable = resolve_node_interaction_policy(node, interaction).selectable;
     let selection = interaction.selection_interaction();
 
-    if (!selection.select_nodes_on_drag || !selectable) && !input.multi_selection_active {
+    if (!selection.select_nodes_on_drag || !selectable) && !input.modifier.additive() {
         return if selected {
             NodeDragStartSelectionAction::Unchanged
         } else {
@@ -112,12 +122,12 @@ pub fn resolve_node_drag_start_selection(
     }
 
     if !selected {
-        if input.multi_selection_active {
+        if input.modifier.additive() {
             NodeDragStartSelectionAction::Add(input.node)
         } else {
             NodeDragStartSelectionAction::SelectOnly(input.node)
         }
-    } else if input.multi_selection_active {
+    } else if input.modifier.additive() {
         NodeDragStartSelectionAction::Remove(input.node)
     } else {
         NodeDragStartSelectionAction::Unchanged

@@ -72,6 +72,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let selection_result = selection::SelectionBoxResult::default();
     assert!(selection_result.is_empty());
     let _selection_options = selection::SelectionBoxOptions::default();
+    let _selection_modifier = selection::SelectionModifier::Additive;
     assert!(selection::selection_drag_threshold_met(
         selection::SelectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0, false),
     ));

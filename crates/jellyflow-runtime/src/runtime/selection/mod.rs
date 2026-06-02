@@ -16,4 +16,4 @@ pub use compute::compute_selection_box;
 pub use node_drag_start::{
     NodeDragStartSelectionAction, NodeDragStartSelectionInput, resolve_node_drag_start_selection,
 };
-pub use types::{SelectionBoxOptions, SelectionBoxResult};
+pub use types::{SelectionBoxOptions, SelectionBoxResult, SelectionModifier};

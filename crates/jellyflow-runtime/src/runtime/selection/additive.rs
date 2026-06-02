@@ -9,7 +9,7 @@ pub(super) fn apply_additive_selection(
     view_state: &NodeGraphViewState,
     options: SelectionBoxOptions,
 ) -> SelectionBoxResult {
-    if !options.additive {
+    if !options.modifier.additive() {
         return result;
     }
 
