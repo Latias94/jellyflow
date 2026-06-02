@@ -21,7 +21,9 @@ use crate::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeKind};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, Group, GroupId, NodeExtent,
+};
 
 mod scenario;
 mod suite;

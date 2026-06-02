@@ -72,7 +72,7 @@ cargo test --manifest-path templates/headless-adapter/Cargo.toml
 cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 ```
 
-Status: pending.
+Status: complete on 2026-06-02.
 
 ## M4 - Documentation And Closeout
 

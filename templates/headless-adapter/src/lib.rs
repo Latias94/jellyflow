@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_core::{
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeExtent, NodeId,
+    NodeKindKey,
+};
 use jellyflow_runtime::io::NodeGraphPanInertiaTuning;
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
@@ -23,6 +26,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template")
         .with_scenarios([
             node_drag_scenario(),
+            node_drag_parent_expansion_scenario(),
             viewport_pan_scenario(),
             viewport_animation_scenario(),
             viewport_pan_inertia_scenario(),
@@ -54,6 +58,13 @@ pub fn approve_fixture_directory(
 pub fn run_node_drag_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(&node_drag_scenario())
         .map_err(|err| err.to_string())
+}
+
+pub fn run_node_drag_parent_expansion_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &node_drag_parent_expansion_scenario(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
@@ -111,6 +122,31 @@ fn node_drag_scenario() -> ConformanceScenario {
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
             ConformanceTraceEvent::gesture(update_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update)),
+        ])
+}
+
+fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
+    let node_id = NodeId::from_u128(3);
+    let parent_id = GroupId::from_u128(30);
+    let graph = graph_with_parent_expanding_node(node_id, parent_id);
+    let target = CanvasPoint { x: 95.0, y: 95.0 };
+
+    ConformanceScenario::new("template node drag parent expansion", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_drag(node_id, target)])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_DRAG_TRANSACTION_LABEL),
+                ["set_node_pos", "set_group_rect"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
         ])
 }
 
@@ -318,6 +354,33 @@ fn graph_with_node(node_id: NodeId) -> Graph {
     graph
 }
 
+fn graph_with_parent_expanding_node(node_id: NodeId, parent_id: GroupId) -> Graph {
+    let mut graph = graph_with_node(node_id);
+    graph.groups.insert(
+        parent_id,
+        Group {
+            title: "Parent".to_owned(),
+            rect: CanvasRect {
+                origin: CanvasPoint { x: 0.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                },
+            },
+            color: None,
+        },
+    );
+    let node = graph.nodes.get_mut(&node_id).expect("node exists");
+    node.parent = Some(parent_id);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(true);
+    node.size = Some(CanvasSize {
+        width: 20.0,
+        height: 20.0,
+    });
+    graph
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,12 +391,20 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 4);
+        assert_eq!(report.scenario_count(), 5);
     }
 
     #[test]
     fn node_drag_smoke_runs_as_single_scenario() {
         let report = run_node_drag_smoke().expect("node drag scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn node_drag_parent_expansion_smoke_runs_as_single_scenario() {
+        let report = run_node_drag_parent_expansion_smoke()
+            .expect("node drag parent expansion scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -366,7 +437,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 4);
+        assert_eq!(report.scenario_count(), 5);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

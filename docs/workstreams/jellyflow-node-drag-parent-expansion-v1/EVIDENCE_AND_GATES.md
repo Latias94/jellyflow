@@ -165,6 +165,42 @@ Fresh verification:
 - `cargo nextest run -p jellyflow-runtime drag_parent_expansion`: passed, 4 tests run, 4 passed.
 - `cargo nextest run -p jellyflow-runtime drag`: passed, 42 tests run, 42 passed.
 
+### 2026-06-02 - JNPE-040 Conformance And Template Parent Expansion Traces
+
+Scope:
+
+- `crates/jellyflow-runtime/src/runtime/tests/conformance/runner/scenario.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/mod.rs`
+- `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/node_drag.rs`
+- `templates/headless-adapter/src/lib.rs`
+- `templates/headless-adapter/tests/conformance.rs`
+
+Result:
+
+- Reused existing `ConformanceAction::ApplyNodeDrag`; no fixture schema change was needed.
+- Added a runtime conformance runner scenario that records `set_node_pos` plus `set_group_rect`.
+- Added an adapter conformance scenario for parent expansion transaction traces and callback counts.
+- Added a fifth headless adapter template smoke scenario: `template node drag parent expansion`.
+
+Behavior proven:
+
+- Conformance fixtures can express parent expansion through the same interaction boundary adapters
+  already call for node drag.
+- XyFlow callback traces still report one node change and zero edge changes while the graph commit
+  op kinds include `set_group_rect`.
+- The external headless adapter template can save, load, and check a built-in suite containing a
+  parent expansion scenario before renderer-specific smoke tests.
+
+Fresh verification:
+
+- `cargo fmt --check`: passed.
+- `cargo nextest run -p jellyflow-runtime conformance`: passed, 53 tests run, 53 passed.
+- `cargo nextest run -p jellyflow-runtime adapter_conformance`: passed, 17 tests run, 17 passed.
+- `cargo test --manifest-path templates/headless-adapter/Cargo.toml`: passed, 8 tests run, 8
+  passed.
+- `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`: passed, 5 matching
+  scenarios.
+
 ## Notes
 
 Fresh command evidence must be appended here before any task or lane completion claim.

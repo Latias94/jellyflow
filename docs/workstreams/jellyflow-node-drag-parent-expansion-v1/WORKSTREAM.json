@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl",
-  "current_task": "JNPE-040",
+  "current_task": "JNPE-050",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime drag_parent_expansion",
@@ -74,6 +74,11 @@
       "date": "2026-06-02",
       "task": "JNPE-030",
       "summary": "Proved deterministic multi-parent expansion and recorded that Jellyflow absolute node coordinates do not require sibling compensation ops."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "JNPE-040",
+      "summary": "Added parent expansion conformance/template traces through the existing ApplyNodeDrag action without changing fixture schema."
     }
   ],
   "adr_refs": [
@@ -100,7 +105,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "next_task",
-    "next_task": "JNPE-040",
-    "notes": "Continue with JNPE-040: decide and implement conformance/template coverage for parent expansion transactions and adapter-facing traces, or record why existing transaction dispatch is enough."
+    "next_task": "JNPE-050",
+    "notes": "Continue with JNPE-050: document parent expansion runtime/adapter boundaries, run package closeout gates, and close or split any remaining resize, nested-cascade, renderer, or coordinate-model follow-ons."
   }
 }

@@ -25,7 +25,10 @@ use crate::runtime::viewport::{
     ViewportPointerButton, ViewportScrollInput, ViewportTransform, plan_viewport_pan_inertia,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, EdgeKind, PortDirection};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Group, GroupId, NodeExtent,
+    PortDirection,
+};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::EdgeEndpoints;
 

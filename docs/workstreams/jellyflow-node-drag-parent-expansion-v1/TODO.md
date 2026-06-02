@@ -49,7 +49,7 @@ Last updated: 2026-06-02
 
 ## M3 - Conformance And Adapter Trace Coverage
 
-- [ ] JNPE-040 [owner=codex] [deps=JNPE-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
+- [x] JNPE-040 [owner=codex] [deps=JNPE-030] [scope=crates/jellyflow-runtime/src/runtime/conformance,crates/jellyflow-runtime/src/runtime/tests/adapter_conformance,templates/headless-adapter]
   Goal: Add conformance/template coverage for parent expansion transactions and any adapter-facing
   node-change or callback traces affected by expanded parent groups.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime conformance; cargo nextest
@@ -59,9 +59,10 @@ Last updated: 2026-06-02
   Review: review-workstream before accepting completion.
   Evidence: conformance/template parent expansion fixtures or a documented no-schema-change decision.
   Context: docs/workstreams/jellyflow-node-drag-parent-expansion-v1/CONTEXT.jsonl.
-  Handoff: TODO.
-  State: TASKS.jsonl entry JNPE-040 must record completion, validation, evidence, and handoff
-  status.
+  Handoff: DONE 2026-06-02. `ApplyNodeDrag` already covers the runtime boundary, so no fixture
+  schema change was needed; runner, adapter conformance, and template smoke now cover
+  `set_group_rect` traces.
+  State: TASKS.jsonl entry JNPE-040 records completion, validation, evidence, and handoff status.
 
 ## M4 - Documentation And Closeout
 
