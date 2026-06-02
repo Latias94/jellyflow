@@ -62,6 +62,17 @@ impl NodePointerDownDecision {
             drag_claim,
         }
     }
+
+    pub fn apply_to_view_state(self, view_state: &mut NodeGraphViewState) {
+        self.selection.apply_to_view_state(view_state);
+    }
+
+    fn selection_after(
+        self,
+        view_state: &NodeGraphViewState,
+    ) -> Option<(Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>)> {
+        self.selection.selection_after(view_state)
+    }
 }
 
 /// Input for resolving the first node pointer-down decision.
@@ -203,8 +214,7 @@ impl NodeGraphStore {
         let interaction = self.resolved_interaction_state();
         let decision =
             resolve_node_pointer_down(self.graph(), self.view_state(), &interaction, input);
-        if let Some((nodes, edges, groups)) = decision.selection.selection_after(self.view_state())
-        {
+        if let Some((nodes, edges, groups)) = decision.selection_after(self.view_state()) {
             self.set_selection(nodes, edges, groups);
         }
         decision
