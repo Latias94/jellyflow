@@ -1,6 +1,7 @@
+use crate::runtime::conformance::{ConformanceTraceEvent, ConformanceViewChange};
 use crate::runtime::events::{
     ConnectEnd, ConnectStart, NodeDragEnd, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
-    NodeGraphStoreEvent, ViewChange, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
+    NodeGraphStoreEvent, ViewportMove, ViewportMoveEnd, ViewportMoveStart,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
@@ -60,26 +61,27 @@ impl HarnessEvent {
     }
 
     pub(super) fn from_store_event(event: NodeGraphStoreEvent<'_>) -> Self {
-        match event {
-            NodeGraphStoreEvent::DocumentReplaced { before, after } => Self::DocumentReplaced {
-                before_revision: before.graph_revision,
-                after_revision: after.graph_revision,
+        match ConformanceTraceEvent::from_store_event(event) {
+            ConformanceTraceEvent::DocumentReplaced {
+                before_revision,
+                after_revision,
+            } => Self::DocumentReplaced {
+                before_revision,
+                after_revision,
             },
-            NodeGraphStoreEvent::GraphCommitted { patch } => Self::GraphCommitted {
-                label: patch.transaction().label().map(str::to_owned),
-                op_kinds: patch
-                    .transaction()
-                    .ops()
-                    .iter()
-                    .map(serialized_graph_op_kind)
-                    .collect(),
-            },
-            NodeGraphStoreEvent::ViewChanged { changes, .. } => Self::ViewChanged {
+            ConformanceTraceEvent::GraphCommitted { label, op_kinds } => {
+                Self::GraphCommitted { label, op_kinds }
+            }
+            ConformanceTraceEvent::ViewChanged { changes } => Self::ViewChanged {
                 changes: changes
-                    .iter()
-                    .map(HarnessViewChange::from_view_change)
+                    .into_iter()
+                    .map(HarnessViewChange::from_conformance_view_change)
                     .collect(),
             },
+            ConformanceTraceEvent::Gesture(event) => Self::Gesture(event),
+            ConformanceTraceEvent::Callback(_) => {
+                unreachable!("store event projection cannot produce callback trace events")
+            }
         }
     }
 }
@@ -131,33 +133,18 @@ pub(in crate::runtime::tests) enum HarnessViewChange {
 }
 
 impl HarnessViewChange {
-    fn from_view_change(change: &ViewChange) -> Self {
+    fn from_conformance_view_change(change: ConformanceViewChange) -> Self {
         match change {
-            ViewChange::Viewport { pan, zoom } => Self::Viewport {
-                pan: *pan,
-                zoom: *zoom,
-            },
-            ViewChange::Selection {
+            ConformanceViewChange::Viewport { pan, zoom } => Self::Viewport { pan, zoom },
+            ConformanceViewChange::Selection {
                 nodes,
                 edges,
                 groups,
             } => Self::Selection {
-                nodes: nodes.clone(),
-                edges: edges.clone(),
-                groups: groups.clone(),
+                nodes,
+                edges,
+                groups,
             },
         }
     }
-}
-
-fn serialized_graph_op_kind(op: &jellyflow_core::ops::GraphOp) -> String {
-    serde_json::to_value(op)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("op")
-                .and_then(|op| op.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "unknown".to_owned())
 }
