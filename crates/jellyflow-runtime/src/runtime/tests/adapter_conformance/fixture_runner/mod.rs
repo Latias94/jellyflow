@@ -9,7 +9,7 @@ use crate::runtime::conformance::{
     ConformanceTraceEvent,
 };
 use crate::runtime::connection::{
-    ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectEdgeRequest, ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
     ConnectionTargetHandle, ConnectionTargetInput, RECONNECT_EDGE_TRANSACTION_LABEL,
     ReconnectEdgeRequest, ResolvedConnectionTarget,
 };

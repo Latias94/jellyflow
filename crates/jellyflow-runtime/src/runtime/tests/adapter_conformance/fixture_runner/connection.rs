@@ -59,6 +59,25 @@ fn adapter_conformance_fixture_runner_asserts_connection_target_policy() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_executes_connect_edge_action() {
+    let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
+    let next_in = insert_input_port(&mut graph, b, "in2");
+
+    let scenario = ConformanceScenario::new("connect edge action", graph)
+        .with_trace_config(ConformanceTraceConfig {
+            record_store_events: false,
+            record_gesture_events: false,
+            record_xyflow_callbacks: false,
+        })
+        .with_actions([ConformanceAction::apply_connect_edge(
+            ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict),
+        )])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_callbacks() {
     let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");

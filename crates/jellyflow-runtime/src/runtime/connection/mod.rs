@@ -4,12 +4,16 @@
 //! connection activation and handle proximity policy that should feel like XyFlow across renderers.
 
 mod activation;
+mod connect;
 mod handles;
 mod indicator;
 mod reconnect;
 mod target;
 
 pub use activation::{ConnectionDragActivationInput, connection_drag_threshold_met};
+pub use connect::{
+    CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeError, ConnectEdgeRequest, connect_edge_transaction,
+};
 pub use handles::{
     ClosestConnectionHandle, ClosestConnectionHandleInput, ConnectionHandleCandidate,
     ConnectionHandleRef, ConnectionHandleValidity, closest_connection_handle,

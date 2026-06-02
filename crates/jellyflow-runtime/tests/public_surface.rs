@@ -171,6 +171,10 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     let _: connection::ConnectionHandleIndicator = indicator;
     assert!(indicator.show_connection_indicator);
+    let _ = std::mem::size_of::<connection::ConnectEdgeRequest>();
+    let _ = std::mem::size_of::<connection::ConnectEdgeError>();
+    let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::connect_edge_transaction;
+    assert_eq!(connection::CONNECT_EDGE_TRANSACTION_LABEL, "connect edge");
     let _ = std::mem::size_of::<connection::ReconnectEdgeRequest>();
     let _ = std::mem::size_of::<connection::ReconnectEdgeError>();
     let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::reconnect_edge_transaction;
@@ -393,6 +397,12 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             feedback: connection::ConnectionHandleValidity::Valid,
         },
     );
+    let connect_action =
+        conformance::ConformanceAction::apply_connect_edge(connection::ConnectEdgeRequest::new(
+            PortId::new(),
+            PortId::new(),
+            NodeGraphConnectionMode::Strict,
+        ));
     let reconnect_action = conformance::ConformanceAction::apply_reconnect_edge(
         connection::ReconnectEdgeRequest::new(
             EdgeId::new(),
@@ -406,6 +416,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_reject_action,
         delete_key_action,
         connection_target_action,
+        connect_action,
         reconnect_action,
     ])
     .expect("serialize fixture actions");

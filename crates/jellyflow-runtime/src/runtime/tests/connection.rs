@@ -1,13 +1,18 @@
 use crate::runtime::connection::{
-    ClosestConnectionHandleInput, ConnectionDragActivationInput, ConnectionHandleCandidate,
-    ConnectionHandleConnection, ConnectionHandleIndicatorInput, ConnectionHandleRef,
-    ConnectionHandleValidity, ConnectionTargetHandle, ConnectionTargetInput,
-    closest_connection_handle, connection_drag_threshold_met, connection_handle_validity,
-    resolve_connection_handle_indicator, resolve_connection_target,
+    CONNECT_EDGE_TRANSACTION_LABEL, ClosestConnectionHandleInput, ConnectEdgeRequest,
+    ConnectionDragActivationInput, ConnectionHandleCandidate, ConnectionHandleConnection,
+    ConnectionHandleIndicatorInput, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectionTargetHandle, ConnectionTargetInput, closest_connection_handle,
+    connection_drag_threshold_met, connection_handle_validity, resolve_connection_handle_indicator,
+    resolve_connection_target,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, NodeId, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
+};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::GraphOp;
 
 #[test]
 fn connection_drag_threshold_uses_xyflow_squared_screen_distance_semantics() {
@@ -334,6 +339,61 @@ fn connection_handle_indicator_filters_strict_and_loose_end_handles() {
     assert!(same_handle_loose.connecting_from);
     assert!(!same_handle_loose.possible_end_handle);
     assert!(!same_handle_loose.show_connection_indicator);
+}
+
+#[test]
+fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
+    let (mut graph, _a, b, out_port, _in_port, _edge_id) = super::fixtures::make_graph();
+    let next_in = PortId::new();
+    graph
+        .nodes
+        .get_mut(&b)
+        .expect("target node")
+        .ports
+        .push(next_in);
+    graph.ports.insert(
+        next_in,
+        Port {
+            node: b,
+            key: PortKey::new("in2"),
+            dir: PortDirection::In,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        },
+    );
+    let mut store = crate::runtime::store::NodeGraphStore::new(
+        graph,
+        crate::io::NodeGraphViewState::default(),
+        crate::runtime::tests::fixtures::default_editor_config(),
+    );
+
+    let outcome = store
+        .apply_connect_edge(ConnectEdgeRequest::new(
+            out_port,
+            next_in,
+            NodeGraphConnectionMode::Strict,
+        ))
+        .expect("connect edge should dispatch")
+        .expect("connect edge should commit");
+
+    assert_eq!(
+        outcome.committed().label(),
+        Some(CONNECT_EDGE_TRANSACTION_LABEL)
+    );
+    let edge_id = match outcome.committed().ops() {
+        [GraphOp::AddEdge { id, edge }] => {
+            assert_eq!(edge.from, out_port);
+            assert_eq!(edge.to, next_in);
+            *id
+        }
+        other => panic!("expected single add-edge op, got {other:#?}"),
+    };
+    assert!(store.graph().edges.contains_key(&edge_id));
 }
 
 fn handle_ref(direction: PortDirection) -> ConnectionHandleRef {

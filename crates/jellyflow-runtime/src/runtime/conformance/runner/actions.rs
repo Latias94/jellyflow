@@ -43,6 +43,10 @@ pub(super) fn execute_action(
                 ))
             }
         }
+        ConformanceAction::ApplyConnectEdge { request } => store
+            .apply_connect_edge(*request)
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
         ConformanceAction::ApplyReconnectEdge { request } => store
             .apply_reconnect_edge(*request)
             .map(|_| ())
