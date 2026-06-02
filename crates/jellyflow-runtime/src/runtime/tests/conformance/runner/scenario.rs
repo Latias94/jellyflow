@@ -1,4 +1,34 @@
 use super::*;
+use jellyflow_core::core::{EdgeId, NodeId};
+
+fn node_pointer_down_selection_trace(node_id: NodeId) -> [ConformanceTraceEvent; 3] {
+    [
+        ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+            changes: vec![ConformanceViewChange::Selection {
+                nodes: vec![node_id],
+                edges: Vec::new(),
+                groups: Vec::new(),
+            }],
+        }),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+            nodes: vec![node_id],
+            edges: Vec::new(),
+            groups: Vec::new(),
+        }),
+    ]
+}
+
+fn node_pointer_down_view_state(
+    node_id: NodeId,
+    other: NodeId,
+    edge_id: EdgeId,
+) -> crate::io::NodeGraphViewState {
+    let mut view_state = crate::io::NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge_id], Vec::new());
+    let _ = node_id;
+    view_state
+}
 
 #[test]
 fn conformance_runner_executes_keyboard_nudge_fixture_and_matches_trace() {
@@ -170,8 +200,7 @@ fn conformance_runner_reports_compact_trace_mismatches() {
 #[test]
 fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_trace() {
     let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
-    let mut view_state = crate::io::NodeGraphViewState::default();
-    view_state.set_selection(vec![other], vec![edge_id], Vec::new());
+    let view_state = node_pointer_down_view_state(node_id, other, edge_id);
 
     let scenario = ConformanceScenario::new("node pointer down runner", graph)
         .with_view_state(view_state)
@@ -181,21 +210,7 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
             false,
             CanvasPoint { x: 3.0, y: 4.0 },
         )])
-        .with_expected_trace([
-            ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Selection {
-                    nodes: vec![node_id],
-                    edges: Vec::new(),
-                    groups: Vec::new(),
-                }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-                nodes: vec![node_id],
-                edges: Vec::new(),
-                groups: Vec::new(),
-            }),
-        ]);
+        .with_expected_trace(node_pointer_down_selection_trace(node_id));
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
 
@@ -206,8 +221,7 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
 #[test]
 fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
     let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
-    let mut view_state = crate::io::NodeGraphViewState::default();
-    view_state.set_selection(vec![other], vec![edge_id], Vec::new());
+    let view_state = node_pointer_down_view_state(node_id, other, edge_id);
 
     let start = NodeDragStart {
         primary: node_id,
@@ -238,19 +252,9 @@ fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
             ConformanceAction::emit_gesture(update_event.clone()),
         ])
         .with_expected_trace([
-            ConformanceTraceEvent::selection(vec![node_id], Vec::new(), Vec::new()),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Selection {
-                    nodes: vec![node_id],
-                    edges: Vec::new(),
-                    groups: Vec::new(),
-                }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-                nodes: vec![node_id],
-                edges: Vec::new(),
-                groups: Vec::new(),
-            }),
+            node_pointer_down_selection_trace(node_id)[0].clone(),
+            node_pointer_down_selection_trace(node_id)[1].clone(),
+            node_pointer_down_selection_trace(node_id)[2].clone(),
             ConformanceTraceEvent::gesture(start_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start)),
             ConformanceTraceEvent::graph_commit(
