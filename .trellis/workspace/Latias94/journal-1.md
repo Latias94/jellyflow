@@ -63,13 +63,55 @@ Added minimal CI, crates.io release-readiness docs, repository-level Trellis rel
 
 ### Main Changes
 
-(Add details)
+- Added `docs/reviews/xyflow-gap-2026-06-02.md`.
+- Classified XyFlow parity across model/store, changes, connection, delete,
+  selection, drag, resize, viewport, auto-pan, geometry, rendering, conformance,
+  and adapter/UI areas.
+- Recorded top follow-up task candidates and kept React/DOM responsibilities at
+  the adapter boundary.
 
 ### Git Commits
 
 | Hash | Message |
 |------|---------|
 | `21c7f46` | (see git log) |
+
+### Testing
+
+- [OK] `python3 ./.trellis/scripts/task.py validate 06-02-xyflow-gap-review`
+- [OK] `git diff --check`
+- [SKIP] Rust behavior tests were not run because only review/Trellis
+  documentation changed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 3: XyFlow gap review
+
+**Date**: 2026-06-02
+**Task**: XyFlow gap review
+**Package**: jellyflow-core
+**Branch**: `main`
+
+### Summary
+
+Reviewed Jellyflow against the local XyFlow reference, documented headless coverage, parity gaps, adapter-owned React/DOM responsibilities, and follow-up Trellis task candidates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1af9007` | (see git log) |
 
 ### Testing
 
