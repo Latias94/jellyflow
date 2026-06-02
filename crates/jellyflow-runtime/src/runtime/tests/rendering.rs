@@ -7,7 +7,7 @@ use crate::io::{NodeGraphEditorConfig, NodeGraphNodeOrigin, NodeGraphViewState};
 use crate::runtime::rendering::{
     EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions, VisibleNodeIdsRequest,
     resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
-    resolve_visible_node_ids,
+    resolve_visible_node_ids, resolve_visible_node_render_order,
 };
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::ViewportTransform;
@@ -448,6 +448,64 @@ fn visible_node_ids_use_transform_node_origin_and_fallback_size() {
         ),
         vec![unsized_id],
         "unsized nodes participate in culling only when the adapter supplies a fallback size"
+    );
+}
+
+#[test]
+fn visible_node_render_order_filters_visible_ids_through_node_render_order() {
+    let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![inside],
+        draw_order: vec![outside, partial, inside, hidden],
+        ..NodeGraphViewState::default()
+    };
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let request = VisibleNodeIdsRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+        viewport_size,
+    );
+
+    assert_eq!(
+        resolve_visible_node_render_order(
+            store.graph(),
+            store.lookups(),
+            store.view_state(),
+            request,
+            NodeRenderOrderOptions::default(),
+        ),
+        vec![partial, inside],
+        "outside and hidden nodes are removed before the selected visible node is elevated"
+    );
+    assert_eq!(
+        store.visible_node_render_order(viewport_size),
+        vec![partial, inside]
+    );
+}
+
+#[test]
+fn visible_node_render_order_matches_node_render_order_when_culling_is_disabled() {
+    let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![inside],
+        draw_order: vec![outside, partial, inside, hidden],
+        ..NodeGraphViewState::default()
+    };
+    let mut store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    store.update_editor_config(|config| {
+        config.runtime_tuning.only_render_visible_elements = false;
+    });
+
+    assert_eq!(
+        store.visible_node_render_order(CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        }),
+        store.node_render_order(),
+        "disabled culling keeps the same paint order as the non-culling node render contract"
     );
 }
 

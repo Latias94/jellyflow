@@ -45,7 +45,7 @@
     }
   ],
   "context_manifest": "docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl",
-  "current_task": "VRO-020",
+  "current_task": "VRO-030",
   "gates": [
     "cargo fmt --check",
     "cargo nextest run -p jellyflow-runtime visible_node_render_order",
@@ -64,6 +64,11 @@
       "date": "2026-06-02",
       "task": "VRO-010",
       "summary": "Opened the visible render order contract lane from existing visible-node and render-order contracts, ADR 0003 renderer-boundary guidance, and adapter template needs."
+    },
+    {
+      "date": "2026-06-02",
+      "task": "VRO-020",
+      "summary": "Added runtime::rendering visible node render order planning and NodeGraphStore::visible_node_render_order using existing visible-node culling plus node render order semantics."
     }
   ],
   "adr_refs": [
@@ -89,7 +94,7 @@
   "lane_slug": null,
   "continue_policy": {
     "default_action": "continue",
-    "next_task": "VRO-020",
-    "notes": "Continue with the runtime/store visible node render order contract. Split follow-ons if scope expands into visible edge culling, full scene render plans, renderer smoke harnesses, or spatial indexing."
+    "next_task": "VRO-030",
+    "notes": "Continue with conformance/template coverage for ordered visible node ids. Split follow-ons if scope expands into visible edge culling, full scene render plans, renderer smoke harnesses, or spatial indexing."
   }
 }

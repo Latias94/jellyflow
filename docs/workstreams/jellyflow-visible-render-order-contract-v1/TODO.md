@@ -20,7 +20,7 @@ Last updated: 2026-06-02
 
 ## M1 - Runtime Visible Render Order Contract
 
-- [ ] VRO-020 [owner=codex] [deps=VRO-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests,crates/jellyflow-runtime/tests/public_surface.rs]
+- [x] VRO-020 [owner=codex] [deps=VRO-010] [scope=crates/jellyflow-runtime/src/runtime,crates/jellyflow-runtime/src/runtime/tests,crates/jellyflow-runtime/tests/public_surface.rs]
   Goal: Add a renderer-neutral visible node render order helper and store method that combine
   viewport culling with node draw order and selected-node elevation.
   Validation: cargo fmt --check; cargo nextest run -p jellyflow-runtime visible_node_render_order;
@@ -29,8 +29,10 @@ Last updated: 2026-06-02
   Evidence: `runtime::rendering` helper, `NodeGraphStore` helper, rendering tests, public surface
   smoke.
   Context: docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl.
-  Handoff: Final status must be DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT.
-  State: TASKS.jsonl entry VRO-020 records owner, scope, validation, evidence, and handoff status.
+  Handoff: DONE 2026-06-02. Added `resolve_visible_node_render_order` and
+  `NodeGraphStore::visible_node_render_order(viewport_size)` with focused runtime/public surface
+  coverage.
+  State: TASKS.jsonl entry VRO-020 records DONE with validation and evidence.
 
 ## M2 - Conformance And Template Coverage
 

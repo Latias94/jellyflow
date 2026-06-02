@@ -9,7 +9,7 @@ Last updated: 2026-06-02
 cargo nextest run -p jellyflow-runtime visible_node_render_order
 ```
 
-VRO-020 should add the first focused runtime repro.
+VRO-020 added this focused runtime repro.
 
 ## Gate Set
 
@@ -83,6 +83,32 @@ Fresh verification:
 - Passed 2026-06-02:
   - `jq empty docs/workstreams/jellyflow-visible-render-order-contract-v1/WORKSTREAM.json docs/workstreams/jellyflow-visible-render-order-contract-v1/TASKS.jsonl docs/workstreams/jellyflow-visible-render-order-contract-v1/CAMPAIGNS.jsonl docs/workstreams/jellyflow-visible-render-order-contract-v1/CONTEXT.jsonl`
   - `git diff --check`
+
+### 2026-06-02 - VRO-020 Runtime Visible Render Order Contract
+
+Scope: `crates/jellyflow-runtime/src/runtime`, `crates/jellyflow-runtime/src/runtime/tests`,
+`crates/jellyflow-runtime/tests/public_surface.rs`
+
+Result:
+
+- Added `runtime::rendering::resolve_visible_node_render_order`.
+- Added `NodeGraphStore::visible_node_render_order(viewport_size)`.
+- Reused `resolve_visible_node_ids` and `resolve_node_render_order` so adapters receive one ordered
+  visible-node list without duplicating runtime composition rules.
+- Added focused rendering tests and public surface smoke.
+
+Behavior proven:
+
+- visible render order removes outside and hidden nodes while preserving draw order;
+- selected visible nodes elevate after non-selected visible nodes;
+- disabled culling matches the normal non-culling `node_render_order()` contract;
+- public consumers can call the runtime helper and store helper.
+
+Fresh verification:
+
+- Passed 2026-06-02: `cargo fmt --check`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime visible_node_render_order`
+- Passed 2026-06-02: `cargo nextest run -p jellyflow-runtime --test public_surface`
 
 ## Notes
 

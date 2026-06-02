@@ -401,6 +401,16 @@ fn explicit_modules_expose_their_owned_surfaces() {
         rendering::resolve_visible_node_ids(selection_store.lookups(), visible_request);
     assert!(visible_ids.is_empty());
     let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> = NodeGraphStore::visible_node_ids;
+    let visible_render_order = rendering::resolve_visible_node_render_order(
+        &graph,
+        selection_store.lookups(),
+        selection_store.view_state(),
+        visible_request,
+        rendering::NodeRenderOrderOptions::default(),
+    );
+    assert!(visible_render_order.is_empty());
+    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> =
+        NodeGraphStore::visible_node_render_order;
     let render_order = rendering::resolve_node_render_order(
         &graph,
         &NodeGraphViewState::default(),
