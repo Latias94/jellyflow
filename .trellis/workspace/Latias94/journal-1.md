@@ -54,7 +54,7 @@ Initialized Trellis workflow files, replaced placeholder specs with Jellyflow-sp
 
 **Date**: 2026-06-02
 **Task**: Release readiness audit
-**Package**: jellyflow-core
+**Package**: jellyflow-runtime
 **Branch**: `main`
 
 ### Summary
@@ -143,7 +143,7 @@ Reviewed Jellyflow against the local XyFlow reference, documented headless cover
 
 **Date**: 2026-06-02
 **Task**: Pointer resize parity
-**Package**: jellyflow-core
+**Package**: jellyflow-runtime
 **Branch**: `main`
 
 ### Summary
@@ -152,7 +152,12 @@ Implemented headless pointer-driven node resize planning in jellyflow-runtime wi
 
 ### Main Changes
 
-(Add details)
+- Added `NodePointerResizeRequest` and `NodeResizeAxis` for canvas-space pointer resize intent.
+- Added pointer resize planning math for direction deltas, min/max constraints, aspect ratio,
+  axis filtering, node origin, and `NodeExtent::{Rect, Parent}` clamps.
+- Added `NodeGraphStore::{plan_node_pointer_resize, apply_node_pointer_resize}`.
+- Added conformance action/runner support and public-surface coverage.
+- Updated the headless adapter template resize scenario to exercise pointer resize.
 
 ### Git Commits
 
@@ -162,7 +167,54 @@ Implemented headless pointer-driven node resize planning in jellyflow-runtime wi
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `cargo fmt --check`
+- [OK] `cargo nextest run -p jellyflow-runtime resize`
+- [OK] `cargo nextest run -p jellyflow-runtime adapter_conformance`
+- [OK] `cargo nextest run -p jellyflow-runtime --test public_surface`
+- [OK] `cargo nextest run -p jellyflow-runtime conformance`
+- [OK] `cargo test --manifest-path templates/headless-adapter/Cargo.toml`
+- [OK] `cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check`
+- [OK] `cargo clippy -p jellyflow-runtime --all-targets -- -D warnings`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: Resize containment ADR
+
+**Date**: 2026-06-02
+**Task**: Resize containment ADR
+**Package**: jellyflow-runtime
+**Branch**: `main`
+
+### Summary
+
+Added ADR 0004 to keep Jellyflow resize containment group-based, defer XyFlow node-as-parent child correction to a separate model decision, and place resize lifecycle callbacks under runtime/xyflow/conformance.
+
+### Main Changes
+
+- Added `docs/adr/0004-resize-containment-and-lifecycle-boundary.md`.
+- Updated `docs/adr/README.md` with ADR 0004.
+- Recorded the decision to keep resize containment group-based in Jellyflow v1.
+- Deferred XyFlow node-as-parent child correction to a future model/schema ADR.
+- Placed resize lifecycle callback parity under runtime/xyflow/conformance.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f5dddf3` | (see git log) |
+
+### Testing
+
+- [OK] `git diff --check`
+- [OK] `python3 .trellis/scripts/task.py validate .trellis/tasks/06-02-resize-model-adr`
 
 ### Status
 
