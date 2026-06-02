@@ -13,6 +13,7 @@ pub mod drag;
 pub mod events;
 pub mod fit_view;
 pub mod geometry;
+pub mod keyboard;
 pub mod lookups;
 pub mod middleware;
 pub mod policy;

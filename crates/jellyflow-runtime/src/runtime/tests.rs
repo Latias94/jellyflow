@@ -6,6 +6,7 @@ mod delete;
 mod drag;
 mod fixtures;
 mod harness;
+mod keyboard;
 mod lookups;
 mod rendering;
 mod selection;

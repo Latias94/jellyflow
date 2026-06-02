@@ -1,4 +1,5 @@
 use crate::runtime::drag::NodeDragRequest;
+use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::{
     ViewportGestureIntent, ViewportGestureRejection, resolve_viewport_drag_pan_gesture,
@@ -23,12 +24,16 @@ pub(super) fn execute_action(
             })
             .map(|_| ())
             .map_err(|err| err.to_string()),
+        ConformanceAction::ApplyNodeNudge { request } => store
+            .apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime()))
+            .map(|_| ())
+            .map_err(|err| err.to_string()),
         ConformanceAction::ApplyDeleteSelection => store
-            .apply_delete_selection()
+            .apply_keyboard_intent(KeyboardIntent::DeleteSelection)
             .map(|_| ())
             .map_err(|err| err.to_string()),
         ConformanceAction::ApplyDeleteSelectionForKey { key } => store
-            .apply_delete_selection_for_key(key.0)
+            .apply_keyboard_intent(KeyboardIntent::DeleteSelectionForKey(key.0))
             .map(|_| ())
             .map_err(|err| err.to_string()),
         ConformanceAction::ApplyAutoPan { request } => store
