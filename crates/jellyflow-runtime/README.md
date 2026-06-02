@@ -74,6 +74,9 @@ returns an updated suite/report, while file and directory `approve_actual_traces
 write back only when every scenario executes without errors. GPU, windowing, screenshot, and pixel
 smoke tests should live in adapter crates such as future wgpu, egui, or Fret integrations, where
 they can verify input capture, platform wiring, and rendered pixels.
+`ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
+fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
+node drag, connect/reconnect, delete, and viewport gestures.
 
 The runtime crate also includes a thin renderer-free example harness for agents and CI:
 

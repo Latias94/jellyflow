@@ -1,5 +1,6 @@
 use super::*;
 use jellyflow_core::core::{EdgeId, NodeId};
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 fn node_pointer_down_selection_trace(node_id: NodeId) -> Vec<ConformanceTraceEvent> {
     selection_trace(vec![node_id], Vec::new())
@@ -172,6 +173,40 @@ fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     assert!(report.is_match(), "{report}");
     assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
     assert!(report.mismatches().is_empty());
+}
+
+#[test]
+fn conformance_runner_keeps_dispatch_transaction_as_low_level_graph_fixture_action() {
+    let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let from = graph.nodes.get(&node_id).expect("node exists").pos;
+    let to = CanvasPoint { x: 24.0, y: 12.0 };
+    let label = "low-level fixture move";
+    let transaction = GraphTransaction::from_ops([GraphOp::SetNodePos {
+        id: node_id,
+        from,
+        to,
+    }])
+    .with_label(label);
+
+    let scenario = ConformanceScenario::new("low-level graph transaction runner", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::dispatch_transaction(transaction)])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(Some(label), ["set_node_pos"]),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(label.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
 }
 
 #[test]

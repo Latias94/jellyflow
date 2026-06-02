@@ -415,6 +415,9 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             NodeGraphConnectionMode::Strict,
         ),
     );
+    let dispatch_action = conformance::ConformanceAction::dispatch_transaction(
+        GraphTransaction::new().with_label("low-level graph fixture setup"),
+    );
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
@@ -422,6 +425,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         connection_target_action,
         connect_action,
         reconnect_action,
+        dispatch_action,
     ])
     .expect("serialize fixture actions");
     assert!(encoded_fixture_actions.is_array());

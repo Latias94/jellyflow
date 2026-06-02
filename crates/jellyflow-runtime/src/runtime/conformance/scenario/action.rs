@@ -20,6 +20,12 @@ use keyboard_types::Code as KeyCode;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConformanceAction {
+    /// Applies a raw graph transaction through the store dispatch pipeline.
+    ///
+    /// Use this for low-level graph fixture setup or graph-operation conformance. Adapter feel
+    /// fixtures should prefer the richer runtime actions such as `ApplyNodeDrag`,
+    /// `ApplyConnectEdge`, `ApplyReconnectEdge`, and delete/viewport actions so the fixture locks
+    /// the same interaction boundary an adapter should call.
     DispatchTransaction {
         transaction: GraphTransaction,
     },
@@ -109,6 +115,9 @@ impl ConformanceAction {
         }
     }
 
+    /// Builds the low-level transaction fixture action.
+    ///
+    /// Prefer the interaction-specific constructors when checking adapter behavior.
     pub fn dispatch_transaction(transaction: GraphTransaction) -> Self {
         Self::DispatchTransaction { transaction }
     }
