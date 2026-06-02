@@ -2,11 +2,13 @@ use super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::io::NodeGraphNodeOrigin;
 use crate::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeConstraints, NodeResizeDirection, NodeResizeItem,
-    NodeResizeRequest, plan_node_resize,
+    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints,
+    NodeResizeDirection, NodeResizeItem, NodeResizeRequest, plan_node_pointer_resize,
+    plan_node_resize,
 };
 use jellyflow_core::core::{
-    CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey, NodeOrigin,
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeExtent, NodeId,
+    NodeKindKey, NodeOrigin,
 };
 use jellyflow_core::ops::GraphOp;
 
@@ -290,11 +292,335 @@ fn single_node_resize_skips_hidden_missing_noop_and_invalid_requests() {
     }
 }
 
+#[test]
+fn pointer_resize_grows_from_bottom_right_pointer_delta() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize bottom right", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 140.0, y: 120.0 },
+            NodeResizeDirection::BottomRight,
+        ))
+        .expect("pointer resize plan");
+
+    assert_eq!(plan.from_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert_eq!(plan.to_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 130.0,
+            height: 100.0,
+        },
+    );
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [GraphOp::SetNodeSize { id, from, to }]
+                if *id == fixture.enabled
+                    && *from == Some(CanvasSize { width: 100.0, height: 60.0 })
+                    && *to == Some(CanvasSize { width: 130.0, height: 100.0 })
+        ),
+        "pointer resize should set only node size: {:#?}",
+        plan.transaction().ops(),
+    );
+}
+
+#[test]
+fn pointer_resize_from_left_and_top_moves_position_before_size_change() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize top left", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 10.0, y: 20.0 },
+            CanvasPoint { x: 0.0, y: 0.0 },
+            NodeResizeDirection::TopLeft,
+        ))
+        .expect("pointer top left resize plan");
+
+    assert_eq!(plan.to_pos, CanvasPoint { x: 0.0, y: 0.0 });
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 110.0,
+            height: 80.0,
+        },
+    );
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [
+                GraphOp::SetNodePos { id: pos_id, to: pos_to, .. },
+                GraphOp::SetNodeSize { id: size_id, to: size_to, .. },
+            ]
+                if *pos_id == fixture.enabled
+                    && *pos_to == CanvasPoint { x: 0.0, y: 0.0 }
+                    && *size_id == fixture.enabled
+                    && *size_to == Some(CanvasSize { width: 110.0, height: 80.0 })
+        ),
+        "top-left pointer resize should move before sizing: {:#?}",
+        plan.transaction().ops(),
+    );
+}
+
+#[test]
+fn pointer_resize_clamps_to_min_max_constraints() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize constraints", fixture.graph);
+    let constraints = NodeResizeConstraints::new(
+        Some(CanvasSize {
+            width: 80.0,
+            height: 50.0,
+        }),
+        Some(CanvasSize {
+            width: 120.0,
+            height: 70.0,
+        }),
+    );
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                fixture.enabled,
+                CanvasPoint { x: 110.0, y: 80.0 },
+                CanvasPoint { x: 400.0, y: 400.0 },
+                NodeResizeDirection::BottomRight,
+            )
+            .with_constraints(constraints),
+        )
+        .expect("constrained pointer resize plan");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 120.0,
+            height: 70.0,
+        },
+    );
+}
+
+#[test]
+fn pointer_resize_preserves_aspect_ratio_for_diagonal_and_axis_handles() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize aspect ratio", fixture.graph);
+
+    let diagonal = harness
+        .store()
+        .plan_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                fixture.enabled,
+                CanvasPoint { x: 110.0, y: 80.0 },
+                CanvasPoint { x: 170.0, y: 100.0 },
+                NodeResizeDirection::BottomRight,
+            )
+            .with_keep_aspect_ratio(true),
+        )
+        .expect("diagonal aspect pointer resize plan");
+    let right = harness
+        .store()
+        .plan_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                fixture.enabled,
+                CanvasPoint { x: 110.0, y: 50.0 },
+                CanvasPoint { x: 170.0, y: 50.0 },
+                NodeResizeDirection::Right,
+            )
+            .with_keep_aspect_ratio(true),
+        )
+        .expect("right aspect pointer resize plan");
+
+    let expected = CanvasSize {
+        width: 160.0,
+        height: 96.0,
+    };
+    assert_eq!(diagonal.to, expected);
+    assert_eq!(right.to, expected);
+}
+
+#[test]
+fn pointer_resize_axis_filter_keeps_unselected_dimension() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize axis filter", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                fixture.enabled,
+                CanvasPoint { x: 110.0, y: 80.0 },
+                CanvasPoint { x: 140.0, y: 120.0 },
+                NodeResizeDirection::BottomRight,
+            )
+            .with_axis(NodeResizeAxis::Horizontal),
+        )
+        .expect("horizontal pointer resize plan");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 130.0,
+            height: 60.0,
+        },
+    );
+}
+
+#[test]
+fn pointer_resize_clamps_to_node_rect_extent() {
+    let mut fixture = resize_fixture();
+    fixture
+        .graph
+        .nodes
+        .get_mut(&fixture.enabled)
+        .unwrap()
+        .extent = Some(NodeExtent::Rect {
+        rect: CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 130.0,
+                height: 100.0,
+            },
+        },
+    });
+    let harness = InteractionHarness::new("pointer resize rect extent", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 400.0, y: 400.0 },
+            NodeResizeDirection::BottomRight,
+        ))
+        .expect("extent pointer resize plan");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 120.0,
+            height: 80.0,
+        },
+    );
+}
+
+#[test]
+fn pointer_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
+    let mut fixture = resize_fixture();
+    let parent = GroupId::from_u128(40);
+    fixture.graph.groups.insert(
+        parent,
+        Group {
+            title: "Parent".to_owned(),
+            rect: CanvasRect {
+                origin: CanvasPoint { x: 0.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 130.0,
+                    height: 100.0,
+                },
+            },
+            color: None,
+        },
+    );
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.parent = Some(parent);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(false);
+    let harness = InteractionHarness::new("pointer resize parent extent", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 400.0, y: 400.0 },
+            NodeResizeDirection::BottomRight,
+        ))
+        .expect("parent extent pointer resize plan");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 120.0,
+            height: 80.0,
+        },
+    );
+}
+
+#[test]
+fn pointer_resize_skips_hidden_missing_unsized_noop_and_invalid_requests() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize rejects", fixture.graph);
+    let valid = NodePointerResizeRequest::new(
+        fixture.enabled,
+        CanvasPoint { x: 110.0, y: 80.0 },
+        CanvasPoint { x: 140.0, y: 120.0 },
+        NodeResizeDirection::BottomRight,
+    );
+
+    for request in [
+        NodePointerResizeRequest::new(
+            fixture.hidden,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 140.0, y: 120.0 },
+            NodeResizeDirection::BottomRight,
+        ),
+        NodePointerResizeRequest::new(
+            fixture.missing,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 140.0, y: 120.0 },
+            NodeResizeDirection::BottomRight,
+        ),
+        NodePointerResizeRequest::new(
+            fixture.no_size,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 140.0, y: 120.0 },
+            NodeResizeDirection::BottomRight,
+        ),
+        NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 110.0, y: 80.0 },
+            CanvasPoint { x: 110.0, y: 80.0 },
+            NodeResizeDirection::BottomRight,
+        ),
+        NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint {
+                x: f32::INFINITY,
+                y: 80.0,
+            },
+            CanvasPoint { x: 140.0, y: 120.0 },
+            NodeResizeDirection::BottomRight,
+        ),
+        valid.with_constraints(NodeResizeConstraints::new(
+            Some(CanvasSize {
+                width: 160.0,
+                height: 20.0,
+            }),
+            Some(CanvasSize {
+                width: 120.0,
+                height: 90.0,
+            }),
+        )),
+    ] {
+        assert!(
+            plan_node_pointer_resize(harness.store().graph(), request).is_none(),
+            "request should not produce a pointer resize plan: {request:?}",
+        );
+    }
+}
+
 struct ResizeFixture {
     graph: Graph,
     enabled: NodeId,
     hidden: NodeId,
     missing: NodeId,
+    no_size: NodeId,
 }
 
 fn resize_fixture() -> ResizeFixture {
@@ -302,14 +628,23 @@ fn resize_fixture() -> ResizeFixture {
     let enabled = NodeId::from_u128(10);
     let hidden = NodeId::from_u128(20);
     let missing = NodeId::from_u128(30);
+    let no_size = NodeId::from_u128(40);
     graph.nodes.insert(enabled, resize_node(false));
     graph.nodes.insert(hidden, resize_node(true));
+    graph.nodes.insert(
+        no_size,
+        Node {
+            size: None,
+            ..resize_node(false)
+        },
+    );
 
     ResizeFixture {
         graph,
         enabled,
         hidden,
         missing,
+        no_size,
     }
 }
 

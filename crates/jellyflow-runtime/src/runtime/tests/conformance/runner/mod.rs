@@ -15,7 +15,7 @@ use crate::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeDirection, NodeResizeRequest,
+    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
 use crate::runtime::selection::{SelectionBoxInput, SelectionBoxOptions};
 use crate::runtime::viewport::{

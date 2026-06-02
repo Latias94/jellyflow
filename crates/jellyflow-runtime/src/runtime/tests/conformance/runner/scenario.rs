@@ -269,6 +269,68 @@ fn conformance_runner_executes_node_resize_fixture_and_matches_trace() {
 }
 
 #[test]
+fn conformance_runner_executes_node_pointer_resize_fixture_and_matches_trace() {
+    let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 100.0,
+        height: 60.0,
+    });
+
+    let scenario = ConformanceScenario::new("node pointer resize runner", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                node_id,
+                CanvasPoint { x: 110.0, y: 60.0 },
+                CanvasPoint { x: 150.0, y: 90.0 },
+                NodeResizeDirection::BottomRight,
+            ),
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_RESIZE_TRANSACTION_LABEL),
+                ["set_node_size"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_RESIZE_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
+
+#[test]
+fn conformance_runner_reports_noop_node_pointer_resize_as_action_error() {
+    let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 100.0,
+        height: 60.0,
+    });
+
+    let scenario =
+        ConformanceScenario::new("noop node pointer resize runner", graph).with_actions([
+            ConformanceAction::apply_node_pointer_resize(NodePointerResizeRequest::new(
+                node_id,
+                CanvasPoint { x: 110.0, y: 60.0 },
+                CanvasPoint { x: 110.0, y: 60.0 },
+                NodeResizeDirection::BottomRight,
+            )),
+        ]);
+
+    let err = run_conformance_scenario(&scenario).expect_err("noop action should fail");
+
+    assert!(err.to_string().contains("apply_node_pointer_resize"));
+}
+
+#[test]
 fn conformance_runner_asserts_visible_node_ids_without_trace() {
     let (mut graph, node_id, outside, _out_port, _in_port, _edge_id) = make_graph();
     graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {

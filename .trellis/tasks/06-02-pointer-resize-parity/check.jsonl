@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/jellyflow-runtime/backend/quality-guidelines.md", "reason": "Validation gates and runtime review checklist for this package."}
+{"file": "docs/adr/0001-jellyflow-headless-node-graph-engine-boundary.md", "reason": "Verify runtime remains free of renderer and platform dependencies."}
+{"file": "docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md", "reason": "Verify new adapter-facing behavior is covered through headless conformance."}
+{"file": "docs/reviews/xyflow-gap-2026-06-02.md", "reason": "Check the implemented slice against the documented XyFlow gap."}
+{"file": ".trellis/tasks/06-02-pointer-resize-parity/research.md", "reason": "Check implementation against task-specific evidence and scope exclusions."}

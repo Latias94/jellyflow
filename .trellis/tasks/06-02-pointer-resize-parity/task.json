@@ -1,0 +1,29 @@
+{
+  "id": "pointer-resize-parity",
+  "name": "pointer-resize-parity",
+  "title": "Pointer resize session parity",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "jellyflow-runtime",
+  "priority": "P2",
+  "creator": "Latias94",
+  "assignee": "Latias94",
+  "createdAt": "2026-06-02",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/tasks/06-02-pointer-resize-parity/research.md",
+    "docs/reviews/xyflow-gap-2026-06-02.md"
+  ],
+  "notes": "First slice should be headless pointer resize math plus runtime/conformance/template coverage. Defer node-as-parent child correction and lifecycle callbacks unless scope is widened.",
+  "meta": {}
+}

@@ -19,7 +19,8 @@ use jellyflow_runtime::runtime::events::{
     ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use jellyflow_runtime::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeDirection, NodeResizeRequest,
+    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection,
+    NodeResizeRequest,
 };
 use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
@@ -192,17 +193,37 @@ fn node_resize_scenario() -> ConformanceScenario {
 
     ConformanceScenario::new("template node resize", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([ConformanceAction::apply_node_resize(
-            NodeResizeRequest::new(
+        .with_actions([
+            ConformanceAction::apply_node_resize(
+                NodeResizeRequest::new(
+                    node_id,
+                    CanvasSize {
+                        width: 220.0,
+                        height: 120.0,
+                    },
+                )
+                .with_direction(NodeResizeDirection::BottomRight),
+            ),
+            ConformanceAction::apply_node_pointer_resize(NodePointerResizeRequest::new(
                 node_id,
-                CanvasSize {
-                    width: 220.0,
-                    height: 120.0,
-                },
-            )
-            .with_direction(NodeResizeDirection::BottomRight),
-        )])
+                CanvasPoint { x: 230.0, y: 140.0 },
+                CanvasPoint { x: 250.0, y: 150.0 },
+                NodeResizeDirection::BottomRight,
+            )),
+        ])
         .with_expected_trace([
+            ConformanceTraceEvent::graph_commit(
+                Some(NODE_RESIZE_TRANSACTION_LABEL),
+                ["set_node_size"],
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(NODE_RESIZE_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: 1,
+                edges: 0,
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
             ConformanceTraceEvent::graph_commit(
                 Some(NODE_RESIZE_TRANSACTION_LABEL),
                 ["set_node_size"],

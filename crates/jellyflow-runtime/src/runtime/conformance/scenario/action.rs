@@ -7,7 +7,10 @@ use crate::runtime::connection::{
 };
 use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::events::NodeGraphGestureEvent;
-use crate::runtime::resize::{NodeResizeConstraints, NodeResizeDirection, NodeResizeRequest};
+use crate::runtime::resize::{
+    NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints, NodeResizeDirection,
+    NodeResizeRequest,
+};
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInput};
 use crate::runtime::viewport::{
@@ -19,6 +22,10 @@ use crate::runtime::viewport::{
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 use keyboard_types::Code as KeyCode;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -38,6 +45,9 @@ pub enum ConformanceAction {
     },
     ApplyNodeResize {
         request: ConformanceNodeResizeRequest,
+    },
+    ApplyNodePointerResize {
+        request: ConformanceNodePointerResizeRequest,
     },
     ApplyNodePointerDown {
         input: ConformanceNodePointerDownInput,
@@ -147,6 +157,7 @@ impl ConformanceAction {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
             Self::ApplyNodeResize { .. } => "apply_node_resize",
+            Self::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
             Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
             Self::ApplySelectionBox { .. } => "apply_selection_box",
             Self::AssertConnectionTarget { .. } => "assert_connection_target",
@@ -190,6 +201,12 @@ impl ConformanceAction {
     pub fn apply_node_resize(request: NodeResizeRequest) -> Self {
         Self::ApplyNodeResize {
             request: ConformanceNodeResizeRequest::from_runtime(request),
+        }
+    }
+
+    pub fn apply_node_pointer_resize(request: NodePointerResizeRequest) -> Self {
+        Self::ApplyNodePointerResize {
+            request: ConformanceNodePointerResizeRequest::from_runtime(request),
         }
     }
 
@@ -472,6 +489,53 @@ impl ConformanceNodeResizeRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceNodePointerResizeRequest {
+    pub node: NodeId,
+    pub start: CanvasPoint,
+    pub current: CanvasPoint,
+    #[serde(default)]
+    pub constraints: ConformanceNodeResizeConstraints,
+    #[serde(default)]
+    pub direction: ConformanceNodeResizeDirection,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_aspect_ratio: bool,
+    #[serde(default)]
+    pub axis: ConformanceNodeResizeAxis,
+}
+
+impl ConformanceNodePointerResizeRequest {
+    pub fn into_runtime(self) -> NodePointerResizeRequest {
+        NodePointerResizeRequest::new(
+            self.node,
+            self.start,
+            self.current,
+            self.direction.into_runtime(),
+        )
+        .with_constraints(NodeResizeConstraints::new(
+            self.constraints.min,
+            self.constraints.max,
+        ))
+        .with_keep_aspect_ratio(self.keep_aspect_ratio)
+        .with_axis(self.axis.into_runtime())
+    }
+
+    pub fn from_runtime(request: NodePointerResizeRequest) -> Self {
+        Self {
+            node: request.node,
+            start: request.start,
+            current: request.current,
+            constraints: ConformanceNodeResizeConstraints {
+                min: request.constraints.min,
+                max: request.constraints.max,
+            },
+            direction: ConformanceNodeResizeDirection::from_runtime(request.direction),
+            keep_aspect_ratio: request.keep_aspect_ratio,
+            axis: ConformanceNodeResizeAxis::from_runtime(request.axis),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConformanceNodeResizeDirection {
@@ -510,6 +574,33 @@ impl ConformanceNodeResizeDirection {
             NodeResizeDirection::BottomLeft => Self::BottomLeft,
             NodeResizeDirection::Left => Self::Left,
             NodeResizeDirection::TopLeft => Self::TopLeft,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConformanceNodeResizeAxis {
+    #[default]
+    Both,
+    Horizontal,
+    Vertical,
+}
+
+impl ConformanceNodeResizeAxis {
+    fn into_runtime(self) -> NodeResizeAxis {
+        match self {
+            Self::Both => NodeResizeAxis::Both,
+            Self::Horizontal => NodeResizeAxis::Horizontal,
+            Self::Vertical => NodeResizeAxis::Vertical,
+        }
+    }
+
+    fn from_runtime(axis: NodeResizeAxis) -> Self {
+        match axis {
+            NodeResizeAxis::Both => Self::Both,
+            NodeResizeAxis::Horizontal => Self::Horizontal,
+            NodeResizeAxis::Vertical => Self::Vertical,
         }
     }
 }

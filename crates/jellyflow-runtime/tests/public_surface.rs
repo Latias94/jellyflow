@@ -218,7 +218,18 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _: resize::NodeResizeRequest = resize_request;
     let _: resize::NodeResizeRequest =
         resize_request.with_direction(resize::NodeResizeDirection::BottomRight);
+    let pointer_resize_request = resize::NodePointerResizeRequest::new(
+        NodeId::new(),
+        CanvasPoint { x: 1.0, y: 1.0 },
+        CanvasPoint { x: 2.0, y: 3.0 },
+        resize::NodeResizeDirection::BottomRight,
+    )
+    .with_constraints(resize::NodeResizeConstraints::unconstrained())
+    .with_keep_aspect_ratio(true)
+    .with_axis(resize::NodeResizeAxis::Both);
+    let _: resize::NodePointerResizeRequest = pointer_resize_request;
     let _: resize::NodeResizeContext = resize::NodeResizeContext::new((0.5, 0.5));
+    let _ = std::mem::size_of::<resize::NodeResizeAxis>();
     let _ = std::mem::size_of::<resize::NodeResizeDirection>();
     let _ = std::mem::size_of::<resize::NodeResizeItem>();
     let _ = std::mem::size_of::<resize::NodeResizePlan>();
@@ -229,6 +240,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
         resize::NodeResizeContext,
         resize::NodeResizeRequest,
     ) -> Option<resize::NodeResizePlan> = resize::plan_node_resize_with_context;
+    let _: fn(&Graph, resize::NodePointerResizeRequest) -> Option<resize::NodeResizePlan> =
+        resize::plan_node_pointer_resize;
+    let _: fn(
+        &Graph,
+        resize::NodeResizeContext,
+        resize::NodePointerResizeRequest,
+    ) -> Option<resize::NodeResizePlan> = resize::plan_node_pointer_resize_with_context;
+    let _: fn(&NodeGraphStore, resize::NodePointerResizeRequest) -> Option<resize::NodeResizePlan> =
+        NodeGraphStore::plan_node_pointer_resize;
+    let _: fn(
+        &mut NodeGraphStore,
+        resize::NodePointerResizeRequest,
+    ) -> Result<Option<DispatchOutcome>, DispatchError> = NodeGraphStore::apply_node_pointer_resize;
     assert_eq!(resize::NODE_RESIZE_TRANSACTION_LABEL, "node resize");
     assert_eq!(
         delete::DELETE_SELECTION_TRANSACTION_LABEL,
@@ -637,6 +661,14 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         )
         .with_direction(resize::NodeResizeDirection::BottomRight),
     );
+    let pointer_resize_action = conformance::ConformanceAction::apply_node_pointer_resize(
+        resize::NodePointerResizeRequest::new(
+            node_id,
+            CanvasPoint { x: 1.0, y: 1.0 },
+            CanvasPoint { x: 2.0, y: 3.0 },
+            resize::NodeResizeDirection::BottomRight,
+        ),
+    );
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
@@ -656,6 +688,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         reconnect_action,
         dispatch_action,
         resize_action,
+        pointer_resize_action,
     ])
     .expect("serialize fixture actions");
     assert!(encoded_fixture_actions.is_array());

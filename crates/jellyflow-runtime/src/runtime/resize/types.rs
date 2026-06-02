@@ -117,6 +117,25 @@ impl NodeResizeDirection {
     }
 }
 
+/// Optional resize-axis filter for pointer-derived resize geometry.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeResizeAxis {
+    #[default]
+    Both,
+    Horizontal,
+    Vertical,
+}
+
+impl NodeResizeAxis {
+    pub(super) fn includes_width(self) -> bool {
+        matches!(self, Self::Both | Self::Horizontal)
+    }
+
+    pub(super) fn includes_height(self) -> bool {
+        matches!(self, Self::Both | Self::Vertical)
+    }
+}
+
 /// Canvas-space request for resizing one node to an explicit size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeResizeRequest {
@@ -147,6 +166,59 @@ impl NodeResizeRequest {
 
     pub fn with_direction(mut self, direction: NodeResizeDirection) -> Self {
         self.direction = direction;
+        self
+    }
+}
+
+/// Canvas-space request for resizing one node from pointer movement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodePointerResizeRequest {
+    /// Node being resized.
+    pub node: NodeId,
+    /// Pointer position at resize start in canvas space.
+    pub start: CanvasPoint,
+    /// Current pointer position in canvas space.
+    pub current: CanvasPoint,
+    /// Resize control direction that determines affected axes and position updates.
+    pub direction: NodeResizeDirection,
+    /// Optional min/max bounds applied before planning.
+    pub constraints: NodeResizeConstraints,
+    /// Whether pointer-derived dimensions preserve the starting aspect ratio.
+    pub keep_aspect_ratio: bool,
+    /// Optional axis filter for pointer-derived dimensions.
+    pub axis: NodeResizeAxis,
+}
+
+impl NodePointerResizeRequest {
+    pub fn new(
+        node: NodeId,
+        start: CanvasPoint,
+        current: CanvasPoint,
+        direction: NodeResizeDirection,
+    ) -> Self {
+        Self {
+            node,
+            start,
+            current,
+            direction,
+            constraints: NodeResizeConstraints::default(),
+            keep_aspect_ratio: false,
+            axis: NodeResizeAxis::default(),
+        }
+    }
+
+    pub fn with_constraints(mut self, constraints: NodeResizeConstraints) -> Self {
+        self.constraints = constraints;
+        self
+    }
+
+    pub fn with_keep_aspect_ratio(mut self, keep_aspect_ratio: bool) -> Self {
+        self.keep_aspect_ratio = keep_aspect_ratio;
+        self
+    }
+
+    pub fn with_axis(mut self, axis: NodeResizeAxis) -> Self {
+        self.axis = axis;
         self
     }
 }
