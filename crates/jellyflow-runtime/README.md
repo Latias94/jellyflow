@@ -8,7 +8,8 @@
 - validation rules and diagnostics, including connect/reconnect/delete planners;
 - schema/profile pipeline hooks;
 - undo/redo store dispatch;
-- XyFlow-style node/edge change projections under `runtime::xyflow`;
+- XyFlow-style node/edge change projections and ordered adapter-array apply helpers under
+  `runtime::xyflow`;
 - renderer-neutral selection-box helpers under `runtime::selection`;
 - renderer-neutral node drag planning, parent expansion, and commit helpers under `runtime::drag`;
 - renderer-neutral node resize planning, parent expansion, and commit helpers under
@@ -89,7 +90,8 @@ validate behavior before rendering. The runtime crate supports that split with:
   that want XyFlow-style `onMoveStart`, `onMove`, and `onMoveEnd` callbacks around pan/zoom
   gestures;
 - rules-derived connect/reconnect/delete planners for graph transactions;
-- `runtime::xyflow` projections for XyFlow-style node/edge changes and callbacks;
+- `runtime::xyflow` projections for XyFlow-style node/edge changes, callbacks, and exact
+  adapter-owned ordered-array apply helpers;
 - `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceFixtureDirectory,
   ConformanceAction, ConformanceTraceEvent, run_conformance_scenario, run_conformance_suite}` for
   reusable fixture checks, fixture discovery, and explicit golden approval updates around a real

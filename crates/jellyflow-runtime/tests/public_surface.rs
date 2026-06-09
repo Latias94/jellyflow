@@ -522,6 +522,20 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert!(edge_render_order.is_empty());
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
+    let _ = std::mem::size_of::<xyflow::XyFlowNodeElement>();
+    let _ = std::mem::size_of::<xyflow::XyFlowEdgeElement>();
+    let _ = std::mem::size_of::<xyflow::XyFlowNodeChange>();
+    let _ = std::mem::size_of::<xyflow::XyFlowEdgeChange>();
+    let _ = std::mem::size_of::<xyflow::XyFlowDimensionAttribute>();
+    let _ = std::mem::size_of::<xyflow::XyFlowDimensionsSetAttributes>();
+    let _: fn(
+        &[xyflow::XyFlowNodeChange],
+        &[xyflow::XyFlowNodeElement],
+    ) -> Vec<xyflow::XyFlowNodeElement> = xyflow::apply_xyflow_node_changes;
+    let _: fn(
+        &[xyflow::XyFlowEdgeChange],
+        &[xyflow::XyFlowEdgeElement],
+    ) -> Vec<xyflow::XyFlowEdgeElement> = xyflow::apply_xyflow_edge_changes;
     let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();
     let _ = std::mem::size_of::<xyflow::NodeResizeStart>();
     let _ = std::mem::size_of::<xyflow::NodeResizeUpdate>();

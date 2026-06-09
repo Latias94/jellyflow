@@ -13,9 +13,15 @@
 
 mod edges;
 mod nodes;
+mod ordered;
 
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{Edge, EdgeId, Graph, Node, NodeId};
+
+pub use ordered::{
+    XyFlowDimensionAttribute, XyFlowDimensionsSetAttributes, XyFlowEdgeChange, XyFlowEdgeElement,
+    XyFlowNodeChange, XyFlowNodeElement, apply_xyflow_edge_changes, apply_xyflow_node_changes,
+};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyChangesReport {

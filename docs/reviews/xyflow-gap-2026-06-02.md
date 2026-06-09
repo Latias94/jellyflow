@@ -12,10 +12,10 @@ several headless seams have been closed: pointer resize sessions and lifecycle
 callbacks, constrained viewport pan/zoom entrypoints, a controlled graph facade,
 aggregate rendering-query results, and visible edge culling. The remaining work
 is mostly precision and adapter-contract work: async pre-delete/veto behavior,
-nested drag lifecycle fixtures, exact React `applyChanges` parity when needed,
-and future adapter-owned browser/UI inventories. React UI components, DOM measurement,
-providers, wrappers, minimap, background, controls, portals, and accessibility
-text should stay out of the headless crates and belong to future adapter crates.
+nested drag lifecycle fixtures, and future adapter-owned browser/UI inventories.
+React UI components, DOM measurement, providers, wrappers, minimap, background,
+controls, portals, and accessibility text should stay out of the headless crates
+and belong to future adapter crates.
 
 This document is now a refreshed backlog snapshot after the runtime-deepening
 work; the document itself does not imply additional behavior changes.
@@ -80,7 +80,7 @@ Jellyflow source areas reviewed:
 | Area | Status | XyFlow Evidence | Jellyflow Evidence | Gap |
 | --- | --- | --- | --- | --- |
 | Graph model and store commit semantics | covered | React store defaults and system utils model interaction state (`packages/react/src/store/initialState.ts:90`, `packages/system/src/utils/store.ts:320`) | `Graph` uses stable maps for nodes/ports/edges/groups (`crates/jellyflow-core/src/core/model/graph.rs:16`); `GraphTransaction` is reversible and atomic (`crates/jellyflow-core/src/ops/transaction/batch.rs:7`) | Different data structures are intentional. Do not copy React array/store internals. |
-| Node/edge change projection and controlled apply helpers | partial | React `applyChanges` handles add/remove/replace/select/position/dimensions with array-order semantics (`packages/react/src/utils/changes.ts:1`) | `runtime::xyflow` maps transactions to node/edge changes and back (`crates/jellyflow-runtime/src/runtime/xyflow/changes/mod.rs:1`); best-effort apply helpers and `ControlledGraph` exist (`crates/jellyflow-runtime/src/runtime/xyflow/apply/mod.rs:1`, `crates/jellyflow-runtime/src/runtime/xyflow/controlled.rs:1`) | Missing exact React array semantics: `replace`, add index insertion, `dimensions.setAttributes`, `resizing`, and full change ordering equivalence. |
+| Node/edge change projection and controlled apply helpers | covered | React `applyChanges` handles add/remove/replace/select/position/dimensions with array-order semantics (`packages/react/src/utils/changes.ts:1`) | `runtime::xyflow` maps transactions to node/edge changes and back (`crates/jellyflow-runtime/src/runtime/xyflow/changes/mod.rs:1`); best-effort graph apply helpers and `ControlledGraph` exist (`crates/jellyflow-runtime/src/runtime/xyflow/apply/mod.rs:1`, `crates/jellyflow-runtime/src/runtime/xyflow/controlled.rs:1`); ordered adapter-array helpers cover exact React-style apply ordering and UI fields (`crates/jellyflow-runtime/src/runtime/xyflow/apply/ordered.rs:1`) | Graph-backed helpers intentionally remain document-model helpers; React array UI fields are represented only in adapter-owned ordered elements. |
 | Connection/reconnection rules | partial | `XYHandle` resolves closest handles, strict/loose mode, `isValidConnection`, connectability, and connection radius (`packages/system/src/xyhandle/XYHandle.ts:20`, `packages/system/src/xyhandle/XYHandle.ts:256`) | Runtime has strict/loose target semantics (`crates/jellyflow-runtime/src/runtime/connection/target.rs:167`), closest handle math (`crates/jellyflow-runtime/src/runtime/connection/handles.rs:89`), handle-candidate target resolution (`crates/jellyflow-runtime/src/runtime/connection/target.rs:202`), connect/reconnect planners (`crates/jellyflow-runtime/src/rules/connection/connect.rs:11`, `crates/jellyflow-runtime/src/rules/connection/reconnect/planner.rs:14`) | DOM handle-under-pointer priority remains adapter-owned; headless candidate resolution is covered. |
 | Delete and keyboard deletion | partial | `getElementsToRemove` cascades nodes/edges and awaits `onBeforeDelete` (`packages/system/src/utils/graph.ts:420`); React `deleteElements` uses the async result (`packages/react/src/hooks/useReactFlow.ts:150`) | Synchronous delete planner, key gate, cascaded edge removal, policy rejection, and selection cleanup exist (`crates/jellyflow-runtime/src/runtime/delete/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/tests/delete.rs:9`) | Async pre-delete/veto/substitute deletion sets are missing. |
 | Selection box and selection callbacks | covered | Pane selection uses screen-space selection rect and `getNodesInside`; edges can be selected through selected nodes (`packages/react/src/container/Pane/index.tsx:190`) | Runtime computes canvas-space selection with full/partial inclusion, selectable policy, edge selection, additive selection (`crates/jellyflow-runtime/src/runtime/selection/compute.rs:13`) | Screen overlay geometry and pointer event ownership are adapter-owned. |
@@ -119,7 +119,7 @@ document and reversible transactions:
 Recommendation: keep this divergence. Parity work should compare behavior, not
 data structure shape.
 
-### 2. Controlled-Mode Compatibility Exists But Is Not Exact React `applyChanges`
+### 2. Controlled-Mode Compatibility Covers React `applyChanges` Ordering
 
 XyFlow's `applyChanges` supports array-focused behavior such as add index,
 remove/replace precedence, shallow item copying, dimensions updates, and
@@ -134,12 +134,16 @@ Jellyflow has:
 - `ControlledGraph` as an adapter-friendly controlled-state facade
   (`crates/jellyflow-runtime/src/runtime/xyflow/controlled.rs:1`);
 - controlled apply helpers that intentionally "apply what exists, ignore what
-  does not" (`crates/jellyflow-runtime/src/runtime/xyflow/apply/mod.rs:1`).
+  does not" for graph-backed state (`crates/jellyflow-runtime/src/runtime/xyflow/apply/mod.rs:1`);
+- ordered adapter-array helpers for exact React-style add/remove/replace,
+  add-index insertion, `select`, `position.dragging`, `dimensions.measured`,
+  `dimensions.setAttributes`, and `resizing` behavior
+  (`crates/jellyflow-runtime/src/runtime/xyflow/apply/ordered.rs:1`).
 
-Gap: there is no precise React `applyChanges` equivalence table. This matters
-for adapters that want to mirror React Flow controlled-state callbacks exactly.
-
-Suggested task: `XyFlow applyChanges precision conformance`.
+Recommendation: use graph-backed helpers when synchronizing Jellyflow documents.
+Use the ordered `XyFlowNodeElement`/`XyFlowEdgeElement` helpers when an adapter
+needs React Flow controlled-array parity, including UI-only fields that do not
+belong in `jellyflow-core::Node`.
 
 ### 3. Connection Runtime Has Candidate Target Contracts
 
@@ -347,11 +351,11 @@ Recently closed by runtime-deepening work:
 - Resize parent group expansion with conformance traces.
 - Connection target resolution from adapter-provided handle candidates.
 - Selection auto-pan request/store/conformance contract.
+- XyFlow ordered adapter-array apply helpers for exact `applyChanges` parity.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
 | P2 | Async pre-delete veto and substitute delete planning | runtime/store, `runtime::xyflow` callbacks | Needed for XyFlow `onBeforeDelete` parity. |
-| P2 | XyFlow applyChanges precision conformance | `runtime::xyflow` | Controlled integrations need exact change semantics only when adapters demand it. |
 | P2 | Nested parent drag lifecycle conformance | runtime drag/conformance | Parent-relative coordinates, deletion during active drag, and lifecycle ordering need fixtures. |
 | P3 | Viewport d3 parity edge-case conformance | runtime viewport/conformance | Only needed if an adapter depends on exact d3 constraint edge cases. |
 | P3 | Spatial index backend for rendering queries | runtime rendering/lookups | Optimize only after real workloads show linear scans are insufficient. |
@@ -379,5 +383,5 @@ direction: core model and transactions, runtime policy/planners, XyFlow-style
 projection/callbacks, conformance fixtures, and adapter template all exist.
 
 The next work should stay narrow and contract-driven, not become a rewrite:
-async pre-delete, nested drag lifecycle fixtures, exact controlled-change
-semantics where needed, and future adapter UI inventories.
+async pre-delete, nested drag lifecycle fixtures, and future adapter UI
+inventories.

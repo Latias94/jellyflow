@@ -15,7 +15,11 @@ mod projection;
 pub mod store;
 mod transaction;
 
-pub use apply::{ApplyChangesReport, apply_edge_changes, apply_graph_changes, apply_node_changes};
+pub use apply::{
+    ApplyChangesReport, XyFlowDimensionAttribute, XyFlowDimensionsSetAttributes, XyFlowEdgeChange,
+    XyFlowEdgeElement, XyFlowNodeChange, XyFlowNodeElement, apply_edge_changes,
+    apply_graph_changes, apply_node_changes, apply_xyflow_edge_changes, apply_xyflow_node_changes,
+};
 pub use callbacks::{
     ConnectionChange, DeleteChange, EdgeConnection, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
     NodeDragUpdate, NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
