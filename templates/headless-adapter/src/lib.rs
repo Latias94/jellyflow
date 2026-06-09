@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Group, GroupId,
-    Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
-    PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
+    GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow_runtime::io::{NodeGraphPanInertiaTuning, NodeGraphViewState};
+use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
     ConformanceFixtureDirectoryApprovalReport, ConformanceFixtureDirectoryReport,
@@ -20,8 +20,7 @@ use jellyflow_runtime::runtime::events::{
     ViewportMoveKind, ViewportMoveStart,
 };
 use jellyflow_runtime::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection,
-    NodeResizeRequest,
+    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
 use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
@@ -29,20 +28,21 @@ use jellyflow_runtime::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, plan_viewport_pan_inertia,
 };
 use jellyflow_runtime::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
+use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
-    ConformanceSuite::new("headless adapter template")
-        .with_scenarios([
-            node_drag_scenario(),
-            node_drag_parent_expansion_scenario(),
-            node_resize_scenario(),
-            delete_selection_scenario(),
-            viewport_pan_scenario(),
-            visible_node_ids_scenario(),
-            visible_node_render_order_scenario(),
-            viewport_animation_scenario(),
-            viewport_pan_inertia_scenario(),
-        ])
+    ConformanceSuite::new("headless adapter template").with_scenarios([
+        node_drag_scenario(),
+        node_drag_parent_expansion_scenario(),
+        node_resize_scenario(),
+        delete_selection_scenario(),
+        viewport_pan_scenario(),
+        viewport_constrained_pan_scenario(),
+        visible_node_ids_scenario(),
+        visible_node_render_order_scenario(),
+        viewport_animation_scenario(),
+        viewport_pan_inertia_scenario(),
+    ])
 }
 
 pub fn check_builtin_suite() -> ConformanceSuiteReport {
@@ -85,10 +85,8 @@ pub fn run_node_resize_smoke() -> Result<ConformanceRunReport, String> {
 }
 
 pub fn run_delete_selection_smoke() -> Result<ConformanceRunReport, String> {
-    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
-        &delete_selection_scenario(),
-    )
-    .map_err(|err| err.to_string())
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&delete_selection_scenario())
+        .map_err(|err| err.to_string())
 }
 
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
@@ -99,10 +97,8 @@ pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
 }
 
 pub fn run_visible_node_ids_smoke() -> Result<ConformanceRunReport, String> {
-    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
-        &visible_node_ids_scenario(),
-    )
-    .map_err(|err| err.to_string())
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&visible_node_ids_scenario())
+        .map_err(|err| err.to_string())
 }
 
 pub fn run_visible_node_render_order_smoke() -> Result<ConformanceRunReport, String> {
@@ -112,11 +108,101 @@ pub fn run_visible_node_render_order_smoke() -> Result<ConformanceRunReport, Str
     .map_err(|err| err.to_string())
 }
 
+pub fn run_viewport_constrained_pan_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &viewport_constrained_pan_scenario(),
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub fn run_viewport_pan_inertia_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
         &viewport_pan_inertia_scenario(),
     )
     .map_err(|err| err.to_string())
+}
+
+pub fn run_controlled_graph_smoke() -> Result<(), String> {
+    let source_id = NodeId::from_u128(80);
+    let target_id = NodeId::from_u128(81);
+    let out_port = PortId::from_u128(82);
+    let in_port = PortId::from_u128(83);
+    let edge_id = EdgeId::from_u128(84);
+    let graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
+    let mut store = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let mut controlled = ControlledGraph::new(graph);
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: source_id,
+            from: CanvasPoint { x: 10.0, y: 20.0 },
+            to: CanvasPoint { x: 42.0, y: 64.0 },
+        },
+        GraphOp::SetEdgeReconnectable {
+            id: edge_id,
+            from: None,
+            to: Some(EdgeReconnectable::Bool(false)),
+        },
+    ]);
+
+    let outcome = store
+        .dispatch_transaction(&tx)
+        .map_err(|err| err.to_string())?;
+    let report = controlled.apply_patch_changes(&outcome.patch);
+    if report.applied() != 2 || report.ignored() != 0 {
+        return Err(format!(
+            "expected controlled patch to apply 2 changes and ignore 0, got applied={} ignored={}",
+            report.applied(),
+            report.ignored()
+        ));
+    }
+
+    let store_graph = serde_json::to_value(store.graph()).map_err(|err| err.to_string())?;
+    let controlled_graph =
+        serde_json::to_value(controlled.graph()).map_err(|err| err.to_string())?;
+    if controlled_graph != store_graph {
+        return Err("controlled graph diverged from store graph".to_owned());
+    }
+
+    Ok(())
+}
+
+pub fn run_rendering_query_smoke() -> Result<(), String> {
+    let (graph, view_state, selected, partial, outside) = visible_node_render_order_fixture();
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    let result = store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    });
+
+    let expected_node_order = vec![outside, partial, selected];
+    if result.node_order != expected_node_order {
+        return Err(format!(
+            "expected node order {expected_node_order:?}, got {:?}",
+            result.node_order
+        ));
+    }
+
+    let expected_visible_node_ids = vec![selected, partial];
+    if result.visible_node_ids != expected_visible_node_ids {
+        return Err(format!(
+            "expected visible node ids {expected_visible_node_ids:?}, got {:?}",
+            result.visible_node_ids
+        ));
+    }
+
+    let expected_visible_render_order = vec![partial, selected];
+    if result.visible_node_render_order != expected_visible_render_order {
+        return Err(format!(
+            "expected visible render order {expected_visible_render_order:?}, got {:?}",
+            result.visible_node_render_order
+        ));
+    }
+
+    Ok(())
 }
 
 fn node_drag_scenario() -> ConformanceScenario {
@@ -203,7 +289,7 @@ fn node_resize_scenario() -> ConformanceScenario {
         node: node_id,
         direction,
         pointer: current_pointer,
-        position: CanvasPoint { x: 0.0, y: 0.0 },
+        position: CanvasPoint { x: 10.0, y: 20.0 },
         size: CanvasSize {
             width: 240.0,
             height: 130.0,
@@ -232,15 +318,12 @@ fn node_resize_scenario() -> ConformanceScenario {
                 )
                 .with_direction(NodeResizeDirection::BottomRight),
             ),
-            ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::apply_node_pointer_resize(NodePointerResizeRequest::new(
+            ConformanceAction::apply_node_pointer_resize_session(NodePointerResizeRequest::new(
                 node_id,
                 start_pointer,
                 current_pointer,
                 direction,
             )),
-            ConformanceAction::emit_gesture(update_event.clone()),
-            ConformanceAction::emit_gesture(end_event.clone()),
         ])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
@@ -384,6 +467,47 @@ fn viewport_pan_scenario() -> ConformanceScenario {
         ])
 }
 
+fn viewport_constrained_pan_scenario() -> ConformanceScenario {
+    let graph = Graph::new(GraphId::from_u128(15));
+    let mut editor_config = NodeGraphEditorConfig::default();
+    editor_config.interaction.translate_extent = Some(CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        },
+    });
+    let requested_pan = CanvasPoint {
+        x: 400.0,
+        y: -300.0,
+    };
+    let constrained_pan = CanvasPoint { x: 0.0, y: -50.0 };
+
+    ConformanceScenario::new("template viewport constrained pan", graph)
+        .with_editor_config(editor_config)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_viewport_pan_constrained(
+            ViewportPanRequest::new(requested_pan),
+            CanvasSize {
+                width: 50.0,
+                height: 50.0,
+            },
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(constrained_pan, 1.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: constrained_pan,
+                    zoom: 1.0,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: constrained_pan,
+                zoom: 1.0,
+            }),
+        ])
+}
+
 fn visible_node_ids_scenario() -> ConformanceScenario {
     let inside = NodeId::from_u128(70);
     let partial = NodeId::from_u128(71);
@@ -435,6 +559,21 @@ fn visible_node_ids_scenario() -> ConformanceScenario {
 }
 
 fn visible_node_render_order_scenario() -> ConformanceScenario {
+    let (graph, view_state, selected, partial, _outside) = visible_node_render_order_fixture();
+
+    ConformanceScenario::new("template visible node render order", graph)
+        .with_view_state(view_state)
+        .with_actions([ConformanceAction::assert_visible_node_render_order(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [partial, selected],
+        )])
+        .with_expected_trace([])
+}
+
+fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, NodeId, NodeId) {
     let selected = NodeId::from_u128(73);
     let partial = NodeId::from_u128(74);
     let outside = NodeId::from_u128(75);
@@ -478,33 +617,21 @@ fn visible_node_render_order_scenario() -> ConformanceScenario {
     };
     view_state.set_selection(vec![selected], Vec::new(), Vec::new());
 
-    ConformanceScenario::new("template visible node render order", graph)
-        .with_view_state(view_state)
-        .with_actions([ConformanceAction::assert_visible_node_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [partial, selected],
-        )])
-        .with_expected_trace([])
+    (graph, view_state, selected, partial, outside)
 }
 
 fn viewport_animation_scenario() -> ConformanceScenario {
     let graph = Graph::new(GraphId::from_u128(11));
-    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0)
-        .expect("valid viewport");
-    let to = ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0)
-        .expect("valid viewport");
+    let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).expect("valid viewport");
+    let to =
+        ViewportTransform::new(CanvasPoint { x: 80.0, y: -40.0 }, 2.0).expect("valid viewport");
     let midpoint_pan = CanvasPoint { x: 40.0, y: -20.0 };
     let endpoint_pan = CanvasPoint { x: 80.0, y: -40.0 };
 
     let double_click_current =
-        ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0)
-            .expect("valid viewport");
+        ViewportTransform::new(CanvasPoint { x: 10.0, y: 20.0 }, 2.0).expect("valid viewport");
     let double_click_target =
-        ViewportTransform::new(CanvasPoint { x: -10.0, y: 10.0 }, 3.0)
-            .expect("valid viewport");
+        ViewportTransform::new(CanvasPoint { x: -10.0, y: 10.0 }, 3.0).expect("valid viewport");
     let expected_plan = ViewportAnimationPlan {
         from: double_click_current,
         to: double_click_target,
@@ -767,7 +894,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 9);
+        assert_eq!(report.scenario_count(), 10);
     }
 
     #[test]
@@ -815,18 +942,35 @@ mod tests {
 
     #[test]
     fn visible_node_render_order_smoke_runs_as_single_scenario() {
-        let report = run_visible_node_render_order_smoke()
-            .expect("visible node render order scenario runs");
+        let report =
+            run_visible_node_render_order_smoke().expect("visible node render order scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn viewport_constrained_pan_smoke_runs_as_single_scenario() {
+        let report =
+            run_viewport_constrained_pan_smoke().expect("viewport constrained pan scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
 
     #[test]
     fn viewport_pan_inertia_smoke_runs_as_single_scenario() {
-        let report =
-            run_viewport_pan_inertia_smoke().expect("viewport pan inertia scenario runs");
+        let report = run_viewport_pan_inertia_smoke().expect("viewport pan inertia scenario runs");
 
         assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn controlled_graph_smoke_applies_store_patch() {
+        run_controlled_graph_smoke().expect("controlled graph smoke runs");
+    }
+
+    #[test]
+    fn rendering_query_smoke_resolves_order_and_visibility() {
+        run_rendering_query_smoke().expect("rendering query smoke runs");
     }
 
     #[test]
@@ -842,7 +986,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 9);
+        assert_eq!(report.scenario_count(), 10);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {
