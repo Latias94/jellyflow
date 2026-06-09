@@ -1,9 +1,10 @@
 use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
-    resolve_connection_target,
+    resolve_connection_target, resolve_connection_target_from_handles,
 };
 use crate::runtime::store::NodeGraphStore;
 
+use super::super::super::scenario::ConformanceConnectionTargetFromHandlesInput;
 use super::require_commit;
 
 pub(super) fn assert_connection_target(
@@ -16,6 +17,20 @@ pub(super) fn assert_connection_target(
     } else {
         Err(format!(
             "connection target resolved to {actual:?}, expected {expected:?}"
+        ))
+    }
+}
+
+pub(super) fn assert_connection_target_from_handles(
+    input: &ConformanceConnectionTargetFromHandlesInput,
+    expected: ResolvedConnectionTarget,
+) -> Result<(), String> {
+    let actual = resolve_connection_target_from_handles(input.as_runtime());
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "connection target from handles resolved to {actual:?}, expected {expected:?}"
         ))
     }
 }

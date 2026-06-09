@@ -23,7 +23,7 @@ impl ConnectionHandleRef {
 }
 
 /// Renderer-normalized handle geometry in canvas coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionHandleCandidate {
     pub handle: ConnectionHandleRef,
     pub node_rect: CanvasRect,
@@ -66,7 +66,7 @@ impl<'a> ClosestConnectionHandleInput<'a> {
 }
 
 /// Closest handle resolution result.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClosestConnectionHandle {
     pub handle: ConnectionHandleRef,
     pub center: CanvasPoint,

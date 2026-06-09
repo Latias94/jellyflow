@@ -54,6 +54,9 @@ validate behavior before rendering. The runtime crate supports that split with:
   `NodeGraphStore::apply_delete_selection_for_key`, and `runtime::keyboard::KeyboardIntent` for
   deterministic selected node/edge deletion through effective policy, configured delete keys,
   cascaded connected-edge deletion, normal graph transactions, and selection cleanup;
+- `runtime::connection::{resolve_connection_target_from_handles, ConnectionTargetCandidate}` for
+  resolving adapter-provided handle geometry and connectability into XyFlow-style target feedback
+  without owning DOM hit testing;
 - `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
   deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
   snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;

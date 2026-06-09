@@ -10,7 +10,8 @@ use crate::runtime::conformance::{
 };
 use crate::runtime::connection::{
     CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest, ConnectionHandleConnection,
-    ConnectionHandleRef, ConnectionHandleValidity, ConnectionTargetHandle, ConnectionTargetInput,
+    ConnectionHandleRef, ConnectionHandleValidity, ConnectionTargetCandidate,
+    ConnectionTargetFromHandlesInput, ConnectionTargetHandle, ConnectionTargetInput,
     RECONNECT_EDGE_TRANSACTION_LABEL, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
@@ -18,6 +19,7 @@ use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
 };
+use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };

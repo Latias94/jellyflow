@@ -11,8 +11,8 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, delete, drag, events, keyboard, rendering, resize,
-    selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, delete, drag, events, geometry, keyboard, rendering,
+    resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -154,7 +154,38 @@ fn explicit_modules_expose_their_owned_surfaces() {
             NodeGraphConnectionMode::Strict,
             true,
         ));
+    let target_candidate = connection::ConnectionTargetCandidate::new(
+        target_handle,
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+        },
+        geometry::HandleBounds {
+            rect: CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+            position: geometry::HandlePosition::Right,
+        },
+    );
+    let target_candidates = [target_candidate];
+    let resolved_target_from_handles = connection::resolve_connection_target_from_handles(
+        connection::ConnectionTargetFromHandlesInput::new(
+            CanvasPoint { x: 5.0, y: 5.0 },
+            10.0,
+            from_handle,
+            &target_candidates,
+            NodeGraphConnectionMode::Strict,
+        ),
+    );
     let _: Option<connection::ConnectionHandleConnection> = resolved_target.connection;
+    let _: Option<connection::ConnectionHandleConnection> = resolved_target_from_handles.connection;
     assert_eq!(
         resolved_target.feedback,
         connection::ConnectionHandleValidity::Valid
@@ -686,6 +717,46 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             feedback: connection::ConnectionHandleValidity::Valid,
         },
     );
+    let connection_target_candidate = connection::ConnectionTargetCandidate::new(
+        target_handle,
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+        },
+        geometry::HandleBounds {
+            rect: CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+            position: geometry::HandlePosition::Right,
+        },
+    );
+    let connection_target_candidates = [connection_target_candidate];
+    let connection_target_from_handles_action =
+        conformance::ConformanceAction::assert_connection_target_from_handles(
+            connection::ConnectionTargetFromHandlesInput::new(
+                CanvasPoint { x: 5.0, y: 5.0 },
+                10.0,
+                source_handle,
+                &connection_target_candidates,
+                NodeGraphConnectionMode::Strict,
+            ),
+            connection::ResolvedConnectionTarget {
+                target: Some(target_handle),
+                connection: Some(connection::ConnectionHandleConnection {
+                    source: source_handle,
+                    target: target_handle.handle,
+                }),
+                is_handle_valid: true,
+                feedback: connection::ConnectionHandleValidity::Valid,
+            },
+        );
     let connect_action = conformance::ConformanceAction::apply_connect_edge(
         connection::ConnectEdgeRequest::new(
             PortId::new(),
@@ -744,6 +815,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_double_click_action,
         delete_key_action,
         connection_target_action,
+        connection_target_from_handles_action,
         connect_action,
         reconnect_action,
         dispatch_action,

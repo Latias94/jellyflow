@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use jellyflow_core::core::PortDirection;
+use jellyflow_core::core::{CanvasPoint, CanvasRect, PortDirection};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
-use super::{ConnectionHandleRef, ConnectionHandleValidity, connection_handle_validity};
+use crate::runtime::geometry::HandleBounds;
+
+use super::{
+    ClosestConnectionHandleInput, ConnectionHandleCandidate, ConnectionHandleRef,
+    ConnectionHandleValidity, closest_connection_handle, connection_handle_validity,
+};
 
 /// Candidate target handle plus adapter-resolved connectability policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -20,6 +25,32 @@ impl ConnectionTargetHandle {
             connectable,
             connectable_end,
         }
+    }
+}
+
+/// Renderer-normalized target-handle geometry plus target connectability policy.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionTargetCandidate {
+    pub target: ConnectionTargetHandle,
+    pub node_rect: CanvasRect,
+    pub bounds: HandleBounds,
+}
+
+impl ConnectionTargetCandidate {
+    pub fn new(
+        target: ConnectionTargetHandle,
+        node_rect: CanvasRect,
+        bounds: HandleBounds,
+    ) -> Self {
+        Self {
+            target,
+            node_rect,
+            bounds,
+        }
+    }
+
+    fn handle_candidate(self) -> ConnectionHandleCandidate {
+        ConnectionHandleCandidate::new(self.target.handle, self.node_rect, self.bounds)
     }
 }
 
@@ -81,6 +112,41 @@ impl ConnectionTargetInput {
     }
 }
 
+/// Input for resolving the current connection target from renderer-normalized handle candidates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConnectionTargetFromHandlesInput<'a> {
+    pub pointer: CanvasPoint,
+    pub radius: f32,
+    pub from: ConnectionHandleRef,
+    pub candidates: &'a [ConnectionTargetCandidate],
+    pub mode: NodeGraphConnectionMode,
+    pub is_valid_connection: bool,
+}
+
+impl<'a> ConnectionTargetFromHandlesInput<'a> {
+    pub fn new(
+        pointer: CanvasPoint,
+        radius: f32,
+        from: ConnectionHandleRef,
+        candidates: &'a [ConnectionTargetCandidate],
+        mode: NodeGraphConnectionMode,
+    ) -> Self {
+        Self {
+            pointer,
+            radius,
+            from,
+            candidates,
+            mode,
+            is_valid_connection: true,
+        }
+    }
+
+    pub fn with_connection_validity(mut self, is_valid_connection: bool) -> Self {
+        self.is_valid_connection = is_valid_connection;
+        self
+    }
+}
+
 fn default_connection_validity() -> bool {
     true
 }
@@ -126,4 +192,38 @@ pub fn resolve_connection_target(input: ConnectionTargetInput) -> ResolvedConnec
         is_handle_valid,
         feedback: connection_handle_validity(input.is_inside_connection_radius, is_handle_valid),
     }
+}
+
+/// Resolves connection target feedback from renderer-normalized handle geometry and policies.
+///
+/// Adapters still own DOM/window hit testing and provide the candidate handle inventory. The runtime
+/// owns XyFlow-compatible closest-handle tie semantics, strict/loose checks, endpoint ordering, and
+/// validity feedback.
+pub fn resolve_connection_target_from_handles(
+    input: ConnectionTargetFromHandlesInput<'_>,
+) -> ResolvedConnectionTarget {
+    let handle_candidates = input
+        .candidates
+        .iter()
+        .copied()
+        .map(ConnectionTargetCandidate::handle_candidate)
+        .collect::<Vec<_>>();
+    let closest = closest_connection_handle(ClosestConnectionHandleInput::new(
+        input.pointer,
+        input.radius,
+        input.from,
+        &handle_candidates,
+    ));
+    let target = closest.and_then(|closest| {
+        input
+            .candidates
+            .iter()
+            .find(|candidate| candidate.target.handle == closest.handle)
+            .map(|candidate| candidate.target)
+    });
+
+    resolve_connection_target(
+        ConnectionTargetInput::new(input.from, target, input.mode, closest.is_some())
+            .with_connection_validity(input.is_valid_connection),
+    )
 }

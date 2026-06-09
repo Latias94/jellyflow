@@ -2,9 +2,10 @@ use crate::runtime::connection::{
     CONNECT_EDGE_TRANSACTION_LABEL, ClosestConnectionHandleInput, ConnectEdgeRequest,
     ConnectionDragActivationInput, ConnectionHandleCandidate, ConnectionHandleConnection,
     ConnectionHandleIndicatorInput, ConnectionHandleRef, ConnectionHandleValidity,
-    ConnectionTargetHandle, ConnectionTargetInput, closest_connection_handle,
-    connection_drag_threshold_met, connection_handle_validity, resolve_connection_handle_indicator,
-    resolve_connection_target,
+    ConnectionTargetCandidate, ConnectionTargetFromHandlesInput, ConnectionTargetHandle,
+    ConnectionTargetInput, closest_connection_handle, connection_drag_threshold_met,
+    connection_handle_validity, resolve_connection_handle_indicator, resolve_connection_target,
+    resolve_connection_target_from_handles,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_core::core::{
@@ -281,6 +282,68 @@ fn resolve_connection_target_preserves_xyflow_feedback_null_when_no_handle_is_cl
 }
 
 #[test]
+fn resolve_connection_target_from_handles_uses_closest_handle_then_policy() {
+    let from = handle_ref(PortDirection::Out);
+    let valid_far = target_candidate(
+        PortDirection::In,
+        CanvasPoint { x: 80.0, y: 80.0 },
+        true,
+        true,
+    );
+    let blocked_near = target_candidate(
+        PortDirection::In,
+        CanvasPoint { x: 10.0, y: 10.0 },
+        true,
+        false,
+    );
+    let candidates = [valid_far, blocked_near];
+
+    let result = resolve_connection_target_from_handles(ConnectionTargetFromHandlesInput::new(
+        CanvasPoint { x: 15.0, y: 15.0 },
+        120.0,
+        from,
+        &candidates,
+        NodeGraphConnectionMode::Strict,
+    ));
+
+    assert_eq!(result.target, Some(blocked_near.target));
+    assert_eq!(
+        result.connection,
+        Some(ConnectionHandleConnection {
+            source: from,
+            target: blocked_near.target.handle,
+        })
+    );
+    assert!(!result.is_handle_valid);
+    assert_eq!(result.feedback, ConnectionHandleValidity::Invalid);
+}
+
+#[test]
+fn resolve_connection_target_from_handles_preserves_no_handle_feedback_outside_radius() {
+    let from = handle_ref(PortDirection::Out);
+    let candidate = target_candidate(
+        PortDirection::In,
+        CanvasPoint { x: 80.0, y: 80.0 },
+        true,
+        true,
+    );
+    let candidates = [candidate];
+
+    let result = resolve_connection_target_from_handles(ConnectionTargetFromHandlesInput::new(
+        CanvasPoint { x: 0.0, y: 0.0 },
+        10.0,
+        from,
+        &candidates,
+        NodeGraphConnectionMode::Strict,
+    ));
+
+    assert_eq!(result.target, None);
+    assert_eq!(result.connection, None);
+    assert!(!result.is_handle_valid);
+    assert_eq!(result.feedback, ConnectionHandleValidity::NoHandle);
+}
+
+#[test]
 fn connection_handle_indicator_shows_start_and_click_end_states_like_xyflow() {
     let handle = handle_ref(PortDirection::Out);
     let idle = resolve_connection_handle_indicator(
@@ -402,6 +465,19 @@ fn handle_ref(direction: PortDirection) -> ConnectionHandleRef {
 
 fn target_handle(direction: PortDirection) -> ConnectionTargetHandle {
     ConnectionTargetHandle::new(handle_ref(direction), true, true)
+}
+
+fn target_candidate(
+    direction: PortDirection,
+    handle_origin: CanvasPoint,
+    connectable: bool,
+    connectable_end: bool,
+) -> ConnectionTargetCandidate {
+    ConnectionTargetCandidate::new(
+        ConnectionTargetHandle::new(handle_ref(direction), connectable, connectable_end),
+        node_rect(CanvasPoint { x: 0.0, y: 0.0 }),
+        handle_bounds(handle_origin),
+    )
 }
 
 fn candidate(direction: PortDirection, handle_origin: CanvasPoint) -> ConnectionHandleCandidate {

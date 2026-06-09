@@ -126,6 +126,57 @@ fn conformance_runner_executes_delete_selection_fixture_and_matches_trace() {
 }
 
 #[test]
+fn conformance_runner_asserts_connection_target_from_handle_candidates() {
+    let (graph, source_node, target_node, out_port, in_port, _edge_id) = make_graph();
+    let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
+    let blocked_near = ConnectionTargetCandidate::new(
+        ConnectionTargetHandle::new(
+            ConnectionHandleRef::new(target_node, in_port, PortDirection::In),
+            true,
+            false,
+        ),
+        connection_node_rect(CanvasPoint { x: 0.0, y: 0.0 }),
+        connection_handle_bounds(CanvasPoint { x: 10.0, y: 10.0 }),
+    );
+    let valid_far = ConnectionTargetCandidate::new(
+        ConnectionTargetHandle::new(
+            ConnectionHandleRef::new(target_node, in_port, PortDirection::Out),
+            true,
+            true,
+        ),
+        connection_node_rect(CanvasPoint { x: 0.0, y: 0.0 }),
+        connection_handle_bounds(CanvasPoint { x: 80.0, y: 80.0 }),
+    );
+    let candidates = [valid_far, blocked_near];
+    let input = ConnectionTargetFromHandlesInput::new(
+        CanvasPoint { x: 15.0, y: 15.0 },
+        120.0,
+        source,
+        &candidates,
+        NodeGraphConnectionMode::Strict,
+    );
+    let expected = ResolvedConnectionTarget {
+        target: Some(blocked_near.target),
+        connection: Some(ConnectionHandleConnection {
+            source,
+            target: blocked_near.target.handle,
+        }),
+        is_handle_valid: false,
+        feedback: ConnectionHandleValidity::Invalid,
+    };
+    let scenario = ConformanceScenario::new("connection target candidates runner", graph)
+        .with_actions([ConformanceAction::assert_connection_target_from_handles(
+            input, expected,
+        )])
+        .with_expected_trace([]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
+
+#[test]
 fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let start = NodeDragStart {
@@ -173,6 +224,29 @@ fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     assert!(report.is_match(), "{report}");
     assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
     assert!(report.mismatches().is_empty());
+}
+
+fn connection_node_rect(origin: CanvasPoint) -> CanvasRect {
+    CanvasRect {
+        origin,
+        size: CanvasSize {
+            width: 200.0,
+            height: 120.0,
+        },
+    }
+}
+
+fn connection_handle_bounds(origin: CanvasPoint) -> HandleBounds {
+    HandleBounds {
+        rect: CanvasRect {
+            origin,
+            size: CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+        },
+        position: HandlePosition::Right,
+    }
 }
 
 #[test]

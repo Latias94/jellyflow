@@ -36,6 +36,9 @@ pub(super) fn execute_action(
         ConformanceAction::AssertConnectionTarget { input, expected } => {
             connection::assert_connection_target(*input, *expected)
         }
+        ConformanceAction::AssertConnectionTargetFromHandles { input, expected } => {
+            connection::assert_connection_target_from_handles(input, *expected)
+        }
         ConformanceAction::ApplyConnectEdge { request } => {
             connection::apply_connect_edge(store, *request)
         }

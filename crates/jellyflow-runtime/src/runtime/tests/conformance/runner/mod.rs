@@ -6,6 +6,11 @@ use crate::runtime::conformance::{
     ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
     run_conformance_suite,
 };
+use crate::runtime::connection::{
+    ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectionTargetCandidate, ConnectionTargetFromHandlesInput, ConnectionTargetHandle,
+    ResolvedConnectionTarget,
+};
 use crate::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use crate::runtime::drag::{
     NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection, NodeNudgeRequest,
@@ -15,6 +20,7 @@ use crate::runtime::events::{
     NodeResizeStart, NodeResizeUpdate, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
     ViewportMoveKind, ViewportMoveStart,
 };
+use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
@@ -26,8 +32,9 @@ use crate::runtime::viewport::{
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, Group, GroupId, NodeExtent,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, Group, GroupId, NodeExtent, PortDirection,
 };
+use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 mod scenario;
 mod suite;

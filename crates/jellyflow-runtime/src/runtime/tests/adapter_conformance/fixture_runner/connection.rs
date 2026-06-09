@@ -59,6 +59,56 @@ fn adapter_conformance_fixture_runner_asserts_connection_target_policy() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_connection_target_from_handle_candidates() {
+    let (mut graph, source_node, target_node, out_port, in_port, _eid) = make_graph();
+    let next_in = insert_input_port(&mut graph, target_node, "in2");
+    let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
+    let blocked_near = ConnectionTargetCandidate::new(
+        ConnectionTargetHandle::new(
+            ConnectionHandleRef::new(target_node, in_port, PortDirection::In),
+            true,
+            false,
+        ),
+        node_rect(CanvasPoint { x: 0.0, y: 0.0 }),
+        handle_bounds(CanvasPoint { x: 10.0, y: 10.0 }),
+    );
+    let valid_far = ConnectionTargetCandidate::new(
+        ConnectionTargetHandle::new(
+            ConnectionHandleRef::new(target_node, next_in, PortDirection::In),
+            true,
+            true,
+        ),
+        node_rect(CanvasPoint { x: 0.0, y: 0.0 }),
+        handle_bounds(CanvasPoint { x: 80.0, y: 80.0 }),
+    );
+    let candidates = [valid_far, blocked_near];
+    let input = ConnectionTargetFromHandlesInput::new(
+        CanvasPoint { x: 15.0, y: 15.0 },
+        120.0,
+        source,
+        &candidates,
+        NodeGraphConnectionMode::Strict,
+    );
+    let expected = ResolvedConnectionTarget {
+        target: Some(blocked_near.target),
+        connection: Some(ConnectionHandleConnection {
+            source,
+            target: blocked_near.target.handle,
+        }),
+        is_handle_valid: false,
+        feedback: ConnectionHandleValidity::Invalid,
+    };
+
+    let scenario = ConformanceScenario::new("connection target from handle candidates", graph)
+        .with_actions([ConformanceAction::assert_connection_target_from_handles(
+            input, expected,
+        )])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_callbacks() {
     let (mut graph, _a, b, out_port, _in_port, _eid) = make_graph();
     let next_in = insert_input_port(&mut graph, b, "in2");
@@ -113,6 +163,29 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
         ]);
 
     assert_conformance_trace(&scenario);
+}
+
+fn node_rect(origin: CanvasPoint) -> CanvasRect {
+    CanvasRect {
+        origin,
+        size: CanvasSize {
+            width: 200.0,
+            height: 120.0,
+        },
+    }
+}
+
+fn handle_bounds(origin: CanvasPoint) -> HandleBounds {
+    HandleBounds {
+        rect: CanvasRect {
+            origin,
+            size: CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+        },
+        position: HandlePosition::Right,
+    }
 }
 
 #[test]

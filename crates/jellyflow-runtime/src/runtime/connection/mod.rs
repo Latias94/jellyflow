@@ -28,6 +28,7 @@ pub use reconnect::{
     reconnect_edge_transaction,
 };
 pub use target::{
-    ConnectionHandleConnection, ConnectionTargetHandle, ConnectionTargetInput,
-    ResolvedConnectionTarget, resolve_connection_target,
+    ConnectionHandleConnection, ConnectionTargetCandidate, ConnectionTargetFromHandlesInput,
+    ConnectionTargetHandle, ConnectionTargetInput, ResolvedConnectionTarget,
+    resolve_connection_target, resolve_connection_target_from_handles,
 };

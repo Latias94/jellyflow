@@ -82,7 +82,7 @@ Jellyflow source areas reviewed:
 | --- | --- | --- | --- | --- |
 | Graph model and store commit semantics | covered | React store defaults and system utils model interaction state (`packages/react/src/store/initialState.ts:90`, `packages/system/src/utils/store.ts:320`) | `Graph` uses stable maps for nodes/ports/edges/groups (`crates/jellyflow-core/src/core/model/graph.rs:16`); `GraphTransaction` is reversible and atomic (`crates/jellyflow-core/src/ops/transaction/batch.rs:7`) | Different data structures are intentional. Do not copy React array/store internals. |
 | Node/edge change projection and controlled apply helpers | partial | React `applyChanges` handles add/remove/replace/select/position/dimensions with array-order semantics (`packages/react/src/utils/changes.ts:1`) | `runtime::xyflow` maps transactions to node/edge changes and back (`crates/jellyflow-runtime/src/runtime/xyflow/changes/mod.rs:1`); best-effort apply helpers and `ControlledGraph` exist (`crates/jellyflow-runtime/src/runtime/xyflow/apply/mod.rs:1`, `crates/jellyflow-runtime/src/runtime/xyflow/controlled.rs:1`) | Missing exact React array semantics: `replace`, add index insertion, `dimensions.setAttributes`, `resizing`, and full change ordering equivalence. |
-| Connection/reconnection rules | partial | `XYHandle` resolves closest handles, strict/loose mode, `isValidConnection`, connectability, and connection radius (`packages/system/src/xyhandle/XYHandle.ts:20`, `packages/system/src/xyhandle/XYHandle.ts:256`) | Runtime has strict/loose target semantics (`crates/jellyflow-runtime/src/runtime/connection/target.rs:97`), closest handle math (`crates/jellyflow-runtime/src/runtime/connection/handles.rs:89`), connect/reconnect planners (`crates/jellyflow-runtime/src/rules/connection/connect.rs:11`, `crates/jellyflow-runtime/src/rules/connection/reconnect/planner.rs:14`) | DOM handle-under-pointer priority and adapter conversion from rendered handles into candidate lists are not first-class conformance flows yet. |
+| Connection/reconnection rules | partial | `XYHandle` resolves closest handles, strict/loose mode, `isValidConnection`, connectability, and connection radius (`packages/system/src/xyhandle/XYHandle.ts:20`, `packages/system/src/xyhandle/XYHandle.ts:256`) | Runtime has strict/loose target semantics (`crates/jellyflow-runtime/src/runtime/connection/target.rs:167`), closest handle math (`crates/jellyflow-runtime/src/runtime/connection/handles.rs:89`), handle-candidate target resolution (`crates/jellyflow-runtime/src/runtime/connection/target.rs:202`), connect/reconnect planners (`crates/jellyflow-runtime/src/rules/connection/connect.rs:11`, `crates/jellyflow-runtime/src/rules/connection/reconnect/planner.rs:14`) | DOM handle-under-pointer priority remains adapter-owned; headless candidate resolution is covered. |
 | Delete and keyboard deletion | partial | `getElementsToRemove` cascades nodes/edges and awaits `onBeforeDelete` (`packages/system/src/utils/graph.ts:420`); React `deleteElements` uses the async result (`packages/react/src/hooks/useReactFlow.ts:150`) | Synchronous delete planner, key gate, cascaded edge removal, policy rejection, and selection cleanup exist (`crates/jellyflow-runtime/src/runtime/delete/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/tests/delete.rs:9`) | Async pre-delete/veto/substitute deletion sets are missing. |
 | Selection box and selection callbacks | covered | Pane selection uses screen-space selection rect and `getNodesInside`; edges can be selected through selected nodes (`packages/react/src/container/Pane/index.tsx:190`) | Runtime computes canvas-space selection with full/partial inclusion, selectable policy, edge selection, additive selection (`crates/jellyflow-runtime/src/runtime/selection/compute.rs:13`) | Screen overlay geometry and pointer event ownership are adapter-owned. |
 | Node drag, snapping, extents, parent expansion, keyboard nudge | partial | `XYDrag` handles multi-drag, snap offsets, node extent adjustment, auto-pan, drag lifecycle, and delete-while-drag abort (`packages/system/src/xydrag/XYDrag.ts:130`, `packages/system/src/xydrag/XYDrag.ts:232`) | Runtime has screen threshold, gesture claim, selected-node candidates, snap, adjusted global extents, parent expansion, and nudge (`crates/jellyflow-runtime/src/runtime/drag/activation.rs:3`, `crates/jellyflow-runtime/src/runtime/drag/planner.rs:14`, `crates/jellyflow-runtime/src/runtime/drag/constraints/items.rs:9`) | Needs conformance for nested parent-relative coordinates, deletion during active drag, and full lifecycle sequencing. |
@@ -93,7 +93,7 @@ Jellyflow source areas reviewed:
 | Visible nodes and node render order | covered | React visible node hook uses `getNodesInside` (`packages/react/src/hooks/useVisibleNodeIds.ts:1`) | Runtime resolves visible node ids, visible node render order, and aggregate rendering query results with culling, hidden policy, node origin, fallback size, and elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:11`, `crates/jellyflow-runtime/src/runtime/rendering/query.rs:1`) | None at the current headless contract level. |
 | Visible edge culling | covered | React visible edge hook calls `isEdgeVisible` using source/target node bounds (`packages/react/src/hooks/useVisibleEdgeIds.ts:1`); system utility has edge visibility math (`packages/system/src/utils/edges/general.ts:69`) | Runtime resolves visible edge ids and visible edge render order using endpoint node bounds, hidden policy, node origin, fallback size, and edge elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:136`, `crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:198`) | Path-geometry clipping remains renderer-owned unless a future adapter needs it. |
 | Render order and selected elevation | covered | XyFlow elevates selected nodes/edges through z-index helpers (`packages/system/src/utils/edges/general.ts:1`) | Runtime resolves node/group/edge paint order and selected-edge elevation through connected selected nodes (`crates/jellyflow-runtime/src/runtime/rendering/order.rs:133`, `crates/jellyflow-runtime/src/runtime/rendering/order.rs:182`) | DOM z-index class implementation is adapter-owned. |
-| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible node and edge rendering/callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:155`, `templates/headless-adapter/src/lib.rs:33`) | Need more gap-specific scenarios: selection auto-pan, async pre-delete, nested containment, and adapter-owned handle target resolution. |
+| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible node and edge rendering/callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:155`, `templates/headless-adapter/src/lib.rs:33`) | Need more gap-specific scenarios: selection auto-pan, async pre-delete, and nested containment. |
 | React/DOM UI inventory | adapter-owned | React package owns wrappers, store binding, hooks, components, minimap, controls, background, toolbar, portals, DOM node internals (`packages/react/src/store/index.ts:160`, `packages/react/src/components`) | ADRs require headless crates to stay renderer/platform-free | Future adapter crates should own this inventory. |
 | Browser/provider/SSR/accessibility text | adapter-owned | React provider, aria descriptions, DOM focus/measurement, ResizeObserver, viewport DOM transform are React/package concerns | No equivalent should exist in core/runtime | Do not implement inside `jellyflow-core` or `jellyflow-runtime`. |
 | XyFlow browser screenshots/pixel parity | intentionally out of scope | XyFlow validates browser/DOM behavior in its own stack | ADR 0003 puts screenshots/pixel smoke in adapter crates (`docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md:42`) | Out of scope for this task and for headless crates. |
@@ -142,7 +142,7 @@ for adapters that want to mirror React Flow controlled-state callbacks exactly.
 
 Suggested task: `XyFlow applyChanges precision conformance`.
 
-### 3. Connection Runtime Is Solid; Target Selection Needs Adapter Contracts
+### 3. Connection Runtime Has Candidate Target Contracts
 
 XyFlow's `XYHandle` combines several layers: pointer capture, DOM lookup,
 closest-handle search, handle-under-pointer priority, connectability classes,
@@ -156,20 +156,19 @@ Jellyflow already owns the headless parts:
 - closest handle geometry and XyFlow tie semantics
   (`crates/jellyflow-runtime/src/runtime/connection/handles.rs:89`);
 - strict/loose target validation and feedback enum
-  (`crates/jellyflow-runtime/src/runtime/connection/target.rs:97`);
+  (`crates/jellyflow-runtime/src/runtime/connection/target.rs:167`);
+- adapter-provided handle-candidate target resolution
+  (`crates/jellyflow-runtime/src/runtime/connection/target.rs:202`);
 - connect/reconnect planners with duplicate/capacity/policy checks
   (`crates/jellyflow-runtime/src/rules/connection/connect.rs:11`,
   `crates/jellyflow-runtime/src/rules/connection/reconnect/planner.rs:14`);
 - conformance traces for connect/reconnect projections
   (`crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/projections.rs:25`).
 
-Gap: the adapter-owned pipeline from rendered/DOM handle inventory to
-`ConnectionHandleCandidate` and `ConnectionTargetInput` is not yet locked in a
-template scenario. XyFlow's "handle below cursor wins over closest handle" is a
-DOM hit-test priority, so it should not live in core, but the future adapter
-should prove it.
-
-Suggested task: `Adapter connection target resolution fixtures`.
+Gap: XyFlow's "handle below cursor wins over closest handle" is a DOM hit-test
+priority, so it should not live in core. Future adapter crates should prove that
+their rendered handle inventory maps into `ConnectionTargetCandidate` values
+before calling the headless resolver.
 
 ### 4. Delete Covers Synchronous Semantics But Not Async `onBeforeDelete`
 
@@ -342,10 +341,10 @@ Recently closed by runtime-deepening work:
 - Aggregate rendering query result for renderer-facing order and visibility.
 - Visible edge culling and visible edge render-order contracts.
 - Resize parent group expansion with conformance traces.
+- Connection target resolution from adapter-provided handle candidates.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
-| P2 | Adapter connection target resolution fixtures | template/future adapter, conformance | Headless math exists, but rendered handle inventory and DOM-priority equivalents need contracts. |
 | P2 | Async pre-delete veto and substitute delete planning | runtime/store, `runtime::xyflow` callbacks | Needed for XyFlow `onBeforeDelete` parity. |
 | P2 | Selection auto-pan conformance | runtime/conformance/template | Kernel exists, but selection-specific behavior is not locked. |
 | P2 | XyFlow applyChanges precision conformance | `runtime::xyflow` | Controlled integrations need exact change semantics only when adapters demand it. |
