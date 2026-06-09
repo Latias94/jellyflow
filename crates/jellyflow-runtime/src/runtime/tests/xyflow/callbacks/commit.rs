@@ -1,13 +1,13 @@
 use super::super::super::fixtures::{make_graph, make_store};
 
 use crate::runtime::commit::NodeGraphPatch;
-use crate::runtime::xyflow::apply::{apply_edge_changes, apply_node_changes};
+use crate::runtime::xyflow::ControlledGraph;
 use crate::runtime::xyflow::callbacks::{
     EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
     install_callbacks,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeReconnectable, Graph, NodeId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeReconnectable, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphOpBuilderExt, GraphTransaction};
 
 #[test]
@@ -76,16 +76,16 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
 
     #[derive(Clone)]
     struct ControlledApply {
-        graph: Rc<RefCell<Graph>>,
+        graph: Rc<RefCell<ControlledGraph>>,
     }
 
     impl NodeGraphCommitCallbacks for ControlledApply {
         fn on_nodes_change(&mut self, changes: &[NodeChange]) {
-            apply_node_changes(&mut self.graph.borrow_mut(), changes);
+            self.graph.borrow_mut().apply_node_changes(changes);
         }
 
         fn on_edges_change(&mut self, changes: &[EdgeChange]) {
-            apply_edge_changes(&mut self.graph.borrow_mut(), changes);
+            self.graph.borrow_mut().apply_edge_changes(changes);
         }
     }
 
@@ -96,7 +96,7 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
     let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
     let mut store = make_store(g0.clone());
 
-    let controlled = Rc::new(RefCell::new(g0));
+    let controlled = Rc::new(RefCell::new(ControlledGraph::new(g0)));
     let _token = install_callbacks(
         &mut store,
         ControlledApply {
@@ -124,7 +124,8 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
     let _ = store.dispatch_transaction(&tx).expect("dispatch");
 
     let store_json = serde_json::to_value(store.graph()).expect("store json");
-    let controlled_json = serde_json::to_value(&*controlled.borrow()).expect("controlled json");
+    let controlled_json =
+        serde_json::to_value(controlled.borrow().graph()).expect("controlled json");
     assert_eq!(store_json, controlled_json);
 }
 

@@ -10,6 +10,7 @@
 pub mod apply;
 pub mod callbacks;
 pub mod changes;
+mod controlled;
 mod projection;
 pub mod store;
 mod transaction;
@@ -26,4 +27,5 @@ pub use callbacks::{
 pub use changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch,
 };
+pub use controlled::ControlledGraph;
 pub use store::DispatchChangesError;
