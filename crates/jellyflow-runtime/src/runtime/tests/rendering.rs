@@ -487,6 +487,28 @@ fn visible_node_render_order_filters_visible_ids_through_node_render_order() {
 }
 
 #[test]
+fn store_rendering_query_returns_order_and_visibility_together() {
+    let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![inside],
+        draw_order: vec![outside, partial, inside, hidden],
+        ..NodeGraphViewState::default()
+    };
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+
+    let query = store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    });
+
+    assert_eq!(query.group_order, Vec::<GroupId>::new());
+    assert_eq!(query.edge_order, Vec::<EdgeId>::new());
+    assert_eq!(query.node_order, vec![outside, partial, inside]);
+    assert_eq!(query.visible_node_ids, vec![inside, partial]);
+    assert_eq!(query.visible_node_render_order, vec![partial, inside]);
+}
+
+#[test]
 fn visible_node_render_order_matches_node_render_order_when_culling_is_disabled() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let view_state = NodeGraphViewState {

@@ -6,6 +6,7 @@ use super::order::{
     EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions,
     resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
 };
+use super::query::{RenderingQueryOptions, RenderingQueryResult, resolve_rendering_query};
 use super::visibility::{
     VisibleNodeIdsRequest, resolve_visible_node_ids, resolve_visible_node_render_order,
 };
@@ -62,6 +63,22 @@ impl NodeGraphStore {
             self.view_state(),
             request,
             NodeRenderOrderOptions::from_interaction(&interaction),
+        )
+    }
+
+    /// Resolves all renderer-facing order and visibility lists for the current store state.
+    pub fn rendering_query(&self, viewport_size: CanvasSize) -> RenderingQueryResult {
+        let interaction = self.resolved_interaction_state();
+        resolve_rendering_query(
+            self.graph(),
+            self.lookups(),
+            self.view_state(),
+            RenderingQueryOptions::new(
+                GroupRenderOrderOptions::from_interaction(&interaction),
+                NodeRenderOrderOptions::from_interaction(&interaction),
+                EdgeRenderOrderOptions::from_interaction(&interaction),
+            )
+            .with_visible_nodes(self.visible_node_ids_request(viewport_size)),
         )
     }
 
