@@ -11,7 +11,8 @@
 - XyFlow-style node/edge change projections under `runtime::xyflow`;
 - renderer-neutral selection-box helpers under `runtime::selection`;
 - renderer-neutral node drag planning, parent expansion, and commit helpers under `runtime::drag`;
-- renderer-neutral node resize planning and commit helpers under `runtime::resize`;
+- renderer-neutral node resize planning, parent expansion, and commit helpers under
+  `runtime::resize`;
 - renderer-neutral viewport pan/zoom helpers under `runtime::viewport`;
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
@@ -110,13 +111,14 @@ positions in canvas space, so left/top group expansion does not add sibling comp
 pointer capture, drag handles, resize handles, renderer-specific grouping UI, screenshots, and
 pixels remain adapter responsibilities.
 
-Resize target-size planning is runtime-owned: adapters provide normalized canvas-space
-`NodeResizeRequest` values, and the runtime produces `node resize` transactions from existing
-`GraphOp::SetNodeSize` and, for left/top controls, `GraphOp::SetNodePos`. Adapters still own resize
-handle UI, raw pointer capture, pointer start/delta lifecycle, cursor policy, renderer feedback,
-and pixels. Exact XyFlow pointer-resize extent and keep-aspect-ratio parity should be implemented
-through a future pointer-resize session request if adapter evidence needs it; it is intentionally
-not modeled as a renderer or DOM dependency in `jellyflow-runtime`.
+Resize planning is runtime-owned: adapters provide normalized canvas-space `NodeResizeRequest` or
+`NodePointerResizeRequest` values, and the runtime produces `node resize` transactions from existing
+`GraphOp::SetNodeSize`, `GraphOp::SetNodePos` for left/top controls, and `GraphOp::SetGroupRect`
+when `expand_parent = true` expands a parent group. `NodeExtent::Parent` with
+`expand_parent = false` still clamps to the current parent group rect. Adapters still own resize
+handle UI, raw pointer capture, cursor policy, renderer feedback, and pixels. Exact XyFlow
+node-owned child containment is intentionally not modeled as a renderer or DOM dependency in
+`jellyflow-runtime`.
 
 Delete selection planning is runtime-owned: adapters maintain view-state selection and translate
 platform keyboard input into direct delete calls or `KeyboardIntent`. The runtime resolves the
@@ -137,9 +139,9 @@ should use the sampled-frame actions and rejection assertion so adapters can pro
 traces without moving frame loops into runtime. Parent expansion fixtures should use
 `ConformanceAction::apply_node_drag`, which exercises the same runtime interaction boundary and
 records `set_group_rect` graph-commit traces when parent expansion occurs. Resize fixtures should
-use `ConformanceAction::apply_node_resize`, which exercises the same runtime interaction boundary
-and records `set_node_size` or `set_node_pos` plus `set_node_size` graph-commit traces. Delete
-fixtures should use
+use `ConformanceAction::apply_node_resize` or `apply_node_pointer_resize`, which exercises the same
+runtime interaction boundary and records `set_node_size`, `set_node_pos` plus `set_node_size`, and
+`set_group_rect` graph-commit traces when parent expansion occurs. Delete fixtures should use
 `ConformanceAction::apply_delete_selection` or `apply_delete_selection_for_key`, which records
 `remove_node` or `remove_edge` graph commits, XyFlow-style delete/disconnect callbacks, and
 selection cleanup traces.

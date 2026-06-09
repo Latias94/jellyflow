@@ -19,7 +19,7 @@ use crate::runtime::events::{
     NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
 };
 use crate::runtime::resize::{
-    NODE_RESIZE_TRANSACTION_LABEL, NodeResizeDirection, NodeResizeRequest,
+    NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationOptions, ViewportAnimationPlan,

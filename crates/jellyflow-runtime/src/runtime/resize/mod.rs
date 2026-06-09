@@ -3,6 +3,7 @@
 //! These helpers turn canvas-space resize intent into normal graph transactions without depending
 //! on resize handles, pointer capture, DOM state, windowing, or renderer APIs.
 
+mod parent_expansion;
 mod planner;
 mod session;
 mod store;

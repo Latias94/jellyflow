@@ -664,6 +664,326 @@ fn pointer_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
 }
 
 #[test]
+fn node_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
+    let mut fixture = resize_fixture();
+    let parent = GroupId::from_u128(40);
+    fixture.graph.groups.insert(
+        parent,
+        Group {
+            title: "Parent".to_owned(),
+            rect: CanvasRect {
+                origin: CanvasPoint { x: 0.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 130.0,
+                    height: 100.0,
+                },
+            },
+            color: None,
+        },
+    );
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.parent = Some(parent);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(false);
+    let harness = InteractionHarness::new("target resize parent extent", fixture.graph);
+
+    let plan = harness
+        .store()
+        .plan_node_resize(NodeResizeRequest::new(
+            fixture.enabled,
+            CanvasSize {
+                width: 400.0,
+                height: 400.0,
+            },
+        ))
+        .expect("parent extent target resize plan");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 120.0,
+            height: 80.0,
+        },
+    );
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [GraphOp::SetNodeSize { id, to, .. }]
+                if *id == fixture.enabled
+                    && *to == Some(CanvasSize { width: 120.0, height: 80.0 })
+        ),
+        "disabled parent expansion should clamp target resize without group ops: {:#?}",
+        plan.transaction().ops(),
+    );
+}
+
+#[test]
+fn node_resize_expands_parent_group_when_expand_parent_is_true() {
+    let mut fixture = resize_fixture();
+    let parent = GroupId::from_u128(40);
+    let parent_rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 130.0,
+            height: 100.0,
+        },
+    };
+    fixture.graph.groups.insert(
+        parent,
+        Group {
+            title: "Parent".to_owned(),
+            rect: parent_rect,
+            color: None,
+        },
+    );
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.parent = Some(parent);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(true);
+    let harness = InteractionHarness::new("target resize parent expansion", fixture.graph);
+    let target = CanvasSize {
+        width: 150.0,
+        height: 100.0,
+    };
+    let expected_parent_rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 160.0,
+            height: 120.0,
+        },
+    };
+
+    let plan = harness
+        .store()
+        .plan_node_resize(NodeResizeRequest::new(fixture.enabled, target))
+        .expect("parent expansion target resize plan");
+
+    assert_eq!(plan.to, target);
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [
+                GraphOp::SetNodeSize { id, to, .. },
+                GraphOp::SetGroupRect {
+                    id: expanded,
+                    from: group_from,
+                    to: group_to,
+                },
+            ] if *id == fixture.enabled
+                && *to == Some(target)
+                && *expanded == parent
+                && *group_from == parent_rect
+                && *group_to == expected_parent_rect
+        ),
+        "enabled parent expansion should expand group for target resize: {:#?}",
+        plan.transaction().ops(),
+    );
+}
+
+#[test]
+fn pointer_resize_expands_parent_group_when_expand_parent_is_true() {
+    let mut fixture = resize_fixture();
+    let parent = GroupId::from_u128(40);
+    let parent_rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 130.0,
+            height: 100.0,
+        },
+    };
+    fixture.graph.groups.insert(
+        parent,
+        Group {
+            title: "Parent".to_owned(),
+            rect: parent_rect,
+            color: None,
+        },
+    );
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.parent = Some(parent);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(true);
+
+    let mut harness = InteractionHarness::new("pointer resize parent expansion", fixture.graph);
+    let target = CanvasSize {
+        width: 150.0,
+        height: 100.0,
+    };
+    let expected_parent_rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 160.0,
+            height: 120.0,
+        },
+    };
+
+    let request = NodePointerResizeRequest::new(
+        fixture.enabled,
+        CanvasPoint { x: 110.0, y: 80.0 },
+        CanvasPoint { x: 160.0, y: 120.0 },
+        NodeResizeDirection::BottomRight,
+    );
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(request)
+        .expect("parent expansion pointer resize plan");
+
+    assert_eq!(plan.to, target);
+    assert_eq!(plan.to_pos, CanvasPoint { x: 10.0, y: 20.0 });
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [
+                GraphOp::SetNodeSize { id, from, to },
+                GraphOp::SetGroupRect {
+                    id: expanded,
+                    from: group_from,
+                    to: group_to,
+                },
+            ] if *id == fixture.enabled
+                && *from == Some(CanvasSize { width: 100.0, height: 60.0 })
+                && *to == Some(target)
+                && *expanded == parent
+                && *group_from == parent_rect
+                && *group_to == expected_parent_rect
+        ),
+        "enabled parent expansion should resize child and expand group: {:#?}",
+        plan.transaction().ops(),
+    );
+
+    harness
+        .store_mut()
+        .apply_node_pointer_resize(request)
+        .expect("parent expansion pointer resize dispatch succeeds")
+        .expect("parent expansion pointer resize dispatch commits");
+
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.enabled].size,
+        Some(target)
+    );
+    assert_eq!(
+        harness.store().graph().groups[&parent].rect,
+        expected_parent_rect,
+    );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some(NODE_RESIZE_TRANSACTION_LABEL),
+        ["set_node_size", "set_group_rect"],
+    )]);
+}
+
+#[test]
+fn pointer_resize_expands_parent_group_from_top_left_without_sibling_compensation() {
+    let mut fixture = resize_fixture();
+    let parent = GroupId::from_u128(40);
+    let parent_rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 130.0,
+            height: 100.0,
+        },
+    };
+    fixture.graph.groups.insert(
+        parent,
+        Group {
+            title: "Parent".to_owned(),
+            rect: parent_rect,
+            color: None,
+        },
+    );
+    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
+    node.parent = Some(parent);
+    node.extent = Some(NodeExtent::Parent);
+    node.expand_parent = Some(true);
+
+    let sibling_pos = CanvasPoint { x: 90.0, y: 40.0 };
+    let sibling = fixture.graph.nodes.get_mut(&fixture.no_size).unwrap();
+    sibling.parent = Some(parent);
+    sibling.pos = sibling_pos;
+
+    let mut harness =
+        InteractionHarness::new("pointer resize top left parent expansion", fixture.graph);
+    let target = CanvasSize {
+        width: 130.0,
+        height: 90.0,
+    };
+    let expected_node_pos = CanvasPoint { x: -20.0, y: -10.0 };
+    let expected_parent_rect = CanvasRect {
+        origin: expected_node_pos,
+        size: CanvasSize {
+            width: 150.0,
+            height: 110.0,
+        },
+    };
+
+    let request = NodePointerResizeRequest::new(
+        fixture.enabled,
+        CanvasPoint { x: 10.0, y: 20.0 },
+        CanvasPoint { x: -20.0, y: -10.0 },
+        NodeResizeDirection::TopLeft,
+    );
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(request)
+        .expect("top left parent expansion pointer resize plan");
+
+    assert_eq!(plan.to, target);
+    assert_eq!(plan.to_pos, expected_node_pos);
+    assert!(
+        matches!(
+            plan.transaction().ops(),
+            [
+                GraphOp::SetNodePos {
+                    id: moved,
+                    to: node_to,
+                    ..
+                },
+                GraphOp::SetNodeSize { id: sized, to: size_to, .. },
+                GraphOp::SetGroupRect {
+                    id: expanded,
+                    from: group_from,
+                    to: group_to,
+                },
+            ] if *moved == fixture.enabled
+                && *node_to == expected_node_pos
+                && *sized == fixture.enabled
+                && *size_to == Some(target)
+                && *expanded == parent
+                && *group_from == parent_rect
+                && *group_to == expected_parent_rect
+        ),
+        "left/top parent expansion should not add sibling compensation ops: {:#?}",
+        plan.transaction().ops(),
+    );
+
+    harness
+        .store_mut()
+        .apply_node_pointer_resize(request)
+        .expect("top left parent expansion pointer resize dispatch succeeds")
+        .expect("top left parent expansion pointer resize dispatch commits");
+
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.enabled].pos,
+        expected_node_pos
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.enabled].size,
+        Some(target)
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.no_size].pos,
+        sibling_pos
+    );
+    assert_eq!(
+        harness.store().graph().groups[&parent].rect,
+        expected_parent_rect,
+    );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some(NODE_RESIZE_TRANSACTION_LABEL),
+        ["set_node_pos", "set_node_size", "set_group_rect"],
+    )]);
+}
+
+#[test]
 fn pointer_resize_skips_hidden_missing_unsized_noop_and_invalid_requests() {
     let fixture = resize_fixture();
     let harness = InteractionHarness::new("pointer resize rejects", fixture.graph);

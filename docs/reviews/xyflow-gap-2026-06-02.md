@@ -86,7 +86,7 @@ Jellyflow source areas reviewed:
 | Delete and keyboard deletion | partial | `getElementsToRemove` cascades nodes/edges and awaits `onBeforeDelete` (`packages/system/src/utils/graph.ts:420`); React `deleteElements` uses the async result (`packages/react/src/hooks/useReactFlow.ts:150`) | Synchronous delete planner, key gate, cascaded edge removal, policy rejection, and selection cleanup exist (`crates/jellyflow-runtime/src/runtime/delete/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/tests/delete.rs:9`) | Async pre-delete/veto/substitute deletion sets are missing. |
 | Selection box and selection callbacks | covered | Pane selection uses screen-space selection rect and `getNodesInside`; edges can be selected through selected nodes (`packages/react/src/container/Pane/index.tsx:190`) | Runtime computes canvas-space selection with full/partial inclusion, selectable policy, edge selection, additive selection (`crates/jellyflow-runtime/src/runtime/selection/compute.rs:13`) | Screen overlay geometry and pointer event ownership are adapter-owned. |
 | Node drag, snapping, extents, parent expansion, keyboard nudge | partial | `XYDrag` handles multi-drag, snap offsets, node extent adjustment, auto-pan, drag lifecycle, and delete-while-drag abort (`packages/system/src/xydrag/XYDrag.ts:130`, `packages/system/src/xydrag/XYDrag.ts:232`) | Runtime has screen threshold, gesture claim, selected-node candidates, snap, adjusted global extents, parent expansion, and nudge (`crates/jellyflow-runtime/src/runtime/drag/activation.rs:3`, `crates/jellyflow-runtime/src/runtime/drag/planner.rs:14`, `crates/jellyflow-runtime/src/runtime/drag/constraints/items.rs:9`) | Needs conformance for nested parent-relative coordinates, deletion during active drag, and full lifecycle sequencing. |
-| Node resize | partial | `XYResizer` owns pointer resize sessions, keep-aspect-ratio, boundaries, child extent correction, parent expansion clamps (`packages/system/src/xyresizer/XYResizer.ts:100`, `packages/system/src/xyresizer/XYResizer.ts:190`) | Runtime supports target-size resize, pointer resize sessions, keep-aspect-ratio, min/max constraints, direction-driven position changes, node origin, store commit, lifecycle callbacks, tests/template smoke (`crates/jellyflow-runtime/src/runtime/resize/session.rs:1`, `crates/jellyflow-runtime/src/runtime/resize/planner.rs:10`, `templates/headless-adapter/src/lib.rs:277`) | Remaining parity gap: parent/child clamp correction, nested containment, and exact top/left child adjustment behavior. |
+| Node resize | partial | `XYResizer` owns pointer resize sessions, keep-aspect-ratio, boundaries, child extent correction, parent expansion clamps (`packages/system/src/xyresizer/XYResizer.ts:100`, `packages/system/src/xyresizer/XYResizer.ts:190`) | Runtime supports target-size resize, pointer resize sessions, keep-aspect-ratio, min/max constraints, direction-driven position changes, node origin, parent group expansion, store commit, lifecycle callbacks, and conformance fixtures (`crates/jellyflow-runtime/src/runtime/resize/session.rs:1`, `crates/jellyflow-runtime/src/runtime/resize/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/resize/parent_expansion.rs:1`) | Remaining parity gap: XyFlow's node-owned child extent correction and parent-relative coordinate behavior are not modeled by Jellyflow's group-as-frame contract. |
 | Viewport pan/zoom, scroll, double-click, animation, inertia, fit view | partial | `XYPanZoom` constrains viewport with d3 `scaleExtent` and `translateExtent`, supports pan/scroll/zoom policies and setters (`packages/system/src/xypanzoom/XYPanZoom.ts:40`, `packages/system/src/xypanzoom/XYPanZoom.ts:204`) | Runtime has pan/zoom transforms, constrained pan/zoom entrypoints, scroll policy, double-click animation, animation frames, inertia, fit-view math, and tests (`crates/jellyflow-runtime/src/runtime/viewport/transform.rs:6`, `crates/jellyflow-runtime/src/runtime/store/view/state.rs:52`, `crates/jellyflow-runtime/src/runtime/fit_view/compute.rs:9`) | Low-level unconstrained setters intentionally remain; exact d3 edge-case parity can be added only if adapters need it. |
 | Auto-pan | partial | XyFlow auto-pans during node drag/connect and node focus; selection drag also has screen-rect auto-pan paths (`packages/system/src/xydrag/XYDrag.ts:232`, `packages/system/src/xyhandle/XYHandle.ts:20`, `packages/react/src/components/NodeWrapper/index.tsx:160`) | Runtime has a deterministic auto-pan kernel, activation gates for node drag/connect/node focus, and an `Always` mode for adapter-owned flows (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:7`, `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:6`) | Selection-specific auto-pan policy and fixtures are not locked yet. |
 | Edge path geometry and hit testing | covered | XyFlow system has bezier path, label, and reconnect helpers (`packages/system/src/utils/edges/bezier-edge.ts:1`) | Runtime has bezier path generation, label math, straight/smooth-step helpers, and numeric hit testing with interaction width (`crates/jellyflow-runtime/src/runtime/geometry/paths/bezier.rs:19`, `crates/jellyflow-runtime/src/runtime/geometry/hit_test.rs:40`) | Exact SVG path string formatting is adapter-owned unless a renderer needs it. |
@@ -216,7 +216,7 @@ parent semantics and abort/lifecycle parity.
 
 Suggested task: `Nested parent drag lifecycle conformance`.
 
-### 6. Resize Session Seam Exists; Containment Is The Remaining Gap
+### 6. Resize Session and Group Containment Seams Exist
 
 XyFlow's `XYResizer` is a full pointer-session engine. It computes next
 dimensions from pointer deltas, supports `keepAspectRatio`, clamps to min/max,
@@ -235,16 +235,16 @@ Jellyflow now has the headless session contract adapters need:
   (`crates/jellyflow-runtime/src/runtime/resize/store.rs:61`);
 - direction-driven position updates and node-origin support
   (`crates/jellyflow-runtime/src/runtime/resize/planner.rs:84`);
+- group-based parent expansion for children with `expand_parent = true`
+  (`crates/jellyflow-runtime/src/runtime/resize/parent_expansion.rs:1`);
 - tests for constraints, top/left position shifts, origin fallback/override,
   and invalid/noop requests (`crates/jellyflow-runtime/src/runtime/tests/resize.rs:73`);
 - adapter-template resize-session smoke (`templates/headless-adapter/src/lib.rs:277`).
 
-Gap: XyFlow still has more exact parent/child extent correction, parent
-expansion clamps, and child adjustment behavior during top/left resizes. That
-should be added only where the headless model can express the same containment
-contract without importing DOM measurement.
-
-Suggested task: `Resize containment and parent-child correction`.
+Gap: XyFlow still has node-owned child extent correction and parent-relative
+child adjustment behavior during top/left resizes. Jellyflow intentionally stores
+nodes in canvas space and treats groups as frames, so this should remain out of
+runtime until a future model decision introduces node-owned nested coordinates.
 
 ### 7. Viewport `translateExtent` Has Constrained Entrypoints
 
@@ -341,10 +341,10 @@ Recently closed by runtime-deepening work:
 - Controlled graph facade for adapter-owned graph state.
 - Aggregate rendering query result for renderer-facing order and visibility.
 - Visible edge culling and visible edge render-order contracts.
+- Resize parent group expansion with conformance traces.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
-| P1 | Resize containment and parent-child correction | runtime resize/conformance | Remaining high-impact resize parity gap after session support. |
 | P2 | Adapter connection target resolution fixtures | template/future adapter, conformance | Headless math exists, but rendered handle inventory and DOM-priority equivalents need contracts. |
 | P2 | Async pre-delete veto and substitute delete planning | runtime/store, `runtime::xyflow` callbacks | Needed for XyFlow `onBeforeDelete` parity. |
 | P2 | Selection auto-pan conformance | runtime/conformance/template | Kernel exists, but selection-specific behavior is not locked. |

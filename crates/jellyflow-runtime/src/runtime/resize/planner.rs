@@ -3,6 +3,7 @@ use crate::runtime::geometry::CanvasBounds;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeExtent, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
+use super::parent_expansion::parent_expansion_op;
 use super::types::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeContext,
     NodeResizeDirection, NodeResizePlan, NodeResizeRequest,
@@ -24,14 +25,19 @@ pub fn plan_node_resize_with_context(
         return None;
     }
 
-    let to = request
+    let mut to = request
         .constraints
         .clamp(direction_target_size(node.size, request)?)?;
     let from_pos = node.pos;
     let node_origin = resolve_node_origin(node.origin, context.node_origin);
-    let to_pos = resized_position(from_pos, node.size, to, request.direction, node_origin)?;
+    let mut to_pos = resized_position(from_pos, node.size, to, request.direction, node_origin)?;
+    if let Some(extent) = resolved_resize_extent(graph, node, None) {
+        let clamped = clamp_geometry_to_extent(to_pos, to, request.direction, node_origin, extent)?;
+        to_pos = clamped.0;
+        to = clamped.1;
+    }
 
-    resize_plan_for_geometry(request.node, node, to, to_pos)
+    resize_plan_for_geometry(graph, request.node, node, to, to_pos, node_origin)
 }
 
 /// Plans a node resize update from canvas-space pointer movement without mutating the graph.
@@ -71,14 +77,16 @@ pub(super) fn plan_node_pointer_resize_with_policy_extent(
     let (to_pos, to) =
         pointer_resize_geometry(graph, node, node_extent, request, from_size, node_origin)?;
 
-    resize_plan_for_geometry(request.node, node, to, to_pos)
+    resize_plan_for_geometry(graph, request.node, node, to, to_pos, node_origin)
 }
 
 fn resize_plan_for_geometry(
+    graph: &Graph,
     node_id: NodeId,
     node: &Node,
     to: CanvasSize,
     to_pos: CanvasPoint,
+    node_origin: (f32, f32),
 ) -> Option<NodeResizePlan> {
     if !to.is_positive_finite() || !to_pos.is_finite() {
         return None;
@@ -101,6 +109,9 @@ fn resize_plan_for_geometry(
             from: node.size,
             to: Some(to),
         });
+    }
+    if let Some(op) = parent_expansion_op(graph, node, to_pos, to, node_origin) {
+        ops.push(op);
     }
     let transaction = GraphTransaction::from_ops(ops).with_label(NODE_RESIZE_TRANSACTION_LABEL);
 
