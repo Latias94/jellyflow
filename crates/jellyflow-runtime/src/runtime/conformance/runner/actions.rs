@@ -18,6 +18,9 @@ pub(super) fn execute_action(
             graph::dispatch_transaction(store, transaction)
         }
         ConformanceAction::ApplyNodeDrag { node, to } => node::apply_node_drag(store, *node, *to),
+        ConformanceAction::AssertNodePosition { node, expected } => {
+            graph::assert_node_position(store, *node, *expected)
+        }
         ConformanceAction::ApplyNodeResize { request } => node::apply_node_resize(store, *request),
         ConformanceAction::ApplyNodePointerResize { request } => {
             node::apply_node_pointer_resize(store, *request)

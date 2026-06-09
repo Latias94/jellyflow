@@ -29,3 +29,21 @@ pub(super) fn set_selection(
 pub(super) fn emit_gesture(store: &mut NodeGraphStore, event: &NodeGraphGestureEvent) {
     store.emit_gesture(event.clone());
 }
+
+pub(super) fn assert_node_position(
+    store: &NodeGraphStore,
+    node: NodeId,
+    expected: CanvasPoint,
+) -> Result<(), String> {
+    let Some(actual) = store.graph().nodes.get(&node).map(|node| node.pos) else {
+        return Err(format!("node not found for position assertion: {node:?}"));
+    };
+
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "node position resolved to {actual:?}, expected {expected:?}"
+        ))
+    }
+}

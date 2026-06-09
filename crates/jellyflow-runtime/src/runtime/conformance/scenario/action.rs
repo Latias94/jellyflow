@@ -45,6 +45,10 @@ pub enum ConformanceAction {
         node: NodeId,
         to: CanvasPoint,
     },
+    AssertNodePosition {
+        node: NodeId,
+        expected: CanvasPoint,
+    },
     ApplyNodeResize {
         request: ConformanceNodeResizeRequest,
     },
@@ -184,6 +188,7 @@ impl ConformanceAction {
         match self {
             Self::DispatchTransaction { .. } => "dispatch_transaction",
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
+            Self::AssertNodePosition { .. } => "assert_node_position",
             Self::ApplyNodeResize { .. } => "apply_node_resize",
             Self::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
             Self::ApplyNodePointerResizeSession { .. } => "apply_node_pointer_resize_session",
@@ -233,6 +238,10 @@ impl ConformanceAction {
 
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn assert_node_position(node: NodeId, expected: CanvasPoint) -> Self {
+        Self::AssertNodePosition { node, expected }
     }
 
     pub fn apply_node_resize(request: NodeResizeRequest) -> Self {

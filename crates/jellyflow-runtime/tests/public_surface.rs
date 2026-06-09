@@ -763,6 +763,10 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
         keyboard_types::Code::Backspace,
     );
+    let assert_node_position_action = conformance::ConformanceAction::assert_node_position(
+        node_id,
+        CanvasPoint { x: 1.0, y: 2.0 },
+    );
     let source_handle =
         connection::ConnectionHandleRef::new(node_id, PortId::new(), PortDirection::Out);
     let target_handle = connection::ConnectionTargetHandle::new(
@@ -887,6 +891,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         expect_viewport_pan_inertia_rejected_action,
         viewport_double_click_action,
         delete_key_action,
+        assert_node_position_action,
         connection_target_action,
         connection_target_from_handles_action,
         connect_action,
