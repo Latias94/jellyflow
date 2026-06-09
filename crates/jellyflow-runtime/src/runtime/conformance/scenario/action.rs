@@ -81,8 +81,16 @@ pub enum ConformanceAction {
     ApplyViewportPan {
         request: ViewportPanRequest,
     },
+    ApplyViewportPanConstrained {
+        request: ViewportPanRequest,
+        viewport_size: CanvasSize,
+    },
     ApplyViewportZoom {
         request: ViewportZoomRequest,
+    },
+    ApplyViewportZoomConstrained {
+        request: ViewportZoomRequest,
+        viewport_size: CanvasSize,
     },
     ApplyViewportAnimationFrame {
         request: ViewportAnimationRequest,
@@ -172,7 +180,9 @@ impl ConformanceAction {
             Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
+            Self::ApplyViewportPanConstrained { .. } => "apply_viewport_pan_constrained",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
+            Self::ApplyViewportZoomConstrained { .. } => "apply_viewport_zoom_constrained",
             Self::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
             Self::ApplyViewportAnimationFrames { .. } => "apply_viewport_animation_frames",
             Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
@@ -277,8 +287,28 @@ impl ConformanceAction {
         Self::ApplyViewportPan { request }
     }
 
+    pub fn apply_viewport_pan_constrained(
+        request: ViewportPanRequest,
+        viewport_size: CanvasSize,
+    ) -> Self {
+        Self::ApplyViewportPanConstrained {
+            request,
+            viewport_size,
+        }
+    }
+
     pub fn apply_viewport_zoom(request: ViewportZoomRequest) -> Self {
         Self::ApplyViewportZoom { request }
+    }
+
+    pub fn apply_viewport_zoom_constrained(
+        request: ViewportZoomRequest,
+        viewport_size: CanvasSize,
+    ) -> Self {
+        Self::ApplyViewportZoomConstrained {
+            request,
+            viewport_size,
+        }
     }
 
     pub fn apply_viewport_animation_frame(

@@ -49,7 +49,15 @@ pub(super) fn execute_action(
         }
         ConformanceAction::ApplyAutoPan { request } => viewport::apply_auto_pan(store, *request),
         ConformanceAction::ApplyViewportPan { request } => viewport::apply_pan(store, *request),
+        ConformanceAction::ApplyViewportPanConstrained {
+            request,
+            viewport_size,
+        } => viewport::apply_pan_constrained(store, *request, *viewport_size),
         ConformanceAction::ApplyViewportZoom { request } => viewport::apply_zoom(store, *request),
+        ConformanceAction::ApplyViewportZoomConstrained {
+            request,
+            viewport_size,
+        } => viewport::apply_zoom_constrained(store, *request, *viewport_size),
         ConformanceAction::ApplyViewportAnimationFrame {
             request,
             elapsed_seconds,

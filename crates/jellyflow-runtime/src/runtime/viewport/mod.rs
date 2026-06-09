@@ -25,5 +25,6 @@ pub use inertia::{
     plan_viewport_pan_inertia,
 };
 pub use transform::{
-    ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
+    ViewportConstraints, ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
+    constrain_viewport, pan_viewport, zoom_viewport,
 };

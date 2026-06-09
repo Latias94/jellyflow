@@ -133,6 +133,40 @@ fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
 }
 
 #[test]
+fn conformance_runner_applies_constrained_viewport_pan_fixture() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.translate_extent = Some(CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        },
+    });
+
+    let scenario = ConformanceScenario::new("viewport constrained pan fixture", graph)
+        .with_editor_config(editor_config)
+        .with_actions([ConformanceAction::apply_viewport_pan_constrained(
+            ViewportPanRequest::new(CanvasPoint {
+                x: 400.0,
+                y: -300.0,
+            }),
+            CanvasSize {
+                width: 50.0,
+                height: 50.0,
+            },
+        )])
+        .with_expected_trace([ConformanceTraceEvent::viewport(
+            CanvasPoint { x: 0.0, y: -50.0 },
+            1.0,
+        )]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
 fn conformance_runner_records_auto_pan_fixture_and_callbacks() {
     let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let mut editor_config = crate::io::NodeGraphEditorConfig::default();

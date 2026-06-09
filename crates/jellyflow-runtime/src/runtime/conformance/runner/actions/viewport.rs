@@ -9,6 +9,7 @@ use crate::runtime::viewport::{
     resolve_viewport_double_click_zoom, resolve_viewport_drag_pan_gesture,
     resolve_viewport_scroll_gesture,
 };
+use jellyflow_core::core::CanvasSize;
 
 pub(super) fn apply_auto_pan(
     store: &mut NodeGraphStore,
@@ -30,6 +31,17 @@ pub(super) fn apply_pan(
         .ok_or_else(|| "viewport pan request was rejected".to_owned())
 }
 
+pub(super) fn apply_pan_constrained(
+    store: &mut NodeGraphStore,
+    request: ViewportPanRequest,
+    viewport_size: CanvasSize,
+) -> Result<(), String> {
+    store
+        .apply_viewport_pan_constrained(request, viewport_size)
+        .map(|_| ())
+        .ok_or_else(|| "viewport constrained pan request was rejected".to_owned())
+}
+
 pub(super) fn apply_zoom(
     store: &mut NodeGraphStore,
     request: ViewportZoomRequest,
@@ -38,6 +50,17 @@ pub(super) fn apply_zoom(
         .apply_viewport_zoom(request)
         .map(|_| ())
         .ok_or_else(|| "viewport zoom request was rejected".to_owned())
+}
+
+pub(super) fn apply_zoom_constrained(
+    store: &mut NodeGraphStore,
+    request: ViewportZoomRequest,
+    viewport_size: CanvasSize,
+) -> Result<(), String> {
+    store
+        .apply_viewport_zoom_constrained(request, viewport_size)
+        .map(|_| ())
+        .ok_or_else(|| "viewport constrained zoom request was rejected".to_owned())
 }
 
 pub(super) fn apply_animation_frame(

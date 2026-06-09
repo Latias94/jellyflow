@@ -34,6 +34,64 @@ fn viewport_zoom_request_keeps_anchor_canvas_point_stable_and_clamps() {
 }
 
 #[test]
+fn viewport_constraints_clamp_pan_to_translate_extent() {
+    let transform = ViewportTransform::new(
+        CanvasPoint {
+            x: 400.0,
+            y: -300.0,
+        },
+        1.0,
+    )
+    .unwrap();
+
+    let constrained = constrain_viewport(
+        transform,
+        ViewportConstraints::with_translate_extent(
+            CanvasSize {
+                width: 50.0,
+                height: 50.0,
+            },
+            CanvasRect {
+                origin: CanvasPoint { x: 0.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                },
+            },
+        ),
+    )
+    .expect("constrained viewport");
+
+    assert_eq!(constrained.zoom, 1.0);
+    assert_eq!(constrained.pan, CanvasPoint { x: 0.0, y: -50.0 });
+}
+
+#[test]
+fn viewport_constraints_center_when_visible_area_exceeds_translate_extent() {
+    let transform = ViewportTransform::new(CanvasPoint::default(), 0.5).unwrap();
+
+    let constrained = constrain_viewport(
+        transform,
+        ViewportConstraints::with_translate_extent(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            CanvasRect {
+                origin: CanvasPoint { x: 0.0, y: 0.0 },
+                size: CanvasSize {
+                    width: 80.0,
+                    height: 60.0,
+                },
+            },
+        ),
+    )
+    .expect("constrained viewport");
+
+    assert_eq!(constrained.pan, CanvasPoint { x: 60.0, y: 70.0 },);
+}
+
+#[test]
 fn viewport_transform_rejects_non_finite_or_non_positive_values() {
     let non_finite_pan = CanvasPoint {
         x: f32::NAN,

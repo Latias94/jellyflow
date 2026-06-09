@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::io::NodeGraphViewState;
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
 /// Current viewport transform.
 ///
@@ -54,6 +54,26 @@ impl ViewportTransform {
         CanvasPoint {
             x: screen.x / self.zoom - self.pan.x,
             y: screen.y / self.zoom - self.pan.y,
+        }
+    }
+}
+
+/// Optional pan constraints for a viewport transform.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ViewportConstraints {
+    pub viewport_size: Option<CanvasSize>,
+    pub translate_extent: Option<CanvasRect>,
+}
+
+impl ViewportConstraints {
+    pub fn unconstrained() -> Self {
+        Self::default()
+    }
+
+    pub fn with_translate_extent(viewport_size: CanvasSize, translate_extent: CanvasRect) -> Self {
+        Self {
+            viewport_size: Some(viewport_size),
+            translate_extent: Some(translate_extent),
         }
     }
 }
@@ -114,6 +134,7 @@ pub fn pan_viewport(
         },
         current.zoom,
     )
+    .and_then(|next| constrain_viewport(next, ViewportConstraints::unconstrained()))
 }
 
 /// Applies an anchored zoom request to the current transform.
@@ -137,6 +158,39 @@ pub fn zoom_viewport(
         },
         target_zoom,
     )
+    .and_then(|next| constrain_viewport(next, ViewportConstraints::unconstrained()))
+}
+
+/// Applies optional translate-extent constraints to a viewport transform.
+pub fn constrain_viewport(
+    transform: ViewportTransform,
+    constraints: ViewportConstraints,
+) -> Option<ViewportTransform> {
+    if !transform.is_valid() {
+        return None;
+    }
+    let Some(translate_extent) = constraints.translate_extent else {
+        return Some(transform);
+    };
+    let viewport_size = constraints.viewport_size?;
+    if !viewport_size.is_positive_finite() || !translate_extent.is_positive_finite() {
+        return None;
+    }
+
+    let visible_width = viewport_size.width / transform.zoom;
+    let visible_height = viewport_size.height / transform.zoom;
+    let extent_min_x = translate_extent.origin.x;
+    let extent_min_y = translate_extent.origin.y;
+    let extent_max_x = translate_extent.origin.x + translate_extent.size.width;
+    let extent_max_y = translate_extent.origin.y + translate_extent.size.height;
+
+    ViewportTransform::new(
+        CanvasPoint {
+            x: constrain_pan_axis(transform.pan.x, visible_width, extent_min_x, extent_max_x),
+            y: constrain_pan_axis(transform.pan.y, visible_height, extent_min_y, extent_max_y),
+        },
+        transform.zoom,
+    )
 }
 
 fn clamped_target_zoom(request: ViewportZoomRequest) -> Option<f32> {
@@ -154,6 +208,16 @@ fn clamped_target_zoom(request: ViewportZoomRequest) -> Option<f32> {
     };
 
     Some(request.target_zoom.clamp(min_zoom, max_zoom))
+}
+
+fn constrain_pan_axis(pan: f32, visible_size: f32, extent_min: f32, extent_max: f32) -> f32 {
+    let lower = visible_size - extent_max;
+    let upper = -extent_min;
+    if lower <= upper {
+        pan.clamp(lower, upper)
+    } else {
+        (lower + upper) * 0.5
+    }
 }
 
 pub(super) fn valid_zoom(zoom: f32) -> bool {

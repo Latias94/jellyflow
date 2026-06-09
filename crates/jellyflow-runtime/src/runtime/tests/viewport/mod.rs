@@ -11,13 +11,13 @@ use crate::runtime::events::{
 };
 use crate::runtime::viewport::{
     PaneClickDistanceInput, ViewportAnimationEasing, ViewportAnimationOptions,
-    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
-    ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection,
+    ViewportAnimationRequest, ViewportConstraints, ViewportDoubleClickZoomInput,
+    ViewportDragPanInput, ViewportGestureContext, ViewportGestureIntent, ViewportGestureRejection,
     ViewportPanInertiaRequest, ViewportPanRequest, ViewportPointerButton, ViewportScrollInput,
-    ViewportTransform, ViewportZoomRequest, pan_viewport, plan_viewport_animation,
-    plan_viewport_animation_with_options, plan_viewport_pan_inertia, resolve_pane_click_distance,
-    resolve_viewport_double_click_zoom, resolve_viewport_drag_pan_gesture,
-    resolve_viewport_scroll_gesture, zoom_viewport,
+    ViewportTransform, ViewportZoomRequest, constrain_viewport, pan_viewport,
+    plan_viewport_animation, plan_viewport_animation_with_options, plan_viewport_pan_inertia,
+    resolve_pane_click_distance, resolve_viewport_double_click_zoom,
+    resolve_viewport_drag_pan_gesture, resolve_viewport_scroll_gesture, zoom_viewport,
 };
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 

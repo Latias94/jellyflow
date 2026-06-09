@@ -1,9 +1,10 @@
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::ViewChange;
 use crate::runtime::viewport::{
-    ViewportPanRequest, ViewportTransform, ViewportZoomRequest, pan_viewport, zoom_viewport,
+    ViewportConstraints, ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
+    constrain_viewport, pan_viewport, zoom_viewport,
 };
-use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 
 use super::super::NodeGraphStore;
 use super::changes::ViewStateMutationKind;
@@ -39,7 +40,25 @@ impl NodeGraphStore {
     /// Applies a normalized drag-pan request through normal view-state publication.
     pub fn apply_viewport_pan(&mut self, request: ViewportPanRequest) -> Option<ViewportTransform> {
         let current = ViewportTransform::from_view_state(&self.view_state)?;
-        let next = pan_viewport(current, request)?;
+        let next = constrain_viewport(
+            pan_viewport(current, request)?,
+            ViewportConstraints::unconstrained(),
+        )?;
+        self.set_viewport(next.pan, next.zoom);
+        Some(next)
+    }
+
+    /// Applies a drag-pan request while honoring configured translate extents.
+    pub fn apply_viewport_pan_constrained(
+        &mut self,
+        request: ViewportPanRequest,
+        viewport_size: CanvasSize,
+    ) -> Option<ViewportTransform> {
+        let current = ViewportTransform::from_view_state(&self.view_state)?;
+        let next = constrain_viewport(
+            pan_viewport(current, request)?,
+            self.viewport_constraints(viewport_size),
+        )?;
         self.set_viewport(next.pan, next.zoom);
         Some(next)
     }
@@ -50,7 +69,25 @@ impl NodeGraphStore {
         request: ViewportZoomRequest,
     ) -> Option<ViewportTransform> {
         let current = ViewportTransform::from_view_state(&self.view_state)?;
-        let next = zoom_viewport(current, request)?;
+        let next = constrain_viewport(
+            zoom_viewport(current, request)?,
+            ViewportConstraints::unconstrained(),
+        )?;
+        self.set_viewport(next.pan, next.zoom);
+        Some(next)
+    }
+
+    /// Applies an anchored zoom request while honoring configured translate extents.
+    pub fn apply_viewport_zoom_constrained(
+        &mut self,
+        request: ViewportZoomRequest,
+        viewport_size: CanvasSize,
+    ) -> Option<ViewportTransform> {
+        let current = ViewportTransform::from_view_state(&self.view_state)?;
+        let next = constrain_viewport(
+            zoom_viewport(current, request)?,
+            self.viewport_constraints(viewport_size),
+        )?;
         self.set_viewport(next.pan, next.zoom);
         Some(next)
     }
@@ -79,6 +116,19 @@ impl NodeGraphStore {
 
         let changes = kind.collect_changes(&before, &after);
         self.publish_view_state_change(before, after, changes);
+    }
+
+    fn viewport_constraints(&self, viewport_size: CanvasSize) -> ViewportConstraints {
+        match self
+            .resolved_interaction_state()
+            .pan_interaction()
+            .translate_extent
+        {
+            Some(translate_extent) => {
+                ViewportConstraints::with_translate_extent(viewport_size, translate_extent)
+            }
+            None => ViewportConstraints::unconstrained(),
+        }
     }
 
     fn publish_view_state_change(

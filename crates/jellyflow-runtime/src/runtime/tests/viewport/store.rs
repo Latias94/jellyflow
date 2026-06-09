@@ -31,10 +31,9 @@ fn store_viewport_pan_and_zoom_helpers_publish_view_changes() {
 }
 
 #[test]
-fn store_viewport_pan_currently_ignores_configured_translate_extent() {
+fn store_viewport_pan_constrained_honors_configured_translate_extent() {
     let (graph, _a, _b, _out_port, _in_port, _eid) = make_graph();
-    let mut harness =
-        InteractionHarness::new("viewport pan without translate extent constraint", graph);
+    let mut harness = InteractionHarness::new("viewport pan with translate extent", graph);
     harness.store_mut().update_editor_config(|editor_config| {
         editor_config.interaction.translate_extent = Some(CanvasRect {
             origin: CanvasPoint { x: 0.0, y: 0.0 },
@@ -47,24 +46,54 @@ fn store_viewport_pan_currently_ignores_configured_translate_extent() {
 
     let panned = harness
         .store_mut()
-        .apply_viewport_pan(ViewportPanRequest::new(CanvasPoint {
-            x: 400.0,
-            y: -300.0,
-        }))
+        .apply_viewport_pan_constrained(
+            ViewportPanRequest::new(CanvasPoint {
+                x: 400.0,
+                y: -300.0,
+            }),
+            CanvasSize {
+                width: 50.0,
+                height: 50.0,
+            },
+        )
         .expect("pan");
 
-    assert_eq!(
-        panned.pan,
-        CanvasPoint {
-            x: 400.0,
-            y: -300.0
-        }
-    );
+    assert_eq!(panned.pan, CanvasPoint { x: 0.0, y: -50.0 });
     harness.assert_events(&[HarnessEvent::viewport(
-        CanvasPoint {
-            x: 400.0,
-            y: -300.0,
-        },
+        CanvasPoint { x: 0.0, y: -50.0 },
         1.0,
+    )]);
+}
+
+#[test]
+fn store_viewport_zoom_constrained_honors_configured_translate_extent() {
+    let (graph, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut harness = InteractionHarness::new("viewport zoom with translate extent", graph);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.translate_extent = Some(CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        });
+    });
+
+    let zoomed = harness
+        .store_mut()
+        .apply_viewport_zoom_constrained(
+            ViewportZoomRequest::new(CanvasPoint::default(), 0.25, 0.25, 4.0),
+            CanvasSize {
+                width: 50.0,
+                height: 50.0,
+            },
+        )
+        .expect("zoom");
+
+    assert_eq!(zoomed.zoom, 0.25);
+    assert_eq!(zoomed.pan, CanvasPoint { x: 50.0, y: 50.0 });
+    harness.assert_events(&[HarnessEvent::viewport(
+        CanvasPoint { x: 50.0, y: 50.0 },
+        0.25,
     )]);
 }
