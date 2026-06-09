@@ -345,17 +345,9 @@ fn conformance_runner_executes_node_resize_lifecycle_fixture_and_matches_trace()
 
     let scenario = ConformanceScenario::new("node resize lifecycle runner", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([
-            ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::apply_node_pointer_resize(NodePointerResizeRequest::new(
-                node_id,
-                start_pointer,
-                current_pointer,
-                direction,
-            )),
-            ConformanceAction::emit_gesture(update_event.clone()),
-            ConformanceAction::emit_gesture(end_event.clone()),
-        ])
+        .with_actions([ConformanceAction::apply_node_pointer_resize_session(
+            NodePointerResizeRequest::new(node_id, start_pointer, current_pointer, direction),
+        )])
         .with_expected_trace([
             ConformanceTraceEvent::gesture(start_event),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResizeStart(start)),

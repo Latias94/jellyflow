@@ -9,7 +9,7 @@ use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::events::NodeGraphGestureEvent;
 use crate::runtime::resize::{
     NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints, NodeResizeDirection,
-    NodeResizeRequest,
+    NodeResizeRequest, NodeResizeSession, NodeResizeSessionUpdateRequest,
 };
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::selection::{NodeDragStartSelectionInput, NodePointerDownInput};
@@ -47,6 +47,9 @@ pub enum ConformanceAction {
         request: ConformanceNodeResizeRequest,
     },
     ApplyNodePointerResize {
+        request: ConformanceNodePointerResizeRequest,
+    },
+    ApplyNodePointerResizeSession {
         request: ConformanceNodePointerResizeRequest,
     },
     ApplyNodePointerDown {
@@ -158,6 +161,7 @@ impl ConformanceAction {
             Self::ApplyNodeDrag { .. } => "apply_node_drag",
             Self::ApplyNodeResize { .. } => "apply_node_resize",
             Self::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
+            Self::ApplyNodePointerResizeSession { .. } => "apply_node_pointer_resize_session",
             Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
             Self::ApplySelectionBox { .. } => "apply_selection_box",
             Self::AssertConnectionTarget { .. } => "assert_connection_target",
@@ -206,6 +210,12 @@ impl ConformanceAction {
 
     pub fn apply_node_pointer_resize(request: NodePointerResizeRequest) -> Self {
         Self::ApplyNodePointerResize {
+            request: ConformanceNodePointerResizeRequest::from_runtime(request),
+        }
+    }
+
+    pub fn apply_node_pointer_resize_session(request: NodePointerResizeRequest) -> Self {
+        Self::ApplyNodePointerResizeSession {
             request: ConformanceNodePointerResizeRequest::from_runtime(request),
         }
     }
@@ -518,6 +528,19 @@ impl ConformanceNodePointerResizeRequest {
         ))
         .with_keep_aspect_ratio(self.keep_aspect_ratio)
         .with_axis(self.axis.into_runtime())
+    }
+
+    pub fn into_runtime_session(self) -> (NodeResizeSession, NodeResizeSessionUpdateRequest) {
+        (
+            NodeResizeSession::new(self.node, self.start, self.direction.into_runtime()),
+            NodeResizeSessionUpdateRequest::new(self.current)
+                .with_constraints(NodeResizeConstraints::new(
+                    self.constraints.min,
+                    self.constraints.max,
+                ))
+                .with_keep_aspect_ratio(self.keep_aspect_ratio)
+                .with_axis(self.axis.into_runtime()),
+        )
     }
 
     pub fn from_runtime(request: NodePointerResizeRequest) -> Self {

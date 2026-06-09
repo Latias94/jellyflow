@@ -1,10 +1,13 @@
 use super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::io::NodeGraphNodeOrigin;
+use crate::runtime::events::{
+    NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
+};
 use crate::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints,
-    NodeResizeDirection, NodeResizeItem, NodeResizeRequest, plan_node_pointer_resize,
-    plan_node_resize,
+    NodeResizeDirection, NodeResizeItem, NodeResizeRequest, NodeResizeSession,
+    NodeResizeSessionUpdateRequest, plan_node_pointer_resize, plan_node_resize,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeExtent, NodeId,
@@ -415,6 +418,66 @@ fn pointer_resize_commit_preserves_position_before_size_order_and_trace() {
         Some(NODE_RESIZE_TRANSACTION_LABEL),
         ["set_node_pos", "set_node_size"],
     )]);
+}
+
+#[test]
+fn node_resize_session_emits_lifecycle_around_pointer_resize_commit() {
+    let fixture = resize_fixture();
+    let mut harness = InteractionHarness::new("node resize session", fixture.graph);
+    let session = NodeResizeSession::new(
+        fixture.enabled,
+        CanvasPoint { x: 110.0, y: 80.0 },
+        NodeResizeDirection::BottomRight,
+    );
+    let update_request = NodeResizeSessionUpdateRequest::new(CanvasPoint { x: 140.0, y: 120.0 });
+
+    let outcome = harness
+        .store_mut()
+        .apply_node_resize_session(session, update_request)
+        .expect("session dispatch succeeds")
+        .expect("session dispatch commits");
+
+    assert_eq!(
+        outcome.update,
+        NodeResizeUpdate {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 140.0, y: 120.0 },
+            position: CanvasPoint { x: 10.0, y: 20.0 },
+            size: CanvasSize {
+                width: 130.0,
+                height: 100.0,
+            },
+        },
+    );
+    assert_eq!(
+        outcome.dispatch.committed().label(),
+        Some(NODE_RESIZE_TRANSACTION_LABEL),
+    );
+    harness.assert_events(&[
+        HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeStart(NodeResizeStart {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 110.0, y: 80.0 },
+        })),
+        HarnessEvent::graph_commit(Some(NODE_RESIZE_TRANSACTION_LABEL), ["set_node_size"]),
+        HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeUpdate(NodeResizeUpdate {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 140.0, y: 120.0 },
+            position: CanvasPoint { x: 10.0, y: 20.0 },
+            size: CanvasSize {
+                width: 130.0,
+                height: 100.0,
+            },
+        })),
+        HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeEnd(NodeResizeEnd {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 140.0, y: 120.0 },
+            outcome: NodeResizeEndOutcome::Committed,
+        })),
+    ]);
 }
 
 #[test]

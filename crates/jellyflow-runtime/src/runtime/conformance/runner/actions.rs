@@ -35,6 +35,13 @@ pub(super) fn execute_action(
             store.apply_node_pointer_resize(request.into_runtime()),
             "apply_node_pointer_resize",
         ),
+        ConformanceAction::ApplyNodePointerResizeSession { request } => {
+            let (session, update_request) = request.into_runtime_session();
+            require_commit(
+                store.apply_node_resize_session(session, update_request),
+                "apply_node_pointer_resize_session",
+            )
+        }
         ConformanceAction::ApplyNodePointerDown { input } => {
             store.apply_node_pointer_down(input.into_runtime());
             Ok(())
