@@ -3,7 +3,9 @@ use keyboard_types::Code as KeyCode;
 use super::fixtures::make_graph;
 use super::harness::{HarnessEvent, InteractionHarness};
 use crate::io::NodeGraphViewState;
-use crate::runtime::delete::{DELETE_SELECTION_TRANSACTION_LABEL, DeleteSelectionError};
+use crate::runtime::delete::{
+    DELETE_SELECTION_TRANSACTION_LABEL, DeleteElements, DeleteSelectionError, PreDeleteResolution,
+};
 use jellyflow_core::ops::{GraphMutationPlanner, GraphOp};
 
 #[test]
@@ -68,6 +70,111 @@ fn delete_selection_can_remove_selected_edge_only() {
         HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_edge"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
     ]);
+}
+
+#[test]
+fn delete_selection_preflight_exposes_requested_and_planned_cascade() {
+    let (graph, a, _b, _out, _in, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![a], Vec::new(), Vec::new());
+    let harness = InteractionHarness::with_view_state("delete preflight", graph, view_state);
+
+    let request = harness
+        .store()
+        .prepare_delete_selection()
+        .expect("preflight should plan")
+        .expect("selected node should produce preflight");
+
+    assert_eq!(request.requested().nodes(), &[a]);
+    assert!(request.requested().edges().is_empty());
+    assert_eq!(request.planned().nodes(), &[a]);
+    assert_eq!(request.planned().edges(), &[edge]);
+}
+
+#[test]
+fn delete_preflight_veto_is_noop() {
+    let (graph, a, _b, _out, _in, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![a], Vec::new(), Vec::new());
+    let mut harness =
+        InteractionHarness::with_view_state("delete preflight veto", graph, view_state);
+    let request = harness
+        .store()
+        .prepare_delete_selection()
+        .expect("preflight should plan")
+        .expect("selected node should produce preflight");
+
+    let outcome = harness
+        .store_mut()
+        .apply_pre_delete_resolution(&request, PreDeleteResolution::veto())
+        .expect("veto should not fail");
+
+    assert!(outcome.is_none());
+    assert!(harness.store().graph().nodes.contains_key(&a));
+    assert!(harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().view_state().selected_nodes.contains(&a));
+    harness.assert_events(&[]);
+}
+
+#[test]
+fn delete_preflight_accept_commits_planned_cascade() {
+    let (graph, a, _b, _out, _in, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![a], Vec::new(), Vec::new());
+    let mut harness =
+        InteractionHarness::with_view_state("delete preflight accept", graph, view_state);
+    let request = harness
+        .store()
+        .prepare_delete_selection()
+        .expect("preflight should plan")
+        .expect("selected node should produce preflight");
+
+    harness
+        .store_mut()
+        .apply_pre_delete_resolution(&request, PreDeleteResolution::accept())
+        .expect("accepted preflight should dispatch")
+        .expect("accepted preflight should commit");
+
+    assert!(!harness.store().graph().nodes.contains_key(&a));
+    assert!(!harness.store().graph().edges.contains_key(&edge));
+    harness.assert_events(&[
+        HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_node"]),
+        HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
+    ]);
+}
+
+#[test]
+fn delete_preflight_replace_commits_substitute_delete_set() {
+    let (graph, a, b, _out, _in, edge) = make_graph();
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![a], Vec::new(), Vec::new());
+    let mut harness =
+        InteractionHarness::with_view_state("delete preflight replace", graph, view_state);
+    let request = harness
+        .store()
+        .prepare_delete_selection()
+        .expect("preflight should plan")
+        .expect("selected node should produce preflight");
+
+    harness
+        .store_mut()
+        .apply_pre_delete_resolution(
+            &request,
+            PreDeleteResolution::Replace {
+                elements: DeleteElements::new([], [edge]),
+            },
+        )
+        .expect("replacement should dispatch")
+        .expect("replacement should commit");
+
+    assert!(harness.store().graph().nodes.contains_key(&a));
+    assert!(harness.store().graph().nodes.contains_key(&b));
+    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().view_state().selected_nodes.contains(&a));
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some(DELETE_SELECTION_TRANSACTION_LABEL),
+        ["remove_edge"],
+    )]);
 }
 
 #[test]

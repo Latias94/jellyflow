@@ -54,7 +54,8 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `NodeGraphStore::plan_delete_selection`, `NodeGraphStore::apply_delete_selection`,
   `NodeGraphStore::apply_delete_selection_for_key`, and `runtime::keyboard::KeyboardIntent` for
   deterministic selected node/edge deletion through effective policy, configured delete keys,
-  cascaded connected-edge deletion, normal graph transactions, and selection cleanup;
+  cascaded connected-edge deletion, normal graph transactions, selection cleanup, and
+  adapter-owned pre-delete `Accept`/`Veto`/`Replace` decisions;
 - `runtime::connection::{resolve_connection_target_from_handles, ConnectionTargetCandidate}` for
   resolving adapter-provided handle geometry and connectability into XyFlow-style target feedback
   without owning DOM hit testing;
@@ -129,8 +130,11 @@ Delete selection planning is runtime-owned: adapters maintain view-state selecti
 platform keyboard input into direct delete calls or `KeyboardIntent`. The runtime resolves the
 configured delete key, effective `deletable` policy, selected nodes/edges, cascaded connected-edge
 deletion, `delete selection` transactions, XyFlow-style callback projections, and stale selection
-cleanup. Adapters still own raw key capture, focus/input suppression, confirmation dialogs, async
-pre-delete hooks such as XyFlow `onBeforeDelete`, renderer feedback, screenshots, and pixels.
+cleanup. For XyFlow-style `onBeforeDelete`, adapters call `prepare_delete_selection` or
+`prepare_delete_selection_for_key`, await their own hook/UI, then call `apply_pre_delete_resolution`
+with `PreDeleteResolution::Accept`, `Veto`, or `Replace`. Adapters still own raw key capture,
+focus/input suppression, confirmation dialogs, async scheduling, renderer feedback, screenshots,
+and pixels.
 
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
 fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as

@@ -289,6 +289,26 @@ fn explicit_modules_expose_their_owned_surfaces() {
         delete::DELETE_SELECTION_TRANSACTION_LABEL,
         "delete selection"
     );
+    let delete_elements = delete::DeleteElements::new([NodeId::new()], [EdgeId::new()]);
+    let _pre_delete =
+        delete::PreDeleteRequest::new(delete_elements.clone(), delete_elements.clone());
+    let _pre_delete_accept = delete::PreDeleteResolution::accept();
+    let _pre_delete_veto = delete::PreDeleteResolution::veto();
+    let _pre_delete_replace =
+        delete::PreDeleteResolution::replace([NodeId::new()], [EdgeId::new()]);
+    let _: fn(&NodeGraphViewState) -> delete::DeleteElements = delete::delete_selection_elements;
+    let _: fn(&jellyflow_runtime::rules::DeletePlan) -> delete::DeleteElements =
+        delete::delete_elements_from_plan;
+    let _: fn(
+        &NodeGraphStore,
+    ) -> Result<Option<delete::PreDeleteRequest>, delete::DeleteSelectionError> =
+        NodeGraphStore::prepare_delete_selection;
+    let _: fn(
+        &mut NodeGraphStore,
+        &delete::PreDeleteRequest,
+        delete::PreDeleteResolution,
+    ) -> Result<Option<DispatchOutcome>, delete::DeleteSelectionError> =
+        NodeGraphStore::apply_pre_delete_resolution;
     let delete_plan = delete::plan_delete_selection(
         &graph,
         &NodeGraphViewState::default(),
