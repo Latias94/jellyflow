@@ -646,6 +646,22 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             0.016,
         ),
     );
+    let viewport_pan_constrained_action =
+        conformance::ConformanceAction::apply_viewport_pan_constrained(
+            viewport::ViewportPanRequest::new(CanvasPoint { x: 20.0, y: -10.0 }),
+            CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+        );
+    let viewport_zoom_constrained_action =
+        conformance::ConformanceAction::apply_viewport_zoom_constrained(
+            viewport::ViewportZoomRequest::new(CanvasPoint::default(), 1.5, 0.5, 4.0),
+            CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+        );
     let viewport_animation_action = conformance::ConformanceAction::assert_viewport_animation_frame(
         viewport::ViewportAnimationRequest::new(
             viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
@@ -880,6 +896,8 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_reject_action,
         auto_pan_action,
         selection_auto_pan_action,
+        viewport_pan_constrained_action,
+        viewport_zoom_constrained_action,
         viewport_animation_action,
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,

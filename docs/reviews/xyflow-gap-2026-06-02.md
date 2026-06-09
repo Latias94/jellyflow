@@ -10,9 +10,9 @@ projection, callback, conformance, and adapter-template surfaces exist in
 The remaining gap is not "build XyFlow again". Since the original review,
 several headless seams have been closed: pointer resize sessions and lifecycle
 callbacks, constrained viewport pan/zoom entrypoints, a controlled graph facade,
-aggregate rendering-query results, and visible edge culling. The remaining work
-is now mostly optional precision/performance work and adapter-owned browser/UI
-inventories.
+aggregate rendering-query results, visible edge culling, and viewport
+translate-extent conformance. The remaining work is now mostly optional
+performance work and adapter-owned browser/UI inventories.
 React UI components, DOM measurement, providers, wrappers, minimap, background,
 controls, portals, and accessibility text should stay out of the headless crates
 and belong to future adapter crates.
@@ -86,7 +86,7 @@ Jellyflow source areas reviewed:
 | Selection box and selection callbacks | covered | Pane selection uses screen-space selection rect and `getNodesInside`; edges can be selected through selected nodes (`packages/react/src/container/Pane/index.tsx:190`) | Runtime computes canvas-space selection with full/partial inclusion, selectable policy, edge selection, additive selection (`crates/jellyflow-runtime/src/runtime/selection/compute.rs:13`) | Screen overlay geometry and pointer event ownership are adapter-owned. |
 | Node drag, snapping, extents, parent expansion, keyboard nudge | covered | `XYDrag` handles multi-drag, snap offsets, node extent adjustment, auto-pan, drag lifecycle, and delete-while-drag abort (`packages/system/src/xydrag/XYDrag.ts:130`, `packages/system/src/xydrag/XYDrag.ts:232`) | Runtime has screen threshold, gesture claim, selected-node candidates, snap, adjusted global extents, parent expansion, nudge, nested parent canvas-space conformance, and delete-during-drag lifecycle fixtures (`crates/jellyflow-runtime/src/runtime/drag/activation.rs:3`, `crates/jellyflow-runtime/src/runtime/drag/planner.rs:14`, `crates/jellyflow-runtime/src/runtime/drag/constraints/items.rs:9`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/node_drag.rs:111`) | XyFlow node-owned relative coordinates remain intentionally outside Jellyflow's group-as-frame model. |
 | Node resize | partial | `XYResizer` owns pointer resize sessions, keep-aspect-ratio, boundaries, child extent correction, parent expansion clamps (`packages/system/src/xyresizer/XYResizer.ts:100`, `packages/system/src/xyresizer/XYResizer.ts:190`) | Runtime supports target-size resize, pointer resize sessions, keep-aspect-ratio, min/max constraints, direction-driven position changes, node origin, parent group expansion, store commit, lifecycle callbacks, and conformance fixtures (`crates/jellyflow-runtime/src/runtime/resize/session.rs:1`, `crates/jellyflow-runtime/src/runtime/resize/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/resize/parent_expansion.rs:1`) | Remaining parity gap: XyFlow's node-owned child extent correction and parent-relative coordinate behavior are not modeled by Jellyflow's group-as-frame contract. |
-| Viewport pan/zoom, scroll, double-click, animation, inertia, fit view | partial | `XYPanZoom` constrains viewport with d3 `scaleExtent` and `translateExtent`, supports pan/scroll/zoom policies and setters (`packages/system/src/xypanzoom/XYPanZoom.ts:40`, `packages/system/src/xypanzoom/XYPanZoom.ts:204`) | Runtime has pan/zoom transforms, constrained pan/zoom entrypoints, scroll policy, double-click animation, animation frames, inertia, fit-view math, and tests (`crates/jellyflow-runtime/src/runtime/viewport/transform.rs:6`, `crates/jellyflow-runtime/src/runtime/store/view/state.rs:52`, `crates/jellyflow-runtime/src/runtime/fit_view/compute.rs:9`) | Low-level unconstrained setters intentionally remain; exact d3 edge-case parity can be added only if adapters need it. |
+| Viewport pan/zoom, scroll, double-click, animation, inertia, fit view | covered | `XYPanZoom` constrains viewport with d3 `scaleExtent` and `translateExtent`, supports pan/scroll/zoom policies and setters (`packages/system/src/xypanzoom/XYPanZoom.ts:40`, `packages/system/src/xypanzoom/XYPanZoom.ts:204`) | Runtime has pan/zoom transforms, constrained pan/zoom entrypoints, translate-extent conformance for clamp and oversized-visible-area centering, scroll policy, double-click animation, animation frames, inertia, fit-view math, and tests (`crates/jellyflow-runtime/src/runtime/viewport/transform.rs:6`, `crates/jellyflow-runtime/src/runtime/store/view/state.rs:52`, `crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/viewport.rs:226`, `crates/jellyflow-runtime/src/runtime/fit_view/compute.rs:9`) | Low-level unconstrained setters intentionally remain for callers that solve bounds externally; adapters needing XyFlow-style bounds should call constrained entrypoints. |
 | Auto-pan | covered | XyFlow auto-pans during node drag/connect and node focus; selection drag also has screen-rect auto-pan paths (`packages/system/src/xydrag/XYDrag.ts:232`, `packages/system/src/xyhandle/XYHandle.ts:20`, `packages/react/src/components/NodeWrapper/index.tsx:160`) | Runtime has a deterministic auto-pan kernel, activation gates for node drag/connect/node focus, selection auto-pan request/store helpers, and conformance fixtures (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:58`, `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:45`, `crates/jellyflow-runtime/src/runtime/auto_pan/store.rs:23`) | Raw selection rectangle tracking, pointer/session ownership, and frame scheduling remain adapter-owned. |
 | Edge path geometry and hit testing | covered | XyFlow system has bezier path, label, and reconnect helpers (`packages/system/src/utils/edges/bezier-edge.ts:1`) | Runtime has bezier path generation, label math, straight/smooth-step helpers, and numeric hit testing with interaction width (`crates/jellyflow-runtime/src/runtime/geometry/paths/bezier.rs:19`, `crates/jellyflow-runtime/src/runtime/geometry/hit_test.rs:40`) | Exact SVG path string formatting is adapter-owned unless a renderer needs it. |
 | Visible nodes and node render order | covered | React visible node hook uses `getNodesInside` (`packages/react/src/hooks/useVisibleNodeIds.ts:1`) | Runtime resolves visible node ids, visible node render order, and aggregate rendering query results with culling, hidden policy, node origin, fallback size, and elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:11`, `crates/jellyflow-runtime/src/runtime/rendering/query.rs:1`) | None at the current headless contract level. |
@@ -198,7 +198,7 @@ Recommendation: adapters should call a prepare method, await their own
 `Replace` back to the store. The store revalidates replacement sets through
 normal delete policy before committing.
 
-### 5. Drag Semantics Are Broadly Covered; Nested Parent and Lifecycle Need Fixtures
+### 5. Drag Semantics Are Covered At The Runtime Boundary
 
 Jellyflow matches a lot of `XYDrag`:
 
@@ -259,7 +259,7 @@ child adjustment behavior during top/left resizes. Jellyflow intentionally store
 nodes in canvas space and treats groups as frames, so this should remain out of
 runtime until a future model decision introduces node-owned nested coordinates.
 
-### 7. Viewport `translateExtent` Has Constrained Entrypoints
+### 7. Viewport `translateExtent` Has Conformance Coverage
 
 Jellyflow already has renderer-neutral viewport math:
 
@@ -269,6 +269,9 @@ Jellyflow already has renderer-neutral viewport math:
 - store-level constrained pan and zoom entrypoints that use configured
   `translate_extent` when the adapter provides viewport size
   (`crates/jellyflow-runtime/src/runtime/store/view/state.rs:52`);
+- adapter conformance fixture coverage for translate-extent clamp and centering
+  when the visible canvas area exceeds the extent
+  (`crates/jellyflow-runtime/src/runtime/tests/adapter_conformance/fixture_runner/viewport.rs:226`);
 - scroll/pinch/wheel priority similar to XyFlow
   (`crates/jellyflow-runtime/src/runtime/viewport/gesture/scroll.rs:13`);
 - double-click zoom animation planning
@@ -279,12 +282,10 @@ Jellyflow already has renderer-neutral viewport math:
 - fit-view helpers with node origin and zoom clamps
   (`crates/jellyflow-runtime/src/runtime/fit_view/compute.rs:9`).
 
-Gap: exact d3 edge-case parity is not fully characterized. The low-level
-`apply_viewport_pan` and `apply_viewport_zoom` methods intentionally remain
-unconstrained for callers that already solved viewport bounds externally; an
-adapter that wants XyFlow-style bounds should call the constrained entrypoints.
-
-Suggested task: `Viewport d3 parity edge-case conformance`.
+The low-level `apply_viewport_pan` and `apply_viewport_zoom` methods
+intentionally remain unconstrained for callers that already solved viewport
+bounds externally. An adapter that wants XyFlow-style bounds should call the
+constrained entrypoints.
 
 ### 8. Auto-Pan Kernel And Selection Contract Exist
 
@@ -365,10 +366,10 @@ Recently closed by runtime-deepening work:
 - XyFlow ordered adapter-array apply helpers for exact `applyChanges` parity.
 - Async pre-delete veto and substitute delete planning contract.
 - Nested parent drag and delete-during-drag lifecycle conformance.
+- Viewport translate-extent clamp and oversized-visible-area conformance.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
-| P3 | Viewport d3 parity edge-case conformance | runtime viewport/conformance | Only needed if an adapter depends on exact d3 constraint edge cases. |
 | P3 | Spatial index backend for rendering queries | runtime rendering/lookups | Optimize only after real workloads show linear scans are insufficient. |
 | P3 | React-style adapter UI inventory | future adapter crates | Minimap, controls, background, toolbar, provider, DOM measurement, and accessibility belong outside headless crates. |
 
@@ -393,6 +394,6 @@ headless contract level. The architecture is already pointed in the right
 direction: core model and transactions, runtime policy/planners, XyFlow-style
 projection/callbacks, conformance fixtures, and adapter template all exist.
 
-The next work should stay narrow and contract-driven, not become a rewrite:
-viewport d3 edge-case fixtures if an adapter needs them, spatial indexing after
-real workload evidence, and future adapter UI inventories.
+The next work should stay narrow and evidence-driven, not become a rewrite:
+spatial indexing after real workload evidence, and future adapter UI
+inventories.

@@ -223,6 +223,68 @@ fn adapter_conformance_fixture_runner_applies_viewport_scroll_gesture_policy() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_applies_translate_extent_viewport_constraints() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.translate_extent = Some(CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        },
+    });
+    let viewport_size = CanvasSize {
+        width: 50.0,
+        height: 50.0,
+    };
+    let clamped_pan = CanvasPoint { x: 0.0, y: -50.0 };
+    let centered_pan = CanvasPoint { x: 50.0, y: 50.0 };
+
+    let scenario = ConformanceScenario::new("viewport translate extent constraints", graph)
+        .with_editor_config(editor_config)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([
+            ConformanceAction::apply_viewport_pan_constrained(
+                ViewportPanRequest::new(CanvasPoint {
+                    x: 400.0,
+                    y: -300.0,
+                }),
+                viewport_size,
+            ),
+            ConformanceAction::apply_viewport_zoom_constrained(
+                ViewportZoomRequest::new(CanvasPoint::default(), 0.25, 0.25, 4.0),
+                viewport_size,
+            ),
+        ])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(clamped_pan, 1.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: clamped_pan,
+                    zoom: 1.0,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: clamped_pan,
+                zoom: 1.0,
+            }),
+            ConformanceTraceEvent::viewport(centered_pan, 0.25),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport {
+                    pan: centered_pan,
+                    zoom: 0.25,
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan: centered_pan,
+                zoom: 0.25,
+            }),
+        ]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_checks_viewport_gesture_rejections() {
     let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let mut editor_config = crate::io::NodeGraphEditorConfig::default();

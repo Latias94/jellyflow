@@ -27,7 +27,8 @@ use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationOptions, ViewportAnimationPlan,
     ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
     ViewportGestureContext, ViewportGestureRejection, ViewportPanInertiaRequest,
-    ViewportPointerButton, ViewportScrollInput, ViewportTransform, plan_viewport_pan_inertia,
+    ViewportPanRequest, ViewportPointerButton, ViewportScrollInput, ViewportTransform,
+    ViewportZoomRequest, plan_viewport_pan_inertia,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{
