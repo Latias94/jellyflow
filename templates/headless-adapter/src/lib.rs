@@ -40,6 +40,8 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
         viewport_constrained_pan_scenario(),
         visible_node_ids_scenario(),
         visible_node_render_order_scenario(),
+        visible_edge_ids_scenario(),
+        visible_edge_render_order_scenario(),
         viewport_animation_scenario(),
         viewport_pan_inertia_scenario(),
     ])
@@ -104,6 +106,18 @@ pub fn run_visible_node_ids_smoke() -> Result<ConformanceRunReport, String> {
 pub fn run_visible_node_render_order_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
         &visible_node_render_order_scenario(),
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn run_visible_edge_ids_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&visible_edge_ids_scenario())
+        .map_err(|err| err.to_string())
+}
+
+pub fn run_visible_edge_render_order_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &visible_edge_render_order_scenario(),
     )
     .map_err(|err| err.to_string())
 }
@@ -199,6 +213,31 @@ pub fn run_rendering_query_smoke() -> Result<(), String> {
         return Err(format!(
             "expected visible render order {expected_visible_render_order:?}, got {:?}",
             result.visible_node_render_order
+        ));
+    }
+
+    let (edge_graph, edge_view_state, visible_edge) = visible_edge_render_order_fixture();
+    let edge_store = NodeGraphStore::new(
+        edge_graph,
+        edge_view_state,
+        NodeGraphEditorConfig::default(),
+    );
+    let edge_result = edge_store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    });
+    if edge_result.visible_edge_ids != vec![visible_edge] {
+        return Err(format!(
+            "expected visible edge ids {:?}, got {:?}",
+            vec![visible_edge],
+            edge_result.visible_edge_ids
+        ));
+    }
+    if edge_result.visible_edge_render_order != vec![visible_edge] {
+        return Err(format!(
+            "expected visible edge render order {:?}, got {:?}",
+            vec![visible_edge],
+            edge_result.visible_edge_render_order
         ));
     }
 
@@ -620,6 +659,63 @@ fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, No
     (graph, view_state, selected, partial, outside)
 }
 
+fn visible_edge_ids_scenario() -> ConformanceScenario {
+    let (graph, _view_state, visible_edge) = visible_edge_render_order_fixture();
+
+    ConformanceScenario::new("template visible edge ids", graph)
+        .with_actions([ConformanceAction::assert_visible_edge_ids(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [visible_edge],
+        )])
+        .with_expected_trace([])
+}
+
+fn visible_edge_render_order_scenario() -> ConformanceScenario {
+    let (graph, view_state, visible_edge) = visible_edge_render_order_fixture();
+
+    ConformanceScenario::new("template visible edge render order", graph)
+        .with_view_state(view_state)
+        .with_actions([ConformanceAction::assert_visible_edge_render_order(
+            CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+            [visible_edge],
+        )])
+        .with_expected_trace([])
+}
+
+fn visible_edge_render_order_fixture() -> (Graph, NodeGraphViewState, EdgeId) {
+    let source_id = NodeId::from_u128(76);
+    let target_id = NodeId::from_u128(77);
+    let out_port = PortId::from_u128(78);
+    let in_port = PortId::from_u128(79);
+    let edge_id = EdgeId::from_u128(80);
+    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
+    let source = graph.nodes.get_mut(&source_id).expect("source node exists");
+    source.pos = CanvasPoint { x: -80.0, y: 0.0 };
+    source.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let target = graph.nodes.get_mut(&target_id).expect("target node exists");
+    target.pos = CanvasPoint { x: 140.0, y: 0.0 };
+    target.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let mut view_state = NodeGraphViewState {
+        edge_draw_order: vec![edge_id],
+        ..NodeGraphViewState::default()
+    };
+    view_state.set_selection(Vec::new(), vec![edge_id], Vec::new());
+
+    (graph, view_state, edge_id)
+}
+
 fn viewport_animation_scenario() -> ConformanceScenario {
     let graph = Graph::new(GraphId::from_u128(11));
     let from = ViewportTransform::new(CanvasPoint { x: 0.0, y: 0.0 }, 1.0).expect("valid viewport");
@@ -894,7 +990,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 10);
+        assert_eq!(report.scenario_count(), 12);
     }
 
     #[test]
@@ -949,6 +1045,21 @@ mod tests {
     }
 
     #[test]
+    fn visible_edge_ids_smoke_runs_as_single_scenario() {
+        let report = run_visible_edge_ids_smoke().expect("visible edge ids scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn visible_edge_render_order_smoke_runs_as_single_scenario() {
+        let report =
+            run_visible_edge_render_order_smoke().expect("visible edge render order scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
     fn viewport_constrained_pan_smoke_runs_as_single_scenario() {
         let report =
             run_viewport_constrained_pan_smoke().expect("viewport constrained pan scenario runs");
@@ -986,7 +1097,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 10);
+        assert_eq!(report.scenario_count(), 12);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

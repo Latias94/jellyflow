@@ -14,5 +14,6 @@ pub use order::{
 };
 pub use query::{RenderingQueryOptions, RenderingQueryResult, resolve_rendering_query};
 pub use visibility::{
-    VisibleNodeIdsRequest, resolve_visible_node_ids, resolve_visible_node_render_order,
+    VisibleEdgeIdsRequest, VisibleNodeIdsRequest, resolve_visible_edge_ids,
+    resolve_visible_edge_render_order, resolve_visible_node_ids, resolve_visible_node_render_order,
 };

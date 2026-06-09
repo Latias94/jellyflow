@@ -10,8 +10,8 @@ projection, callback, conformance, and adapter-template surfaces exist in
 The remaining gap is not "build XyFlow again". Since the original review,
 several headless seams have been closed: pointer resize sessions and lifecycle
 callbacks, constrained viewport pan/zoom entrypoints, a controlled graph facade,
-and aggregate rendering-query results. The remaining work is mostly precision
-and adapter-contract work: visible edge culling, async pre-delete/veto behavior,
+aggregate rendering-query results, and visible edge culling. The remaining work
+is mostly precision and adapter-contract work: async pre-delete/veto behavior,
 selection auto-pan scenarios, nested drag/resize containment, exact React
 `applyChanges` parity when needed, and a more explicit adapter-owned
 connection-handle target pipeline. React UI components, DOM measurement,
@@ -91,9 +91,9 @@ Jellyflow source areas reviewed:
 | Auto-pan | partial | XyFlow auto-pans during node drag/connect and node focus; selection drag also has screen-rect auto-pan paths (`packages/system/src/xydrag/XYDrag.ts:232`, `packages/system/src/xyhandle/XYHandle.ts:20`, `packages/react/src/components/NodeWrapper/index.tsx:160`) | Runtime has a deterministic auto-pan kernel, activation gates for node drag/connect/node focus, and an `Always` mode for adapter-owned flows (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:7`, `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:6`) | Selection-specific auto-pan policy and fixtures are not locked yet. |
 | Edge path geometry and hit testing | covered | XyFlow system has bezier path, label, and reconnect helpers (`packages/system/src/utils/edges/bezier-edge.ts:1`) | Runtime has bezier path generation, label math, straight/smooth-step helpers, and numeric hit testing with interaction width (`crates/jellyflow-runtime/src/runtime/geometry/paths/bezier.rs:19`, `crates/jellyflow-runtime/src/runtime/geometry/hit_test.rs:40`) | Exact SVG path string formatting is adapter-owned unless a renderer needs it. |
 | Visible nodes and node render order | covered | React visible node hook uses `getNodesInside` (`packages/react/src/hooks/useVisibleNodeIds.ts:1`) | Runtime resolves visible node ids, visible node render order, and aggregate rendering query results with culling, hidden policy, node origin, fallback size, and elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:11`, `crates/jellyflow-runtime/src/runtime/rendering/query.rs:1`) | None at the current headless contract level. |
-| Visible edge culling | missing | React visible edge hook calls `isEdgeVisible` using source/target node bounds (`packages/react/src/hooks/useVisibleEdgeIds.ts:1`); system utility has edge visibility math (`packages/system/src/utils/edges/general.ts:190`) | `rg` found visible node culling but no `resolve_visible_edge_ids` equivalent in runtime rendering | Add runtime edge visibility once endpoint/path/AABB semantics are settled. |
+| Visible edge culling | covered | React visible edge hook calls `isEdgeVisible` using source/target node bounds (`packages/react/src/hooks/useVisibleEdgeIds.ts:1`); system utility has edge visibility math (`packages/system/src/utils/edges/general.ts:69`) | Runtime resolves visible edge ids and visible edge render order using endpoint node bounds, hidden policy, node origin, fallback size, and edge elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:136`, `crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:198`) | Path-geometry clipping remains renderer-owned unless a future adapter needs it. |
 | Render order and selected elevation | covered | XyFlow elevates selected nodes/edges through z-index helpers (`packages/system/src/utils/edges/general.ts:1`) | Runtime resolves node/group/edge paint order and selected-edge elevation through connected selected nodes (`crates/jellyflow-runtime/src/runtime/rendering/order.rs:133`, `crates/jellyflow-runtime/src/runtime/rendering/order.rs:182`) | DOM z-index class implementation is adapter-owned. |
-| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible nodes/render order and callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:23`, `templates/headless-adapter/src/lib.rs:37`) | Need more gap-specific scenarios: visible edges, selection auto-pan, async pre-delete, nested containment, and adapter-owned handle target resolution. |
+| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible node and edge rendering/callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:155`, `templates/headless-adapter/src/lib.rs:33`) | Need more gap-specific scenarios: selection auto-pan, async pre-delete, nested containment, and adapter-owned handle target resolution. |
 | React/DOM UI inventory | adapter-owned | React package owns wrappers, store binding, hooks, components, minimap, controls, background, toolbar, portals, DOM node internals (`packages/react/src/store/index.ts:160`, `packages/react/src/components`) | ADRs require headless crates to stay renderer/platform-free | Future adapter crates should own this inventory. |
 | Browser/provider/SSR/accessibility text | adapter-owned | React provider, aria descriptions, DOM focus/measurement, ResizeObserver, viewport DOM transform are React/package concerns | No equivalent should exist in core/runtime | Do not implement inside `jellyflow-core` or `jellyflow-runtime`. |
 | XyFlow browser screenshots/pixel parity | intentionally out of scope | XyFlow validates browser/DOM behavior in its own stack | ADR 0003 puts screenshots/pixel smoke in adapter crates (`docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md:42`) | Out of scope for this task and for headless crates. |
@@ -290,28 +290,30 @@ selection fixture or adapter-template scenario.
 
 Suggested task: `Selection auto-pan conformance`.
 
-### 9. Rendering Helpers Cover Nodes But Not Visible Edges
+### 9. Rendering Helpers Cover Node And Edge Visibility
 
-Jellyflow already covers node-side rendering queries:
+Jellyflow covers renderer-facing ordering and visibility:
 
 - visible node IDs with viewport culling and hidden policy
   (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:11`);
 - visible node render order by composing culling and order
   (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:82`);
+- visible edge IDs with XyFlow-style endpoint node-box union culling
+  (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:136`);
+- visible edge render order by composing edge culling and edge order
+  (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:198`);
 - aggregate renderer-facing order and visibility result
-  (`crates/jellyflow-runtime/src/runtime/rendering/query.rs:1`);
+  (`crates/jellyflow-runtime/src/runtime/rendering/query.rs:50`);
 - node/group/edge order with selected elevation
   (`crates/jellyflow-runtime/src/runtime/rendering/order.rs:133`,
   `crates/jellyflow-runtime/src/runtime/rendering/order.rs:182`);
-- template smoke for visible node ids and visible node render order
-  (`templates/headless-adapter/src/lib.rs:511`,
-  `templates/headless-adapter/src/lib.rs:561`).
+- template smoke for visible node and edge rendering
+  (`templates/headless-adapter/src/lib.rs:550`,
+  `templates/headless-adapter/src/lib.rs:662`).
 
-Gap: XyFlow has visible edge culling through `isEdgeVisible`; Jellyflow has no
-equivalent `resolve_visible_edge_ids`. This belongs in `runtime::rendering`
-after endpoint/path/AABB semantics are chosen.
-
-Suggested task: `Visible edge culling contract`.
+Gap: path-level edge clipping is intentionally not part of the headless
+contract. XyFlow's reusable helper uses endpoint node bounds, so Jellyflow
+matches that seam and leaves renderer-specific path clipping to adapters.
 
 ### 10. Geometry And Hit Testing Are In Good Shape
 
@@ -338,10 +340,10 @@ Recently closed by runtime-deepening work:
 - Viewport `translateExtent` support through constrained pan/zoom entrypoints.
 - Controlled graph facade for adapter-owned graph state.
 - Aggregate rendering query result for renderer-facing order and visibility.
+- Visible edge culling and visible edge render-order contracts.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
-| P1 | Visible edge culling contract | `runtime::rendering`, conformance | XyFlow has visible edge culling; Jellyflow only has visible nodes. |
 | P1 | Resize containment and parent-child correction | runtime resize/conformance | Remaining high-impact resize parity gap after session support. |
 | P2 | Adapter connection target resolution fixtures | template/future adapter, conformance | Headless math exists, but rendered handle inventory and DOM-priority equivalents need contracts. |
 | P2 | Async pre-delete veto and substitute delete planning | runtime/store, `runtime::xyflow` callbacks | Needed for XyFlow `onBeforeDelete` parity. |
@@ -374,6 +376,6 @@ direction: core model and transactions, runtime policy/planners, XyFlow-style
 projection/callbacks, conformance fixtures, and adapter template all exist.
 
 The next work should stay narrow and contract-driven, not become a rewrite:
-visible edges, resize containment, async pre-delete, selection auto-pan, nested
-drag lifecycle fixtures, exact controlled-change semantics where needed, and
-adapter handle-target fixtures.
+resize containment, async pre-delete, selection auto-pan, nested drag lifecycle
+fixtures, exact controlled-change semantics where needed, and adapter
+handle-target fixtures.

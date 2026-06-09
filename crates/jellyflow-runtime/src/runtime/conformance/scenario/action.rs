@@ -152,6 +152,14 @@ pub enum ConformanceAction {
         viewport_size: CanvasSize,
         expected: Vec<NodeId>,
     },
+    AssertVisibleEdgeIds {
+        viewport_size: CanvasSize,
+        expected: Vec<EdgeId>,
+    },
+    AssertVisibleEdgeRenderOrder {
+        viewport_size: CanvasSize,
+        expected: Vec<EdgeId>,
+    },
     SetSelection {
         nodes: Vec<NodeId>,
         edges: Vec<EdgeId>,
@@ -196,6 +204,8 @@ impl ConformanceAction {
             Self::SetViewport { .. } => "set_viewport",
             Self::AssertVisibleNodeIds { .. } => "assert_visible_node_ids",
             Self::AssertVisibleNodeRenderOrder { .. } => "assert_visible_node_render_order",
+            Self::AssertVisibleEdgeIds { .. } => "assert_visible_edge_ids",
+            Self::AssertVisibleEdgeRenderOrder { .. } => "assert_visible_edge_render_order",
             Self::SetSelection { .. } => "set_selection",
             Self::EmitGesture { .. } => "emit_gesture",
         }
@@ -466,6 +476,26 @@ impl ConformanceAction {
         expected: impl IntoIterator<Item = NodeId>,
     ) -> Self {
         Self::AssertVisibleNodeRenderOrder {
+            viewport_size,
+            expected: expected.into_iter().collect(),
+        }
+    }
+
+    pub fn assert_visible_edge_ids(
+        viewport_size: CanvasSize,
+        expected: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
+        Self::AssertVisibleEdgeIds {
+            viewport_size,
+            expected: expected.into_iter().collect(),
+        }
+    }
+
+    pub fn assert_visible_edge_render_order(
+        viewport_size: CanvasSize,
+        expected: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
+        Self::AssertVisibleEdgeRenderOrder {
             viewport_size,
             expected: expected.into_iter().collect(),
         }

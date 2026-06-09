@@ -114,6 +114,14 @@ pub(super) fn execute_action(
             viewport_size,
             expected,
         } => rendering::assert_visible_node_render_order(store, *viewport_size, expected),
+        ConformanceAction::AssertVisibleEdgeIds {
+            viewport_size,
+            expected,
+        } => rendering::assert_visible_edge_ids(store, *viewport_size, expected),
+        ConformanceAction::AssertVisibleEdgeRenderOrder {
+            viewport_size,
+            expected,
+        } => rendering::assert_visible_edge_render_order(store, *viewport_size, expected),
         ConformanceAction::SetSelection {
             nodes,
             edges,

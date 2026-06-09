@@ -8,7 +8,8 @@ use super::order::{
 };
 use super::query::{RenderingQueryOptions, RenderingQueryResult, resolve_rendering_query};
 use super::visibility::{
-    VisibleNodeIdsRequest, resolve_visible_node_ids, resolve_visible_node_render_order,
+    VisibleEdgeIdsRequest, VisibleNodeIdsRequest, resolve_visible_edge_ids,
+    resolve_visible_edge_render_order, resolve_visible_node_ids, resolve_visible_node_render_order,
 };
 
 impl NodeGraphStore {
@@ -38,6 +39,30 @@ impl NodeGraphStore {
         resolve_edge_render_order(
             self.graph(),
             self.view_state(),
+            EdgeRenderOrderOptions::from_interaction(&interaction),
+        )
+    }
+
+    /// Resolves edge ids visible in the given logical viewport size using current store tuning.
+    pub fn visible_edge_ids(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
+        let Some(request) = self.visible_edge_ids_request(viewport_size) else {
+            return Vec::new();
+        };
+
+        resolve_visible_edge_ids(self.graph(), self.lookups(), request)
+    }
+
+    /// Resolves visible edge ids in the current edge paint order using current store tuning.
+    pub fn visible_edge_render_order(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
+        let Some(request) = self.visible_edge_ids_request(viewport_size) else {
+            return Vec::new();
+        };
+        let interaction = self.resolved_interaction_state();
+        resolve_visible_edge_render_order(
+            self.graph(),
+            self.lookups(),
+            self.view_state(),
+            request,
             EdgeRenderOrderOptions::from_interaction(&interaction),
         )
     }
@@ -78,7 +103,20 @@ impl NodeGraphStore {
                 NodeRenderOrderOptions::from_interaction(&interaction),
                 EdgeRenderOrderOptions::from_interaction(&interaction),
             )
-            .with_visible_nodes(self.visible_node_ids_request(viewport_size)),
+            .with_visible_nodes(self.visible_node_ids_request(viewport_size))
+            .with_visible_edges(self.visible_edge_ids_request(viewport_size)),
+        )
+    }
+
+    fn visible_edge_ids_request(&self, viewport_size: CanvasSize) -> Option<VisibleEdgeIdsRequest> {
+        let transform = ViewportTransform::from_view_state(self.view_state())?;
+        let interaction = self.resolved_interaction_state();
+        let rendering = interaction.rendering_interaction();
+        let node_origin = interaction.node_origin.normalized();
+        Some(
+            VisibleEdgeIdsRequest::new(transform, viewport_size)
+                .with_only_render_visible_elements(rendering.only_render_visible_elements)
+                .with_node_origin((node_origin.x, node_origin.y)),
         )
     }
 

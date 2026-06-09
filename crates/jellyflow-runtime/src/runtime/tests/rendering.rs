@@ -5,8 +5,9 @@ use jellyflow_core::core::{
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphNodeOrigin, NodeGraphViewState};
 use crate::runtime::rendering::{
-    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions, VisibleNodeIdsRequest,
-    resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
+    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions, VisibleEdgeIdsRequest,
+    VisibleNodeIdsRequest, resolve_edge_render_order, resolve_group_render_order,
+    resolve_node_render_order, resolve_visible_edge_ids, resolve_visible_edge_render_order,
     resolve_visible_node_ids, resolve_visible_node_render_order,
 };
 use crate::runtime::store::NodeGraphStore;
@@ -182,6 +183,82 @@ fn graph_with_three_edges(hidden_c: bool) -> (Graph, NodeId, EdgeId, EdgeId, Edg
     graph.edges.insert(e2, edge(c_out, d_in, false));
     graph.edges.insert(e3, edge(b_out, c_in, hidden_c));
     (graph, a, e1, e2, e3)
+}
+
+fn graph_with_visible_edge_fixture() -> (Graph, EdgeId, EdgeId, EdgeId, EdgeId, EdgeId) {
+    let mut graph = Graph::new(GraphId::from_u128(2));
+    let size = CanvasSize {
+        width: 10.0,
+        height: 10.0,
+    };
+
+    let left = NodeId::from_u128(10);
+    let right = NodeId::from_u128(11);
+    let outside_a = NodeId::from_u128(12);
+    let outside_b = NodeId::from_u128(13);
+    let inside = NodeId::from_u128(14);
+    let hidden = NodeId::from_u128(15);
+    for (id, pos, hidden) in [
+        (left, CanvasPoint { x: -20.0, y: 10.0 }, false),
+        (right, CanvasPoint { x: 110.0, y: 10.0 }, false),
+        (outside_a, CanvasPoint { x: 140.0, y: 0.0 }, false),
+        (outside_b, CanvasPoint { x: 160.0, y: 0.0 }, false),
+        (inside, CanvasPoint { x: 20.0, y: 20.0 }, false),
+        (hidden, CanvasPoint { x: 0.0, y: 0.0 }, true),
+    ] {
+        graph
+            .nodes
+            .insert(id, sized_node("test.edge-endpoint", pos, size, hidden));
+    }
+
+    let left_out = PortId::from_u128(20);
+    let right_in = PortId::from_u128(21);
+    let outside_a_out = PortId::from_u128(22);
+    let outside_b_in = PortId::from_u128(23);
+    let inside_out = PortId::from_u128(24);
+    let inside_in = PortId::from_u128(25);
+    let hidden_out = PortId::from_u128(26);
+    for (id, port) in [
+        (left_out, port(left, PortDirection::Out)),
+        (right_in, port(right, PortDirection::In)),
+        (outside_a_out, port(outside_a, PortDirection::Out)),
+        (outside_b_in, port(outside_b, PortDirection::In)),
+        (inside_out, port(inside, PortDirection::Out)),
+        (inside_in, port(inside, PortDirection::In)),
+        (hidden_out, port(hidden, PortDirection::Out)),
+    ] {
+        graph.ports.insert(id, port);
+    }
+
+    let spanning = EdgeId::from_u128(10);
+    let outside = EdgeId::from_u128(11);
+    let hidden_edge = EdgeId::from_u128(12);
+    let hidden_endpoint = EdgeId::from_u128(13);
+    let inside_edge = EdgeId::from_u128(14);
+    graph
+        .edges
+        .insert(spanning, edge(left_out, right_in, false));
+    graph
+        .edges
+        .insert(outside, edge(outside_a_out, outside_b_in, false));
+    graph
+        .edges
+        .insert(hidden_edge, edge(inside_out, right_in, true));
+    graph
+        .edges
+        .insert(hidden_endpoint, edge(hidden_out, inside_in, false));
+    graph
+        .edges
+        .insert(inside_edge, edge(inside_out, left_out, false));
+
+    (
+        graph,
+        spanning,
+        outside,
+        hidden_edge,
+        hidden_endpoint,
+        inside_edge,
+    )
 }
 
 #[test]
@@ -487,6 +564,101 @@ fn visible_node_render_order_filters_visible_ids_through_node_render_order() {
 }
 
 #[test]
+fn visible_edge_ids_follow_endpoint_union_and_rendering_tuning() {
+    let (graph, spanning, outside, hidden_edge, hidden_endpoint, inside_edge) =
+        graph_with_visible_edge_fixture();
+    let store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let request = VisibleEdgeIdsRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+        viewport_size,
+    )
+    .with_only_render_visible_elements(true);
+
+    assert_eq!(
+        resolve_visible_edge_ids(store.graph(), store.lookups(), request),
+        vec![spanning, inside_edge],
+        "edge culling uses the union of endpoint node bounds, not endpoint-node visibility"
+    );
+
+    let uncull_ids = resolve_visible_edge_ids(
+        store.graph(),
+        store.lookups(),
+        request.with_only_render_visible_elements(false),
+    );
+    assert_eq!(
+        uncull_ids,
+        vec![spanning, outside, hidden_endpoint, inside_edge],
+        "disabled culling returns all non-hidden edge ids in deterministic order"
+    );
+    assert!(!uncull_ids.contains(&hidden_edge));
+
+    assert_eq!(
+        store.visible_edge_ids(viewport_size),
+        vec![spanning, inside_edge],
+        "store helper reads only_render_visible_elements from default runtime tuning"
+    );
+
+    let mut uncull_store = store;
+    uncull_store.update_editor_config(|config| {
+        config.runtime_tuning.only_render_visible_elements = false;
+    });
+    assert_eq!(
+        uncull_store.visible_edge_ids(viewport_size),
+        vec![spanning, outside, hidden_endpoint, inside_edge]
+    );
+
+    assert!(
+        uncull_store
+            .visible_edge_ids(CanvasSize::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn visible_edge_render_order_filters_visible_ids_through_edge_render_order() {
+    let (graph, spanning, outside, _hidden_edge, hidden_endpoint, inside_edge) =
+        graph_with_visible_edge_fixture();
+    let view_state = NodeGraphViewState {
+        selected_edges: vec![spanning],
+        edge_draw_order: vec![outside, spanning, inside_edge, hidden_endpoint],
+        ..NodeGraphViewState::default()
+    };
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let request = VisibleEdgeIdsRequest::new(
+        ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
+        viewport_size,
+    );
+
+    assert_eq!(
+        resolve_visible_edge_render_order(
+            store.graph(),
+            store.lookups(),
+            store.view_state(),
+            request,
+            EdgeRenderOrderOptions::default(),
+        ),
+        vec![inside_edge, spanning],
+        "outside and hidden-endpoint edges are removed before the selected visible edge is elevated"
+    );
+    assert_eq!(
+        store.visible_edge_render_order(viewport_size),
+        vec![inside_edge, spanning]
+    );
+}
+
+#[test]
 fn store_rendering_query_returns_order_and_visibility_together() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let view_state = NodeGraphViewState {
@@ -506,6 +678,32 @@ fn store_rendering_query_returns_order_and_visibility_together() {
     assert_eq!(query.node_order, vec![outside, partial, inside]);
     assert_eq!(query.visible_node_ids, vec![inside, partial]);
     assert_eq!(query.visible_node_render_order, vec![partial, inside]);
+    assert_eq!(query.visible_edge_ids, Vec::<EdgeId>::new());
+    assert_eq!(query.visible_edge_render_order, Vec::<EdgeId>::new());
+}
+
+#[test]
+fn store_rendering_query_returns_visible_edge_order_and_visibility_together() {
+    let (graph, spanning, outside, _hidden_edge, hidden_endpoint, inside_edge) =
+        graph_with_visible_edge_fixture();
+    let view_state = NodeGraphViewState {
+        selected_edges: vec![spanning],
+        edge_draw_order: vec![outside, spanning, inside_edge, hidden_endpoint],
+        ..NodeGraphViewState::default()
+    };
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+
+    let query = store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    });
+
+    assert_eq!(
+        query.edge_order,
+        vec![outside, inside_edge, hidden_endpoint, spanning]
+    );
+    assert_eq!(query.visible_edge_ids, vec![spanning, inside_edge]);
+    assert_eq!(query.visible_edge_render_order, vec![inside_edge, spanning]);
 }
 
 #[test]
