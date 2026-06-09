@@ -29,3 +29,42 @@ fn store_viewport_pan_and_zoom_helpers_publish_view_changes() {
         HarnessEvent::viewport(CanvasPoint { x: -10.0, y: -35.0 }, 2.0),
     ]);
 }
+
+#[test]
+fn store_viewport_pan_currently_ignores_configured_translate_extent() {
+    let (graph, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut harness =
+        InteractionHarness::new("viewport pan without translate extent constraint", graph);
+    harness.store_mut().update_editor_config(|editor_config| {
+        editor_config.interaction.translate_extent = Some(CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            },
+        });
+    });
+
+    let panned = harness
+        .store_mut()
+        .apply_viewport_pan(ViewportPanRequest::new(CanvasPoint {
+            x: 400.0,
+            y: -300.0,
+        }))
+        .expect("pan");
+
+    assert_eq!(
+        panned.pan,
+        CanvasPoint {
+            x: 400.0,
+            y: -300.0
+        }
+    );
+    harness.assert_events(&[HarnessEvent::viewport(
+        CanvasPoint {
+            x: 400.0,
+            y: -300.0,
+        },
+        1.0,
+    )]);
+}

@@ -370,6 +370,54 @@ fn pointer_resize_from_left_and_top_moves_position_before_size_change() {
 }
 
 #[test]
+fn pointer_resize_commit_preserves_position_before_size_order_and_trace() {
+    let fixture = resize_fixture();
+    let mut harness = InteractionHarness::new("pointer resize top left commit", fixture.graph);
+
+    let outcome = harness
+        .store_mut()
+        .apply_node_pointer_resize(NodePointerResizeRequest::new(
+            fixture.enabled,
+            CanvasPoint { x: 10.0, y: 20.0 },
+            CanvasPoint { x: 0.0, y: 0.0 },
+            NodeResizeDirection::TopLeft,
+        ))
+        .expect("pointer resize dispatch succeeds")
+        .expect("pointer resize commits");
+
+    assert!(
+        matches!(
+            outcome.patch.ops(),
+            [
+                GraphOp::SetNodePos { id: pos_id, to: pos_to, .. },
+                GraphOp::SetNodeSize { id: size_id, to: size_to, .. },
+            ]
+                if *pos_id == fixture.enabled
+                    && *pos_to == CanvasPoint { x: 0.0, y: 0.0 }
+                    && *size_id == fixture.enabled
+                    && *size_to == Some(CanvasSize { width: 110.0, height: 80.0 })
+        ),
+        "committed pointer resize should move before sizing: {:#?}",
+        outcome.patch.ops(),
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.enabled].pos,
+        CanvasPoint { x: 0.0, y: 0.0 },
+    );
+    assert_eq!(
+        harness.store().graph().nodes[&fixture.enabled].size,
+        Some(CanvasSize {
+            width: 110.0,
+            height: 80.0,
+        }),
+    );
+    harness.assert_events(&[HarnessEvent::graph_commit(
+        Some(NODE_RESIZE_TRANSACTION_LABEL),
+        ["set_node_pos", "set_node_size"],
+    )]);
+}
+
+#[test]
 fn pointer_resize_clamps_to_min_max_constraints() {
     let fixture = resize_fixture();
     let harness = InteractionHarness::new("pointer resize constraints", fixture.graph);

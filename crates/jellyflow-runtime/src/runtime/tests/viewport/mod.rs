@@ -19,7 +19,7 @@ use crate::runtime::viewport::{
     resolve_viewport_double_click_zoom, resolve_viewport_drag_pan_gesture,
     resolve_viewport_scroll_gesture, zoom_viewport,
 };
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
 mod animation;
 mod callbacks;

@@ -129,6 +129,72 @@ fn controlled_graph_can_apply_store_changes_via_callbacks() {
 }
 
 #[test]
+fn install_callbacks_preserves_commit_callback_order_for_controlled_updates() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone)]
+    struct Recorder {
+        order: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl NodeGraphCommitCallbacks for Recorder {
+        fn on_graph_commit(&mut self, _patch: &NodeGraphPatch) {
+            self.order.borrow_mut().push("graph_commit");
+        }
+
+        fn on_node_edge_changes(&mut self, _changes: &NodeGraphChanges) {
+            self.order.borrow_mut().push("node_edge_changes");
+        }
+
+        fn on_nodes_change(&mut self, _changes: &[NodeChange]) {
+            self.order.borrow_mut().push("nodes_change");
+        }
+
+        fn on_edges_change(&mut self, _changes: &[EdgeChange]) {
+            self.order.borrow_mut().push("edges_change");
+        }
+    }
+
+    impl NodeGraphViewCallbacks for Recorder {}
+    impl NodeGraphGestureCallbacks for Recorder {}
+
+    let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
+    let mut store = make_store(g0);
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let _token = install_callbacks(
+        &mut store,
+        Recorder {
+            order: order.clone(),
+        },
+    );
+
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetNodePos {
+            id: a,
+            from: CanvasPoint { x: 0.0, y: 0.0 },
+            to: CanvasPoint { x: 123.0, y: 456.0 },
+        },
+        GraphOp::SetEdgeReconnectable {
+            id: eid,
+            from: None,
+            to: Some(EdgeReconnectable::Bool(false)),
+        },
+    ]);
+    let _ = store.dispatch_transaction(&tx).expect("dispatch");
+
+    assert_eq!(
+        order.borrow().as_slice(),
+        &[
+            "graph_commit",
+            "node_edge_changes",
+            "nodes_change",
+            "edges_change",
+        ],
+    );
+}
+
+#[test]
 fn install_callbacks_calls_delete_hooks_for_remove_node() {
     use std::cell::RefCell;
     use std::rc::Rc;
