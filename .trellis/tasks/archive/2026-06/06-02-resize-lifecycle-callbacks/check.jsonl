@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/jellyflow-runtime/backend/index.md", "reason": "Check final work against runtime package boundaries."}
-{"file": ".trellis/spec/jellyflow-runtime/backend/directory-structure.md", "reason": "Verify events, xyflow callbacks, conformance, and public-surface placement."}
-{"file": ".trellis/spec/jellyflow-runtime/backend/quality-guidelines.md", "reason": "Verify quality gate and headless dependency rules."}
-{"file": "docs/adr/0004-resize-containment-and-lifecycle-boundary.md", "reason": "Check lifecycle implementation stays inside accepted ADR boundary."}
-{"file": ".trellis/tasks/06-02-resize-lifecycle-callbacks/research.md", "reason": "Check implementation against task-specific evidence and out-of-scope decisions."}
