@@ -419,8 +419,25 @@ fn explicit_modules_expose_their_owned_surfaces() {
         auto_pan_request,
     )
     .expect("auto-pan");
+    let selection_auto_pan_request = auto_pan::SelectionAutoPanRequest::new(
+        CanvasPoint { x: 99.0, y: 40.0 },
+        jellyflow_core::core::CanvasSize {
+            width: 100.0,
+            height: 80.0,
+        },
+        0.016,
+    );
+    let _ = auto_pan::compute_selection_auto_pan(
+        &jellyflow_runtime::io::NodeGraphAutoPanTuning::default(),
+        selection_auto_pan_request,
+    )
+    .expect("selection auto-pan");
     let _ = auto_pan_plan.viewport_pan_request();
     let _ = std::mem::size_of::<auto_pan::AutoPanOutcome>();
+    let _: fn(
+        &mut NodeGraphStore,
+        auto_pan::SelectionAutoPanRequest,
+    ) -> Option<auto_pan::AutoPanOutcome> = NodeGraphStore::apply_selection_auto_pan;
 
     let drag_start = events::NodeDragStart {
         primary: NodeId::new(),
@@ -575,6 +592,26 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             ),
             viewport::ViewportGestureRejection::ConnectionInProgress,
         );
+    let auto_pan_action =
+        conformance::ConformanceAction::apply_auto_pan(auto_pan::AutoPanRequest::new(
+            auto_pan::AutoPanActivation::Always,
+            CanvasPoint { x: 99.0, y: 40.0 },
+            CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+            0.016,
+        ));
+    let selection_auto_pan_action = conformance::ConformanceAction::apply_selection_auto_pan(
+        auto_pan::SelectionAutoPanRequest::new(
+            CanvasPoint { x: 99.0, y: 40.0 },
+            CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            },
+            0.016,
+        ),
+    );
     let viewport_animation_action = conformance::ConformanceAction::assert_viewport_animation_frame(
         viewport::ViewportAnimationRequest::new(
             viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
@@ -803,6 +840,8 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let encoded_fixture_actions = serde_json::to_value([
         viewport_scroll_action,
         viewport_reject_action,
+        auto_pan_action,
+        selection_auto_pan_action,
         viewport_animation_action,
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,

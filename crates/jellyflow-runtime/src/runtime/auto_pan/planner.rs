@@ -1,7 +1,7 @@
 use crate::io::NodeGraphAutoPanTuning;
 use jellyflow_core::core::CanvasPoint;
 
-use super::types::{AutoPanPlan, AutoPanRequest};
+use super::types::{AutoPanPlan, AutoPanRequest, SelectionAutoPanRequest};
 
 /// Computes one auto-pan frame without mutating store state.
 pub fn compute_auto_pan(
@@ -39,6 +39,14 @@ pub fn compute_auto_pan(
     }
 
     Some(AutoPanPlan { screen_delta })
+}
+
+/// Computes one selection-drag auto-pan frame without mutating store state.
+pub fn compute_selection_auto_pan(
+    tuning: &NodeGraphAutoPanTuning,
+    request: SelectionAutoPanRequest,
+) -> Option<AutoPanPlan> {
+    compute_auto_pan(tuning, request.auto_pan_request())
 }
 
 fn axis_screen_delta(

@@ -203,6 +203,46 @@ fn conformance_runner_records_auto_pan_fixture_and_callbacks() {
 }
 
 #[test]
+fn conformance_runner_records_selection_auto_pan_fixture_and_callbacks() {
+    let (graph, _node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let mut editor_config = crate::io::NodeGraphEditorConfig::default();
+    editor_config.interaction.auto_pan.on_node_drag = false;
+    editor_config.interaction.auto_pan.on_connect = false;
+    editor_config.interaction.auto_pan.on_node_focus = false;
+    editor_config.interaction.auto_pan.speed = 100.0;
+    editor_config.interaction.auto_pan.margin = 20.0;
+
+    let pan = CanvasPoint { x: -50.0, y: 0.0 };
+    let scenario = ConformanceScenario::new("selection auto-pan fixture", graph)
+        .with_editor_config(editor_config)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_actions([ConformanceAction::apply_selection_auto_pan(
+            SelectionAutoPanRequest::new(
+                CanvasPoint { x: 190.0, y: 50.0 },
+                CanvasSize {
+                    width: 200.0,
+                    height: 100.0,
+                },
+                1.0,
+            ),
+        )])
+        .with_expected_trace([
+            ConformanceTraceEvent::viewport(pan, 1.0),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Viewport { pan, zoom: 1.0 }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
+                pan,
+                zoom: 1.0,
+            }),
+        ]);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+}
+
+#[test]
 fn conformance_runner_rejects_viewport_drag_pan_when_selection_modifier_claims_pointer() {
     let scenario = viewport_drag_rejection_scenario(
         "viewport selection modifier suppresses drag pan",

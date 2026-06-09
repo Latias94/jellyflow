@@ -51,6 +51,9 @@ pub(super) fn execute_action(
             selection::apply_delete_selection_for_key(store, *key)
         }
         ConformanceAction::ApplyAutoPan { request } => viewport::apply_auto_pan(store, *request),
+        ConformanceAction::ApplySelectionAutoPan { request } => {
+            viewport::apply_selection_auto_pan(store, *request)
+        }
         ConformanceAction::ApplyViewportPan { request } => viewport::apply_pan(store, *request),
         ConformanceAction::ApplyViewportPanConstrained {
             request,

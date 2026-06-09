@@ -1,4 +1,4 @@
-use crate::runtime::auto_pan::AutoPanRequest;
+use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -19,6 +19,16 @@ pub(super) fn apply_auto_pan(
         .apply_auto_pan(request)
         .map(|_| ())
         .ok_or_else(|| "auto-pan request was rejected".to_owned())
+}
+
+pub(super) fn apply_selection_auto_pan(
+    store: &mut NodeGraphStore,
+    request: SelectionAutoPanRequest,
+) -> Result<(), String> {
+    store
+        .apply_selection_auto_pan(request)
+        .map(|_| ())
+        .ok_or_else(|| "selection auto-pan request was rejected".to_owned())
 }
 
 pub(super) fn apply_pan(

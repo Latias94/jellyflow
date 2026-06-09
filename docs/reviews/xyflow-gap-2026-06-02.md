@@ -12,9 +12,8 @@ several headless seams have been closed: pointer resize sessions and lifecycle
 callbacks, constrained viewport pan/zoom entrypoints, a controlled graph facade,
 aggregate rendering-query results, and visible edge culling. The remaining work
 is mostly precision and adapter-contract work: async pre-delete/veto behavior,
-selection auto-pan scenarios, nested drag/resize containment, exact React
-`applyChanges` parity when needed, and a more explicit adapter-owned
-connection-handle target pipeline. React UI components, DOM measurement,
+nested drag lifecycle fixtures, exact React `applyChanges` parity when needed,
+and future adapter-owned browser/UI inventories. React UI components, DOM measurement,
 providers, wrappers, minimap, background, controls, portals, and accessibility
 text should stay out of the headless crates and belong to future adapter crates.
 
@@ -88,12 +87,12 @@ Jellyflow source areas reviewed:
 | Node drag, snapping, extents, parent expansion, keyboard nudge | partial | `XYDrag` handles multi-drag, snap offsets, node extent adjustment, auto-pan, drag lifecycle, and delete-while-drag abort (`packages/system/src/xydrag/XYDrag.ts:130`, `packages/system/src/xydrag/XYDrag.ts:232`) | Runtime has screen threshold, gesture claim, selected-node candidates, snap, adjusted global extents, parent expansion, and nudge (`crates/jellyflow-runtime/src/runtime/drag/activation.rs:3`, `crates/jellyflow-runtime/src/runtime/drag/planner.rs:14`, `crates/jellyflow-runtime/src/runtime/drag/constraints/items.rs:9`) | Needs conformance for nested parent-relative coordinates, deletion during active drag, and full lifecycle sequencing. |
 | Node resize | partial | `XYResizer` owns pointer resize sessions, keep-aspect-ratio, boundaries, child extent correction, parent expansion clamps (`packages/system/src/xyresizer/XYResizer.ts:100`, `packages/system/src/xyresizer/XYResizer.ts:190`) | Runtime supports target-size resize, pointer resize sessions, keep-aspect-ratio, min/max constraints, direction-driven position changes, node origin, parent group expansion, store commit, lifecycle callbacks, and conformance fixtures (`crates/jellyflow-runtime/src/runtime/resize/session.rs:1`, `crates/jellyflow-runtime/src/runtime/resize/planner.rs:10`, `crates/jellyflow-runtime/src/runtime/resize/parent_expansion.rs:1`) | Remaining parity gap: XyFlow's node-owned child extent correction and parent-relative coordinate behavior are not modeled by Jellyflow's group-as-frame contract. |
 | Viewport pan/zoom, scroll, double-click, animation, inertia, fit view | partial | `XYPanZoom` constrains viewport with d3 `scaleExtent` and `translateExtent`, supports pan/scroll/zoom policies and setters (`packages/system/src/xypanzoom/XYPanZoom.ts:40`, `packages/system/src/xypanzoom/XYPanZoom.ts:204`) | Runtime has pan/zoom transforms, constrained pan/zoom entrypoints, scroll policy, double-click animation, animation frames, inertia, fit-view math, and tests (`crates/jellyflow-runtime/src/runtime/viewport/transform.rs:6`, `crates/jellyflow-runtime/src/runtime/store/view/state.rs:52`, `crates/jellyflow-runtime/src/runtime/fit_view/compute.rs:9`) | Low-level unconstrained setters intentionally remain; exact d3 edge-case parity can be added only if adapters need it. |
-| Auto-pan | partial | XyFlow auto-pans during node drag/connect and node focus; selection drag also has screen-rect auto-pan paths (`packages/system/src/xydrag/XYDrag.ts:232`, `packages/system/src/xyhandle/XYHandle.ts:20`, `packages/react/src/components/NodeWrapper/index.tsx:160`) | Runtime has a deterministic auto-pan kernel, activation gates for node drag/connect/node focus, and an `Always` mode for adapter-owned flows (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:7`, `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:6`) | Selection-specific auto-pan policy and fixtures are not locked yet. |
+| Auto-pan | covered | XyFlow auto-pans during node drag/connect and node focus; selection drag also has screen-rect auto-pan paths (`packages/system/src/xydrag/XYDrag.ts:232`, `packages/system/src/xyhandle/XYHandle.ts:20`, `packages/react/src/components/NodeWrapper/index.tsx:160`) | Runtime has a deterministic auto-pan kernel, activation gates for node drag/connect/node focus, selection auto-pan request/store helpers, and conformance fixtures (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:58`, `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:45`, `crates/jellyflow-runtime/src/runtime/auto_pan/store.rs:23`) | Raw selection rectangle tracking, pointer/session ownership, and frame scheduling remain adapter-owned. |
 | Edge path geometry and hit testing | covered | XyFlow system has bezier path, label, and reconnect helpers (`packages/system/src/utils/edges/bezier-edge.ts:1`) | Runtime has bezier path generation, label math, straight/smooth-step helpers, and numeric hit testing with interaction width (`crates/jellyflow-runtime/src/runtime/geometry/paths/bezier.rs:19`, `crates/jellyflow-runtime/src/runtime/geometry/hit_test.rs:40`) | Exact SVG path string formatting is adapter-owned unless a renderer needs it. |
 | Visible nodes and node render order | covered | React visible node hook uses `getNodesInside` (`packages/react/src/hooks/useVisibleNodeIds.ts:1`) | Runtime resolves visible node ids, visible node render order, and aggregate rendering query results with culling, hidden policy, node origin, fallback size, and elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:11`, `crates/jellyflow-runtime/src/runtime/rendering/query.rs:1`) | None at the current headless contract level. |
 | Visible edge culling | covered | React visible edge hook calls `isEdgeVisible` using source/target node bounds (`packages/react/src/hooks/useVisibleEdgeIds.ts:1`); system utility has edge visibility math (`packages/system/src/utils/edges/general.ts:69`) | Runtime resolves visible edge ids and visible edge render order using endpoint node bounds, hidden policy, node origin, fallback size, and edge elevation (`crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:136`, `crates/jellyflow-runtime/src/runtime/rendering/visibility.rs:198`) | Path-geometry clipping remains renderer-owned unless a future adapter needs it. |
 | Render order and selected elevation | covered | XyFlow elevates selected nodes/edges through z-index helpers (`packages/system/src/utils/edges/general.ts:1`) | Runtime resolves node/group/edge paint order and selected-edge elevation through connected selected nodes (`crates/jellyflow-runtime/src/runtime/rendering/order.rs:133`, `crates/jellyflow-runtime/src/runtime/rendering/order.rs:182`) | DOM z-index class implementation is adapter-owned. |
-| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible node and edge rendering/callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:155`, `templates/headless-adapter/src/lib.rs:33`) | Need more gap-specific scenarios: selection auto-pan, async pre-delete, and nested containment. |
+| Conformance harness and adapter template | partial | XyFlow behavior is source-backed, but XyFlow itself does not provide Jellyflow fixtures | Jellyflow has conformance actions for drag/resize sessions/connect/reconnect/delete/auto-pan/constrained viewport/visible node and edge rendering/callback traces (`crates/jellyflow-runtime/src/runtime/conformance/scenario/action.rs:155`, `templates/headless-adapter/src/lib.rs:33`) | Need more gap-specific scenarios: async pre-delete and nested containment. |
 | React/DOM UI inventory | adapter-owned | React package owns wrappers, store binding, hooks, components, minimap, controls, background, toolbar, portals, DOM node internals (`packages/react/src/store/index.ts:160`, `packages/react/src/components`) | ADRs require headless crates to stay renderer/platform-free | Future adapter crates should own this inventory. |
 | Browser/provider/SSR/accessibility text | adapter-owned | React provider, aria descriptions, DOM focus/measurement, ResizeObserver, viewport DOM transform are React/package concerns | No equivalent should exist in core/runtime | Do not implement inside `jellyflow-core` or `jellyflow-runtime`. |
 | XyFlow browser screenshots/pixel parity | intentionally out of scope | XyFlow validates browser/DOM behavior in its own stack | ADR 0003 puts screenshots/pixel smoke in adapter crates (`docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md:42`) | Out of scope for this task and for headless crates. |
@@ -272,7 +271,7 @@ adapter that wants XyFlow-style bounds should call the constrained entrypoints.
 
 Suggested task: `Viewport d3 parity edge-case conformance`.
 
-### 8. Auto-Pan Kernel Exists; Selection Auto-Pan Needs A Contract
+### 8. Auto-Pan Kernel And Selection Contract Exist
 
 Jellyflow's auto-pan is deterministic and reusable:
 
@@ -280,14 +279,19 @@ Jellyflow's auto-pan is deterministic and reusable:
   adapter-owned flows (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:7`);
 - `compute_auto_pan` derives per-frame screen delta from pointer proximity
   (`crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:6`);
+- `SelectionAutoPanRequest` and `compute_selection_auto_pan` name the selection
+  workflow while reusing the shared edge-proximity math
+  (`crates/jellyflow-runtime/src/runtime/auto_pan/types.rs:58`,
+  `crates/jellyflow-runtime/src/runtime/auto_pan/planner.rs:45`);
 - store application publishes normal viewport changes
-  (`crates/jellyflow-runtime/src/runtime/auto_pan/store.rs:13`).
+  (`crates/jellyflow-runtime/src/runtime/auto_pan/store.rs:13`), including
+  selection auto-pan via `NodeGraphStore::apply_selection_auto_pan`
+  (`crates/jellyflow-runtime/src/runtime/auto_pan/store.rs:23`).
 
 Gap: XyFlow selection auto-pan depends on a screen-space selection rectangle and
-pointer/session ownership. The kernel can support it, but there is no dedicated
-selection fixture or adapter-template scenario.
-
-Suggested task: `Selection auto-pan conformance`.
+pointer/session ownership. Those remain adapter responsibilities; the shared
+runtime contract now covers the viewport-motion frame once the adapter supplies
+the pointer position.
 
 ### 9. Rendering Helpers Cover Node And Edge Visibility
 
@@ -342,11 +346,11 @@ Recently closed by runtime-deepening work:
 - Visible edge culling and visible edge render-order contracts.
 - Resize parent group expansion with conformance traces.
 - Connection target resolution from adapter-provided handle candidates.
+- Selection auto-pan request/store/conformance contract.
 
 | Priority | Suggested Trellis Task | Owner Area | Why |
 | --- | --- | --- | --- |
 | P2 | Async pre-delete veto and substitute delete planning | runtime/store, `runtime::xyflow` callbacks | Needed for XyFlow `onBeforeDelete` parity. |
-| P2 | Selection auto-pan conformance | runtime/conformance/template | Kernel exists, but selection-specific behavior is not locked. |
 | P2 | XyFlow applyChanges precision conformance | `runtime::xyflow` | Controlled integrations need exact change semantics only when adapters demand it. |
 | P2 | Nested parent drag lifecycle conformance | runtime drag/conformance | Parent-relative coordinates, deletion during active drag, and lifecycle ordering need fixtures. |
 | P3 | Viewport d3 parity edge-case conformance | runtime viewport/conformance | Only needed if an adapter depends on exact d3 constraint edge cases. |
@@ -375,6 +379,5 @@ direction: core model and transactions, runtime policy/planners, XyFlow-style
 projection/callbacks, conformance fixtures, and adapter template all exist.
 
 The next work should stay narrow and contract-driven, not become a rewrite:
-resize containment, async pre-delete, selection auto-pan, nested drag lifecycle
-fixtures, exact controlled-change semantics where needed, and adapter
-handle-target fixtures.
+async pre-delete, nested drag lifecycle fixtures, exact controlled-change
+semantics where needed, and future adapter UI inventories.

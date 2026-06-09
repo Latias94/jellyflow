@@ -53,6 +53,37 @@ impl AutoPanRequest {
     }
 }
 
+/// One selection-drag auto-pan frame in logical screen coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SelectionAutoPanRequest {
+    pub pointer_screen: CanvasPoint,
+    pub viewport_size: CanvasSize,
+    pub elapsed_seconds: f32,
+}
+
+impl SelectionAutoPanRequest {
+    pub fn new(
+        pointer_screen: CanvasPoint,
+        viewport_size: CanvasSize,
+        elapsed_seconds: f32,
+    ) -> Self {
+        Self {
+            pointer_screen,
+            viewport_size,
+            elapsed_seconds,
+        }
+    }
+
+    pub fn auto_pan_request(self) -> AutoPanRequest {
+        AutoPanRequest::new(
+            AutoPanActivation::Always,
+            self.pointer_screen,
+            self.viewport_size,
+            self.elapsed_seconds,
+        )
+    }
+}
+
 /// Deterministic auto-pan frame produced from edge proximity.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AutoPanPlan {

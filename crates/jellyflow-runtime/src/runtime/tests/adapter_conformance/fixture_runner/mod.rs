@@ -3,7 +3,7 @@ use super::support::{assert_conformance_trace, insert_input_port};
 
 use crate::io::{NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};
 use crate::rules::EdgeEndpoint;
-use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
+use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
     ConformanceTraceEvent, ConformanceViewChange,

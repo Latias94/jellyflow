@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::io::NodeGraphKeyCode;
-use crate::runtime::auto_pan::AutoPanRequest;
+use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetCandidate, ConnectionTargetFromHandlesInput,
     ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
@@ -83,6 +83,9 @@ pub enum ConformanceAction {
     },
     ApplyAutoPan {
         request: AutoPanRequest,
+    },
+    ApplySelectionAutoPan {
+        request: SelectionAutoPanRequest,
     },
     ApplyViewportPan {
         request: ViewportPanRequest,
@@ -196,6 +199,7 @@ impl ConformanceAction {
             Self::ApplyDeleteSelection => "apply_delete_selection",
             Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
             Self::ApplyAutoPan { .. } => "apply_auto_pan",
+            Self::ApplySelectionAutoPan { .. } => "apply_selection_auto_pan",
             Self::ApplyViewportPan { .. } => "apply_viewport_pan",
             Self::ApplyViewportPanConstrained { .. } => "apply_viewport_pan_constrained",
             Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
@@ -310,6 +314,10 @@ impl ConformanceAction {
 
     pub fn apply_auto_pan(request: AutoPanRequest) -> Self {
         Self::ApplyAutoPan { request }
+    }
+
+    pub fn apply_selection_auto_pan(request: SelectionAutoPanRequest) -> Self {
+        Self::ApplySelectionAutoPan { request }
     }
 
     pub fn apply_viewport_pan(request: ViewportPanRequest) -> Self {

@@ -75,9 +75,9 @@ validate behavior before rendering. The runtime crate supports that split with:
   ViewportPanInertiaFrame}` plus `runtime::viewport::plan_viewport_pan_inertia` for deterministic
   pan inertia sampling from adapter-provided logical screen px/s release velocity and
   `NodeGraphPanInertiaTuning`;
-- `runtime::auto_pan::{AutoPanActivation, AutoPanRequest, AutoPanPlan}` plus
-  `NodeGraphStore::apply_auto_pan` for deterministic edge-proximity auto-pan frames that feed the
-  normal viewport publication path;
+- `runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest, AutoPanPlan}` plus
+  `NodeGraphStore::{apply_auto_pan, apply_selection_auto_pan}` for deterministic edge-proximity
+  auto-pan frames that feed the normal viewport publication path;
 - `runtime::rendering::{VisibleNodeIdsRequest, resolve_visible_node_ids,
   resolve_visible_node_render_order}` plus `NodeGraphStore::visible_node_ids` and
   `NodeGraphStore::visible_node_render_order` for XyFlow-style visible node culling and paint order
@@ -181,9 +181,9 @@ Viewport conformance is also headless. Runtime tests cover:
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
 raw double-click detection, release velocity estimation, frame scheduling, animation and inertia
 cancellation policy, sampled-frame commits, visible edge culling, resize handles, window event
-loops, screenshots, and pixel assertions. For selection workflows, adapters may call the generic
-`AutoPanActivation::Always` path until a persisted selection-specific auto-pan toggle is justified
-by integration evidence.
+loops, screenshots, and pixel assertions. For selection workflows, adapters own the screen-space
+selection rectangle and pointer/session ownership, then call `SelectionAutoPanRequest` for the
+shared edge-proximity viewport motion.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

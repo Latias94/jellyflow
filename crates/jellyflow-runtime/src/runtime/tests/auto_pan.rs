@@ -1,7 +1,10 @@
 use super::fixtures::make_graph;
 use super::harness::{HarnessEvent, InteractionHarness};
 use crate::io::NodeGraphAutoPanTuning;
-use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, compute_auto_pan};
+use crate::runtime::auto_pan::{
+    AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest, compute_auto_pan,
+    compute_selection_auto_pan,
+};
 use jellyflow_core::core::{CanvasPoint, CanvasSize};
 
 #[test]
@@ -57,6 +60,32 @@ fn auto_pan_respects_workflow_activation_policy() {
         },
     )
     .expect("generic auto-pan bypasses workflow toggle");
+
+    assert_eq!(plan.screen_delta, CanvasPoint { x: -50.0, y: 0.0 });
+}
+
+#[test]
+fn selection_auto_pan_uses_adapter_owned_always_activation() {
+    let tuning = NodeGraphAutoPanTuning {
+        on_node_drag: false,
+        on_connect: false,
+        on_node_focus: false,
+        speed: 100.0,
+        margin: 20.0,
+    };
+
+    let plan = compute_selection_auto_pan(
+        &tuning,
+        SelectionAutoPanRequest::new(
+            CanvasPoint { x: 190.0, y: 50.0 },
+            CanvasSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            1.0,
+        ),
+    )
+    .expect("selection auto-pan frame");
 
     assert_eq!(plan.screen_delta, CanvasPoint { x: -50.0, y: 0.0 });
 }
@@ -142,6 +171,35 @@ fn store_auto_pan_publishes_viewport_changes() {
     assert!((outcome.plan.screen_delta.x - (-10.5)).abs() <= 1.0e-5);
     assert_eq!(outcome.plan.screen_delta.y, 0.0);
     assert_eq!(outcome.transform.zoom, 1.0);
+    assert_eq!(outcome.transform.pan, outcome.plan.screen_delta);
+    harness.assert_events(&[HarnessEvent::viewport(outcome.transform.pan, 1.0)]);
+}
+
+#[test]
+fn store_selection_auto_pan_publishes_viewport_changes() {
+    let (graph, _a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut harness = InteractionHarness::new("selection auto-pan publishes viewport", graph);
+    harness.store_mut().update_editor_config(|config| {
+        config.interaction.auto_pan.on_node_drag = false;
+        config.interaction.auto_pan.on_connect = false;
+        config.interaction.auto_pan.on_node_focus = false;
+        config.interaction.auto_pan.speed = 100.0;
+        config.interaction.auto_pan.margin = 20.0;
+    });
+
+    let outcome = harness
+        .store_mut()
+        .apply_selection_auto_pan(SelectionAutoPanRequest::new(
+            CanvasPoint { x: 190.0, y: 50.0 },
+            CanvasSize {
+                width: 200.0,
+                height: 100.0,
+            },
+            1.0,
+        ))
+        .expect("selection auto-pan frame");
+
+    assert_eq!(outcome.plan.screen_delta, CanvasPoint { x: -50.0, y: 0.0 });
     assert_eq!(outcome.transform.pan, outcome.plan.screen_delta);
     harness.assert_events(&[HarnessEvent::viewport(outcome.transform.pan, 1.0)]);
 }

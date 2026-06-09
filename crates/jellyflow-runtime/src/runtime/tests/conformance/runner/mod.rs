@@ -1,6 +1,6 @@
 use super::super::fixtures::make_graph;
 
-use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
+use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceSuite,
     ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
