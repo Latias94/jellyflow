@@ -7,9 +7,9 @@ use crate::runtime::conformance::{
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
-    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSuite,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
-    run_conformance_suite,
+    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSelectionBoxContract,
+    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    run_conformance_scenario, run_conformance_suite,
 };
 use crate::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,

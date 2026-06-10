@@ -11,9 +11,10 @@ use crate::runtime::events::{
 use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::rendering::RenderingQueryResult;
 use crate::runtime::resize::NODE_RESIZE_TRANSACTION_LABEL;
+use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{ViewportDragPanInput, ViewportGestureContext, ViewportTransform};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 
 use super::action::{
     ConformanceAction, ConformanceLayoutFactsExpectation, ConformanceNodePointerResizeRequest,
@@ -28,6 +29,7 @@ pub enum ConformanceBehavior {
     NodeDragSession(ConformanceNodeDragSessionContract),
     ConnectEdgeSession(ConformanceConnectEdgeSessionContract),
     NodeResizeSession(ConformanceNodeResizeSessionContract),
+    SelectionBox(ConformanceSelectionBoxContract),
     ViewportDragPanSession(ConformanceViewportDragPanSessionContract),
     RenderingQuery(ConformanceRenderingQueryContract),
     LayoutFacts(ConformanceLayoutFactsContract),
@@ -44,6 +46,10 @@ impl ConformanceBehavior {
 
     pub fn node_resize_session(contract: ConformanceNodeResizeSessionContract) -> Self {
         Self::NodeResizeSession(contract)
+    }
+
+    pub fn selection_box(contract: ConformanceSelectionBoxContract) -> Self {
+        Self::SelectionBox(contract)
     }
 
     pub fn viewport_drag_pan_session(contract: ConformanceViewportDragPanSessionContract) -> Self {
@@ -63,6 +69,7 @@ impl ConformanceBehavior {
             Self::NodeDragSession(contract) => vec![contract.action()],
             Self::ConnectEdgeSession(contract) => vec![contract.action()],
             Self::NodeResizeSession(contract) => vec![contract.action()],
+            Self::SelectionBox(contract) => vec![contract.action()],
             Self::ViewportDragPanSession(contract) => vec![contract.action()],
             Self::RenderingQuery(contract) => vec![contract.action()],
             Self::LayoutFacts(contract) => contract.actions(),
@@ -74,6 +81,7 @@ impl ConformanceBehavior {
             Self::NodeDragSession(contract) => contract.expected_trace(),
             Self::ConnectEdgeSession(contract) => contract.expected_trace(),
             Self::NodeResizeSession(contract) => contract.expected_trace(),
+            Self::SelectionBox(contract) => contract.expected_trace(),
             Self::ViewportDragPanSession(contract) => contract.expected_trace(),
             Self::RenderingQuery(contract) => contract.expected_trace(),
             Self::LayoutFacts(contract) => contract.expected_trace(),
@@ -288,6 +296,62 @@ impl ConformanceNodeResizeSessionContract {
     }
 }
 
+/// Behavior contract for applying a marquee selection box and observing selection callbacks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceSelectionBoxContract {
+    pub input: SelectionBoxInput,
+    pub nodes: Vec<NodeId>,
+    pub edges: Vec<EdgeId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupId>,
+}
+
+impl ConformanceSelectionBoxContract {
+    pub fn new(
+        input: SelectionBoxInput,
+        nodes: impl IntoIterator<Item = NodeId>,
+        edges: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
+        Self {
+            input,
+            nodes: nodes.into_iter().collect(),
+            edges: edges.into_iter().collect(),
+            groups: Vec::new(),
+        }
+    }
+
+    pub fn with_groups(mut self, groups: impl IntoIterator<Item = GroupId>) -> Self {
+        self.groups = groups.into_iter().collect();
+        self
+    }
+
+    fn action(&self) -> ConformanceAction {
+        ConformanceAction::apply_selection_box(self.input)
+    }
+
+    fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        vec![
+            ConformanceTraceEvent::selection(
+                self.nodes.clone(),
+                self.edges.clone(),
+                self.groups.clone(),
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Selection {
+                    nodes: self.nodes.clone(),
+                    edges: self.edges.clone(),
+                    groups: self.groups.clone(),
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+                nodes: self.nodes.clone(),
+                edges: self.edges.clone(),
+                groups: self.groups.clone(),
+            }),
+        ]
+    }
+}
+
 /// Behavior contract for an accepted viewport drag-pan session.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceViewportDragPanSessionContract {
@@ -438,6 +502,10 @@ impl ConformanceScenario {
         contract: ConformanceNodeResizeSessionContract,
     ) -> Self {
         self.with_behavior(ConformanceBehavior::node_resize_session(contract))
+    }
+
+    pub fn with_selection_box_contract(self, contract: ConformanceSelectionBoxContract) -> Self {
+        self.with_behavior(ConformanceBehavior::selection_box(contract))
     }
 
     pub fn with_viewport_drag_pan_session_contract(

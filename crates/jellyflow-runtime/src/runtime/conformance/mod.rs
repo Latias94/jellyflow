@@ -30,7 +30,7 @@ pub use scenario::{
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
-    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSetup, ConformanceSuite,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
-    ConformanceViewportDragPanSessionContract,
+    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSelectionBoxContract,
+    ConformanceSetup, ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };

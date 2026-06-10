@@ -16,7 +16,8 @@ pub use action::{
 pub use behavior::{
     ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceLayoutFactsContract,
     ConformanceNodeDragSessionContract, ConformanceNodeResizeSessionContract,
-    ConformanceRenderingQueryContract, ConformanceViewportDragPanSessionContract,
+    ConformanceRenderingQueryContract, ConformanceSelectionBoxContract,
+    ConformanceViewportDragPanSessionContract,
 };
 pub(crate) use callback_recorder::ConformanceCallbackTraceRecorder;
 pub use constants::CONFORMANCE_FIXTURE_SCHEMA_VERSION;

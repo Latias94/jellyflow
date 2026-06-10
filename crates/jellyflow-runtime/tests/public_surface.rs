@@ -754,6 +754,15 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         },
         rendering::RenderingQueryResult::default(),
     );
+    let selection_box_input = selection::SelectionBoxInput::replace(CanvasRect {
+        origin: CanvasPoint::default(),
+        size: CanvasSize {
+            width: 10.0,
+            height: 10.0,
+        },
+    });
+    let selection_box_action =
+        conformance::ConformanceAction::apply_selection_box(selection_box_input);
     let inertia_request = viewport::ViewportPanInertiaRequest::new(
         viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
         CanvasPoint { x: 500.0, y: 0.0 },
@@ -955,6 +964,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,
         rendering_query_action,
+        selection_box_action,
         apply_viewport_pan_inertia_action,
         apply_viewport_pan_inertia_frames_action,
         assert_viewport_pan_inertia_action,
@@ -1013,9 +1023,28 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     assert_eq!(scenario.behaviors.len(), 1);
     assert_eq!(scenario.expanded_actions().len(), 1);
     assert!(!scenario.expanded_expected_trace().is_empty());
+    let selection_box_contract = conformance::ConformanceSelectionBoxContract::new(
+        selection_box_input,
+        [node_id],
+        Vec::<EdgeId>::new(),
+    );
+    let selection_scenario = conformance::ConformanceScenario::new(
+        "public selection box fixture",
+        Graph::new(GraphId::new()),
+    )
+    .with_selection_box_contract(selection_box_contract);
+    assert_eq!(selection_scenario.behaviors.len(), 1);
+    assert_eq!(selection_scenario.expanded_actions().len(), 1);
+    assert!(!selection_scenario.expanded_expected_trace().is_empty());
+    let selection_fixture =
+        serde_json::to_value(&selection_scenario).expect("serialize selection fixture");
+    let selection_decoded: conformance::ConformanceScenario =
+        serde_json::from_value(selection_fixture).expect("deserialize selection fixture");
+    assert_eq!(selection_decoded.behaviors.len(), 1);
     let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
     let _ = std::mem::size_of::<conformance::ConformanceNodeResizeSessionContract>();
     let _ = std::mem::size_of::<conformance::ConformanceRenderingQueryContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceSelectionBoxContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();

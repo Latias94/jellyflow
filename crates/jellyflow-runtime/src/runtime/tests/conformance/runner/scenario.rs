@@ -805,7 +805,7 @@ fn conformance_runner_executes_selection_box_fixture_and_matches_trace() {
     let scenario = ConformanceScenario::new("selection box runner", graph)
         .with_view_state(view_state)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([ConformanceAction::apply_selection_box(
+        .with_selection_box_contract(ConformanceSelectionBoxContract::new(
             SelectionBoxInput::new(
                 rect,
                 SelectionBoxOptions {
@@ -816,13 +816,17 @@ fn conformance_runner_executes_selection_box_fixture_and_matches_trace() {
                     ..SelectionBoxOptions::default()
                 },
             ),
-        )])
-        .with_expected_trace(selection_trace(vec![node_id], vec![edge_id]));
+            [node_id],
+            [edge_id],
+        ));
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
 
     assert!(report.is_match(), "{report}");
-    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+    assert!(scenario.actions.is_empty());
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
 }
 
 #[test]
