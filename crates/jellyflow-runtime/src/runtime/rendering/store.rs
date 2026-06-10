@@ -7,10 +7,7 @@ use super::order::{
     resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
 };
 use super::query::{RenderingQueryOptions, RenderingQueryResult, resolve_rendering_query};
-use super::visibility::{
-    VisibleEdgeIdsRequest, VisibleNodeIdsRequest, resolve_visible_edge_ids,
-    resolve_visible_edge_render_order, resolve_visible_node_ids, resolve_visible_node_render_order,
-};
+use super::visibility::{VisibleEdgeIdsRequest, VisibleNodeIdsRequest};
 
 impl NodeGraphStore {
     /// Resolves the current group render order using the store's view-state and editor config.
@@ -45,67 +42,45 @@ impl NodeGraphStore {
 
     /// Resolves edge ids visible in the given logical viewport size using current store tuning.
     pub fn visible_edge_ids(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
-        let Some(request) = self.visible_edge_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-
-        resolve_visible_edge_ids(self.graph(), self.lookups(), request)
+        self.rendering_query(viewport_size).visible_edge_ids
     }
 
     /// Resolves visible edge ids in the current edge paint order using current store tuning.
     pub fn visible_edge_render_order(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
-        let Some(request) = self.visible_edge_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-        let interaction = self.resolved_interaction_state();
-        resolve_visible_edge_render_order(
-            self.graph(),
-            self.lookups(),
-            self.view_state(),
-            request,
-            EdgeRenderOrderOptions::from_interaction(&interaction),
-        )
+        self.rendering_query(viewport_size)
+            .visible_edge_render_order
     }
 
     /// Resolves node ids visible in the given logical viewport size using current store tuning.
     pub fn visible_node_ids(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        let Some(request) = self.visible_node_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-
-        resolve_visible_node_ids(self.lookups(), request)
+        self.rendering_query(viewport_size).visible_node_ids
     }
 
     /// Resolves visible node ids in the current node paint order using current store tuning.
     pub fn visible_node_render_order(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        let Some(request) = self.visible_node_ids_request(viewport_size) else {
-            return Vec::new();
-        };
-        let interaction = self.resolved_interaction_state();
-        resolve_visible_node_render_order(
-            self.graph(),
-            self.lookups(),
-            self.view_state(),
-            request,
-            NodeRenderOrderOptions::from_interaction(&interaction),
-        )
+        self.rendering_query(viewport_size)
+            .visible_node_render_order
     }
 
     /// Resolves all renderer-facing order and visibility lists for the current store state.
     pub fn rendering_query(&self, viewport_size: CanvasSize) -> RenderingQueryResult {
-        let interaction = self.resolved_interaction_state();
         resolve_rendering_query(
             self.graph(),
             self.lookups(),
             self.view_state(),
-            RenderingQueryOptions::new(
-                GroupRenderOrderOptions::from_interaction(&interaction),
-                NodeRenderOrderOptions::from_interaction(&interaction),
-                EdgeRenderOrderOptions::from_interaction(&interaction),
-            )
-            .with_visible_nodes(self.visible_node_ids_request(viewport_size))
-            .with_visible_edges(self.visible_edge_ids_request(viewport_size)),
+            self.rendering_query_options(viewport_size),
         )
+    }
+
+    fn rendering_query_options(&self, viewport_size: CanvasSize) -> RenderingQueryOptions {
+        let interaction = self.resolved_interaction_state();
+        RenderingQueryOptions::new(
+            GroupRenderOrderOptions::from_interaction(&interaction),
+            NodeRenderOrderOptions::from_interaction(&interaction),
+            EdgeRenderOrderOptions::from_interaction(&interaction),
+        )
+        .with_visible_nodes(self.visible_node_ids_request(viewport_size))
+        .with_visible_edges(self.visible_edge_ids_request(viewport_size))
     }
 
     fn visible_edge_ids_request(&self, viewport_size: CanvasSize) -> Option<VisibleEdgeIdsRequest> {

@@ -707,6 +707,40 @@ fn store_rendering_query_returns_visible_edge_order_and_visibility_together() {
 }
 
 #[test]
+fn store_rendering_query_matches_visibility_helper_wrappers() {
+    let (graph, spanning, outside, _hidden_edge, hidden_endpoint, inside_edge) =
+        graph_with_visible_edge_fixture();
+    let view_state = NodeGraphViewState {
+        selected_edges: vec![spanning],
+        edge_draw_order: vec![outside, spanning, inside_edge, hidden_endpoint],
+        ..NodeGraphViewState::default()
+    };
+    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let query = store.rendering_query(viewport_size);
+
+    assert_eq!(
+        store.visible_node_ids(viewport_size),
+        query.visible_node_ids
+    );
+    assert_eq!(
+        store.visible_node_render_order(viewport_size),
+        query.visible_node_render_order
+    );
+    assert_eq!(
+        store.visible_edge_ids(viewport_size),
+        query.visible_edge_ids
+    );
+    assert_eq!(
+        store.visible_edge_render_order(viewport_size),
+        query.visible_edge_render_order
+    );
+}
+
+#[test]
 fn visible_node_render_order_matches_node_render_order_when_culling_is_disabled() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let view_state = NodeGraphViewState {
