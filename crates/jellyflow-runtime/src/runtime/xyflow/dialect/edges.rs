@@ -111,3 +111,39 @@ pub(in crate::runtime::xyflow) fn edge_update_op(
         },
     })
 }
+
+pub(in crate::runtime::xyflow) fn edge_update_change_from_op(op: &GraphOp) -> Option<EdgeChange> {
+    Some(match op {
+        GraphOp::SetEdgeKind { id, to, .. } => EdgeChange::Kind { id: *id, kind: *to },
+        GraphOp::SetEdgeSelectable { id, to, .. } => EdgeChange::Selectable {
+            id: *id,
+            selectable: *to,
+        },
+        GraphOp::SetEdgeFocusable { id, to, .. } => EdgeChange::Focusable {
+            id: *id,
+            focusable: *to,
+        },
+        GraphOp::SetEdgeHidden { id, to, .. } => EdgeChange::Hidden {
+            id: *id,
+            hidden: *to,
+        },
+        GraphOp::SetEdgeInteractionWidth { id, to, .. } => EdgeChange::InteractionWidth {
+            id: *id,
+            interaction_width: *to,
+        },
+        GraphOp::SetEdgeDeletable { id, to, .. } => EdgeChange::Deletable {
+            id: *id,
+            deletable: *to,
+        },
+        GraphOp::SetEdgeReconnectable { id, to, .. } => EdgeChange::Reconnectable {
+            id: *id,
+            reconnectable: *to,
+        },
+        GraphOp::SetEdgeEndpoints { id, to, .. } => EdgeChange::Endpoints {
+            id: *id,
+            from: to.from,
+            to: to.to,
+        },
+        _ => return None,
+    })
+}

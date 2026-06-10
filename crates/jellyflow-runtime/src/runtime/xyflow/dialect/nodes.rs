@@ -195,3 +195,74 @@ pub(in crate::runtime::xyflow) fn node_update_op(
         },
     })
 }
+
+pub(in crate::runtime::xyflow) fn node_update_change_from_op(op: &GraphOp) -> Option<NodeChange> {
+    Some(match op {
+        GraphOp::SetNodePos { id, to, .. } => NodeChange::Position {
+            id: *id,
+            position: *to,
+        },
+        GraphOp::SetNodeOrigin { id, to, .. } => NodeChange::Origin {
+            id: *id,
+            origin: *to,
+        },
+        GraphOp::SetNodeKind { id, to, .. } => NodeChange::Kind {
+            id: *id,
+            kind: to.clone(),
+        },
+        GraphOp::SetNodeKindVersion { id, to, .. } => NodeChange::KindVersion {
+            id: *id,
+            kind_version: *to,
+        },
+        GraphOp::SetNodeSelectable { id, to, .. } => NodeChange::Selectable {
+            id: *id,
+            selectable: *to,
+        },
+        GraphOp::SetNodeFocusable { id, to, .. } => NodeChange::Focusable {
+            id: *id,
+            focusable: *to,
+        },
+        GraphOp::SetNodeDraggable { id, to, .. } => NodeChange::Draggable {
+            id: *id,
+            draggable: *to,
+        },
+        GraphOp::SetNodeConnectable { id, to, .. } => NodeChange::Connectable {
+            id: *id,
+            connectable: *to,
+        },
+        GraphOp::SetNodeDeletable { id, to, .. } => NodeChange::Deletable {
+            id: *id,
+            deletable: *to,
+        },
+        GraphOp::SetNodeParent { id, to, .. } => NodeChange::Parent {
+            id: *id,
+            parent: *to,
+        },
+        GraphOp::SetNodeExtent { id, to, .. } => NodeChange::Extent {
+            id: *id,
+            extent: *to,
+        },
+        GraphOp::SetNodeExpandParent { id, to, .. } => NodeChange::ExpandParent {
+            id: *id,
+            expand_parent: *to,
+        },
+        GraphOp::SetNodeSize { id, to, .. } => NodeChange::Size { id: *id, size: *to },
+        GraphOp::SetNodeHidden { id, to, .. } => NodeChange::Hidden {
+            id: *id,
+            hidden: *to,
+        },
+        GraphOp::SetNodeCollapsed { id, to, .. } => NodeChange::Collapsed {
+            id: *id,
+            collapsed: *to,
+        },
+        GraphOp::SetNodeData { id, to, .. } => NodeChange::Data {
+            id: *id,
+            data: to.clone(),
+        },
+        GraphOp::SetNodePorts { id, to, .. } => NodeChange::Ports {
+            id: *id,
+            ports: to.clone(),
+        },
+        _ => return None,
+    })
+}

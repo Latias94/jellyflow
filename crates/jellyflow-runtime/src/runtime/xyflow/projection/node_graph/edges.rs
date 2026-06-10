@@ -1,4 +1,5 @@
 use crate::runtime::xyflow::changes::{EdgeChange, NodeGraphChanges};
+use crate::runtime::xyflow::dialect::edge_update_change_from_op;
 use jellyflow_core::core::{Edge, EdgeId};
 use jellyflow_core::ops::GraphOp;
 
@@ -14,41 +15,12 @@ pub(super) fn try_push_edge_change(op: &GraphOp, out: &mut NodeGraphChanges) -> 
             });
         }
         GraphOp::RemoveEdge { id, .. } => push_edge_remove(*id, out),
-        GraphOp::SetEdgeKind { id, to, .. } => {
-            out.push_edge(EdgeChange::Kind { id: *id, kind: *to })
+        _ => {
+            let Some(change) = edge_update_change_from_op(op) else {
+                return false;
+            };
+            out.push_edge(change);
         }
-        GraphOp::SetEdgeSelectable { id, to, .. } => out.push_edge(EdgeChange::Selectable {
-            id: *id,
-            selectable: *to,
-        }),
-        GraphOp::SetEdgeFocusable { id, to, .. } => out.push_edge(EdgeChange::Focusable {
-            id: *id,
-            focusable: *to,
-        }),
-        GraphOp::SetEdgeHidden { id, to, .. } => out.push_edge(EdgeChange::Hidden {
-            id: *id,
-            hidden: *to,
-        }),
-        GraphOp::SetEdgeInteractionWidth { id, to, .. } => {
-            out.push_edge(EdgeChange::InteractionWidth {
-                id: *id,
-                interaction_width: *to,
-            })
-        }
-        GraphOp::SetEdgeDeletable { id, to, .. } => out.push_edge(EdgeChange::Deletable {
-            id: *id,
-            deletable: *to,
-        }),
-        GraphOp::SetEdgeReconnectable { id, to, .. } => out.push_edge(EdgeChange::Reconnectable {
-            id: *id,
-            reconnectable: *to,
-        }),
-        GraphOp::SetEdgeEndpoints { id, to, .. } => out.push_edge(EdgeChange::Endpoints {
-            id: *id,
-            from: to.from,
-            to: to.to,
-        }),
-        _ => return false,
     }
     true
 }
