@@ -11,6 +11,75 @@ use crate::runtime::viewport::{
 };
 use jellyflow_core::core::CanvasSize;
 
+use super::super::super::scenario::ConformanceAction;
+
+pub(super) fn execute_action(
+    store: &mut NodeGraphStore,
+    action: &ConformanceAction,
+) -> Option<Result<(), String>> {
+    Some(match action {
+        ConformanceAction::ApplyAutoPan { request } => apply_auto_pan(store, *request),
+        ConformanceAction::ApplySelectionAutoPan { request } => {
+            apply_selection_auto_pan(store, *request)
+        }
+        ConformanceAction::ApplyViewportPan { request } => apply_pan(store, *request),
+        ConformanceAction::ApplyViewportPanConstrained {
+            request,
+            viewport_size,
+        } => apply_pan_constrained(store, *request, *viewport_size),
+        ConformanceAction::ApplyViewportZoom { request } => apply_zoom(store, *request),
+        ConformanceAction::ApplyViewportZoomConstrained {
+            request,
+            viewport_size,
+        } => apply_zoom_constrained(store, *request, *viewport_size),
+        ConformanceAction::ApplyViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+        } => apply_animation_frame(store, *request, *elapsed_seconds),
+        ConformanceAction::ApplyViewportAnimationFrames {
+            request,
+            elapsed_seconds,
+        } => apply_animation_frames(store, *request, elapsed_seconds),
+        ConformanceAction::AssertViewportAnimationFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        } => assert_animation_frame(*request, *elapsed_seconds, *expected),
+        ConformanceAction::ApplyViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+        } => apply_pan_inertia_frame(store, request, *elapsed_seconds),
+        ConformanceAction::ApplyViewportPanInertiaFrames {
+            request,
+            elapsed_seconds,
+        } => apply_pan_inertia_frames(store, request, elapsed_seconds),
+        ConformanceAction::AssertViewportPanInertiaFrame {
+            request,
+            elapsed_seconds,
+            expected,
+        } => assert_pan_inertia_frame(request, *elapsed_seconds, *expected),
+        ConformanceAction::ExpectViewportPanInertiaRejected { request } => {
+            expect_pan_inertia_rejected(request)
+        }
+        ConformanceAction::AssertViewportDoubleClickZoom {
+            input,
+            expected,
+            expect_rejection,
+        } => assert_double_click_zoom(store, *input, *expected, *expect_rejection),
+        ConformanceAction::ApplyViewportScrollGesture {
+            context,
+            input,
+            expect_rejection,
+        } => apply_scroll_gesture(store, *context, *input, *expect_rejection),
+        ConformanceAction::ApplyViewportDragPanGesture {
+            context,
+            input,
+            expect_rejection,
+        } => apply_drag_pan_gesture(store, *context, *input, *expect_rejection),
+        _ => return None,
+    })
+}
+
 pub(super) fn apply_auto_pan(
     store: &mut NodeGraphStore,
     request: AutoPanRequest,

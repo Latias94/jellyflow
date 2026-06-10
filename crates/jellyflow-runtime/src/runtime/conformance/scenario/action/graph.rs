@@ -4,6 +4,17 @@ use jellyflow_core::ops::GraphTransaction;
 
 use super::ConformanceAction;
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::DispatchTransaction { .. } => "dispatch_transaction",
+        ConformanceAction::AssertNodePosition { .. } => "assert_node_position",
+        ConformanceAction::SetViewport { .. } => "set_viewport",
+        ConformanceAction::SetSelection { .. } => "set_selection",
+        ConformanceAction::EmitGesture { .. } => "emit_gesture",
+        _ => return None,
+    })
+}
+
 impl ConformanceAction {
     /// Builds the low-level transaction fixture action.
     ///

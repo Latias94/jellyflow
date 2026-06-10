@@ -4,6 +4,15 @@ use keyboard_types::Code as KeyCode;
 
 use super::ConformanceAction;
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::ApplySelectionBox { .. } => "apply_selection_box",
+        ConformanceAction::ApplyDeleteSelection => "apply_delete_selection",
+        ConformanceAction::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
+        _ => return None,
+    })
+}
+
 impl ConformanceAction {
     pub fn apply_selection_box(input: SelectionBoxInput) -> Self {
         Self::ApplySelectionBox { input }

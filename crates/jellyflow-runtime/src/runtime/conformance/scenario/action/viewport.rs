@@ -9,6 +9,38 @@ use jellyflow_core::core::CanvasSize;
 
 use super::ConformanceAction;
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::ApplyAutoPan { .. } => "apply_auto_pan",
+        ConformanceAction::ApplySelectionAutoPan { .. } => "apply_selection_auto_pan",
+        ConformanceAction::ApplyViewportPan { .. } => "apply_viewport_pan",
+        ConformanceAction::ApplyViewportPanConstrained { .. } => "apply_viewport_pan_constrained",
+        ConformanceAction::ApplyViewportZoom { .. } => "apply_viewport_zoom",
+        ConformanceAction::ApplyViewportZoomConstrained { .. } => "apply_viewport_zoom_constrained",
+        ConformanceAction::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
+        ConformanceAction::ApplyViewportAnimationFrames { .. } => "apply_viewport_animation_frames",
+        ConformanceAction::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
+        ConformanceAction::ApplyViewportPanInertiaFrame { .. } => {
+            "apply_viewport_pan_inertia_frame"
+        }
+        ConformanceAction::ApplyViewportPanInertiaFrames { .. } => {
+            "apply_viewport_pan_inertia_frames"
+        }
+        ConformanceAction::AssertViewportPanInertiaFrame { .. } => {
+            "assert_viewport_pan_inertia_frame"
+        }
+        ConformanceAction::ExpectViewportPanInertiaRejected { .. } => {
+            "expect_viewport_pan_inertia_rejected"
+        }
+        ConformanceAction::AssertViewportDoubleClickZoom { .. } => {
+            "assert_viewport_double_click_zoom"
+        }
+        ConformanceAction::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
+        ConformanceAction::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
+        _ => return None,
+    })
+}
+
 impl ConformanceAction {
     pub fn apply_auto_pan(request: AutoPanRequest) -> Self {
         Self::ApplyAutoPan { request }

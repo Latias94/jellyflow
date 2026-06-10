@@ -4,8 +4,27 @@ use crate::runtime::connection::{
 };
 use crate::runtime::store::NodeGraphStore;
 
-use super::super::super::scenario::ConformanceConnectionTargetFromHandlesInput;
+use super::super::super::scenario::{
+    ConformanceAction, ConformanceConnectionTargetFromHandlesInput,
+};
 use super::require_commit;
+
+pub(super) fn execute_action(
+    store: &mut NodeGraphStore,
+    action: &ConformanceAction,
+) -> Option<Result<(), String>> {
+    Some(match action {
+        ConformanceAction::AssertConnectionTarget { input, expected } => {
+            assert_connection_target(*input, *expected)
+        }
+        ConformanceAction::AssertConnectionTargetFromHandles { input, expected } => {
+            assert_connection_target_from_handles(input, *expected)
+        }
+        ConformanceAction::ApplyConnectEdge { request } => apply_connect_edge(store, *request),
+        ConformanceAction::ApplyReconnectEdge { request } => apply_reconnect_edge(store, *request),
+        _ => return None,
+    })
+}
 
 pub(super) fn assert_connection_target(
     input: ConnectionTargetInput,

@@ -4,10 +4,32 @@ use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, NodeId};
 
 use super::super::super::scenario::{
-    ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
+    ConformanceAction, ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
 };
 use super::require_commit;
+
+pub(super) fn execute_action(
+    store: &mut NodeGraphStore,
+    action: &ConformanceAction,
+) -> Option<Result<(), String>> {
+    Some(match action {
+        ConformanceAction::ApplyNodeDrag { node, to } => apply_node_drag(store, *node, *to),
+        ConformanceAction::ApplyNodeResize { request } => apply_node_resize(store, *request),
+        ConformanceAction::ApplyNodePointerResize { request } => {
+            apply_node_pointer_resize(store, *request)
+        }
+        ConformanceAction::ApplyNodePointerResizeSession { request } => {
+            apply_node_pointer_resize_session(store, *request)
+        }
+        ConformanceAction::ApplyNodePointerDown { input } => {
+            apply_node_pointer_down(store, *input);
+            Ok(())
+        }
+        ConformanceAction::ApplyNodeNudge { request } => apply_node_nudge(store, *request),
+        _ => return None,
+    })
+}
 
 pub(super) fn apply_node_drag(
     store: &mut NodeGraphStore,

@@ -2,6 +2,20 @@ use jellyflow_core::core::{CanvasSize, EdgeId, NodeId};
 
 use super::ConformanceAction;
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::AssertVisibleNodeIds { .. } => "assert_visible_node_ids",
+        ConformanceAction::AssertVisibleNodeRenderOrder { .. } => {
+            "assert_visible_node_render_order"
+        }
+        ConformanceAction::AssertVisibleEdgeIds { .. } => "assert_visible_edge_ids",
+        ConformanceAction::AssertVisibleEdgeRenderOrder { .. } => {
+            "assert_visible_edge_render_order"
+        }
+        _ => return None,
+    })
+}
+
 impl ConformanceAction {
     pub fn assert_visible_node_ids(
         viewport_size: CanvasSize,

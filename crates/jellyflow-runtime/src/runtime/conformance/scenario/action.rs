@@ -189,47 +189,12 @@ pub enum ConformanceAction {
 
 impl ConformanceAction {
     pub fn kind(&self) -> &'static str {
-        match self {
-            Self::DispatchTransaction { .. } => "dispatch_transaction",
-            Self::ApplyNodeDrag { .. } => "apply_node_drag",
-            Self::AssertNodePosition { .. } => "assert_node_position",
-            Self::ApplyNodeResize { .. } => "apply_node_resize",
-            Self::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
-            Self::ApplyNodePointerResizeSession { .. } => "apply_node_pointer_resize_session",
-            Self::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
-            Self::ApplySelectionBox { .. } => "apply_selection_box",
-            Self::AssertConnectionTarget { .. } => "assert_connection_target",
-            Self::AssertConnectionTargetFromHandles { .. } => {
-                "assert_connection_target_from_handles"
-            }
-            Self::ApplyConnectEdge { .. } => "apply_connect_edge",
-            Self::ApplyReconnectEdge { .. } => "apply_reconnect_edge",
-            Self::ApplyNodeNudge { .. } => "apply_node_nudge",
-            Self::ApplyDeleteSelection => "apply_delete_selection",
-            Self::ApplyDeleteSelectionForKey { .. } => "apply_delete_selection_for_key",
-            Self::ApplyAutoPan { .. } => "apply_auto_pan",
-            Self::ApplySelectionAutoPan { .. } => "apply_selection_auto_pan",
-            Self::ApplyViewportPan { .. } => "apply_viewport_pan",
-            Self::ApplyViewportPanConstrained { .. } => "apply_viewport_pan_constrained",
-            Self::ApplyViewportZoom { .. } => "apply_viewport_zoom",
-            Self::ApplyViewportZoomConstrained { .. } => "apply_viewport_zoom_constrained",
-            Self::ApplyViewportAnimationFrame { .. } => "apply_viewport_animation_frame",
-            Self::ApplyViewportAnimationFrames { .. } => "apply_viewport_animation_frames",
-            Self::AssertViewportAnimationFrame { .. } => "assert_viewport_animation_frame",
-            Self::ApplyViewportPanInertiaFrame { .. } => "apply_viewport_pan_inertia_frame",
-            Self::ApplyViewportPanInertiaFrames { .. } => "apply_viewport_pan_inertia_frames",
-            Self::AssertViewportPanInertiaFrame { .. } => "assert_viewport_pan_inertia_frame",
-            Self::ExpectViewportPanInertiaRejected { .. } => "expect_viewport_pan_inertia_rejected",
-            Self::AssertViewportDoubleClickZoom { .. } => "assert_viewport_double_click_zoom",
-            Self::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
-            Self::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
-            Self::SetViewport { .. } => "set_viewport",
-            Self::AssertVisibleNodeIds { .. } => "assert_visible_node_ids",
-            Self::AssertVisibleNodeRenderOrder { .. } => "assert_visible_node_render_order",
-            Self::AssertVisibleEdgeIds { .. } => "assert_visible_edge_ids",
-            Self::AssertVisibleEdgeRenderOrder { .. } => "assert_visible_edge_render_order",
-            Self::SetSelection { .. } => "set_selection",
-            Self::EmitGesture { .. } => "emit_gesture",
-        }
+        graph::kind(self)
+            .or_else(|| node::kind(self))
+            .or_else(|| selection::kind(self))
+            .or_else(|| connection::kind(self))
+            .or_else(|| viewport::kind(self))
+            .or_else(|| rendering::kind(self))
+            .expect("all conformance action variants must have a kind")
     }
 }

@@ -10,6 +10,20 @@ use jellyflow_core::core::{CanvasPoint, CanvasSize, NodeId};
 
 use super::{ConformanceAction, is_false};
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::ApplyNodeDrag { .. } => "apply_node_drag",
+        ConformanceAction::ApplyNodeResize { .. } => "apply_node_resize",
+        ConformanceAction::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
+        ConformanceAction::ApplyNodePointerResizeSession { .. } => {
+            "apply_node_pointer_resize_session"
+        }
+        ConformanceAction::ApplyNodePointerDown { .. } => "apply_node_pointer_down",
+        ConformanceAction::ApplyNodeNudge { .. } => "apply_node_nudge",
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceNodeResizeConstraints {
     #[serde(default, skip_serializing_if = "Option::is_none")]

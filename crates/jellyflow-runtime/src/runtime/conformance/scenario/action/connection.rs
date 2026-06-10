@@ -9,6 +9,18 @@ use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::ConformanceAction;
 
+pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
+    Some(match action {
+        ConformanceAction::AssertConnectionTarget { .. } => "assert_connection_target",
+        ConformanceAction::AssertConnectionTargetFromHandles { .. } => {
+            "assert_connection_target_from_handles"
+        }
+        ConformanceAction::ApplyConnectEdge { .. } => "apply_connect_edge",
+        ConformanceAction::ApplyReconnectEdge { .. } => "apply_reconnect_edge",
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceConnectionTargetFromHandlesInput {
     pub pointer: CanvasPoint,

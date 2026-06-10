@@ -3,6 +3,39 @@ use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
+use super::super::super::scenario::ConformanceAction;
+
+pub(super) fn execute_action(
+    store: &mut NodeGraphStore,
+    action: &ConformanceAction,
+) -> Option<Result<(), String>> {
+    Some(match action {
+        ConformanceAction::DispatchTransaction { transaction } => {
+            dispatch_transaction(store, transaction)
+        }
+        ConformanceAction::AssertNodePosition { node, expected } => {
+            assert_node_position(store, *node, *expected)
+        }
+        ConformanceAction::SetViewport { pan, zoom } => {
+            set_viewport(store, *pan, *zoom);
+            Ok(())
+        }
+        ConformanceAction::SetSelection {
+            nodes,
+            edges,
+            groups,
+        } => {
+            set_selection(store, nodes, edges, groups);
+            Ok(())
+        }
+        ConformanceAction::EmitGesture { event } => {
+            emit_gesture(store, event);
+            Ok(())
+        }
+        _ => return None,
+    })
+}
+
 pub(super) fn dispatch_transaction(
     store: &mut NodeGraphStore,
     transaction: &GraphTransaction,
