@@ -443,9 +443,9 @@ fn visible_node_ids_follow_viewport_and_rendering_tuning() {
     assert!(!uncull_ids.contains(&hidden));
 
     assert_eq!(
-        store.visible_node_ids(viewport_size),
+        store.rendering_query(viewport_size).visible_node_ids,
         vec![inside, partial],
-        "store helper reads only_render_visible_elements from default runtime tuning"
+        "store query reads only_render_visible_elements from default runtime tuning"
     );
 
     let mut uncull_store = store;
@@ -453,13 +453,14 @@ fn visible_node_ids_follow_viewport_and_rendering_tuning() {
         config.runtime_tuning.only_render_visible_elements = false;
     });
     assert_eq!(
-        uncull_store.visible_node_ids(viewport_size),
+        uncull_store.rendering_query(viewport_size).visible_node_ids,
         vec![inside, partial, outside]
     );
 
     assert!(
         uncull_store
-            .visible_node_ids(CanvasSize::default())
+            .rendering_query(CanvasSize::default())
+            .visible_node_ids
             .is_empty()
     );
 }
@@ -502,12 +503,14 @@ fn visible_node_ids_use_transform_node_origin_and_fallback_size() {
     );
 
     assert_eq!(
-        store.visible_node_ids(CanvasSize {
-            width: 1.0,
-            height: 10.0,
-        }),
+        store
+            .rendering_query(CanvasSize {
+                width: 1.0,
+                height: 10.0,
+            })
+            .visible_node_ids,
         vec![centered],
-        "store helper maps logical viewport size through current pan and node origin"
+        "store query maps logical viewport size through current pan and node origin"
     );
 
     let request = VisibleNodeIdsRequest::new(
@@ -561,7 +564,9 @@ fn visible_node_render_order_filters_visible_ids_through_node_render_order() {
         "outside and hidden nodes are removed before the selected visible node is elevated"
     );
     assert_eq!(
-        store.visible_node_render_order(viewport_size),
+        store
+            .rendering_query(viewport_size)
+            .visible_node_render_order,
         vec![partial, inside]
     );
 }
@@ -604,9 +609,9 @@ fn visible_edge_ids_follow_endpoint_union_and_rendering_tuning() {
     assert!(!uncull_ids.contains(&hidden_edge));
 
     assert_eq!(
-        store.visible_edge_ids(viewport_size),
+        store.rendering_query(viewport_size).visible_edge_ids,
         vec![spanning, inside_edge],
-        "store helper reads only_render_visible_elements from default runtime tuning"
+        "store query reads only_render_visible_elements from default runtime tuning"
     );
 
     let mut uncull_store = store;
@@ -614,13 +619,14 @@ fn visible_edge_ids_follow_endpoint_union_and_rendering_tuning() {
         config.runtime_tuning.only_render_visible_elements = false;
     });
     assert_eq!(
-        uncull_store.visible_edge_ids(viewport_size),
+        uncull_store.rendering_query(viewport_size).visible_edge_ids,
         vec![spanning, outside, hidden_endpoint, inside_edge]
     );
 
     assert!(
         uncull_store
-            .visible_edge_ids(CanvasSize::default())
+            .rendering_query(CanvasSize::default())
+            .visible_edge_ids
             .is_empty()
     );
 }
@@ -656,7 +662,9 @@ fn visible_edge_render_order_filters_visible_ids_through_edge_render_order() {
         "outside and hidden-endpoint edges are removed before the selected visible edge is elevated"
     );
     assert_eq!(
-        store.visible_edge_render_order(viewport_size),
+        store
+            .rendering_query(viewport_size)
+            .visible_edge_render_order,
         vec![inside_edge, spanning]
     );
 }
@@ -823,40 +831,6 @@ fn store_rendering_query_combines_measurements_visibility_and_selected_elevation
 }
 
 #[test]
-fn store_rendering_query_matches_visibility_helper_wrappers() {
-    let (graph, spanning, outside, _hidden_edge, hidden_endpoint, inside_edge) =
-        graph_with_visible_edge_fixture();
-    let view_state = NodeGraphViewState {
-        selected_edges: vec![spanning],
-        edge_draw_order: vec![outside, spanning, inside_edge, hidden_endpoint],
-        ..NodeGraphViewState::default()
-    };
-    let store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
-    let viewport_size = CanvasSize {
-        width: 100.0,
-        height: 100.0,
-    };
-    let query = store.rendering_query(viewport_size);
-
-    assert_eq!(
-        store.visible_node_ids(viewport_size),
-        query.visible_node_ids
-    );
-    assert_eq!(
-        store.visible_node_render_order(viewport_size),
-        query.visible_node_render_order
-    );
-    assert_eq!(
-        store.visible_edge_ids(viewport_size),
-        query.visible_edge_ids
-    );
-    assert_eq!(
-        store.visible_edge_render_order(viewport_size),
-        query.visible_edge_render_order
-    );
-}
-
-#[test]
 fn visible_node_render_order_matches_node_render_order_when_culling_is_disabled() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let view_state = NodeGraphViewState {
@@ -870,10 +844,12 @@ fn visible_node_render_order_matches_node_render_order_when_culling_is_disabled(
     });
 
     assert_eq!(
-        store.visible_node_render_order(CanvasSize {
-            width: 100.0,
-            height: 100.0,
-        }),
+        store
+            .rendering_query(CanvasSize {
+                width: 100.0,
+                height: 100.0,
+            })
+            .visible_node_render_order,
         store.node_render_order(),
         "disabled culling keeps the same paint order as the non-culling node render contract"
     );

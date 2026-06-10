@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::io::NodeGraphViewState;
 use crate::runtime::lookups::NodeGraphLookups;
 use jellyflow_core::core::{EdgeId, Graph, GroupId, NodeId};
+use serde::{Deserialize, Serialize};
 
 use super::order::{
     EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions,
@@ -46,7 +47,7 @@ impl RenderingQueryOptions {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderingQueryResult {
     pub group_order: Vec<GroupId>,
     pub node_order: Vec<NodeId>,

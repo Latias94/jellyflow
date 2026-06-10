@@ -40,28 +40,6 @@ impl NodeGraphStore {
         )
     }
 
-    /// Resolves edge ids visible in the given logical viewport size using current store tuning.
-    pub fn visible_edge_ids(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
-        self.rendering_query(viewport_size).visible_edge_ids
-    }
-
-    /// Resolves visible edge ids in the current edge paint order using current store tuning.
-    pub fn visible_edge_render_order(&self, viewport_size: CanvasSize) -> Vec<EdgeId> {
-        self.rendering_query(viewport_size)
-            .visible_edge_render_order
-    }
-
-    /// Resolves node ids visible in the given logical viewport size using current store tuning.
-    pub fn visible_node_ids(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        self.rendering_query(viewport_size).visible_node_ids
-    }
-
-    /// Resolves visible node ids in the current node paint order using current store tuning.
-    pub fn visible_node_render_order(&self, viewport_size: CanvasSize) -> Vec<NodeId> {
-        self.rendering_query(viewport_size)
-            .visible_node_render_order
-    }
-
     /// Resolves all renderer-facing order and visibility lists for the current store state.
     pub fn rendering_query(&self, viewport_size: CanvasSize) -> RenderingQueryResult {
         resolve_rendering_query(

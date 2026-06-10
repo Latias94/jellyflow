@@ -9,6 +9,7 @@ use crate::runtime::events::{
     ViewportMoveStart,
 };
 use crate::runtime::measurement::NodeMeasurement;
+use crate::runtime::rendering::RenderingQueryResult;
 use crate::runtime::resize::NODE_RESIZE_TRANSACTION_LABEL;
 use crate::runtime::viewport::{ViewportDragPanInput, ViewportGestureContext, ViewportTransform};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
@@ -28,6 +29,7 @@ pub enum ConformanceBehavior {
     ConnectEdgeSession(ConformanceConnectEdgeSessionContract),
     NodeResizeSession(ConformanceNodeResizeSessionContract),
     ViewportDragPanSession(ConformanceViewportDragPanSessionContract),
+    RenderingQuery(ConformanceRenderingQueryContract),
     LayoutFacts(ConformanceLayoutFactsContract),
 }
 
@@ -48,6 +50,10 @@ impl ConformanceBehavior {
         Self::ViewportDragPanSession(contract)
     }
 
+    pub fn rendering_query(contract: ConformanceRenderingQueryContract) -> Self {
+        Self::RenderingQuery(contract)
+    }
+
     pub fn layout_facts(contract: ConformanceLayoutFactsContract) -> Self {
         Self::LayoutFacts(contract)
     }
@@ -58,6 +64,7 @@ impl ConformanceBehavior {
             Self::ConnectEdgeSession(contract) => vec![contract.action()],
             Self::NodeResizeSession(contract) => vec![contract.action()],
             Self::ViewportDragPanSession(contract) => vec![contract.action()],
+            Self::RenderingQuery(contract) => vec![contract.action()],
             Self::LayoutFacts(contract) => contract.actions(),
         }
     }
@@ -68,6 +75,7 @@ impl ConformanceBehavior {
             Self::ConnectEdgeSession(contract) => contract.expected_trace(),
             Self::NodeResizeSession(contract) => contract.expected_trace(),
             Self::ViewportDragPanSession(contract) => contract.expected_trace(),
+            Self::RenderingQuery(contract) => contract.expected_trace(),
             Self::LayoutFacts(contract) => contract.expected_trace(),
         }
     }
@@ -348,6 +356,30 @@ impl ConformanceViewportDragPanSessionContract {
     }
 }
 
+/// Behavior contract for reading renderer-facing order and visibility in one store query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceRenderingQueryContract {
+    pub viewport_size: CanvasSize,
+    pub expected: RenderingQueryResult,
+}
+
+impl ConformanceRenderingQueryContract {
+    pub fn new(viewport_size: CanvasSize, expected: RenderingQueryResult) -> Self {
+        Self {
+            viewport_size,
+            expected,
+        }
+    }
+
+    fn action(&self) -> ConformanceAction {
+        ConformanceAction::assert_rendering_query(self.viewport_size, self.expected.clone())
+    }
+
+    fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        Vec::new()
+    }
+}
+
 /// Behavior contract for reporting measurements once and reading derived layout facts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceLayoutFactsContract {
@@ -413,6 +445,13 @@ impl ConformanceScenario {
         contract: ConformanceViewportDragPanSessionContract,
     ) -> Self {
         self.with_behavior(ConformanceBehavior::viewport_drag_pan_session(contract))
+    }
+
+    pub fn with_rendering_query_contract(
+        self,
+        contract: ConformanceRenderingQueryContract,
+    ) -> Self {
+        self.with_behavior(ConformanceBehavior::rendering_query(contract))
     }
 
     pub fn with_layout_facts_contract(self, contract: ConformanceLayoutFactsContract) -> Self {

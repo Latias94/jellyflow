@@ -578,12 +578,6 @@ fn explicit_modules_expose_their_owned_surfaces() {
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
-    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> = NodeGraphStore::visible_node_ids;
-    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> =
-        NodeGraphStore::visible_node_render_order;
-    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<EdgeId> = NodeGraphStore::visible_edge_ids;
-    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<EdgeId> =
-        NodeGraphStore::visible_edge_render_order;
     let _: fn(&NodeGraphStore) -> Vec<GroupId> = NodeGraphStore::group_render_order;
     let _: fn(&NodeGraphStore) -> Vec<NodeId> = NodeGraphStore::node_render_order;
     let _: fn(&NodeGraphStore) -> Vec<EdgeId> = NodeGraphStore::edge_render_order;
@@ -753,21 +747,13 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             ),
             [0.5, 1.0],
         );
-    let visible_node_ids_action = conformance::ConformanceAction::assert_visible_node_ids(
+    let rendering_query_action = conformance::ConformanceAction::assert_rendering_query(
         CanvasSize {
             width: 100.0,
             height: 80.0,
         },
-        [node_id],
+        rendering::RenderingQueryResult::default(),
     );
-    let visible_node_render_order_action =
-        conformance::ConformanceAction::assert_visible_node_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-            [node_id],
-        );
     let inertia_request = viewport::ViewportPanInertiaRequest::new(
         viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
         CanvasPoint { x: 500.0, y: 0.0 },
@@ -968,8 +954,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         viewport_animation_action,
         apply_viewport_animation_action,
         apply_viewport_animation_frames_action,
-        visible_node_ids_action,
-        visible_node_render_order_action,
+        rendering_query_action,
         apply_viewport_pan_inertia_action,
         apply_viewport_pan_inertia_frames_action,
         assert_viewport_pan_inertia_action,
@@ -1030,6 +1015,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     assert!(!scenario.expanded_expected_trace().is_empty());
     let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
     let _ = std::mem::size_of::<conformance::ConformanceNodeResizeSessionContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceRenderingQueryContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();

@@ -25,6 +25,7 @@ use crate::runtime::connection::{
 };
 use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
 use crate::runtime::measurement::NodeMeasurement;
+use crate::runtime::rendering::RenderingQueryResult;
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -189,21 +190,9 @@ pub enum ConformanceAction {
         pan: CanvasPoint,
         zoom: f32,
     },
-    AssertVisibleNodeIds {
+    AssertRenderingQuery {
         viewport_size: CanvasSize,
-        expected: Vec<NodeId>,
-    },
-    AssertVisibleNodeRenderOrder {
-        viewport_size: CanvasSize,
-        expected: Vec<NodeId>,
-    },
-    AssertVisibleEdgeIds {
-        viewport_size: CanvasSize,
-        expected: Vec<EdgeId>,
-    },
-    AssertVisibleEdgeRenderOrder {
-        viewport_size: CanvasSize,
-        expected: Vec<EdgeId>,
+        expected: RenderingQueryResult,
     },
     SetSelection {
         nodes: Vec<NodeId>,

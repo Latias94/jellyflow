@@ -13,9 +13,9 @@ use jellyflow_runtime::runtime::conformance::{
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
-    ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
-    ConformanceViewportDragPanSessionContract,
+    ConformanceRenderingQueryContract, ConformanceRunReport, ConformanceScenario,
+    ConformanceSuite, ConformanceSuiteReport, ConformanceTraceConfig, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };
 use jellyflow_runtime::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
@@ -25,6 +25,7 @@ use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::events::NodeResizeUpdate;
 use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
+use jellyflow_runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow_runtime::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
@@ -46,10 +47,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
         delete_selection_scenario(),
         viewport_pan_scenario(),
         viewport_constrained_pan_scenario(),
-        visible_node_ids_scenario(),
-        visible_node_render_order_scenario(),
-        visible_edge_ids_scenario(),
-        visible_edge_render_order_scenario(),
+        rendering_query_contract_scenario(),
         viewport_animation_scenario(),
         viewport_pan_inertia_scenario(),
     ])
@@ -106,26 +104,9 @@ pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
     .map_err(|err| err.to_string())
 }
 
-pub fn run_visible_node_ids_smoke() -> Result<ConformanceRunReport, String> {
-    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&visible_node_ids_scenario())
-        .map_err(|err| err.to_string())
-}
-
-pub fn run_visible_node_render_order_smoke() -> Result<ConformanceRunReport, String> {
+pub fn run_rendering_query_contract_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(
-        &visible_node_render_order_scenario(),
-    )
-    .map_err(|err| err.to_string())
-}
-
-pub fn run_visible_edge_ids_smoke() -> Result<ConformanceRunReport, String> {
-    jellyflow_runtime::runtime::conformance::run_conformance_scenario(&visible_edge_ids_scenario())
-        .map_err(|err| err.to_string())
-}
-
-pub fn run_visible_edge_render_order_smoke() -> Result<ConformanceRunReport, String> {
-    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
-        &visible_edge_render_order_scenario(),
+        &rendering_query_contract_scenario(),
     )
     .map_err(|err| err.to_string())
 }
@@ -649,33 +630,59 @@ fn viewport_constrained_pan_scenario() -> ConformanceScenario {
         ])
 }
 
-fn visible_node_ids_scenario() -> ConformanceScenario {
-    let inside = NodeId::from_u128(70);
-    let partial = NodeId::from_u128(71);
-    let outside = NodeId::from_u128(72);
-    let mut graph = Graph::new(GraphId::from_u128(13));
-    graph.nodes.insert(
-        inside,
-        template_node(
-            CanvasPoint { x: 0.0, y: 0.0 },
-            Vec::new(),
-            Some(CanvasSize {
-                width: 40.0,
-                height: 40.0,
-            }),
-        ),
-    );
-    graph.nodes.insert(
-        partial,
-        template_node(
-            CanvasPoint { x: 95.0, y: 95.0 },
-            Vec::new(),
-            Some(CanvasSize {
-                width: 40.0,
-                height: 40.0,
-            }),
-        ),
-    );
+fn rendering_query_contract_scenario() -> ConformanceScenario {
+    let (graph, view_state, selected, partial, outside, edge_id) =
+        rendering_query_contract_fixture();
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let expected = RenderingQueryResult {
+        group_order: Vec::new(),
+        node_order: vec![outside, partial, selected],
+        edge_order: vec![edge_id],
+        visible_node_ids: vec![selected, partial],
+        visible_node_render_order: vec![partial, selected],
+        visible_edge_ids: vec![edge_id],
+        visible_edge_render_order: vec![edge_id],
+    };
+
+    ConformanceScenario::new("template rendering query", graph)
+        .with_view_state(view_state)
+        .with_rendering_query_contract(ConformanceRenderingQueryContract::new(
+            viewport_size,
+            expected,
+        ))
+}
+
+fn rendering_query_contract_fixture() -> (
+    Graph,
+    NodeGraphViewState,
+    NodeId,
+    NodeId,
+    NodeId,
+    EdgeId,
+) {
+    let selected = NodeId::from_u128(73);
+    let partial = NodeId::from_u128(74);
+    let outside = NodeId::from_u128(75);
+    let out_port = PortId::from_u128(78);
+    let in_port = PortId::from_u128(79);
+    let edge_id = EdgeId::from_u128(80);
+    let mut graph = graph_with_connected_nodes(selected, partial, out_port, in_port, edge_id);
+
+    let selected_node = graph.nodes.get_mut(&selected).expect("selected node exists");
+    selected_node.pos = CanvasPoint { x: 0.0, y: 0.0 };
+    selected_node.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
+    let partial_node = graph.nodes.get_mut(&partial).expect("partial node exists");
+    partial_node.pos = CanvasPoint { x: 95.0, y: 0.0 };
+    partial_node.size = Some(CanvasSize {
+        width: 40.0,
+        height: 40.0,
+    });
     graph.nodes.insert(
         outside,
         template_node(
@@ -688,30 +695,14 @@ fn visible_node_ids_scenario() -> ConformanceScenario {
         ),
     );
 
-    ConformanceScenario::new("template visible node ids", graph)
-        .with_actions([ConformanceAction::assert_visible_node_ids(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [inside, partial],
-        )])
-        .with_expected_trace([])
-}
+    let mut view_state = NodeGraphViewState {
+        draw_order: vec![outside, selected, partial],
+        edge_draw_order: vec![edge_id],
+        ..NodeGraphViewState::default()
+    };
+    view_state.set_selection(vec![selected], vec![edge_id], Vec::new());
 
-fn visible_node_render_order_scenario() -> ConformanceScenario {
-    let (graph, view_state, selected, partial, _outside) = visible_node_render_order_fixture();
-
-    ConformanceScenario::new("template visible node render order", graph)
-        .with_view_state(view_state)
-        .with_actions([ConformanceAction::assert_visible_node_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [partial, selected],
-        )])
-        .with_expected_trace([])
+    (graph, view_state, selected, partial, outside, edge_id)
 }
 
 fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, NodeId, NodeId) {
@@ -759,35 +750,6 @@ fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, No
     view_state.set_selection(vec![selected], Vec::new(), Vec::new());
 
     (graph, view_state, selected, partial, outside)
-}
-
-fn visible_edge_ids_scenario() -> ConformanceScenario {
-    let (graph, _view_state, visible_edge) = visible_edge_render_order_fixture();
-
-    ConformanceScenario::new("template visible edge ids", graph)
-        .with_actions([ConformanceAction::assert_visible_edge_ids(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [visible_edge],
-        )])
-        .with_expected_trace([])
-}
-
-fn visible_edge_render_order_scenario() -> ConformanceScenario {
-    let (graph, view_state, visible_edge) = visible_edge_render_order_fixture();
-
-    ConformanceScenario::new("template visible edge render order", graph)
-        .with_view_state(view_state)
-        .with_actions([ConformanceAction::assert_visible_edge_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [visible_edge],
-        )])
-        .with_expected_trace([])
 }
 
 fn visible_edge_render_order_fixture() -> (Graph, NodeGraphViewState, EdgeId) {
@@ -1092,7 +1054,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 13);
+        assert_eq!(report.scenario_count(), 10);
     }
 
     #[test]
@@ -1132,31 +1094,9 @@ mod tests {
     }
 
     #[test]
-    fn visible_node_ids_smoke_runs_as_single_scenario() {
-        let report = run_visible_node_ids_smoke().expect("visible node ids scenario runs");
-
-        assert!(report.is_match(), "{report}");
-    }
-
-    #[test]
-    fn visible_node_render_order_smoke_runs_as_single_scenario() {
+    fn rendering_query_contract_smoke_runs_as_single_scenario() {
         let report =
-            run_visible_node_render_order_smoke().expect("visible node render order scenario runs");
-
-        assert!(report.is_match(), "{report}");
-    }
-
-    #[test]
-    fn visible_edge_ids_smoke_runs_as_single_scenario() {
-        let report = run_visible_edge_ids_smoke().expect("visible edge ids scenario runs");
-
-        assert!(report.is_match(), "{report}");
-    }
-
-    #[test]
-    fn visible_edge_render_order_smoke_runs_as_single_scenario() {
-        let report =
-            run_visible_edge_render_order_smoke().expect("visible edge render order scenario runs");
+            run_rendering_query_contract_smoke().expect("rendering query contract scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -1204,7 +1144,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 13);
+        assert_eq!(report.scenario_count(), 10);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

@@ -29,7 +29,8 @@ pub use scenario::{
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract, ConformanceScenario,
-    ConformanceSetup, ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent,
-    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
+    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSetup, ConformanceSuite,
+    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceViewportDragPanSessionContract,
 };

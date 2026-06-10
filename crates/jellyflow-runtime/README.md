@@ -89,10 +89,9 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `NodeGraphStore::layout_facts_query` for adapter-facing report-once/read-many layout facts after
   measurement publication. It returns the current layout-facts revision, renderer-facing
   `rendering_query` result, visible edge endpoints, and connection target candidates; selector
-  subscriptions can track `layout_facts_revision` for redraw/re-query decisions. Narrow
-  `NodeGraphStore::rendering_query` and `NodeGraphStore::{visible_node_ids,
-  visible_node_render_order, visible_edge_ids, visible_edge_render_order}` helpers remain available
-  for callers that only need paint order or visibility lists;
+  subscriptions can track `layout_facts_revision` for redraw/re-query decisions.
+  `NodeGraphStore::rendering_query` is the narrow read path for deterministic group/node/edge order
+  and visible node/edge lists;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -148,13 +147,9 @@ and pixels.
 fixture escape hatch; adapter feel fixtures should prefer `ConformanceBehavior` session contracts
 or interaction-specific actions such as node drag, node resize, connect/reconnect, delete,
 viewport gestures, viewport animation frames, and double-click zoom plan or rejection assertions.
-Visible-node fixtures should use
-`ConformanceAction::assert_visible_node_ids`, which asserts `NodeGraphStore::visible_node_ids`
-without producing renderer traces. Pre-render paint-order fixtures should use
-`ConformanceAction::assert_visible_node_render_order`, which asserts
-`NodeGraphStore::visible_node_render_order` without producing renderer traces. Visible-edge
-fixtures should use the matching visible edge assertions, while adapters that need all lists should
-read `NodeGraphStore::rendering_query` once. Pan inertia fixtures
+Rendering fixtures should use `ConformanceRenderingQueryContract` or
+`ConformanceAction::assert_rendering_query`, which assert `NodeGraphStore::rendering_query` without
+producing renderer traces. Pan inertia fixtures
 should use the sampled-frame actions and rejection assertion so adapters can prove release-momentum
 traces without moving frame loops into runtime. Parent expansion fixtures should use
 `ConformanceAction::apply_node_drag`, which exercises the same runtime interaction boundary and

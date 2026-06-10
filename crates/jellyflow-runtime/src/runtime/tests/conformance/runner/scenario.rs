@@ -357,7 +357,9 @@ fn conformance_runner_expands_layout_facts_behavior_contract() {
         is_handle_valid: true,
         feedback: ConnectionHandleValidity::Valid,
     };
-    let expected = ConformanceLayoutFactsExpectation::new([source_node, target_node], [edge_id])
+    let mut expected_visible_node_ids = vec![source_node, target_node];
+    expected_visible_node_ids.sort();
+    let expected = ConformanceLayoutFactsExpectation::new(expected_visible_node_ids, [edge_id])
         .with_edge_positions([ConformanceLayoutEdgePosition::new(
             edge_id,
             ConformanceEdgeEndpointPosition::new(
@@ -701,38 +703,8 @@ fn conformance_runner_reports_noop_node_pointer_resize_as_action_error() {
 }
 
 #[test]
-fn conformance_runner_asserts_visible_node_ids_without_trace() {
-    let (mut graph, node_id, outside, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
-    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    outside_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-
-    let scenario = ConformanceScenario::new("visible node ids runner", graph)
-        .with_actions([ConformanceAction::assert_visible_node_ids(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [node_id],
-        )])
-        .with_expected_trace([]);
-
-    let report = run_conformance_scenario(&scenario).expect("fixture should run");
-
-    assert!(report.is_match(), "{report}");
-    assert!(report.actual_trace().is_empty());
-}
-
-#[test]
-fn conformance_runner_asserts_visible_node_render_order_without_trace() {
-    let (mut graph, node_id, outside, _out_port, _in_port, _edge_id) = make_graph();
+fn conformance_runner_asserts_rendering_query_without_trace() {
+    let (mut graph, node_id, outside, _out_port, _in_port, edge_id) = make_graph();
     graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
         width: 40.0,
         height: 40.0,
@@ -750,91 +722,38 @@ fn conformance_runner_asserts_visible_node_render_order_without_trace() {
     graph.nodes.insert(partial, partial_node);
     let mut view_state = crate::io::NodeGraphViewState {
         draw_order: vec![outside, node_id, partial],
-        ..crate::io::NodeGraphViewState::default()
-    };
-    view_state.set_selection(vec![node_id], Vec::new(), Vec::new());
-
-    let scenario = ConformanceScenario::new("visible node render order runner", graph)
-        .with_view_state(view_state)
-        .with_actions([ConformanceAction::assert_visible_node_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [partial, node_id],
-        )])
-        .with_expected_trace([]);
-
-    let report = run_conformance_scenario(&scenario).expect("fixture should run");
-
-    assert!(report.is_match(), "{report}");
-    assert!(report.actual_trace().is_empty());
-}
-
-#[test]
-fn conformance_runner_asserts_visible_edge_ids_without_trace() {
-    let (mut graph, node_id, outside, _out_port, _in_port, edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
-    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    outside_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-
-    let scenario = ConformanceScenario::new("visible edge ids runner", graph)
-        .with_actions([ConformanceAction::assert_visible_edge_ids(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [edge_id],
-        )])
-        .with_expected_trace([]);
-
-    let report = run_conformance_scenario(&scenario).expect("fixture should run");
-
-    assert!(report.is_match(), "{report}");
-    assert!(report.actual_trace().is_empty());
-}
-
-#[test]
-fn conformance_runner_asserts_visible_edge_render_order_without_trace() {
-    let (mut graph, node_id, outside, _out_port, _in_port, edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
-    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    outside_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let mut view_state = crate::io::NodeGraphViewState {
         edge_draw_order: vec![edge_id],
         ..crate::io::NodeGraphViewState::default()
     };
-    view_state.set_selection(Vec::new(), vec![edge_id], Vec::new());
+    view_state.set_selection(vec![node_id], vec![edge_id], Vec::new());
+    let viewport_size = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+    let expected = crate::runtime::store::NodeGraphStore::new(
+        graph.clone(),
+        view_state.clone(),
+        crate::io::NodeGraphEditorConfig::default(),
+    )
+    .rendering_query(viewport_size);
+    assert_eq!(expected.node_order, vec![outside, partial, node_id]);
+    assert_eq!(expected.visible_node_render_order, vec![partial, node_id]);
+    assert_eq!(expected.visible_edge_ids, vec![edge_id]);
+    assert_eq!(expected.visible_edge_render_order, vec![edge_id]);
 
-    let scenario = ConformanceScenario::new("visible edge render order runner", graph)
+    let scenario = ConformanceScenario::new("rendering query runner", graph)
         .with_view_state(view_state)
-        .with_actions([ConformanceAction::assert_visible_edge_render_order(
-            CanvasSize {
-                width: 100.0,
-                height: 100.0,
-            },
-            [edge_id],
-        )])
-        .with_expected_trace([]);
+        .with_rendering_query_contract(ConformanceRenderingQueryContract::new(
+            viewport_size,
+            expected,
+        ));
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
 
     assert!(report.is_match(), "{report}");
     assert!(report.actual_trace().is_empty());
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert!(scenario.expanded_expected_trace().is_empty());
 }
 
 #[test]
