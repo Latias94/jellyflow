@@ -14,7 +14,7 @@ pub use planner::{
     plan_node_resize_with_context,
 };
 pub use session::{NodeResizeSession, NodeResizeSessionUpdateRequest};
-pub use store::NodeResizeSessionUpdateOutcome;
+pub use store::{NodeResizeSessionOutcome, NodeResizeSessionUpdateOutcome};
 pub use types::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints,
     NodeResizeContext, NodeResizeDirection, NodeResizeItem, NodeResizePlan, NodeResizeRequest,

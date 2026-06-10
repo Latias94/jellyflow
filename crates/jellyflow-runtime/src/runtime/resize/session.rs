@@ -25,15 +25,19 @@ impl NodeResizeSession {
         }
     }
 
-    pub fn start_event(self) -> NodeGraphGestureEvent {
-        NodeGraphGestureEvent::NodeResizeStart(NodeResizeStart {
+    pub fn start(self) -> NodeResizeStart {
+        NodeResizeStart {
             node: self.node,
             direction: self.direction,
             pointer: self.start,
-        })
+        }
     }
 
-    pub fn update_event(
+    pub fn start_event(self) -> NodeGraphGestureEvent {
+        NodeGraphGestureEvent::NodeResizeStart(self.start())
+    }
+
+    pub fn update(
         self,
         plan: &NodeResizePlan,
         request: NodeResizeSessionUpdateRequest,
@@ -47,17 +51,29 @@ impl NodeResizeSession {
         }
     }
 
+    pub fn update_event(
+        self,
+        plan: &NodeResizePlan,
+        request: NodeResizeSessionUpdateRequest,
+    ) -> NodeGraphGestureEvent {
+        NodeGraphGestureEvent::NodeResizeUpdate(self.update(plan, request))
+    }
+
+    pub fn end(self, pointer: CanvasPoint, outcome: NodeResizeEndOutcome) -> NodeResizeEnd {
+        NodeResizeEnd {
+            node: self.node,
+            direction: self.direction,
+            pointer,
+            outcome,
+        }
+    }
+
     pub fn end_event(
         self,
         pointer: CanvasPoint,
         outcome: NodeResizeEndOutcome,
     ) -> NodeGraphGestureEvent {
-        NodeGraphGestureEvent::NodeResizeEnd(NodeResizeEnd {
-            node: self.node,
-            direction: self.direction,
-            pointer,
-            outcome,
-        })
+        NodeGraphGestureEvent::NodeResizeEnd(self.end(pointer, outcome))
     }
 
     pub fn pointer_resize_request(

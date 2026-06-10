@@ -434,11 +434,21 @@ fn node_resize_session_emits_lifecycle_around_pointer_resize_commit() {
     let outcome = harness
         .store_mut()
         .apply_node_resize_session(session, update_request)
-        .expect("session dispatch succeeds")
+        .expect("session dispatch succeeds");
+    let update = outcome
+        .committed_update()
         .expect("session dispatch commits");
 
     assert_eq!(
-        outcome.update,
+        outcome.start,
+        NodeResizeStart {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 110.0, y: 80.0 },
+        },
+    );
+    assert_eq!(
+        update.update,
         NodeResizeUpdate {
             node: fixture.enabled,
             direction: NodeResizeDirection::BottomRight,
@@ -451,8 +461,17 @@ fn node_resize_session_emits_lifecycle_around_pointer_resize_commit() {
         },
     );
     assert_eq!(
-        outcome.dispatch.committed().label(),
+        update.dispatch.committed().label(),
         Some(NODE_RESIZE_TRANSACTION_LABEL),
+    );
+    assert_eq!(
+        outcome.end,
+        NodeResizeEnd {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 140.0, y: 120.0 },
+            outcome: NodeResizeEndOutcome::Committed,
+        },
     );
     harness.assert_events(&[
         HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeStart(NodeResizeStart {
@@ -476,6 +495,39 @@ fn node_resize_session_emits_lifecycle_around_pointer_resize_commit() {
             direction: NodeResizeDirection::BottomRight,
             pointer: CanvasPoint { x: 140.0, y: 120.0 },
             outcome: NodeResizeEndOutcome::Committed,
+        })),
+    ]);
+}
+
+#[test]
+fn node_resize_session_emits_noop_lifecycle_without_commit() {
+    let fixture = resize_fixture();
+    let mut harness = InteractionHarness::new("node resize session noop", fixture.graph);
+    let session = NodeResizeSession::new(
+        fixture.enabled,
+        CanvasPoint { x: 110.0, y: 80.0 },
+        NodeResizeDirection::BottomRight,
+    );
+    let update_request = NodeResizeSessionUpdateRequest::new(CanvasPoint { x: 110.0, y: 80.0 });
+
+    let outcome = harness
+        .store_mut()
+        .apply_node_resize_session(session, update_request)
+        .expect("session dispatch succeeds");
+
+    assert!(outcome.committed_update().is_none());
+    assert_eq!(outcome.end_outcome(), NodeResizeEndOutcome::NoOp);
+    harness.assert_events(&[
+        HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeStart(NodeResizeStart {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 110.0, y: 80.0 },
+        })),
+        HarnessEvent::gesture(NodeGraphGestureEvent::NodeResizeEnd(NodeResizeEnd {
+            node: fixture.enabled,
+            direction: NodeResizeDirection::BottomRight,
+            pointer: CanvasPoint { x: 110.0, y: 80.0 },
+            outcome: NodeResizeEndOutcome::NoOp,
         })),
     ]);
 }

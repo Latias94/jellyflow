@@ -45,10 +45,14 @@ pub(super) fn apply_node_pointer_resize_session(
     request: ConformanceNodePointerResizeRequest,
 ) -> Result<(), String> {
     let (session, update_request) = request.into_runtime_session();
-    require_commit(
-        store.apply_node_resize_session(session, update_request),
-        "apply_node_pointer_resize_session",
-    )
+    let outcome = store
+        .apply_node_resize_session(session, update_request)
+        .map_err(|err| err.to_string())?;
+    if outcome.committed_update().is_some() {
+        Ok(())
+    } else {
+        Err("apply_node_pointer_resize_session produced no commit".to_owned())
+    }
 }
 
 pub(super) fn apply_node_pointer_down(
