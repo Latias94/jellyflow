@@ -1,5 +1,6 @@
 mod connection;
 mod graph;
+mod layout_facts;
 mod node;
 mod rendering;
 mod selection;
@@ -23,6 +24,9 @@ pub(super) fn execute_action(
         return result;
     }
     if let Some(result) = connection::execute_action(store, action) {
+        return result;
+    }
+    if let Some(result) = layout_facts::execute_action(store, action) {
         return result;
     }
     if let Some(result) = viewport::execute_action(store, action) {

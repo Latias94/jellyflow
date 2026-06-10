@@ -26,7 +26,10 @@ pub(crate) use scenario::ConformanceCallbackTraceRecorder;
 pub use scenario::{
     CONFORMANCE_FIXTURE_SCHEMA_VERSION, ConformanceAction, ConformanceBehavior,
     ConformanceCallbackEvent, ConformanceConnectEdgeSessionContract,
-    ConformanceNodeDragSessionContract, ConformanceScenario, ConformanceSetup, ConformanceSuite,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
-    ConformanceViewportDragPanSessionContract,
+    ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
+    ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract, ConformanceScenario,
+    ConformanceSetup, ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };

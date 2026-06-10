@@ -141,7 +141,7 @@ pub enum ConformanceNodeResizeDirection {
 }
 
 impl ConformanceNodeResizeDirection {
-    fn into_runtime(self) -> NodeResizeDirection {
+    pub(crate) fn into_runtime(self) -> NodeResizeDirection {
         match self {
             Self::Top => NodeResizeDirection::Top,
             Self::TopRight => NodeResizeDirection::TopRight,

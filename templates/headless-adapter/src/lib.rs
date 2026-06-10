@@ -7,17 +7,22 @@ use jellyflow_core::{
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
-    ConformanceFixtureDirectoryApprovalReport, ConformanceFixtureDirectoryReport,
-    ConformanceNodeDragSessionContract, ConformanceRunReport, ConformanceScenario,
-    ConformanceSuite, ConformanceSuiteReport, ConformanceTraceConfig, ConformanceTraceEvent,
-    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceEdgeEndpointPosition,
+    ConformanceFixtureDirectory, ConformanceFixtureDirectoryApprovalReport,
+    ConformanceFixtureDirectoryReport, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
+    ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
+    ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
+    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceViewportDragPanSessionContract,
 };
-use jellyflow_runtime::runtime::connection::{ConnectionHandleRef, ConnectionHandleValidity};
+use jellyflow_runtime::runtime::connection::{
+    ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectionTargetHandle, ResolvedConnectionTarget,
+};
 use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
-use jellyflow_runtime::runtime::events::{
-    NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
-};
+use jellyflow_runtime::runtime::events::NodeResizeUpdate;
 use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow_runtime::runtime::resize::{
@@ -37,6 +42,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
         node_drag_scenario(),
         node_drag_parent_expansion_scenario(),
         node_resize_scenario(),
+        layout_facts_scenario(),
         delete_selection_scenario(),
         viewport_pan_scenario(),
         viewport_constrained_pan_scenario(),
@@ -392,11 +398,8 @@ fn node_resize_scenario() -> ConformanceScenario {
     let direction = NodeResizeDirection::BottomRight;
     let start_pointer = CanvasPoint { x: 230.0, y: 140.0 };
     let current_pointer = CanvasPoint { x: 250.0, y: 150.0 };
-    let start = NodeResizeStart {
-        node: node_id,
-        direction,
-        pointer: start_pointer,
-    };
+    let session_request =
+        NodePointerResizeRequest::new(node_id, start_pointer, current_pointer, direction);
     let update = NodeResizeUpdate {
         node: node_id,
         direction,
@@ -407,15 +410,6 @@ fn node_resize_scenario() -> ConformanceScenario {
             height: 130.0,
         },
     };
-    let end = NodeResizeEnd {
-        node: node_id,
-        direction,
-        pointer: current_pointer,
-        outcome: NodeResizeEndOutcome::Committed,
-    };
-    let start_event = NodeGraphGestureEvent::NodeResizeStart(start.clone());
-    let update_event = NodeGraphGestureEvent::NodeResizeUpdate(update.clone());
-    let end_event = NodeGraphGestureEvent::NodeResizeEnd(end.clone());
 
     ConformanceScenario::new("template node resize", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
@@ -430,12 +424,6 @@ fn node_resize_scenario() -> ConformanceScenario {
                 )
                 .with_direction(NodeResizeDirection::BottomRight),
             ),
-            ConformanceAction::apply_node_pointer_resize_session(NodePointerResizeRequest::new(
-                node_id,
-                start_pointer,
-                current_pointer,
-                direction,
-            )),
         ])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
@@ -450,25 +438,99 @@ fn node_resize_scenario() -> ConformanceScenario {
                 edges: 0,
             }),
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-            ConformanceTraceEvent::gesture(start_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResizeStart(start)),
-            ConformanceTraceEvent::graph_commit(
-                Some(NODE_RESIZE_TRANSACTION_LABEL),
-                ["set_node_size"],
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(NODE_RESIZE_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 1,
-                edges: 0,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-            ConformanceTraceEvent::gesture(update_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResize(update)),
-            ConformanceTraceEvent::gesture(end_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeResizeEnd(end)),
         ])
+        .with_node_resize_session_contract(ConformanceNodeResizeSessionContract::new(
+            ConformanceNodePointerResizeRequest::from_runtime(session_request),
+            update,
+        ))
+}
+
+fn layout_facts_scenario() -> ConformanceScenario {
+    let source_id = NodeId::from_u128(90);
+    let target_id = NodeId::from_u128(91);
+    let out_port = PortId::from_u128(92);
+    let in_port = PortId::from_u128(93);
+    let edge_id = EdgeId::from_u128(94);
+    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
+    graph.nodes.get_mut(&source_id).expect("source exists").size = None;
+    graph.nodes.get_mut(&target_id).expect("target exists").size = None;
+
+    let source_handle = ConnectionHandleRef::new(source_id, out_port, PortDirection::Out);
+    let target_handle = ConnectionHandleRef::new(target_id, in_port, PortDirection::In);
+    let source_measurement = NodeMeasurement::new(source_id)
+        .with_size(Some(CanvasSize {
+            width: 160.0,
+            height: 80.0,
+        }))
+        .with_handles([MeasuredHandle::new(
+            source_handle,
+            HandleBounds {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 152.0, y: 32.0 },
+                    size: CanvasSize {
+                        width: 8.0,
+                        height: 16.0,
+                    },
+                },
+                position: HandlePosition::Right,
+            },
+        )]);
+    let target_measurement = NodeMeasurement::new(target_id)
+        .with_size(Some(CanvasSize {
+            width: 160.0,
+            height: 80.0,
+        }))
+        .with_handles([MeasuredHandle::new(
+            target_handle,
+            HandleBounds {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 32.0 },
+                    size: CanvasSize {
+                        width: 8.0,
+                        height: 16.0,
+                    },
+                },
+                position: HandlePosition::Left,
+            },
+        )]);
+    let expected_target_handle = ConnectionTargetHandle::new(target_handle, true, true);
+    let expected_target = ResolvedConnectionTarget {
+        target: Some(expected_target_handle),
+        connection: Some(ConnectionHandleConnection {
+            source: source_handle,
+            target: target_handle,
+        }),
+        is_handle_valid: true,
+        feedback: ConnectionHandleValidity::Valid,
+    };
+    let expected = ConformanceLayoutFactsExpectation::new([source_id, target_id], [edge_id])
+        .with_edge_positions([ConformanceLayoutEdgePosition::new(
+            edge_id,
+            ConformanceEdgeEndpointPosition::new(
+                CanvasPoint { x: 170.0, y: 60.0 },
+                HandlePosition::Right,
+            ),
+            ConformanceEdgeEndpointPosition::new(
+                CanvasPoint { x: 260.0, y: 60.0 },
+                HandlePosition::Left,
+            ),
+        )])
+        .with_connection_target(ConformanceLayoutFactsConnectionTargetExpectation::new(
+            CanvasPoint { x: 264.0, y: 60.0 },
+            source_handle,
+            expected_target,
+        ));
+
+    ConformanceScenario::new("template layout facts", graph).with_layout_facts_contract(
+        ConformanceLayoutFactsContract::new(
+            [source_measurement, target_measurement],
+            CanvasSize {
+                width: 300.0,
+                height: 100.0,
+            },
+            expected,
+        ),
+    )
 }
 
 fn delete_selection_scenario() -> ConformanceScenario {
@@ -1030,7 +1092,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 12);
+        assert_eq!(report.scenario_count(), 13);
     }
 
     #[test]
@@ -1142,7 +1204,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 12);
+        assert_eq!(report.scenario_count(), 13);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

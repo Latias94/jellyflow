@@ -7,12 +7,15 @@ mod suite;
 mod trace;
 
 pub use action::{
-    ConformanceAction, ConformanceConnectionTargetFromHandlesInput, ConformanceNodeNudgeRequest,
-    ConformanceNodePointerDownInput, ConformanceNodePointerResizeRequest,
-    ConformanceNodeResizeRequest,
+    ConformanceAction, ConformanceConnectionTargetFromHandlesInput,
+    ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsExpectation,
+    ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
 };
 pub use behavior::{
-    ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceNodeDragSessionContract,
+    ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceLayoutFactsContract,
+    ConformanceNodeDragSessionContract, ConformanceNodeResizeSessionContract,
     ConformanceViewportDragPanSessionContract,
 };
 pub(crate) use callback_recorder::ConformanceCallbackTraceRecorder;

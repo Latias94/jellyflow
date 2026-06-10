@@ -2,12 +2,17 @@ use serde::{Deserialize, Serialize};
 
 mod connection;
 mod graph;
+mod layout_facts;
 mod node;
 mod rendering;
 mod selection;
 mod viewport;
 
 pub use connection::ConformanceConnectionTargetFromHandlesInput;
+pub use layout_facts::{
+    ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsExpectation,
+};
 pub use node::{
     ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
@@ -19,6 +24,7 @@ use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
 use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
+use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -103,6 +109,13 @@ pub enum ConformanceAction {
     },
     ApplySelectionAutoPan {
         request: SelectionAutoPanRequest,
+    },
+    ReportNodeMeasurement {
+        measurement: NodeMeasurement,
+    },
+    AssertLayoutFacts {
+        viewport_size: CanvasSize,
+        expected: ConformanceLayoutFactsExpectation,
     },
     ApplyViewportPan {
         request: ViewportPanRequest,
@@ -208,6 +221,7 @@ impl ConformanceAction {
             .or_else(|| node::kind(self))
             .or_else(|| selection::kind(self))
             .or_else(|| connection::kind(self))
+            .or_else(|| layout_facts::kind(self))
             .or_else(|| viewport::kind(self))
             .or_else(|| rendering::kind(self))
             .expect("all conformance action variants must have a kind")

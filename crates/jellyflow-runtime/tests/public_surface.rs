@@ -939,6 +939,19 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
             resize::NodeResizeDirection::BottomRight,
         ),
     );
+    let report_measurement_action = conformance::ConformanceAction::report_node_measurement(
+        measurement::NodeMeasurement::new(node_id).with_size(Some(CanvasSize {
+            width: 2.0,
+            height: 3.0,
+        })),
+    );
+    let assert_layout_facts_action = conformance::ConformanceAction::assert_layout_facts(
+        CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        },
+        conformance::ConformanceLayoutFactsExpectation::new([node_id], Vec::<EdgeId>::new()),
+    );
     let resize_start_gesture_action =
         conformance::ConformanceAction::emit_gesture(resize_start_event.clone());
     let resize_update_gesture_action =
@@ -971,6 +984,8 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         dispatch_action,
         resize_action,
         pointer_resize_action,
+        report_measurement_action,
+        assert_layout_facts_action,
         resize_start_gesture_action,
         resize_update_gesture_action,
         resize_end_gesture_action,
@@ -1014,6 +1029,12 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     assert_eq!(scenario.expanded_actions().len(), 1);
     assert!(!scenario.expanded_expected_trace().is_empty());
     let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
+    let _ = std::mem::size_of::<conformance::ConformanceNodeResizeSessionContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
+    let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();
+    let _ = std::mem::size_of::<conformance::ConformanceEdgeEndpointPosition>();
+    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsConnectionTargetExpectation>();
 
     let encoded = serde_json::to_value(&scenario).expect("serialize fixture");
     let decoded: conformance::ConformanceScenario =

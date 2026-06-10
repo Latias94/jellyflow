@@ -83,7 +83,7 @@ impl ConformanceScenario {
 
     pub fn expanded_actions(&self) -> Vec<ConformanceAction> {
         let mut actions = self.actions.clone();
-        actions.extend(self.behaviors.iter().map(ConformanceBehavior::action));
+        actions.extend(self.behaviors.iter().flat_map(ConformanceBehavior::actions));
         actions
     }
 

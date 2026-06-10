@@ -262,6 +262,140 @@ fn conformance_runner_expands_behavior_contracts_and_matches_trace() {
     assert_eq!(decoded.expanded_actions().len(), 1);
 }
 
+#[test]
+fn conformance_runner_expands_node_resize_session_behavior_contract() {
+    let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
+        width: 100.0,
+        height: 60.0,
+    });
+    let direction = NodeResizeDirection::BottomRight;
+    let start_pointer = CanvasPoint { x: 110.0, y: 60.0 };
+    let current_pointer = CanvasPoint { x: 150.0, y: 90.0 };
+    let request = ConformanceNodePointerResizeRequest::from_runtime(NodePointerResizeRequest::new(
+        node_id,
+        start_pointer,
+        current_pointer,
+        direction,
+    ));
+    let update = NodeResizeUpdate {
+        node: node_id,
+        direction,
+        pointer: current_pointer,
+        position: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 140.0,
+            height: 90.0,
+        },
+    };
+    let scenario = ConformanceScenario::new("node resize behavior contract runner", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_node_resize_session_contract(ConformanceNodeResizeSessionContract::new(
+            request, update,
+        ));
+
+    assert!(scenario.actions.is_empty());
+    assert!(scenario.expected_trace.is_empty());
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 1);
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
+}
+
+#[test]
+fn conformance_runner_expands_layout_facts_behavior_contract() {
+    let (graph, source_node, target_node, out_port, in_port, edge_id) = make_graph();
+    let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
+    let target = ConnectionHandleRef::new(target_node, in_port, PortDirection::In);
+    let source_measurement = NodeMeasurement::new(source_node)
+        .with_size(Some(CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        }))
+        .with_handles([MeasuredHandle::new(
+            source,
+            HandleBounds {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 90.0, y: 40.0 },
+                    size: CanvasSize {
+                        width: 10.0,
+                        height: 20.0,
+                    },
+                },
+                position: HandlePosition::Right,
+            },
+        )]);
+    let target_measurement = NodeMeasurement::new(target_node)
+        .with_size(Some(CanvasSize {
+            width: 100.0,
+            height: 100.0,
+        }))
+        .with_handles([MeasuredHandle::new(
+            target,
+            HandleBounds {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 40.0 },
+                    size: CanvasSize {
+                        width: 10.0,
+                        height: 20.0,
+                    },
+                },
+                position: HandlePosition::Left,
+            },
+        )]);
+    let connection_target = ConnectionTargetHandle::new(target, true, true);
+    let expected_target = ResolvedConnectionTarget {
+        target: Some(connection_target),
+        connection: Some(ConnectionHandleConnection {
+            source,
+            target: connection_target.handle,
+        }),
+        is_handle_valid: true,
+        feedback: ConnectionHandleValidity::Valid,
+    };
+    let expected = ConformanceLayoutFactsExpectation::new([source_node, target_node], [edge_id])
+        .with_edge_positions([ConformanceLayoutEdgePosition::new(
+            edge_id,
+            ConformanceEdgeEndpointPosition::new(
+                CanvasPoint { x: 100.0, y: 50.0 },
+                HandlePosition::Right,
+            ),
+            ConformanceEdgeEndpointPosition::new(
+                CanvasPoint { x: 100.0, y: 50.0 },
+                HandlePosition::Left,
+            ),
+        )])
+        .with_connection_target(ConformanceLayoutFactsConnectionTargetExpectation::new(
+            CanvasPoint { x: 105.0, y: 50.0 },
+            source,
+            expected_target,
+        ));
+    let scenario = ConformanceScenario::new("layout facts behavior contract runner", graph)
+        .with_layout_facts_contract(ConformanceLayoutFactsContract::new(
+            [source_measurement, target_measurement],
+            CanvasSize {
+                width: 320.0,
+                height: 160.0,
+            },
+            expected,
+        ));
+
+    assert!(scenario.actions.is_empty());
+    assert!(scenario.expected_trace.is_empty());
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 3);
+    assert!(scenario.expanded_expected_trace().is_empty());
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert!(report.actual_trace().is_empty());
+}
+
 fn connection_node_rect(origin: CanvasPoint) -> CanvasRect {
     CanvasRect {
         origin,

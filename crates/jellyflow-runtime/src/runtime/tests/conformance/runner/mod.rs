@@ -3,9 +3,12 @@ use super::super::fixtures::make_graph;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceBehavior, ConformanceCallbackEvent,
-    ConformanceNodeDragSessionContract, ConformanceScenario, ConformanceSuite,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
-    run_conformance_suite,
+    ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
+    ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract, ConformanceScenario,
+    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    run_conformance_scenario, run_conformance_suite,
 };
 use crate::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
@@ -22,6 +25,7 @@ use crate::runtime::events::{
     ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
+use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use crate::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
