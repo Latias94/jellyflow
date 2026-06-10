@@ -1,5 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, NodeId, PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, GroupId, NodeId, PortDirection,
+    PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
@@ -561,44 +562,32 @@ fn explicit_modules_expose_their_owned_surfaces() {
         events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
     let _resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
 
-    let _module_store = store::NodeGraphStore::new(
+    let module_store = store::NodeGraphStore::new(
         graph.clone(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
-    let visible_request = rendering::VisibleNodeIdsRequest::new(
-        transform,
-        CanvasSize {
-            width: 100.0,
-            height: 80.0,
-        },
-    );
-    let visible_ids =
-        rendering::resolve_visible_node_ids(selection_store.lookups(), visible_request);
-    assert!(visible_ids.is_empty());
     let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> = NodeGraphStore::visible_node_ids;
-    let visible_render_order = rendering::resolve_visible_node_render_order(
-        &graph,
-        selection_store.lookups(),
-        selection_store.view_state(),
-        visible_request,
-        rendering::NodeRenderOrderOptions::default(),
-    );
-    assert!(visible_render_order.is_empty());
     let _: fn(&NodeGraphStore, CanvasSize) -> Vec<NodeId> =
         NodeGraphStore::visible_node_render_order;
-    let render_order = rendering::resolve_node_render_order(
-        &graph,
-        &NodeGraphViewState::default(),
-        rendering::NodeRenderOrderOptions::default(),
-    );
-    assert!(render_order.is_empty());
-    let edge_render_order = rendering::resolve_edge_render_order(
-        &graph,
-        &NodeGraphViewState::default(),
-        rendering::EdgeRenderOrderOptions::default(),
-    );
-    assert!(edge_render_order.is_empty());
+    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<EdgeId> = NodeGraphStore::visible_edge_ids;
+    let _: fn(&NodeGraphStore, CanvasSize) -> Vec<EdgeId> =
+        NodeGraphStore::visible_edge_render_order;
+    let _: fn(&NodeGraphStore) -> Vec<GroupId> = NodeGraphStore::group_render_order;
+    let _: fn(&NodeGraphStore) -> Vec<NodeId> = NodeGraphStore::node_render_order;
+    let _: fn(&NodeGraphStore) -> Vec<EdgeId> = NodeGraphStore::edge_render_order;
+    let _ = std::mem::size_of::<rendering::RenderingQueryResult>();
+    let query = module_store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 80.0,
+    });
+    assert!(query.group_order.is_empty());
+    assert!(query.node_order.is_empty());
+    assert!(query.edge_order.is_empty());
+    assert!(query.visible_node_ids.is_empty());
+    assert!(query.visible_node_render_order.is_empty());
+    assert!(query.visible_edge_ids.is_empty());
+    assert!(query.visible_edge_render_order.is_empty());
     let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
     assert!(changes.is_empty());
     let _ = std::mem::size_of::<xyflow::XyFlowNodeElement>();

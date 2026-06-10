@@ -18,8 +18,8 @@
 - renderer-neutral viewport animation and double-click zoom planning under `runtime::viewport`;
 - renderer-neutral viewport pan inertia planning under `runtime::viewport`;
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
-- renderer-neutral render ordering, visible-node id planning, and visible-node render-order
-  planning under `runtime::rendering`;
+- renderer-neutral store-level rendering reads through `NodeGraphStore::rendering_query` and
+  `runtime::rendering::RenderingQueryResult`;
 - renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
   `runtime::keyboard`;
 - fit-view math that uses Jellyflow canvas geometry;
@@ -80,11 +80,12 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest, AutoPanPlan}` plus
   `NodeGraphStore::{apply_auto_pan, apply_selection_auto_pan}` for deterministic edge-proximity
   auto-pan frames that feed the normal viewport publication path;
-- `runtime::rendering::{VisibleNodeIdsRequest, resolve_visible_node_ids,
-  resolve_visible_node_render_order}` plus `NodeGraphStore::visible_node_ids` and
-  `NodeGraphStore::visible_node_render_order` for XyFlow-style visible node culling and paint order
-  from current viewport transform, logical viewport size, node-origin policy, draw order,
-  selected-node elevation, and `only_render_visible_elements` tuning;
+- `NodeGraphStore::rendering_query` for renderer-facing group, node, and edge paint order plus
+  XyFlow-style visible node/edge culling from current viewport transform, logical viewport size,
+  node-origin policy, draw order, selected elevation, reported measurements, and
+  `only_render_visible_elements` tuning. `NodeGraphStore::{visible_node_ids,
+  visible_node_render_order, visible_edge_ids, visible_edge_render_order}` remain convenience
+  wrappers for callers that only need one list;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -143,7 +144,9 @@ and double-click zoom plan or rejection assertions. Visible-node fixtures should
 `ConformanceAction::assert_visible_node_ids`, which asserts `NodeGraphStore::visible_node_ids`
 without producing renderer traces. Pre-render paint-order fixtures should use
 `ConformanceAction::assert_visible_node_render_order`, which asserts
-`NodeGraphStore::visible_node_render_order` without producing renderer traces. Pan inertia fixtures
+`NodeGraphStore::visible_node_render_order` without producing renderer traces. Visible-edge
+fixtures should use the matching visible edge assertions, while adapters that need all lists should
+read `NodeGraphStore::rendering_query` once. Pan inertia fixtures
 should use the sampled-frame actions and rejection assertion so adapters can prove release-momentum
 traces without moving frame loops into runtime. Parent expansion fixtures should use
 `ConformanceAction::apply_node_drag`, which exercises the same runtime interaction boundary and
@@ -181,15 +184,15 @@ Viewport conformance is also headless. Runtime tests cover:
   double-click zoom plan or rejection outcomes.
 - conformance assertions for pan inertia frame sampling, sampled-frame viewport traces, and rejected
   below-threshold inertia plans.
-- conformance assertions for visible node ids and visible node render order before
-  renderer-specific culling or draw batching.
+- conformance assertions for visible node ids, visible edge ids, and render order before
+  renderer-specific draw batching.
 
 Adapters still own raw wheel delta normalization, pinch detection, pointer capture, cursor policy,
 raw double-click detection, release velocity estimation, frame scheduling, animation and inertia
-cancellation policy, sampled-frame commits, visible edge culling, resize handles, window event
-loops, screenshots, and pixel assertions. For selection workflows, adapters own the screen-space
-selection rectangle and pointer/session ownership, then call `SelectionAutoPanRequest` for the
-shared edge-proximity viewport motion.
+cancellation policy, sampled-frame commits, edge routing and draw batching, resize handles, window
+event loops, screenshots, and pixel assertions. For selection workflows, adapters own the
+screen-space selection rectangle and pointer/session ownership, then call `SelectionAutoPanRequest`
+for the shared edge-proximity viewport motion.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

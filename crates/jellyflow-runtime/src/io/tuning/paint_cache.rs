@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Tuning reserved for renderer/runtime paint-cache pruning.
+///
+/// The headless runtime does not own renderer paint caches today. Keep this payload serialized so
+/// adapters and future cache plumbing can share stable defaults without graph-schema churn.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeGraphPaintCachePruneTuning {
     /// Remove cache entries not used within this many frames.

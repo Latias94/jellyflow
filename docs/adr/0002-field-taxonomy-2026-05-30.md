@@ -92,7 +92,7 @@ ADR 0002 accepts an additive v1 boundary:
 | --- | --- | --- |
 | `NodeGraphPureViewState::{pan, zoom, selected_*, draw_order, edge_draw_order, group_draw_order}` | Volatile/per-user view state | Stored outside `Graph`; may be per project or per user. |
 | `NodeGraphInteractionConfig` | Volatile/per-user or editor profile policy defaults | Global defaults for effective editor behavior. |
-| `NodeGraphRuntimeTuning` | Runtime tuning | Performance/cache/spatial index settings, not graph semantics. |
+| `NodeGraphRuntimeTuning` | Runtime tuning | Performance/cache/spatial index settings, including reserved backend payloads; not graph semantics or proof that a backend is active. |
 | `NodeGraphInteractionState` | Resolved global policy state | Input to runtime policy facade. |
 
 ## Policy Resolution Rules For Follow-On Work

@@ -4,11 +4,14 @@ use jellyflow_core::core::{
 };
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphNodeOrigin, NodeGraphViewState};
-use crate::runtime::rendering::{
-    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions, VisibleEdgeIdsRequest,
-    VisibleNodeIdsRequest, resolve_edge_render_order, resolve_group_render_order,
-    resolve_node_render_order, resolve_visible_edge_ids, resolve_visible_edge_render_order,
-    resolve_visible_node_ids, resolve_visible_node_render_order,
+use crate::runtime::measurement::NodeMeasurement;
+use crate::runtime::rendering::order::{
+    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions,
+    resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
+};
+use crate::runtime::rendering::visibility::{
+    VisibleEdgeIdsRequest, VisibleNodeIdsRequest, resolve_visible_edge_ids,
+    resolve_visible_edge_render_order, resolve_visible_node_ids, resolve_visible_node_render_order,
 };
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::ViewportTransform;
@@ -704,6 +707,119 @@ fn store_rendering_query_returns_visible_edge_order_and_visibility_together() {
     );
     assert_eq!(query.visible_edge_ids, vec![spanning, inside_edge]);
     assert_eq!(query.visible_edge_render_order, vec![inside_edge, spanning]);
+}
+
+#[test]
+fn store_rendering_query_combines_measurements_visibility_and_selected_elevation() {
+    let mut graph = Graph::new(GraphId::from_u128(3));
+    let measured_selected = NodeId::from_u128(10);
+    let sized_middle = NodeId::from_u128(11);
+    let sized_right = NodeId::from_u128(12);
+    let unmeasured = NodeId::from_u128(13);
+    graph.nodes.insert(
+        measured_selected,
+        Node {
+            pos: CanvasPoint::default(),
+            ..node("test.measured-selected", false)
+        },
+    );
+    graph.nodes.insert(
+        sized_middle,
+        sized_node(
+            "test.sized-middle",
+            CanvasPoint { x: 20.0, y: 0.0 },
+            CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+            false,
+        ),
+    );
+    graph.nodes.insert(
+        sized_right,
+        sized_node(
+            "test.sized-right",
+            CanvasPoint { x: 40.0, y: 0.0 },
+            CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+            false,
+        ),
+    );
+    graph.nodes.insert(
+        unmeasured,
+        Node {
+            pos: CanvasPoint { x: 5.0, y: 0.0 },
+            ..node("test.unmeasured", false)
+        },
+    );
+
+    let selected_out = PortId::from_u128(20);
+    let middle_in = PortId::from_u128(21);
+    let middle_out = PortId::from_u128(22);
+    let right_in = PortId::from_u128(23);
+    for (id, port) in [
+        (selected_out, port(measured_selected, PortDirection::Out)),
+        (middle_in, port(sized_middle, PortDirection::In)),
+        (middle_out, port(sized_middle, PortDirection::Out)),
+        (right_in, port(sized_right, PortDirection::In)),
+    ] {
+        graph.ports.insert(id, port);
+    }
+
+    let elevated_edge = EdgeId::from_u128(30);
+    let normal_edge = EdgeId::from_u128(31);
+    graph
+        .edges
+        .insert(elevated_edge, edge(selected_out, middle_in, false));
+    graph
+        .edges
+        .insert(normal_edge, edge(middle_out, right_in, false));
+
+    let view_state = NodeGraphViewState {
+        selected_nodes: vec![measured_selected],
+        edge_draw_order: vec![elevated_edge, normal_edge],
+        draw_order: vec![measured_selected, sized_middle, sized_right, unmeasured],
+        ..NodeGraphViewState::default()
+    };
+    let mut store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    store
+        .report_node_measurement(NodeMeasurement::new(measured_selected).with_size(Some(
+            CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+        )))
+        .expect("node measurement");
+
+    let query = store.rendering_query(CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    });
+
+    assert_eq!(
+        query.node_order,
+        vec![sized_middle, sized_right, unmeasured, measured_selected],
+        "selected node elevation applies to the full non-hidden node paint order"
+    );
+    assert_eq!(
+        query.visible_node_ids,
+        vec![measured_selected, sized_middle, sized_right],
+        "reported measurement makes the unsized selected node visible while the unmeasured node stays culled"
+    );
+    assert_eq!(
+        query.visible_node_render_order,
+        vec![sized_middle, sized_right, measured_selected],
+        "visible node order keeps selected elevation after culling"
+    );
+    assert_eq!(query.edge_order, vec![normal_edge, elevated_edge]);
+    assert_eq!(query.visible_edge_ids, vec![elevated_edge, normal_edge]);
+    assert_eq!(
+        query.visible_edge_render_order,
+        vec![normal_edge, elevated_edge],
+        "edge visibility and selected-node elevation are resolved in one store-level query"
+    );
 }
 
 #[test]

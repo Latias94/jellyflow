@@ -1,19 +1,13 @@
-//! Renderer-neutral ordering and visibility helpers.
+//! Renderer-neutral ordering and visibility reads.
 //!
-//! Adapters still own painting, widgets, and GPU/UI details. This module only resolves the stable
-//! order and viewport-visible ids they should use when interpreting Jellyflow view-state.
+//! Adapters still own painting, widgets, and GPU/UI details. The public adapter seam is
+//! `NodeGraphStore`'s store-level rendering read methods, especially
+//! `NodeGraphStore::rendering_query`. The resolver functions stay inside the crate so the runtime
+//! can change lookup/cache/index implementations without making adapters depend on that shape.
 
-mod order;
-mod query;
+pub(crate) mod order;
+pub(crate) mod query;
 mod store;
-mod visibility;
+pub(crate) mod visibility;
 
-pub use order::{
-    EdgeRenderOrderOptions, GroupRenderOrderOptions, NodeRenderOrderOptions,
-    resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
-};
-pub use query::{RenderingQueryOptions, RenderingQueryResult, resolve_rendering_query};
-pub use visibility::{
-    VisibleEdgeIdsRequest, VisibleNodeIdsRequest, resolve_visible_edge_ids,
-    resolve_visible_edge_render_order, resolve_visible_node_ids, resolve_visible_node_render_order,
-};
+pub use query::RenderingQueryResult;

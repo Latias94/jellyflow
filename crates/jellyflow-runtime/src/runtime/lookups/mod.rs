@@ -27,7 +27,23 @@ pub use self::types::{
 
 #[derive(Debug, Default)]
 pub struct NodeGraphLookups {
-    pub node_lookup: HashMap<NodeId, NodeLookupEntry>,
-    pub edge_lookup: HashMap<EdgeId, EdgeLookupEntry>,
-    pub connection_lookup: HashMap<ConnectionLookupKey, HashMap<EdgeId, HandleConnection>>,
+    pub(crate) node_lookup: HashMap<NodeId, NodeLookupEntry>,
+    pub(crate) edge_lookup: HashMap<EdgeId, EdgeLookupEntry>,
+    pub(crate) connection_lookup: HashMap<ConnectionLookupKey, HashMap<EdgeId, HandleConnection>>,
+}
+
+impl NodeGraphLookups {
+    pub fn node_count(&self) -> usize {
+        self.node_lookup.len()
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.edge_lookup.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.node_lookup.is_empty()
+            && self.edge_lookup.is_empty()
+            && self.connection_lookup.is_empty()
+    }
 }

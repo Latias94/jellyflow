@@ -2,7 +2,10 @@ use crate::io::tuning::{NodeGraphPaintCachePruneTuning, NodeGraphSpatialIndexTun
 
 use super::super::NodeGraphInteractionState;
 
-/// Rendering and spatial-query tuning resolved for runtime use.
+/// Rendering and reserved spatial/cache tuning resolved for runtime use.
+///
+/// `spatial_index` and `paint_cache_prune` are stable configuration payloads. Current store-level
+/// rendering reads still choose their own implementation internally.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeGraphRenderingInteraction {
     pub spatial_index: NodeGraphSpatialIndexTuning,

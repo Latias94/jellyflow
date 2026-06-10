@@ -14,9 +14,9 @@ The initial package split is intentionally small:
   helpers, renderer-neutral selection deletion, renderer-neutral node dragging with parent expansion
   planning, renderer-neutral viewport pan/zoom, renderer-neutral viewport animation planning,
   renderer-neutral viewport pan inertia planning, renderer-neutral auto-pan, renderer-neutral node
-  resize planning, renderer-neutral geometry, and public headless conformance fixtures.
-  It also exposes renderer-neutral visible-node id and render-order planning for XyFlow-style
-  `onlyRenderVisibleElements` adapter behavior before rendering.
+  resize planning, renderer-neutral geometry, store-level rendering reads, and public headless
+  conformance fixtures. It also exposes renderer-neutral visible-node/edge id and render-order
+  results for XyFlow-style `onlyRenderVisibleElements` adapter behavior before rendering.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -84,10 +84,11 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   sampled frames;
 - `runtime::auto_pan` turns pointer-edge proximity and elapsed frame time into deterministic
   viewport pan frames, while adapters keep ownership of pointer capture and frame scheduling;
-- `runtime::rendering`, `NodeGraphStore::visible_node_ids`, and
-  `NodeGraphStore::visible_node_render_order` turn current viewport state, logical viewport size,
-  node-origin policy, draw order, selected-node elevation, and `only_render_visible_elements`
-  tuning into deterministic visible node ids before rendering;
+- `NodeGraphStore::rendering_query` turns current viewport state, logical viewport size,
+  node-origin policy, draw order, selected elevation, reported measurements, and
+  `only_render_visible_elements` tuning into deterministic group/node/edge order and visible
+  node/edge ids before rendering. Narrow helper methods such as `visible_node_ids` and
+  `visible_edge_render_order` remain available when an adapter only needs one list;
 - `runtime::conformance` defines reusable fixture scenarios and a runner that drive a real
   `NodeGraphStore` and compare normalized traces for graph transactions, view changes, gesture
   lifecycle events, and XyFlow compatibility callbacks; adapter crates can group scenarios into
@@ -95,11 +96,11 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   actual headless traces back into golden files through the `conformance_harness` example for
   aggregate pre-render conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, delete, node drag, node drag
-  parent expansion, node resize, visible node ids, visible node render order, viewport, viewport
-  animation planning, pan inertia replay, double-click zoom, and auto-pan behavior before any
-  renderer-specific smoke tests are written;
+  parent expansion, node resize, visible node ids, visible edge ids, render order, viewport,
+  viewport animation planning, pan inertia replay, double-click zoom, and auto-pan behavior before
+  any renderer-specific smoke tests are written;
 - `templates/headless-adapter` is a copyable external adapter skeleton that runs node-drag, node
-  drag parent expansion, node resize, delete selection, visible node id, visible node render order,
+  drag parent expansion, node resize, delete selection, visible node/edge id, render-order,
   viewport, viewport animation, and pan inertia conformance with `cargo --manifest-path` before
   adding renderer smoke tests;
 - wgpu, egui, Fret, screenshot, or pixel tests belong in future adapter crates that consume the
