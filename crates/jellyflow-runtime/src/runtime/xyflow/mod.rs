@@ -11,6 +11,7 @@ pub mod apply;
 pub mod callbacks;
 pub mod changes;
 mod controlled;
+mod dialect;
 mod projection;
 pub mod store;
 mod transaction;

@@ -2,10 +2,10 @@ use super::super::fixtures::make_graph;
 
 use crate::runtime::xyflow::apply::{
     XyFlowDimensionAttribute, XyFlowDimensionsSetAttributes, XyFlowEdgeChange, XyFlowEdgeElement,
-    XyFlowNodeChange, XyFlowNodeElement, apply_edge_changes, apply_node_changes,
-    apply_xyflow_edge_changes, apply_xyflow_node_changes,
+    XyFlowNodeChange, XyFlowNodeElement, apply_edge_changes, apply_graph_changes,
+    apply_node_changes, apply_xyflow_edge_changes, apply_xyflow_node_changes,
 };
-use crate::runtime::xyflow::changes::{EdgeChange, NodeChange};
+use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, EdgeKind, NodeId, NodeOrigin};
 
 #[test]
@@ -88,6 +88,105 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
     assert_eq!(g0.edges.get(&eid).unwrap().kind, EdgeKind::Exec);
     assert!(g0.edges.get(&eid).unwrap().hidden);
     assert_eq!(g0.edges.get(&eid).unwrap().interaction_width, Some(30.0));
+}
+
+#[test]
+fn node_update_changes_apply_and_transaction_paths_agree() {
+    let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
+    let changes = NodeGraphChanges::from_parts(
+        vec![
+            NodeChange::Position {
+                id: a,
+                position: CanvasPoint { x: 12.0, y: 24.0 },
+            },
+            NodeChange::Origin {
+                id: a,
+                origin: Some(NodeOrigin { x: 0.5, y: 0.25 }),
+            },
+            NodeChange::Selectable {
+                id: a,
+                selectable: Some(false),
+            },
+            NodeChange::Size {
+                id: a,
+                size: Some(CanvasSize {
+                    width: 88.0,
+                    height: 44.0,
+                }),
+            },
+            NodeChange::Hidden {
+                id: a,
+                hidden: true,
+            },
+        ],
+        Vec::new(),
+    );
+
+    let mut applied = g0.clone();
+    let report = apply_graph_changes(&mut applied, &changes);
+    let tx = changes.to_transaction(&g0).expect("node update tx");
+    let mut transacted = g0.clone();
+    tx.apply_to(&mut transacted)
+        .expect("node update tx applies");
+
+    assert_eq!(report.applied(), 5);
+    assert_eq!(report.ignored(), 0);
+    let applied_node = applied.nodes.get(&a).expect("applied node");
+    let transacted_node = transacted.nodes.get(&a).expect("transacted node");
+    assert_eq!(applied_node.pos, transacted_node.pos);
+    assert_eq!(applied_node.origin, transacted_node.origin);
+    assert_eq!(applied_node.selectable, transacted_node.selectable);
+    assert_eq!(applied_node.size, transacted_node.size);
+    assert_eq!(applied_node.hidden, transacted_node.hidden);
+}
+
+#[test]
+fn edge_update_changes_apply_and_transaction_paths_agree() {
+    let (g0, _a, _b, out_port, in_port, eid) = make_graph();
+    let replacement_from = out_port;
+    let replacement_to = in_port;
+    let changes = NodeGraphChanges::from_parts(
+        Vec::new(),
+        vec![
+            EdgeChange::Kind {
+                id: eid,
+                kind: EdgeKind::Exec,
+            },
+            EdgeChange::Hidden {
+                id: eid,
+                hidden: true,
+            },
+            EdgeChange::InteractionWidth {
+                id: eid,
+                interaction_width: Some(32.0),
+            },
+            EdgeChange::Endpoints {
+                id: eid,
+                from: replacement_from,
+                to: replacement_to,
+            },
+        ],
+    );
+
+    let mut applied = g0.clone();
+    let report = apply_graph_changes(&mut applied, &changes);
+    let tx = changes.to_transaction(&g0).expect("edge update tx");
+    let mut transacted = g0.clone();
+    tx.apply_to(&mut transacted)
+        .expect("edge update tx applies");
+
+    assert_eq!(report.applied(), 4);
+    assert_eq!(report.ignored(), 0);
+    let applied_edge = applied.edges.get(&eid).expect("applied edge");
+    let transacted_edge = transacted.edges.get(&eid).expect("transacted edge");
+    assert_eq!(applied_edge.kind, transacted_edge.kind);
+    assert_eq!(applied_edge.hidden, transacted_edge.hidden);
+    assert_eq!(
+        applied_edge.interaction_width,
+        transacted_edge.interaction_width
+    );
+    assert_eq!(applied_edge.from, transacted_edge.from);
+    assert_eq!(applied_edge.to, transacted_edge.to);
 }
 
 #[test]

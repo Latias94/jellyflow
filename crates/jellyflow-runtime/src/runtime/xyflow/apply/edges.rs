@@ -1,4 +1,7 @@
 use crate::runtime::xyflow::changes::EdgeChange;
+use crate::runtime::xyflow::dialect::{
+    apply_edge_update_change as apply_edge_update, edge_update_id,
+};
 use jellyflow_core::core::EdgeId;
 
 use super::ApplyChangesPlanner;
@@ -19,36 +22,23 @@ impl<'a> ApplyChangesPlanner<'a> {
             EdgeChange::Remove { id } => {
                 self.remove_edge_change(*id);
             }
-            EdgeChange::Kind { id, kind } => {
-                self.mutate_existing_edge(*id, |edge| edge.kind = *kind);
-            }
-            EdgeChange::Selectable { id, selectable } => {
-                self.mutate_existing_edge(*id, |edge| edge.selectable = *selectable);
-            }
-            EdgeChange::Focusable { id, focusable } => {
-                self.mutate_existing_edge(*id, |edge| edge.focusable = *focusable);
-            }
-            EdgeChange::Hidden { id, hidden } => {
-                self.mutate_existing_edge(*id, |edge| edge.hidden = *hidden);
-            }
-            EdgeChange::InteractionWidth {
-                id,
-                interaction_width,
-            } => {
-                self.mutate_existing_edge(*id, |edge| edge.interaction_width = *interaction_width);
-            }
-            EdgeChange::Deletable { id, deletable } => {
-                self.mutate_existing_edge(*id, |edge| edge.deletable = *deletable);
-            }
-            EdgeChange::Reconnectable { id, reconnectable } => {
-                self.mutate_existing_edge(*id, |edge| edge.reconnectable = *reconnectable);
-            }
-            EdgeChange::Endpoints { id, from, to } => {
-                self.mutate_existing_edge(*id, |edge| {
-                    edge.from = *from;
-                    edge.to = *to;
-                });
-            }
+            _ => self.apply_edge_update_change(change),
+        }
+    }
+
+    fn apply_edge_update_change(&mut self, change: &EdgeChange) {
+        let Some(id) = edge_update_id(change) else {
+            self.mark_ignored();
+            return;
+        };
+        let Some(edge) = self.graph.edges.get_mut(&id) else {
+            self.mark_ignored();
+            return;
+        };
+        if apply_edge_update(change, edge) {
+            self.mark_applied();
+        } else {
+            self.mark_ignored();
         }
     }
 

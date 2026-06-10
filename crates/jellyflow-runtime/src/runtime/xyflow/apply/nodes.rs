@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
 use crate::runtime::xyflow::changes::NodeChange;
+use crate::runtime::xyflow::dialect::{
+    apply_node_update_change as apply_node_update, node_update_id,
+};
 use jellyflow_core::core::{Edge, Node, NodeId, PortId};
 
 use super::ApplyChangesPlanner;
@@ -21,57 +24,23 @@ impl<'a> ApplyChangesPlanner<'a> {
             NodeChange::Remove { id } => {
                 self.remove_node_change(*id);
             }
-            NodeChange::Position { id, position } => {
-                self.mutate_existing_node(*id, |node| node.pos = *position);
-            }
-            NodeChange::Origin { id, origin } => {
-                self.mutate_existing_node(*id, |node| node.origin = *origin);
-            }
-            NodeChange::Kind { id, kind } => {
-                self.mutate_existing_node(*id, |node| node.kind = kind.clone());
-            }
-            NodeChange::KindVersion { id, kind_version } => {
-                self.mutate_existing_node(*id, |node| node.kind_version = *kind_version);
-            }
-            NodeChange::Selectable { id, selectable } => {
-                self.mutate_existing_node(*id, |node| node.selectable = *selectable);
-            }
-            NodeChange::Focusable { id, focusable } => {
-                self.mutate_existing_node(*id, |node| node.focusable = *focusable);
-            }
-            NodeChange::Draggable { id, draggable } => {
-                self.mutate_existing_node(*id, |node| node.draggable = *draggable);
-            }
-            NodeChange::Connectable { id, connectable } => {
-                self.mutate_existing_node(*id, |node| node.connectable = *connectable);
-            }
-            NodeChange::Deletable { id, deletable } => {
-                self.mutate_existing_node(*id, |node| node.deletable = *deletable);
-            }
-            NodeChange::Parent { id, parent } => {
-                self.mutate_existing_node(*id, |node| node.parent = *parent);
-            }
-            NodeChange::Extent { id, extent } => {
-                self.mutate_existing_node(*id, |node| node.extent = *extent);
-            }
-            NodeChange::ExpandParent { id, expand_parent } => {
-                self.mutate_existing_node(*id, |node| node.expand_parent = *expand_parent);
-            }
-            NodeChange::Size { id, size } => {
-                self.mutate_existing_node(*id, |node| node.size = *size);
-            }
-            NodeChange::Hidden { id, hidden } => {
-                self.mutate_existing_node(*id, |node| node.hidden = *hidden);
-            }
-            NodeChange::Collapsed { id, collapsed } => {
-                self.mutate_existing_node(*id, |node| node.collapsed = *collapsed);
-            }
-            NodeChange::Data { id, data } => {
-                self.mutate_existing_node(*id, |node| node.data = data.clone());
-            }
-            NodeChange::Ports { id, ports } => {
-                self.mutate_existing_node(*id, |node| node.ports = ports.clone());
-            }
+            _ => self.apply_node_update_change(change),
+        }
+    }
+
+    fn apply_node_update_change(&mut self, change: &NodeChange) {
+        let Some(id) = node_update_id(change) else {
+            self.mark_ignored();
+            return;
+        };
+        let Some(node) = self.graph.nodes.get_mut(&id) else {
+            self.mark_ignored();
+            return;
+        };
+        if apply_node_update(change, node) {
+            self.mark_applied();
+        } else {
+            self.mark_ignored();
         }
     }
 

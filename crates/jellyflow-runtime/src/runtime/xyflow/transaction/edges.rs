@@ -1,6 +1,7 @@
 use crate::runtime::xyflow::changes::{ChangesToTransactionError, EdgeChange};
-use jellyflow_core::core::{Edge, EdgeId};
-use jellyflow_core::ops::{EdgeEndpoints, GraphMutationPlanner, GraphOp};
+use crate::runtime::xyflow::dialect::{edge_update_id, edge_update_op};
+use jellyflow_core::core::EdgeId;
+use jellyflow_core::ops::{GraphMutationPlanner, GraphOp};
 
 use super::ChangesTransactionPlanner;
 
@@ -19,66 +20,21 @@ impl<'a> ChangesTransactionPlanner<'a> {
             EdgeChange::Remove { id } => {
                 self.push_remove_edge_change(*id)?;
             }
-            EdgeChange::Kind { id, kind } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeKind {
-                    id: *id,
-                    from: edge.kind,
-                    to: *kind,
-                })?;
-            }
-            EdgeChange::Selectable { id, selectable } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeSelectable {
-                    id: *id,
-                    from: edge.selectable,
-                    to: *selectable,
-                })?;
-            }
-            EdgeChange::Focusable { id, focusable } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeFocusable {
-                    id: *id,
-                    from: edge.focusable,
-                    to: *focusable,
-                })?;
-            }
-            EdgeChange::Hidden { id, hidden } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeHidden {
-                    id: *id,
-                    from: edge.hidden,
-                    to: *hidden,
-                })?;
-            }
-            EdgeChange::InteractionWidth {
-                id,
-                interaction_width,
-            } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeInteractionWidth {
-                    id: *id,
-                    from: edge.interaction_width,
-                    to: *interaction_width,
-                })?;
-            }
-            EdgeChange::Deletable { id, deletable } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeDeletable {
-                    id: *id,
-                    from: edge.deletable,
-                    to: *deletable,
-                })?;
-            }
-            EdgeChange::Reconnectable { id, reconnectable } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeReconnectable {
-                    id: *id,
-                    from: edge.reconnectable,
-                    to: *reconnectable,
-                })?;
-            }
-            EdgeChange::Endpoints { id, from, to } => {
-                self.push_edge_update(*id, |edge| GraphOp::SetEdgeEndpoints {
-                    id: *id,
-                    from: EdgeEndpoints::from_edge(edge),
-                    to: EdgeEndpoints::new(*from, *to),
-                })?;
-            }
+            _ => self.push_edge_update_change(change)?,
         }
+        Ok(())
+    }
+
+    fn push_edge_update_change(
+        &mut self,
+        change: &EdgeChange,
+    ) -> Result<(), ChangesToTransactionError> {
+        let id = edge_update_id(change).expect("edge update change should have an id");
+        let op = {
+            let edge = self.existing_edge(id)?;
+            edge_update_op(change, edge).expect("edge update change should produce an op")
+        };
+        self.push_op(op);
         Ok(())
     }
 
@@ -86,19 +42,6 @@ impl<'a> ChangesTransactionPlanner<'a> {
         let op = GraphMutationPlanner::new(self.graph)
             .remove_edge_op(id)
             .map_err(|_| ChangesToTransactionError::MissingEdge(id))?;
-        self.push_op(op);
-        Ok(())
-    }
-
-    fn push_edge_update(
-        &mut self,
-        id: EdgeId,
-        build: impl FnOnce(&Edge) -> GraphOp,
-    ) -> Result<(), ChangesToTransactionError> {
-        let op = {
-            let edge = self.existing_edge(id)?;
-            build(edge)
-        };
         self.push_op(op);
         Ok(())
     }

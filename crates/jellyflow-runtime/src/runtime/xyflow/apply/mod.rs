@@ -16,7 +16,7 @@ mod nodes;
 mod ordered;
 
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{Edge, EdgeId, Graph, Node, NodeId};
+use jellyflow_core::core::Graph;
 
 pub use ordered::{
     XyFlowDimensionAttribute, XyFlowDimensionsSetAttributes, XyFlowEdgeChange, XyFlowEdgeElement,
@@ -94,24 +94,6 @@ impl<'a> ApplyChangesPlanner<'a> {
 
     fn finish(self) -> ApplyChangesReport {
         self.report
-    }
-
-    fn mutate_existing_node(&mut self, id: NodeId, f: impl FnOnce(&mut Node)) {
-        let Some(node) = self.graph.nodes.get_mut(&id) else {
-            self.mark_ignored();
-            return;
-        };
-        f(node);
-        self.mark_applied();
-    }
-
-    fn mutate_existing_edge(&mut self, id: EdgeId, f: impl FnOnce(&mut Edge)) {
-        let Some(edge) = self.graph.edges.get_mut(&id) else {
-            self.mark_ignored();
-            return;
-        };
-        f(edge);
-        self.mark_applied();
     }
 
     fn mark_applied(&mut self) {
