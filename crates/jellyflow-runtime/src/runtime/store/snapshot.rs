@@ -10,6 +10,7 @@ use super::NodeGraphStore;
 pub(super) struct StoreSnapshotParts<'a> {
     graph: &'a Graph,
     graph_revision: u64,
+    layout_facts_revision: u64,
     view_state: &'a NodeGraphViewState,
     interaction: &'a NodeGraphInteractionConfig,
     runtime_tuning: &'a NodeGraphRuntimeTuning,
@@ -20,6 +21,7 @@ impl<'a> StoreSnapshotParts<'a> {
     pub(super) fn from_store_fields(
         graph: &'a Graph,
         graph_revision: u64,
+        layout_facts_revision: u64,
         view_state: &'a NodeGraphViewState,
         interaction: &'a NodeGraphInteractionConfig,
         runtime_tuning: &'a NodeGraphRuntimeTuning,
@@ -28,6 +30,7 @@ impl<'a> StoreSnapshotParts<'a> {
         Self {
             graph,
             graph_revision,
+            layout_facts_revision,
             view_state,
             interaction,
             runtime_tuning,
@@ -39,6 +42,7 @@ impl<'a> StoreSnapshotParts<'a> {
         Self::from_store_fields(
             &store.graph,
             store.graph_revision,
+            store.layout_facts_revision,
             &store.view_state,
             &store.interaction,
             &store.runtime_tuning,
@@ -50,6 +54,7 @@ impl<'a> StoreSnapshotParts<'a> {
         NodeGraphStoreSnapshot::new(
             self.graph,
             self.graph_revision,
+            self.layout_facts_revision,
             self.view_state,
             self.interaction,
             self.runtime_tuning,

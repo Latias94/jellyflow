@@ -1,7 +1,10 @@
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use crate::runtime::connection::{ConnectionHandleRef, ConnectionHandleValidity};
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
-use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement, NodeMeasurementOutcome};
+use crate::runtime::measurement::{
+    LayoutEdgePosition, MeasuredHandle, NodeMeasurement, NodeMeasurementError,
+    NodeMeasurementOutcome,
+};
 use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId,
@@ -21,6 +24,7 @@ fn measured_size_feeds_rendering_query_without_persisting_graph_size() {
         width: 10.0,
         height: 10.0,
     };
+    let persisted_before = serde_json::to_value(store.graph()).expect("serialize graph");
 
     assert!(store.rendering_query(viewport).visible_node_ids.is_empty());
 
@@ -37,12 +41,22 @@ fn measured_size_feeds_rendering_query_without_persisting_graph_size() {
         None,
         "runtime measurements must not persist into Graph"
     );
+    assert_eq!(
+        serde_json::to_value(store.graph()).expect("serialize measured graph"),
+        persisted_before,
+        "runtime measurements must not change the persisted Graph payload"
+    );
 
     assert_eq!(
         store.clear_node_measurement(node),
         NodeMeasurementOutcome::Changed
     );
     assert!(store.rendering_query(viewport).visible_node_ids.is_empty());
+    assert_eq!(
+        serde_json::to_value(store.graph()).expect("serialize cleared graph"),
+        persisted_before,
+        "clearing runtime measurements must not change the persisted Graph payload"
+    );
 }
 
 #[test]
@@ -106,18 +120,160 @@ fn measured_handles_feed_edge_endpoints_and_connection_targets() {
         .expect("target measurement");
 
     let endpoints = store
-        .edge_position_from_measurements(edge)
+        .edge_position_from_layout_facts(edge)
         .expect("edge endpoints");
     assert_eq!(endpoints.source.point, CanvasPoint { x: 100.0, y: 50.0 });
     assert_eq!(endpoints.target.point, CanvasPoint { x: 200.0, y: 50.0 });
 
-    let target = store.resolve_connection_target_from_measurements(
+    let facts = store.layout_facts_query(CanvasSize {
+        width: 320.0,
+        height: 160.0,
+    });
+    assert_eq!(facts.revision, store.layout_facts_revision());
+    assert_eq!(facts.rendering.visible_node_ids, vec![source, target]);
+    assert_eq!(
+        facts.visible_edge_positions,
+        vec![LayoutEdgePosition::new(edge, endpoints)]
+    );
+    assert_eq!(facts.visible_edge_position(edge), Some(endpoints));
+    assert!(
+        facts
+            .connection_target_candidates
+            .iter()
+            .any(|candidate| candidate.target.handle == target_handle)
+    );
+
+    let target = store.resolve_connection_target_from_layout_facts(
         CanvasPoint { x: 205.0, y: 50.0 },
         source_handle,
     );
     assert_eq!(target.target.expect("target handle").handle, target_handle);
     assert_eq!(target.feedback, ConnectionHandleValidity::Valid);
     assert!(target.is_handle_valid);
+}
+
+#[test]
+fn clearing_measurement_removes_derived_handle_facts() {
+    let source = NodeId::from_u128(40);
+    let target = NodeId::from_u128(41);
+    let out = PortId::from_u128(42);
+    let input = PortId::from_u128(43);
+    let edge = EdgeId::from_u128(44);
+    let mut store = NodeGraphStore::new(
+        graph_with_unsized_connected_nodes(source, target, out, input, edge),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let source_handle = ConnectionHandleRef::new(source, out, PortDirection::Out);
+    let target_handle = ConnectionHandleRef::new(target, input, PortDirection::In);
+
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(source)
+                .with_size(Some(CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                }))
+                .with_handles([MeasuredHandle::new(
+                    source_handle,
+                    HandleBounds {
+                        rect: CanvasRect {
+                            origin: CanvasPoint { x: 90.0, y: 40.0 },
+                            size: CanvasSize {
+                                width: 10.0,
+                                height: 20.0,
+                            },
+                        },
+                        position: HandlePosition::Right,
+                    },
+                )]),
+        )
+        .expect("source measurement");
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(target)
+                .with_size(Some(CanvasSize {
+                    width: 100.0,
+                    height: 100.0,
+                }))
+                .with_handles([MeasuredHandle::new(
+                    target_handle,
+                    HandleBounds {
+                        rect: CanvasRect {
+                            origin: CanvasPoint { x: 0.0, y: 40.0 },
+                            size: CanvasSize {
+                                width: 10.0,
+                                height: 20.0,
+                            },
+                        },
+                        position: HandlePosition::Left,
+                    },
+                )]),
+        )
+        .expect("target measurement");
+
+    assert!(store.edge_position_from_layout_facts(edge).is_some());
+    assert!(
+        store
+            .resolve_connection_target_from_layout_facts(
+                CanvasPoint { x: 205.0, y: 50.0 },
+                source_handle,
+            )
+            .target
+            .is_some()
+    );
+
+    assert_eq!(
+        store.clear_node_measurement(target),
+        NodeMeasurementOutcome::Changed
+    );
+    assert!(store.edge_position_from_layout_facts(edge).is_none());
+    let facts = store.layout_facts_query(CanvasSize {
+        width: 320.0,
+        height: 160.0,
+    });
+    assert!(facts.visible_edge_position(edge).is_none());
+    assert!(
+        facts
+            .connection_target_candidates
+            .iter()
+            .all(|candidate| candidate.target.handle != target_handle)
+    );
+    let resolved = store.resolve_connection_target_from_layout_facts(
+        CanvasPoint { x: 205.0, y: 50.0 },
+        source_handle,
+    );
+    assert!(resolved.target.is_none());
+    assert!(!resolved.is_handle_valid);
+}
+
+#[test]
+fn invalid_measurement_input_is_rejected_without_replacing_existing_facts() {
+    let node = NodeId::from_u128(50);
+    let mut store = NodeGraphStore::new(
+        graph_with_unsized_node(node),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let measurement = NodeMeasurement::new(node).with_size(Some(CanvasSize {
+        width: 10.0,
+        height: 10.0,
+    }));
+
+    store
+        .report_node_measurement(measurement.clone())
+        .expect("valid measurement");
+    let before = store.node_measurement(node);
+
+    let err = store
+        .report_node_measurement(NodeMeasurement::new(node).with_size(Some(CanvasSize {
+            width: 0.0,
+            height: 10.0,
+        })))
+        .expect_err("invalid size should be rejected");
+
+    assert!(matches!(err, NodeMeasurementError::InvalidSize { .. }));
+    assert_eq!(store.node_measurement(node), before);
 }
 
 fn graph_with_unsized_node(node: NodeId) -> Graph {

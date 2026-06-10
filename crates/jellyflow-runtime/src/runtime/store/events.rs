@@ -41,6 +41,15 @@ impl NodeGraphStore {
         self.graph_revision = self.graph_revision.saturating_add(1);
     }
 
+    pub(super) fn bump_layout_facts_revision(&mut self) {
+        self.layout_facts_revision = self.layout_facts_revision.saturating_add(1);
+    }
+
+    pub(crate) fn publish_layout_facts_changed(&mut self) {
+        self.bump_layout_facts_revision();
+        self.notify_selectors();
+    }
+
     pub(super) fn capture_document_snapshot(&self) -> DocumentSnapshotParts {
         DocumentSnapshotParts::from_store(self)
     }

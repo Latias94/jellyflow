@@ -9,6 +9,7 @@ use jellyflow_core::ops::GraphHistory;
 pub struct NodeGraphStoreSnapshot<'a> {
     pub graph: &'a Graph,
     pub graph_revision: u64,
+    pub layout_facts_revision: u64,
     pub view_state: &'a NodeGraphViewState,
     pub interaction: &'a NodeGraphInteractionConfig,
     pub runtime_tuning: &'a NodeGraphRuntimeTuning,
@@ -19,6 +20,7 @@ impl<'a> NodeGraphStoreSnapshot<'a> {
     pub(crate) fn new(
         graph: &'a Graph,
         graph_revision: u64,
+        layout_facts_revision: u64,
         view_state: &'a NodeGraphViewState,
         interaction: &'a NodeGraphInteractionConfig,
         runtime_tuning: &'a NodeGraphRuntimeTuning,
@@ -27,6 +29,7 @@ impl<'a> NodeGraphStoreSnapshot<'a> {
         Self {
             graph,
             graph_revision,
+            layout_facts_revision,
             view_state,
             interaction,
             runtime_tuning,

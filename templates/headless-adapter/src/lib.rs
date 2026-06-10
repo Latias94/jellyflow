@@ -317,23 +317,23 @@ pub fn run_measurement_smoke() -> Result<(), String> {
         )
         .map_err(|err| err.to_string())?;
 
-    let query = store.rendering_query(viewport);
-    if query.visible_node_ids != vec![source_id, target_id] {
+    let facts = store.layout_facts_query(viewport);
+    if facts.rendering.visible_node_ids != vec![source_id, target_id] {
         return Err(format!(
             "expected measured visible nodes {:?}, got {:?}",
             vec![source_id, target_id],
-            query.visible_node_ids
+            facts.rendering.visible_node_ids
         ));
     }
-    if query.visible_edge_ids != vec![edge_id] {
+    if facts.rendering.visible_edge_ids != vec![edge_id] {
         return Err(format!(
             "expected measured visible edge {:?}, got {:?}",
-            edge_id, query.visible_edge_ids
+            edge_id, facts.rendering.visible_edge_ids
         ));
     }
 
-    let endpoints = store
-        .edge_position_from_measurements(edge_id)
+    let endpoints = facts
+        .visible_edge_position(edge_id)
         .ok_or_else(|| "expected measured edge endpoints".to_owned())?;
     if endpoints.source.point != (CanvasPoint { x: 170.0, y: 60.0 }) {
         return Err(format!(
@@ -348,7 +348,7 @@ pub fn run_measurement_smoke() -> Result<(), String> {
         ));
     }
 
-    let target = store.resolve_connection_target_from_measurements(
+    let target = store.resolve_connection_target_from_layout_facts(
         CanvasPoint { x: 264.0, y: 60.0 },
         source_handle,
     );

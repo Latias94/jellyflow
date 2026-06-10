@@ -14,6 +14,10 @@ impl NodeGraphStore {
         self.graph_revision
     }
 
+    pub fn layout_facts_revision(&self) -> u64 {
+        self.layout_facts_revision
+    }
+
     pub fn lookups(&self) -> &NodeGraphLookups {
         &self.lookups
     }
@@ -36,6 +40,7 @@ impl NodeGraphStore {
         self.bump_graph_revision();
         self.view_state.sanitize_for_graph(&self.graph);
         self.lookups.rebuild_from(&self.graph);
+        self.bump_layout_facts_revision();
         self.publish_document_replaced(before);
     }
 
@@ -59,6 +64,7 @@ impl NodeGraphStore {
         self.runtime_tuning = editor_config.runtime_tuning;
         self.history = GraphHistory::default();
         self.lookups.rebuild_from(&self.graph);
+        self.bump_layout_facts_revision();
         self.publish_document_replaced(before);
     }
 }

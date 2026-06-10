@@ -99,6 +99,7 @@ impl NodeGraphStore {
         let snapshot_parts = StoreSnapshotParts::from_store_fields(
             &self.graph,
             self.graph_revision,
+            self.layout_facts_revision,
             &self.view_state,
             &self.interaction,
             &self.runtime_tuning,
@@ -127,6 +128,7 @@ impl NodeGraphStore {
         self.bump_graph_revision();
         self.view_state.sanitize_for_graph(&self.graph);
         self.lookups.apply_transaction(&self.graph, committed);
+        self.bump_layout_facts_revision();
     }
 
     pub(super) fn prepare_committed_graph_patch(

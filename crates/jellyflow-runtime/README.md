@@ -80,12 +80,13 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest, AutoPanPlan}` plus
   `NodeGraphStore::{apply_auto_pan, apply_selection_auto_pan}` for deterministic edge-proximity
   auto-pan frames that feed the normal viewport publication path;
-- `NodeGraphStore::rendering_query` for renderer-facing group, node, and edge paint order plus
-  XyFlow-style visible node/edge culling from current viewport transform, logical viewport size,
-  node-origin policy, draw order, selected elevation, reported measurements, and
-  `only_render_visible_elements` tuning. `NodeGraphStore::{visible_node_ids,
-  visible_node_render_order, visible_edge_ids, visible_edge_render_order}` remain convenience
-  wrappers for callers that only need one list;
+- `NodeGraphStore::layout_facts_query` for adapter-facing report-once/read-many layout facts after
+  measurement publication. It returns the current layout-facts revision, renderer-facing
+  `rendering_query` result, visible edge endpoints, and connection target candidates; selector
+  subscriptions can track `layout_facts_revision` for redraw/re-query decisions. Narrow
+  `NodeGraphStore::rendering_query` and `NodeGraphStore::{visible_node_ids,
+  visible_node_render_order, visible_edge_ids, visible_edge_render_order}` helpers remain available
+  for callers that only need paint order or visibility lists;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -192,7 +193,9 @@ raw double-click detection, release velocity estimation, frame scheduling, anima
 cancellation policy, sampled-frame commits, edge routing and draw batching, resize handles, window
 event loops, screenshots, and pixel assertions. For selection workflows, adapters own the
 screen-space selection rectangle and pointer/session ownership, then call `SelectionAutoPanRequest`
-for the shared edge-proximity viewport motion.
+for the shared edge-proximity viewport motion. Low-level geometry helpers remain available for
+custom routing and hit testing; adapters that need store-derived endpoints after reporting
+measurements should prefer `NodeGraphStore::layout_facts_query`.
 
 ```rust
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize};

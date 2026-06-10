@@ -84,11 +84,12 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   sampled frames;
 - `runtime::auto_pan` turns pointer-edge proximity and elapsed frame time into deterministic
   viewport pan frames, while adapters keep ownership of pointer capture and frame scheduling;
-- `NodeGraphStore::rendering_query` turns current viewport state, logical viewport size,
-  node-origin policy, draw order, selected elevation, reported measurements, and
-  `only_render_visible_elements` tuning into deterministic group/node/edge order and visible
-  node/edge ids before rendering. Narrow helper methods such as `visible_node_ids` and
-  `visible_edge_render_order` remain available when an adapter only needs one list;
+- `NodeGraphStore::layout_facts_query` is the adapter-facing report-once/read-many seam for
+  reported measurements: it returns the current layout-facts revision, `rendering_query` result,
+  visible edge endpoints, and connection target candidates before rendering or pointer feedback.
+  Selector subscriptions can track `layout_facts_revision` when adapters need redraw/re-query
+  signals for measurement-derived facts. `NodeGraphStore::rendering_query` remains available when
+  an adapter only needs deterministic group/node/edge order and visible node/edge ids;
 - `runtime::conformance` defines reusable fixture scenarios and a runner that drive a real
   `NodeGraphStore` and compare normalized traces for graph transactions, view changes, gesture
   lifecycle events, and XyFlow compatibility callbacks; adapter crates can group scenarios into

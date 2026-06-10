@@ -275,6 +275,8 @@ fn explicit_modules_expose_their_owned_surfaces() {
         .with_handles([measured_handle]);
     let _ = std::mem::size_of::<measurement::NodeMeasurementOutcome>();
     let _ = std::mem::size_of::<measurement::NodeMeasurementError>();
+    let _ = std::mem::size_of::<measurement::LayoutEdgePosition>();
+    let _ = std::mem::size_of::<measurement::LayoutFactsQueryResult>();
     let _: fn(
         &mut NodeGraphStore,
         measurement::NodeMeasurement,
@@ -285,16 +287,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
         NodeGraphStore::clear_node_measurement;
     let _: fn(&NodeGraphStore, NodeId) -> Option<measurement::NodeMeasurement> =
         NodeGraphStore::node_measurement;
+    let _: fn(&NodeGraphStore) -> u64 = NodeGraphStore::layout_facts_revision;
+    let _: fn(&NodeGraphStore, CanvasSize) -> measurement::LayoutFactsQueryResult =
+        NodeGraphStore::layout_facts_query;
     let _: fn(&NodeGraphStore) -> Vec<connection::ConnectionTargetCandidate> =
-        NodeGraphStore::connection_target_candidates_from_measurements;
+        NodeGraphStore::connection_target_candidates_from_layout_facts;
     let _: fn(
         &NodeGraphStore,
         CanvasPoint,
         connection::ConnectionHandleRef,
     ) -> connection::ResolvedConnectionTarget =
-        NodeGraphStore::resolve_connection_target_from_measurements;
+        NodeGraphStore::resolve_connection_target_from_layout_facts;
     let _: fn(&NodeGraphStore, EdgeId) -> Option<geometry::EdgePosition> =
-        NodeGraphStore::edge_position_from_measurements;
+        NodeGraphStore::edge_position_from_layout_facts;
     let _ = std::mem::size_of::<selection::NodePointerDownDecision>();
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();

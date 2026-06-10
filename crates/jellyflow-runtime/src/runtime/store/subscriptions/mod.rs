@@ -76,6 +76,7 @@ impl NodeGraphStore {
         let snapshot_parts = StoreSnapshotParts::from_store_fields(
             &self.graph,
             self.graph_revision,
+            self.layout_facts_revision,
             &self.view_state,
             &self.interaction,
             &self.runtime_tuning,

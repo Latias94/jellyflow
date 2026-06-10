@@ -57,6 +57,7 @@ pub enum DispatchError {
 pub struct NodeGraphStore {
     graph: Graph,
     graph_revision: u64,
+    layout_facts_revision: u64,
     view_state: NodeGraphViewState,
     interaction: NodeGraphInteractionConfig,
     runtime_tuning: NodeGraphRuntimeTuning,
@@ -72,6 +73,7 @@ impl std::fmt::Debug for NodeGraphStore {
         f.debug_struct("NodeGraphStore")
             .field("graph_id", &self.graph.graph_id)
             .field("graph_revision", &self.graph_revision)
+            .field("layout_facts_revision", &self.layout_facts_revision)
             .field("node_count", &self.graph.nodes.len())
             .field("edge_count", &self.graph.edges.len())
             .field("lookup_node_count", &self.lookups.node_count())
@@ -128,6 +130,7 @@ impl NodeGraphStore {
         Self {
             graph,
             graph_revision: 0,
+            layout_facts_revision: 0,
             view_state,
             interaction,
             runtime_tuning,

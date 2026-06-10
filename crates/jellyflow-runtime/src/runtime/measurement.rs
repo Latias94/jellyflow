@@ -13,6 +13,7 @@ use crate::runtime::connection::{
 use crate::runtime::geometry::{
     EdgeEndpointInput, EdgePosition, HandleBounds, HandlePosition, edge_position,
 };
+use crate::runtime::rendering::RenderingQueryResult;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::utils::get_node_rect;
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, NodeId, PortDirection};
@@ -91,6 +92,51 @@ pub enum NodeMeasurementError {
     },
 }
 
+/// Resolved endpoint geometry for one visible edge in a layout-facts query.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutEdgePosition {
+    pub edge: EdgeId,
+    pub position: EdgePosition,
+}
+
+impl LayoutEdgePosition {
+    pub fn new(edge: EdgeId, position: EdgePosition) -> Self {
+        Self { edge, position }
+    }
+}
+
+/// Store-level layout facts derived from the graph, view state, and reported measurements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutFactsQueryResult {
+    pub revision: u64,
+    pub rendering: RenderingQueryResult,
+    pub visible_edge_positions: Vec<LayoutEdgePosition>,
+    pub connection_target_candidates: Vec<ConnectionTargetCandidate>,
+}
+
+impl LayoutFactsQueryResult {
+    pub fn new(
+        revision: u64,
+        rendering: RenderingQueryResult,
+        visible_edge_positions: Vec<LayoutEdgePosition>,
+        connection_target_candidates: Vec<ConnectionTargetCandidate>,
+    ) -> Self {
+        Self {
+            revision,
+            rendering,
+            visible_edge_positions,
+            connection_target_candidates,
+        }
+    }
+
+    pub fn visible_edge_position(&self, edge: EdgeId) -> Option<EdgePosition> {
+        self.visible_edge_positions
+            .iter()
+            .find(|position| position.edge == edge)
+            .map(|position| position.position)
+    }
+}
+
 impl NodeGraphStore {
     /// Applies non-persisted renderer measurements for one node.
     pub fn report_node_measurement(
@@ -103,6 +149,7 @@ impl NodeGraphStore {
         };
 
         if entry.apply_measurement(&measurement) {
+            self.publish_layout_facts_changed();
             Ok(NodeMeasurementOutcome::Changed)
         } else {
             Ok(NodeMeasurementOutcome::Unchanged)
@@ -116,6 +163,7 @@ impl NodeGraphStore {
         };
 
         if entry.clear_measurement() {
+            self.publish_layout_facts_changed();
             NodeMeasurementOutcome::Changed
         } else {
             NodeMeasurementOutcome::Unchanged
@@ -130,8 +178,30 @@ impl NodeGraphStore {
             .and_then(|entry| entry.measurement(node))
     }
 
+    /// Reads the adapter-facing layout facts for the current store state.
+    pub fn layout_facts_query(&self, viewport_size: CanvasSize) -> LayoutFactsQueryResult {
+        let rendering = self.rendering_query(viewport_size);
+        let visible_edge_positions = rendering
+            .visible_edge_render_order
+            .iter()
+            .copied()
+            .filter_map(|edge| {
+                self.edge_position_from_layout_facts(edge)
+                    .map(|position| LayoutEdgePosition::new(edge, position))
+            })
+            .collect();
+        let connection_target_candidates = self.connection_target_candidates_from_layout_facts();
+
+        LayoutFactsQueryResult::new(
+            self.layout_facts_revision(),
+            rendering,
+            visible_edge_positions,
+            connection_target_candidates,
+        )
+    }
+
     /// Builds renderer-neutral connection target candidates from reported handle measurements.
-    pub fn connection_target_candidates_from_measurements(&self) -> Vec<ConnectionTargetCandidate> {
+    pub fn connection_target_candidates_from_layout_facts(&self) -> Vec<ConnectionTargetCandidate> {
         let interaction = self.resolved_interaction_state();
         let node_origin = interaction.node_origin.normalized();
         let mut candidates = Vec::new();
@@ -176,14 +246,14 @@ impl NodeGraphStore {
     }
 
     /// Resolves a connection target using the handle inventory previously reported by adapters.
-    pub fn resolve_connection_target_from_measurements(
+    pub fn resolve_connection_target_from_layout_facts(
         &self,
         pointer: CanvasPoint,
         from: ConnectionHandleRef,
     ) -> ResolvedConnectionTarget {
         let interaction = self.resolved_interaction_state();
         let connection = interaction.connection_interaction();
-        let candidates = self.connection_target_candidates_from_measurements();
+        let candidates = self.connection_target_candidates_from_layout_facts();
         resolve_connection_target_from_handles(ConnectionTargetFromHandlesInput::new(
             pointer,
             connection.connection_radius,
@@ -194,7 +264,7 @@ impl NodeGraphStore {
     }
 
     /// Resolves edge endpoint geometry from graph endpoints plus reported measurement facts.
-    pub fn edge_position_from_measurements(&self, edge: EdgeId) -> Option<EdgePosition> {
+    pub fn edge_position_from_layout_facts(&self, edge: EdgeId) -> Option<EdgePosition> {
         let edge = self.graph().edges.get(&edge)?;
         let from_port = self.graph().ports.get(&edge.from)?;
         let to_port = self.graph().ports.get(&edge.to)?;

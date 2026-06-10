@@ -1,8 +1,9 @@
 use super::super::fixtures::{make_graph, make_store};
 
 use crate::runtime::events::NodeGraphStoreEvent;
+use crate::runtime::measurement::{NodeMeasurement, NodeMeasurementOutcome};
 use crate::runtime::xyflow::changes::{NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{CanvasPoint, Node, NodeId, NodeKindKey};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, Node, NodeId, NodeKindKey};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
@@ -139,4 +140,78 @@ fn store_selector_diff_provides_prev_and_next() {
     store.set_selection(Vec::new(), Vec::new(), Vec::new());
 
     assert_eq!(deltas.borrow().as_slice(), &[(0, 1), (1, 0)]);
+}
+
+#[test]
+fn store_selector_subscription_tracks_layout_fact_revision_changes() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (g0, a, _b, _out_port, _in_port, _eid) = make_graph();
+    let mut store = make_store(g0);
+    let measurement = NodeMeasurement::new(a).with_size(Some(CanvasSize {
+        width: 10.0,
+        height: 10.0,
+    }));
+
+    let revisions: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let revisions2 = revisions.clone();
+    store.subscribe_selector(
+        |s| s.layout_facts_revision,
+        move |revision| revisions2.borrow_mut().push(*revision),
+    );
+
+    assert_eq!(store.layout_facts_revision(), 0);
+    assert_eq!(
+        store
+            .report_node_measurement(measurement.clone())
+            .expect("changed measurement"),
+        NodeMeasurementOutcome::Changed
+    );
+    assert_eq!(store.layout_facts_revision(), 1);
+    assert_eq!(revisions.borrow().as_slice(), &[1]);
+
+    assert_eq!(
+        store
+            .report_node_measurement(measurement)
+            .expect("identical measurement"),
+        NodeMeasurementOutcome::Unchanged
+    );
+    assert_eq!(store.layout_facts_revision(), 1);
+    assert_eq!(revisions.borrow().as_slice(), &[1]);
+
+    assert_eq!(
+        store.clear_node_measurement(a),
+        NodeMeasurementOutcome::Changed
+    );
+    assert_eq!(store.layout_facts_revision(), 2);
+    assert_eq!(revisions.borrow().as_slice(), &[1, 2]);
+
+    assert_eq!(
+        store.clear_node_measurement(a),
+        NodeMeasurementOutcome::Unchanged
+    );
+    assert_eq!(store.layout_facts_revision(), 2);
+    assert_eq!(revisions.borrow().as_slice(), &[1, 2]);
+
+    assert!(
+        store
+            .report_node_measurement(NodeMeasurement::new(NodeId::new()).with_size(Some(
+                CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            )))
+            .is_err()
+    );
+    assert!(
+        store
+            .report_node_measurement(NodeMeasurement::new(a).with_size(Some(CanvasSize {
+                width: 0.0,
+                height: 10.0,
+            })))
+            .is_err()
+    );
+    assert_eq!(store.layout_facts_revision(), 2);
+    assert_eq!(revisions.borrow().as_slice(), &[1, 2]);
 }
