@@ -91,6 +91,47 @@ fn conformance_runner_executes_delete_selection_fixture_and_matches_trace() {
 }
 
 #[test]
+fn conformance_runner_expands_delete_selection_during_node_drag_behavior_contract() {
+    let (graph, node_id, _b, out_port, in_port, edge_id) = make_graph();
+    let mut view_state = crate::io::NodeGraphViewState::default();
+    view_state.set_selection(vec![node_id], Vec::new(), Vec::new());
+    let disconnected = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
+    let start = NodeDragStart {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+    };
+    let end = NodeDragEnd {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+        outcome: NodeDragEndOutcome::Canceled,
+    };
+
+    let scenario = ConformanceScenario::new("delete during node drag behavior contract", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_delete_selection_during_node_drag_contract(
+            ConformanceDeleteSelectionDuringNodeDragContract::new(
+                start,
+                end,
+                ConformanceDeleteSelectionContract::new(1, 1)
+                    .for_key(keyboard_types::Code::Backspace)
+                    .with_disconnected([disconnected]),
+            ),
+        );
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(scenario.actions.len(), 0);
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 3);
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
+}
+
+#[test]
 fn conformance_runner_asserts_connection_target_from_handle_candidates() {
     let (graph, source_node, target_node, out_port, in_port, _edge_id) = make_graph();
     let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
@@ -849,6 +890,81 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
 
     assert!(report.is_match(), "{report}");
     assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+}
+
+#[test]
+fn conformance_runner_expands_node_pointer_down_selection_behavior_contract() {
+    let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
+    let view_state = node_pointer_down_view_state(other, edge_id);
+
+    let scenario = ConformanceScenario::new("node pointer down behavior contract runner", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_node_pointer_down_selection_contract(
+            ConformanceNodePointerDownSelectionContract::new(
+                ConformanceNodePointerDownInput {
+                    node: node_id,
+                    multi_selection_active: false,
+                    screen_delta: CanvasPoint { x: 3.0, y: 4.0 },
+                },
+                PointerGestureClaim::NodeDrag,
+                [node_id],
+                std::iter::empty::<EdgeId>(),
+            ),
+        );
+
+    assert!(scenario.actions.is_empty());
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert_eq!(
+        scenario.expanded_actions()[0].kind(),
+        "apply_node_pointer_down"
+    );
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
+
+    let encoded = serde_json::to_value(&scenario).expect("serialize behavior fixture");
+    assert!(encoded.get("behaviors").is_some());
+    assert!(encoded.get("actions").is_none());
+    assert!(encoded.get("expected_trace").is_none());
+    let decoded: ConformanceScenario =
+        serde_json::from_value(encoded).expect("deserialize behavior fixture");
+    assert_eq!(decoded.behaviors.len(), 1);
+    assert_eq!(decoded.expanded_actions().len(), 1);
+}
+
+#[test]
+fn conformance_runner_expands_node_pointer_down_selection_behavior_contract_without_drag_claim() {
+    let (graph, node_id, other, _out_port, _in_port, edge_id) = make_graph();
+    let view_state = node_pointer_down_view_state(other, edge_id);
+
+    let scenario = ConformanceScenario::new("node pointer down behavior contract none", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_node_pointer_down_selection_contract(
+            ConformanceNodePointerDownSelectionContract::new(
+                ConformanceNodePointerDownInput {
+                    node: node_id,
+                    multi_selection_active: false,
+                    screen_delta: CanvasPoint::default(),
+                },
+                PointerGestureClaim::None,
+                [node_id],
+                std::iter::empty::<EdgeId>(),
+            ),
+        );
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(
+        report.actual_trace(),
+        scenario.expanded_expected_trace().as_slice()
+    );
 }
 
 #[test]

@@ -23,6 +23,7 @@ use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
+use crate::runtime::drag::PointerGestureClaim;
 use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
 use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::rendering::RenderingQueryResult;
@@ -76,6 +77,8 @@ pub enum ConformanceAction {
     },
     ApplyNodePointerDown {
         input: ConformanceNodePointerDownInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_claim: Option<PointerGestureClaim>,
     },
     ApplySelectionBox {
         input: SelectionBoxInput,

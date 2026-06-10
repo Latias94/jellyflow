@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
+use crate::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest, PointerGestureClaim};
 use crate::runtime::resize::{
     NodePointerResizeRequest, NodeResizeAxis, NodeResizeConstraints, NodeResizeDirection,
     NodeResizeRequest, NodeResizeSession, NodeResizeSessionUpdateRequest,
@@ -302,6 +302,23 @@ impl ConformanceAction {
                 multi_selection_active,
                 screen_delta,
             },
+            expected_claim: None,
+        }
+    }
+
+    pub fn apply_node_pointer_down_expect_claim(
+        node: NodeId,
+        multi_selection_active: bool,
+        screen_delta: CanvasPoint,
+        expected_claim: PointerGestureClaim,
+    ) -> Self {
+        Self::ApplyNodePointerDown {
+            input: ConformanceNodePointerDownInput {
+                node,
+                multi_selection_active,
+                screen_delta,
+            },
+            expected_claim: Some(expected_claim),
         }
     }
 

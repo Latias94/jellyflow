@@ -4,6 +4,7 @@ use crate::io::NodeGraphKeyCode;
 use crate::runtime::connection::{CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest};
 use crate::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
+use crate::runtime::drag::PointerGestureClaim;
 use crate::runtime::events::{
     ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
     NodeDragUpdate, NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart,
@@ -20,7 +21,8 @@ use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use keyboard_types::Code as KeyCode;
 
 use super::action::{
-    ConformanceAction, ConformanceLayoutFactsExpectation, ConformanceNodePointerResizeRequest,
+    ConformanceAction, ConformanceLayoutFactsExpectation, ConformanceNodePointerDownInput,
+    ConformanceNodePointerResizeRequest,
 };
 use super::suite::ConformanceScenario;
 use super::trace::{ConformanceCallbackEvent, ConformanceTraceEvent, ConformanceViewChange};
@@ -34,6 +36,8 @@ pub enum ConformanceBehavior {
     NodeResizeSession(ConformanceNodeResizeSessionContract),
     SelectionBox(ConformanceSelectionBoxContract),
     DeleteSelection(ConformanceDeleteSelectionContract),
+    DeleteSelectionDuringNodeDrag(ConformanceDeleteSelectionDuringNodeDragContract),
+    NodePointerDownSelection(ConformanceNodePointerDownSelectionContract),
     ViewportDragPanSession(ConformanceViewportDragPanSessionContract),
     RenderingQuery(ConformanceRenderingQueryContract),
     LayoutFacts(ConformanceLayoutFactsContract),
@@ -60,6 +64,18 @@ impl ConformanceBehavior {
         Self::DeleteSelection(contract)
     }
 
+    pub fn delete_selection_during_node_drag(
+        contract: ConformanceDeleteSelectionDuringNodeDragContract,
+    ) -> Self {
+        Self::DeleteSelectionDuringNodeDrag(contract)
+    }
+
+    pub fn node_pointer_down_selection(
+        contract: ConformanceNodePointerDownSelectionContract,
+    ) -> Self {
+        Self::NodePointerDownSelection(contract)
+    }
+
     pub fn viewport_drag_pan_session(contract: ConformanceViewportDragPanSessionContract) -> Self {
         Self::ViewportDragPanSession(contract)
     }
@@ -79,6 +95,8 @@ impl ConformanceBehavior {
             Self::NodeResizeSession(contract) => vec![contract.action()],
             Self::SelectionBox(contract) => vec![contract.action()],
             Self::DeleteSelection(contract) => vec![contract.action()],
+            Self::DeleteSelectionDuringNodeDrag(contract) => contract.actions(),
+            Self::NodePointerDownSelection(contract) => vec![contract.action()],
             Self::ViewportDragPanSession(contract) => vec![contract.action()],
             Self::RenderingQuery(contract) => vec![contract.action()],
             Self::LayoutFacts(contract) => contract.actions(),
@@ -92,6 +110,8 @@ impl ConformanceBehavior {
             Self::NodeResizeSession(contract) => contract.expected_trace(),
             Self::SelectionBox(contract) => contract.expected_trace(),
             Self::DeleteSelection(contract) => contract.expected_trace(),
+            Self::DeleteSelectionDuringNodeDrag(contract) => contract.expected_trace(),
+            Self::NodePointerDownSelection(contract) => contract.expected_trace(),
             Self::ViewportDragPanSession(contract) => contract.expected_trace(),
             Self::RenderingQuery(contract) => contract.expected_trace(),
             Self::LayoutFacts(contract) => contract.expected_trace(),
@@ -340,26 +360,30 @@ impl ConformanceSelectionBoxContract {
     }
 
     fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
-        vec![
-            ConformanceTraceEvent::selection(
-                self.nodes.clone(),
-                self.edges.clone(),
-                self.groups.clone(),
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Selection {
-                    nodes: self.nodes.clone(),
-                    edges: self.edges.clone(),
-                    groups: self.groups.clone(),
-                }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-                nodes: self.nodes.clone(),
-                edges: self.edges.clone(),
-                groups: self.groups.clone(),
-            }),
-        ]
+        selection_trace_events(&self.nodes, &self.edges, &self.groups)
     }
+}
+
+fn selection_trace_events(
+    nodes: &[NodeId],
+    edges: &[EdgeId],
+    groups: &[GroupId],
+) -> Vec<ConformanceTraceEvent> {
+    vec![
+        ConformanceTraceEvent::selection(nodes.to_vec(), edges.to_vec(), groups.to_vec()),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+            changes: vec![ConformanceViewChange::Selection {
+                nodes: nodes.to_vec(),
+                edges: edges.to_vec(),
+                groups: groups.to_vec(),
+            }],
+        }),
+        ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+            nodes: nodes.to_vec(),
+            edges: edges.to_vec(),
+            groups: groups.to_vec(),
+        }),
+    ]
 }
 
 fn usize_is_zero(value: &usize) -> bool {
@@ -509,29 +533,110 @@ impl ConformanceDeleteSelectionContract {
             ));
         }
 
-        trace.extend([
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Delete {
+        trace.push(ConformanceTraceEvent::callback(
+            ConformanceCallbackEvent::Delete {
                 nodes: self.nodes,
                 edges: self.edges,
                 groups: self.groups,
                 sticky_notes: self.sticky_notes,
-            }),
-            ConformanceTraceEvent::selection(Vec::new(), Vec::new(), Vec::new()),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Selection {
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                    groups: Vec::new(),
-                }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                groups: Vec::new(),
-            }),
-        ]);
+            },
+        ));
+        trace.extend(selection_trace_events(&[], &[], &[]));
 
         trace
+    }
+}
+
+/// Behavior contract for deleting the active selection mid-drag and then ending the drag as canceled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceDeleteSelectionDuringNodeDragContract {
+    pub start: NodeDragStart,
+    pub end: NodeDragEnd,
+    pub delete: ConformanceDeleteSelectionContract,
+}
+
+impl ConformanceDeleteSelectionDuringNodeDragContract {
+    pub fn new(
+        start: NodeDragStart,
+        end: NodeDragEnd,
+        delete: ConformanceDeleteSelectionContract,
+    ) -> Self {
+        Self { start, end, delete }
+    }
+
+    fn actions(&self) -> Vec<ConformanceAction> {
+        vec![
+            ConformanceAction::emit_gesture(NodeGraphGestureEvent::NodeDragStart(
+                self.start.clone(),
+            )),
+            self.delete.action(),
+            ConformanceAction::emit_gesture(NodeGraphGestureEvent::NodeDragEnd(self.end.clone())),
+        ]
+    }
+
+    fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        let mut trace = vec![
+            ConformanceTraceEvent::gesture(NodeGraphGestureEvent::NodeDragStart(
+                self.start.clone(),
+            )),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(
+                self.start.clone(),
+            )),
+        ];
+        trace.extend(self.delete.expected_trace());
+        trace.extend([
+            ConformanceTraceEvent::gesture(NodeGraphGestureEvent::NodeDragEnd(self.end.clone())),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragEnd(
+                self.end.clone(),
+            )),
+        ]);
+        trace
+    }
+}
+
+/// Behavior contract for a node pointer-down selection update and drag claim assertion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceNodePointerDownSelectionContract {
+    pub input: ConformanceNodePointerDownInput,
+    pub expected_claim: PointerGestureClaim,
+    pub nodes: Vec<NodeId>,
+    pub edges: Vec<EdgeId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupId>,
+}
+
+impl ConformanceNodePointerDownSelectionContract {
+    pub fn new(
+        input: ConformanceNodePointerDownInput,
+        expected_claim: PointerGestureClaim,
+        nodes: impl IntoIterator<Item = NodeId>,
+        edges: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
+        Self {
+            input,
+            expected_claim,
+            nodes: nodes.into_iter().collect(),
+            edges: edges.into_iter().collect(),
+            groups: Vec::new(),
+        }
+    }
+
+    pub fn with_groups(mut self, groups: impl IntoIterator<Item = GroupId>) -> Self {
+        self.groups = groups.into_iter().collect();
+        self
+    }
+
+    fn action(&self) -> ConformanceAction {
+        ConformanceAction::apply_node_pointer_down_expect_claim(
+            self.input.node,
+            self.input.multi_selection_active,
+            self.input.screen_delta,
+            self.expected_claim,
+        )
+    }
+
+    fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        selection_trace_events(&self.nodes, &self.edges, &self.groups)
     }
 }
 
@@ -696,6 +801,22 @@ impl ConformanceScenario {
         contract: ConformanceDeleteSelectionContract,
     ) -> Self {
         self.with_behavior(ConformanceBehavior::delete_selection(contract))
+    }
+
+    pub fn with_delete_selection_during_node_drag_contract(
+        self,
+        contract: ConformanceDeleteSelectionDuringNodeDragContract,
+    ) -> Self {
+        self.with_behavior(ConformanceBehavior::delete_selection_during_node_drag(
+            contract,
+        ))
+    }
+
+    pub fn with_node_pointer_down_selection_contract(
+        self,
+        contract: ConformanceNodePointerDownSelectionContract,
+    ) -> Self {
+        self.with_behavior(ConformanceBehavior::node_pointer_down_selection(contract))
     }
 
     pub fn with_viewport_drag_pan_session_contract(

@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, GroupId, NodeId, PortDirection,
-    PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Graph, GraphId, GroupId, NodeId,
+    PortDirection, PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphTransaction;
@@ -828,6 +828,14 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
         keyboard_types::Code::Backspace,
     );
+    let node_pointer_down_action =
+        conformance::ConformanceAction::apply_node_pointer_down_expect_claim(
+            node_id,
+            false,
+            CanvasPoint { x: 3.0, y: 4.0 },
+            drag::PointerGestureClaim::NodeDrag,
+        );
+    assert_eq!(node_pointer_down_action.kind(), "apply_node_pointer_down");
     let assert_node_position_action = conformance::ConformanceAction::assert_node_position(
         node_id,
         CanvasPoint { x: 1.0, y: 2.0 },
@@ -1044,6 +1052,74 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let delete_selection_contract = conformance::ConformanceDeleteSelectionContract::new(1, 0)
         .for_key(keyboard_types::Code::Delete)
         .with_commit_op_kinds(["remove_node"]);
+    let node_pointer_down_contract = conformance::ConformanceNodePointerDownSelectionContract::new(
+        conformance::ConformanceNodePointerDownInput {
+            node: node_id,
+            multi_selection_active: false,
+            screen_delta: CanvasPoint { x: 3.0, y: 4.0 },
+        },
+        drag::PointerGestureClaim::NodeDrag,
+        [node_id],
+        std::iter::empty::<EdgeId>(),
+    );
+    let node_pointer_down_scenario = conformance::ConformanceScenario::new(
+        "public node pointer down selection fixture",
+        Graph::new(GraphId::new()),
+    )
+    .with_node_pointer_down_selection_contract(node_pointer_down_contract);
+    assert_eq!(node_pointer_down_scenario.behaviors.len(), 1);
+    assert_eq!(node_pointer_down_scenario.expanded_actions().len(), 1);
+    assert!(
+        !node_pointer_down_scenario
+            .expanded_expected_trace()
+            .is_empty()
+    );
+    let node_pointer_down_fixture = serde_json::to_value(&node_pointer_down_scenario)
+        .expect("serialize node pointer down fixture");
+    let node_pointer_down_decoded: conformance::ConformanceScenario =
+        serde_json::from_value(node_pointer_down_fixture)
+            .expect("deserialize node pointer down fixture");
+    assert_eq!(node_pointer_down_decoded.behaviors.len(), 1);
+    let delete_during_drag_contract =
+        conformance::ConformanceDeleteSelectionDuringNodeDragContract::new(
+            events::NodeDragStart {
+                primary: node_id,
+                nodes: vec![node_id],
+                pointer: CanvasPoint { x: 1.0, y: 2.0 },
+            },
+            events::NodeDragEnd {
+                primary: node_id,
+                nodes: vec![node_id],
+                pointer: CanvasPoint { x: 1.0, y: 2.0 },
+                outcome: events::NodeDragEndOutcome::Canceled,
+            },
+            conformance::ConformanceDeleteSelectionContract::new(1, 1)
+                .for_key(keyboard_types::Code::Backspace)
+                .with_disconnected([xyflow::EdgeConnection::new(
+                    EdgeId::new(),
+                    PortId::new(),
+                    PortId::new(),
+                    EdgeKind::Data,
+                )]),
+        );
+    let delete_during_drag_scenario = conformance::ConformanceScenario::new(
+        "public delete during drag fixture",
+        Graph::new(GraphId::new()),
+    )
+    .with_delete_selection_during_node_drag_contract(delete_during_drag_contract);
+    assert_eq!(delete_during_drag_scenario.behaviors.len(), 1);
+    assert_eq!(delete_during_drag_scenario.expanded_actions().len(), 3);
+    assert!(
+        !delete_during_drag_scenario
+            .expanded_expected_trace()
+            .is_empty()
+    );
+    let delete_during_drag_fixture = serde_json::to_value(&delete_during_drag_scenario)
+        .expect("serialize delete during drag fixture");
+    let delete_during_drag_decoded: conformance::ConformanceScenario =
+        serde_json::from_value(delete_during_drag_fixture)
+            .expect("deserialize delete during drag fixture");
+    assert_eq!(delete_during_drag_decoded.behaviors.len(), 1);
     let delete_scenario = conformance::ConformanceScenario::new(
         "public delete selection fixture",
         Graph::new(GraphId::new()),
@@ -1061,6 +1137,9 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let _ = std::mem::size_of::<conformance::ConformanceRenderingQueryContract>();
     let _ = std::mem::size_of::<conformance::ConformanceSelectionBoxContract>();
     let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionDuringNodeDragContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceNodePointerDownSelectionContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceNodePointerDownInput>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();

@@ -8,7 +8,8 @@ use jellyflow_core::{
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceDeleteSelectionContract,
-    ConformanceEdgeEndpointPosition, ConformanceFixtureDirectory, ConformanceFixtureDirectoryApprovalReport,
+    ConformanceDeleteSelectionDuringNodeDragContract, ConformanceEdgeEndpointPosition,
+    ConformanceFixtureDirectory, ConformanceFixtureDirectoryApprovalReport,
     ConformanceFixtureDirectoryReport, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
@@ -21,7 +22,7 @@ use jellyflow_runtime::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
     ConnectionTargetHandle, ResolvedConnectionTarget,
 };
-use jellyflow_runtime::runtime::events::NodeResizeUpdate;
+use jellyflow_runtime::runtime::events::{NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeResizeUpdate};
 use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow_runtime::runtime::rendering::RenderingQueryResult;
@@ -44,6 +45,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
         node_resize_scenario(),
         layout_facts_scenario(),
         delete_selection_scenario(),
+        delete_during_active_drag_scenario(),
         viewport_pan_scenario(),
         viewport_constrained_pan_scenario(),
         rendering_query_contract_scenario(),
@@ -94,6 +96,13 @@ pub fn run_node_resize_smoke() -> Result<ConformanceRunReport, String> {
 pub fn run_delete_selection_smoke() -> Result<ConformanceRunReport, String> {
     jellyflow_runtime::runtime::conformance::run_conformance_scenario(&delete_selection_scenario())
         .map_err(|err| err.to_string())
+}
+
+pub fn run_delete_during_active_drag_smoke() -> Result<ConformanceRunReport, String> {
+    jellyflow_runtime::runtime::conformance::run_conformance_scenario(
+        &delete_during_active_drag_scenario(),
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn run_viewport_animation_smoke() -> Result<ConformanceRunReport, String> {
@@ -531,6 +540,42 @@ fn delete_selection_scenario() -> ConformanceScenario {
             ConformanceDeleteSelectionContract::new(1, 1)
                 .for_key(keyboard_types::Code::Backspace)
                 .with_disconnected([disconnected]),
+        )
+}
+
+fn delete_during_active_drag_scenario() -> ConformanceScenario {
+    let node_id = NodeId::from_u128(7);
+    let sibling_id = NodeId::from_u128(8);
+    let out_port = PortId::from_u128(70);
+    let in_port = PortId::from_u128(80);
+    let edge_id = EdgeId::from_u128(700);
+    let graph = graph_with_connected_nodes(node_id, sibling_id, out_port, in_port, edge_id);
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![node_id], Vec::new(), Vec::new());
+    let disconnected = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
+    let start = NodeDragStart {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+    };
+    let end = NodeDragEnd {
+        primary: node_id,
+        nodes: vec![node_id],
+        pointer: CanvasPoint { x: 1.0, y: 2.0 },
+        outcome: NodeDragEndOutcome::Canceled,
+    };
+
+    ConformanceScenario::new("template delete during active node drag", graph)
+        .with_view_state(view_state)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_delete_selection_during_node_drag_contract(
+            ConformanceDeleteSelectionDuringNodeDragContract::new(
+                start,
+                end,
+                ConformanceDeleteSelectionContract::new(1, 1)
+                    .for_key(keyboard_types::Code::Backspace)
+                    .with_disconnected([disconnected]),
+            ),
         )
 }
 
@@ -1015,7 +1060,7 @@ mod tests {
         let report = check_builtin_suite();
 
         assert!(report.is_match(), "{report}");
-        assert_eq!(report.scenario_count(), 10);
+        assert_eq!(report.scenario_count(), 11);
     }
 
     #[test]
@@ -1043,6 +1088,14 @@ mod tests {
     #[test]
     fn delete_selection_smoke_runs_as_single_scenario() {
         let report = run_delete_selection_smoke().expect("delete selection scenario runs");
+
+        assert!(report.is_match(), "{report}");
+    }
+
+    #[test]
+    fn delete_during_active_drag_smoke_runs_as_single_scenario() {
+        let report = run_delete_during_active_drag_smoke()
+            .expect("delete during active drag scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -1105,7 +1158,7 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.file_count(), 1);
-        assert_eq!(report.scenario_count(), 10);
+        assert_eq!(report.scenario_count(), 11);
     }
 
     fn temp_fixture_dir(name: &str) -> std::path::PathBuf {

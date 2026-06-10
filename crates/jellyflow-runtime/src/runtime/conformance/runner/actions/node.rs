@@ -1,4 +1,4 @@
-use crate::runtime::drag::NodeDragRequest;
+use crate::runtime::drag::{NodeDragRequest, PointerGestureClaim};
 use crate::runtime::gesture::NodeDragSession;
 use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
@@ -26,10 +26,10 @@ pub(super) fn execute_action(
         ConformanceAction::ApplyNodePointerResizeSession { request } => {
             apply_node_pointer_resize_session(store, *request)
         }
-        ConformanceAction::ApplyNodePointerDown { input } => {
-            apply_node_pointer_down(store, *input);
-            Ok(())
-        }
+        ConformanceAction::ApplyNodePointerDown {
+            input,
+            expected_claim,
+        } => apply_node_pointer_down(store, *input, *expected_claim),
         ConformanceAction::ApplyNodeNudge { request } => apply_node_nudge(store, *request),
         _ => return None,
     })
@@ -100,8 +100,19 @@ pub(super) fn apply_node_pointer_resize_session(
 pub(super) fn apply_node_pointer_down(
     store: &mut NodeGraphStore,
     input: ConformanceNodePointerDownInput,
-) {
-    store.apply_node_pointer_down(input.into_runtime());
+    expected_claim: Option<PointerGestureClaim>,
+) -> Result<(), String> {
+    let decision = store.apply_node_pointer_down(input.into_runtime());
+    if let Some(expected_claim) = expected_claim
+        && decision.drag_claim != expected_claim
+    {
+        return Err(format!(
+            "apply_node_pointer_down expected drag claim {expected_claim:?}, got {:?}",
+            decision.drag_claim
+        ));
+    }
+
+    Ok(())
 }
 
 pub(super) fn apply_node_nudge(

@@ -1,4 +1,5 @@
 use jellyflow_core::core::CanvasPoint;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::selection::{
     SelectionPointerClaim, SelectionPointerClaimInput, resolve_selection_pointer_claim,
@@ -38,7 +39,8 @@ impl PointerGestureClaimInput {
 }
 
 /// Which runtime gesture should own the current pointer drag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerGestureClaim {
     None,
     Selection,

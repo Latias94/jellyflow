@@ -195,3 +195,60 @@ fn store_apply_node_pointer_down_updates_selection_and_returns_decision() {
     );
     harness.assert_events(&[HarnessEvent::selection(vec![node], Vec::new(), Vec::new())]);
 }
+
+#[test]
+fn store_apply_node_pointer_down_keeps_hidden_and_non_selectable_nodes_unchanged() {
+    let (mut graph, node, other, _, _, edge) = make_graph();
+    graph.nodes.get_mut(&node).unwrap().selectable = Some(false);
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![other], vec![edge], Vec::new());
+
+    let mut harness = InteractionHarness::with_view_state(
+        "node pointer down non-selectable unchanged",
+        graph.clone(),
+        view_state.clone(),
+    );
+    let decision = harness
+        .store_mut()
+        .apply_node_pointer_down(NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(node, true),
+            CanvasPoint::default(),
+        ));
+
+    assert_eq!(
+        decision,
+        NodePointerDownDecision::new(
+            NodeDragStartSelectionAction::Unchanged,
+            PointerGestureClaim::None
+        )
+    );
+    assert_eq!(harness.store().view_state().selected_nodes, vec![other]);
+    assert_eq!(harness.store().view_state().selected_edges, vec![edge]);
+    harness.assert_events(&[]);
+
+    graph.nodes.get_mut(&node).unwrap().hidden = true;
+    let mut view_state = NodeGraphViewState::default();
+    view_state.set_selection(vec![other], Vec::new(), Vec::new());
+    let mut harness = InteractionHarness::with_view_state(
+        "node pointer down hidden unchanged",
+        graph,
+        view_state,
+    );
+    let decision = harness
+        .store_mut()
+        .apply_node_pointer_down(NodePointerDownInput::new(
+            NodeDragStartSelectionInput::new(node, false),
+            CanvasPoint::default(),
+        ));
+
+    assert_eq!(
+        decision,
+        NodePointerDownDecision::new(
+            NodeDragStartSelectionAction::Unchanged,
+            PointerGestureClaim::None
+        )
+    );
+    assert_eq!(harness.store().view_state().selected_nodes, vec![other]);
+    assert!(harness.store().view_state().selected_edges.is_empty());
+    harness.assert_events(&[]);
+}

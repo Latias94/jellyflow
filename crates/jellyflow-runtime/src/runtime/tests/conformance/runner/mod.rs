@@ -3,13 +3,15 @@ use super::super::fixtures::make_graph;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceBehavior, ConformanceCallbackEvent,
-    ConformanceDeleteSelectionContract, ConformanceEdgeEndpointPosition,
-    ConformanceLayoutEdgePosition, ConformanceLayoutFactsConnectionTargetExpectation,
-    ConformanceLayoutFactsContract, ConformanceLayoutFactsExpectation,
-    ConformanceNodeDragSessionContract, ConformanceNodePointerResizeRequest,
-    ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract, ConformanceScenario,
-    ConformanceSelectionBoxContract, ConformanceSuite, ConformanceTraceConfig,
-    ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario, run_conformance_suite,
+    ConformanceDeleteSelectionContract, ConformanceDeleteSelectionDuringNodeDragContract,
+    ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
+    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
+    ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
+    ConformanceNodePointerDownInput, ConformanceNodePointerDownSelectionContract,
+    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
+    ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSelectionBoxContract,
+    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    run_conformance_scenario, run_conformance_suite,
 };
 use crate::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
@@ -17,12 +19,13 @@ use crate::runtime::connection::{
     ResolvedConnectionTarget,
 };
 use crate::runtime::drag::{
-    NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection, NodeNudgeRequest,
+    NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection,
+    NodeNudgeRequest, PointerGestureClaim,
 };
 use crate::runtime::events::{
-    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome,
-    NodeResizeStart, NodeResizeUpdate, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
-    ViewportMoveKind, ViewportMoveStart,
+    NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
+    NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate, ViewportMove,
+    ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind, ViewportMoveStart,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement};

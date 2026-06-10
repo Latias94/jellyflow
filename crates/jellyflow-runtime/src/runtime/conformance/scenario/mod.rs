@@ -15,7 +15,8 @@ pub use action::{
 };
 pub use behavior::{
     ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceDeleteSelectionContract,
-    ConformanceLayoutFactsContract, ConformanceNodeDragSessionContract,
+    ConformanceDeleteSelectionDuringNodeDragContract, ConformanceLayoutFactsContract,
+    ConformanceNodeDragSessionContract, ConformanceNodePointerDownSelectionContract,
     ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract,
     ConformanceSelectionBoxContract, ConformanceViewportDragPanSessionContract,
 };
