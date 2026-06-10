@@ -14,10 +14,10 @@ pub use action::{
     ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
 };
 pub use behavior::{
-    ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceLayoutFactsContract,
-    ConformanceNodeDragSessionContract, ConformanceNodeResizeSessionContract,
-    ConformanceRenderingQueryContract, ConformanceSelectionBoxContract,
-    ConformanceViewportDragPanSessionContract,
+    ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceDeleteSelectionContract,
+    ConformanceLayoutFactsContract, ConformanceNodeDragSessionContract,
+    ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract,
+    ConformanceSelectionBoxContract, ConformanceViewportDragPanSessionContract,
 };
 pub(crate) use callback_recorder::ConformanceCallbackTraceRecorder;
 pub use constants::CONFORMANCE_FIXTURE_SCHEMA_VERSION;

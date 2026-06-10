@@ -1041,10 +1041,26 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let selection_decoded: conformance::ConformanceScenario =
         serde_json::from_value(selection_fixture).expect("deserialize selection fixture");
     assert_eq!(selection_decoded.behaviors.len(), 1);
+    let delete_selection_contract = conformance::ConformanceDeleteSelectionContract::new(1, 0)
+        .for_key(keyboard_types::Code::Delete)
+        .with_commit_op_kinds(["remove_node"]);
+    let delete_scenario = conformance::ConformanceScenario::new(
+        "public delete selection fixture",
+        Graph::new(GraphId::new()),
+    )
+    .with_delete_selection_contract(delete_selection_contract);
+    assert_eq!(delete_scenario.behaviors.len(), 1);
+    assert_eq!(delete_scenario.expanded_actions().len(), 1);
+    assert!(!delete_scenario.expanded_expected_trace().is_empty());
+    let delete_fixture = serde_json::to_value(&delete_scenario).expect("serialize delete fixture");
+    let delete_decoded: conformance::ConformanceScenario =
+        serde_json::from_value(delete_fixture).expect("deserialize delete fixture");
+    assert_eq!(delete_decoded.behaviors.len(), 1);
     let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
     let _ = std::mem::size_of::<conformance::ConformanceNodeResizeSessionContract>();
     let _ = std::mem::size_of::<conformance::ConformanceRenderingQueryContract>();
     let _ = std::mem::size_of::<conformance::ConformanceSelectionBoxContract>();
+    let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();

@@ -75,54 +75,19 @@ fn conformance_runner_executes_delete_selection_fixture_and_matches_trace() {
     let scenario = ConformanceScenario::new("delete selection runner", graph)
         .with_view_state(view_state)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([ConformanceAction::apply_delete_selection_for_key(
-            keyboard_types::Code::Backspace,
-        )])
-        .with_expected_trace([
-            ConformanceTraceEvent::graph_commit(
-                Some(DELETE_SELECTION_TRANSACTION_LABEL),
-                ["remove_node"],
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(DELETE_SELECTION_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 1,
-                edges: 1,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
-                ConnectionChange::Disconnected(disconnected),
-            )),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Disconnect(disconnected)),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesDelete { count: 1 }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesDelete { count: 1 }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Delete {
-                nodes: 1,
-                edges: 1,
-                groups: 0,
-                sticky_notes: 0,
-            }),
-            ConformanceTraceEvent::selection(Vec::new(), Vec::new(), Vec::new()),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Selection {
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                    groups: Vec::new(),
-                }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                groups: Vec::new(),
-            }),
-        ]);
+        .with_delete_selection_contract(
+            ConformanceDeleteSelectionContract::new(1, 1)
+                .for_key(keyboard_types::Code::Backspace)
+                .with_disconnected([disconnected]),
+        );
 
     let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
 
     assert!(report.is_match(), "{report}");
-    assert_eq!(report.actual_trace(), scenario.expected_trace.as_slice());
+    assert!(scenario.actions.is_empty());
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
 }
 
 #[test]

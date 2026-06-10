@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::io::NodeGraphKeyCode;
 use crate::runtime::connection::{CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest};
+use crate::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
     ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome, NodeDragStart,
@@ -15,6 +17,7 @@ use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{ViewportDragPanInput, ViewportGestureContext, ViewportTransform};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
+use keyboard_types::Code as KeyCode;
 
 use super::action::{
     ConformanceAction, ConformanceLayoutFactsExpectation, ConformanceNodePointerResizeRequest,
@@ -30,6 +33,7 @@ pub enum ConformanceBehavior {
     ConnectEdgeSession(ConformanceConnectEdgeSessionContract),
     NodeResizeSession(ConformanceNodeResizeSessionContract),
     SelectionBox(ConformanceSelectionBoxContract),
+    DeleteSelection(ConformanceDeleteSelectionContract),
     ViewportDragPanSession(ConformanceViewportDragPanSessionContract),
     RenderingQuery(ConformanceRenderingQueryContract),
     LayoutFacts(ConformanceLayoutFactsContract),
@@ -52,6 +56,10 @@ impl ConformanceBehavior {
         Self::SelectionBox(contract)
     }
 
+    pub fn delete_selection(contract: ConformanceDeleteSelectionContract) -> Self {
+        Self::DeleteSelection(contract)
+    }
+
     pub fn viewport_drag_pan_session(contract: ConformanceViewportDragPanSessionContract) -> Self {
         Self::ViewportDragPanSession(contract)
     }
@@ -70,6 +78,7 @@ impl ConformanceBehavior {
             Self::ConnectEdgeSession(contract) => vec![contract.action()],
             Self::NodeResizeSession(contract) => vec![contract.action()],
             Self::SelectionBox(contract) => vec![contract.action()],
+            Self::DeleteSelection(contract) => vec![contract.action()],
             Self::ViewportDragPanSession(contract) => vec![contract.action()],
             Self::RenderingQuery(contract) => vec![contract.action()],
             Self::LayoutFacts(contract) => contract.actions(),
@@ -82,6 +91,7 @@ impl ConformanceBehavior {
             Self::ConnectEdgeSession(contract) => contract.expected_trace(),
             Self::NodeResizeSession(contract) => contract.expected_trace(),
             Self::SelectionBox(contract) => contract.expected_trace(),
+            Self::DeleteSelection(contract) => contract.expected_trace(),
             Self::ViewportDragPanSession(contract) => contract.expected_trace(),
             Self::RenderingQuery(contract) => contract.expected_trace(),
             Self::LayoutFacts(contract) => contract.expected_trace(),
@@ -352,6 +362,179 @@ impl ConformanceSelectionBoxContract {
     }
 }
 
+fn usize_is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+fn default_delete_commit_op_kinds(nodes: usize, edges: usize) -> Vec<String> {
+    if nodes > 0 {
+        return vec!["remove_node".to_owned()];
+    }
+
+    if edges > 0 {
+        return vec!["remove_edge".to_owned()];
+    }
+
+    Vec::new()
+}
+
+/// Behavior contract for committing a delete-selection action and observing delete callbacks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceDeleteSelectionContract {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<NodeGraphKeyCode>,
+    pub nodes: usize,
+    pub edges: usize,
+    #[serde(default, skip_serializing_if = "usize_is_zero")]
+    pub groups: usize,
+    #[serde(default, skip_serializing_if = "usize_is_zero")]
+    pub sticky_notes: usize,
+    pub commit_op_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disconnected: Vec<EdgeConnection>,
+}
+
+impl ConformanceDeleteSelectionContract {
+    pub fn new(nodes: usize, edges: usize) -> Self {
+        Self {
+            key: None,
+            nodes,
+            edges,
+            groups: 0,
+            sticky_notes: 0,
+            commit_op_kinds: default_delete_commit_op_kinds(nodes, edges),
+            disconnected: Vec::new(),
+        }
+    }
+
+    pub fn for_key(mut self, key: KeyCode) -> Self {
+        self.key = Some(NodeGraphKeyCode(key));
+        self
+    }
+
+    pub fn with_commit_op_kinds(
+        mut self,
+        op_kinds: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.commit_op_kinds = op_kinds.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_deleted_groups(mut self, groups: usize) -> Self {
+        self.groups = groups;
+        self
+    }
+
+    pub fn with_deleted_sticky_notes(mut self, sticky_notes: usize) -> Self {
+        self.sticky_notes = sticky_notes;
+        self
+    }
+
+    pub fn with_disconnected(
+        mut self,
+        disconnected: impl IntoIterator<Item = EdgeConnection>,
+    ) -> Self {
+        self.disconnected = disconnected.into_iter().collect();
+        self
+    }
+
+    fn action(&self) -> ConformanceAction {
+        match self.key {
+            Some(key) => ConformanceAction::apply_delete_selection_for_key(key.0),
+            None => ConformanceAction::apply_delete_selection(),
+        }
+    }
+
+    fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        let mut trace = vec![
+            ConformanceTraceEvent::graph_commit(
+                Some(DELETE_SELECTION_TRANSACTION_LABEL),
+                self.commit_op_kinds.iter().map(String::as_str),
+            ),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
+                label: Some(DELETE_SELECTION_TRANSACTION_LABEL.to_owned()),
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
+                nodes: self.nodes,
+                edges: self.edges,
+            }),
+        ];
+
+        if self.nodes > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::NodesChange { count: self.nodes },
+            ));
+        }
+
+        if self.edges > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::EdgesChange { count: self.edges },
+            ));
+        }
+
+        for connection in self.disconnected.iter().copied() {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::ConnectionChange(ConnectionChange::Disconnected(
+                    connection,
+                )),
+            ));
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::Disconnect(connection),
+            ));
+        }
+
+        if self.nodes > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::NodesDelete { count: self.nodes },
+            ));
+        }
+
+        if self.edges > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::EdgesDelete { count: self.edges },
+            ));
+        }
+
+        if self.groups > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::GroupsDelete { count: self.groups },
+            ));
+        }
+
+        if self.sticky_notes > 0 {
+            trace.push(ConformanceTraceEvent::callback(
+                ConformanceCallbackEvent::StickyNotesDelete {
+                    count: self.sticky_notes,
+                },
+            ));
+        }
+
+        trace.extend([
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Delete {
+                nodes: self.nodes,
+                edges: self.edges,
+                groups: self.groups,
+                sticky_notes: self.sticky_notes,
+            }),
+            ConformanceTraceEvent::selection(Vec::new(), Vec::new(), Vec::new()),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
+                changes: vec![ConformanceViewChange::Selection {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                    groups: Vec::new(),
+                }],
+            }),
+            ConformanceTraceEvent::callback(ConformanceCallbackEvent::SelectionChange {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                groups: Vec::new(),
+            }),
+        ]);
+
+        trace
+    }
+}
+
 /// Behavior contract for an accepted viewport drag-pan session.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceViewportDragPanSessionContract {
@@ -506,6 +689,13 @@ impl ConformanceScenario {
 
     pub fn with_selection_box_contract(self, contract: ConformanceSelectionBoxContract) -> Self {
         self.with_behavior(ConformanceBehavior::selection_box(contract))
+    }
+
+    pub fn with_delete_selection_contract(
+        self,
+        contract: ConformanceDeleteSelectionContract,
+    ) -> Self {
+        self.with_behavior(ConformanceBehavior::delete_selection(contract))
     }
 
     pub fn with_viewport_drag_pan_session_contract(
