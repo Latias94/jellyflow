@@ -18,10 +18,12 @@ impl ConformanceSuite {
         for scenario in &mut approved.scenarios {
             match run_conformance_scenario(scenario) {
                 Ok(report) => {
-                    let expected_event_count = scenario.expected_trace.len();
+                    let expected_event_count = scenario.expanded_expected_trace().len();
                     let actual_event_count = report.actual_trace.len();
-                    let changed = scenario.expected_trace != report.actual_trace;
-                    scenario.expected_trace = report.actual_trace;
+                    let approved_expected_trace =
+                        scenario.approval_expected_trace(&report.actual_trace);
+                    let changed = scenario.expected_trace != approved_expected_trace;
+                    scenario.expected_trace = approved_expected_trace;
                     scenario_reports.push(ConformanceScenarioApprovalReport {
                         scenario: scenario.name.clone(),
                         changed,

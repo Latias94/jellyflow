@@ -2,7 +2,8 @@ use super::super::fixtures::make_graph;
 
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceSuite,
+    ConformanceAction, ConformanceBehavior, ConformanceCallbackEvent,
+    ConformanceNodeDragSessionContract, ConformanceScenario, ConformanceSuite,
     ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
     run_conformance_suite,
 };

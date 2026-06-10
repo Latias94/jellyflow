@@ -1009,8 +1009,11 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         conformance::CONFORMANCE_FIXTURE_SCHEMA_VERSION,
     );
     assert!(scenario.setup.trace.record_xyflow_callbacks);
-    assert_eq!(scenario.actions.len(), 1);
-    assert!(!scenario.expected_trace.is_empty());
+    assert!(scenario.actions.is_empty());
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert!(!scenario.expanded_expected_trace().is_empty());
+    let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
 
     let encoded = serde_json::to_value(&scenario).expect("serialize fixture");
     let decoded: conformance::ConformanceScenario =

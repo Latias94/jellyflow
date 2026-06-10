@@ -226,6 +226,42 @@ fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     assert!(report.mismatches().is_empty());
 }
 
+#[test]
+fn conformance_runner_expands_behavior_contracts_and_matches_trace() {
+    let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
+    let start = CanvasPoint { x: 1.0, y: 2.0 };
+    let target = CanvasPoint { x: 32.0, y: 16.0 };
+    let scenario = ConformanceScenario::new("node drag behavior contract runner", graph)
+        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_behaviors([ConformanceBehavior::node_drag_session(
+            ConformanceNodeDragSessionContract::new(node_id, start, target),
+        )]);
+
+    assert!(scenario.actions.is_empty());
+    assert!(scenario.expected_trace.is_empty());
+    assert_eq!(scenario.behaviors.len(), 1);
+    assert_eq!(scenario.expanded_actions().len(), 1);
+    assert_eq!(
+        scenario.expanded_actions()[0].kind(),
+        "apply_node_drag_session"
+    );
+
+    let report = run_conformance_scenario(&scenario).expect("fixture should run");
+    let expected_trace = scenario.expanded_expected_trace();
+
+    assert!(report.is_match(), "{report}");
+    assert_eq!(report.actual_trace(), expected_trace.as_slice());
+
+    let encoded = serde_json::to_value(&scenario).expect("serialize behavior fixture");
+    assert!(encoded.get("behaviors").is_some());
+    assert!(encoded.get("actions").is_none());
+    assert!(encoded.get("expected_trace").is_none());
+    let decoded: ConformanceScenario =
+        serde_json::from_value(encoded).expect("deserialize behavior fixture");
+    assert_eq!(decoded.behaviors.len(), 1);
+    assert_eq!(decoded.expanded_actions().len(), 1);
+}
+
 fn connection_node_rect(origin: CanvasPoint) -> CanvasRect {
     CanvasRect {
         origin,

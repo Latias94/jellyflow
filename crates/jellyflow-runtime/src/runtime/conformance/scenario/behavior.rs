@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::runtime::connection::{CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest};
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
@@ -13,8 +15,47 @@ use super::action::ConformanceAction;
 use super::suite::ConformanceScenario;
 use super::trace::{ConformanceCallbackEvent, ConformanceTraceEvent, ConformanceViewChange};
 
+/// High-level conformance behavior that expands to runtime actions and expected trace events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum ConformanceBehavior {
+    NodeDragSession(ConformanceNodeDragSessionContract),
+    ConnectEdgeSession(ConformanceConnectEdgeSessionContract),
+    ViewportDragPanSession(ConformanceViewportDragPanSessionContract),
+}
+
+impl ConformanceBehavior {
+    pub fn node_drag_session(contract: ConformanceNodeDragSessionContract) -> Self {
+        Self::NodeDragSession(contract)
+    }
+
+    pub fn connect_edge_session(contract: ConformanceConnectEdgeSessionContract) -> Self {
+        Self::ConnectEdgeSession(contract)
+    }
+
+    pub fn viewport_drag_pan_session(contract: ConformanceViewportDragPanSessionContract) -> Self {
+        Self::ViewportDragPanSession(contract)
+    }
+
+    pub(crate) fn action(&self) -> ConformanceAction {
+        match self {
+            Self::NodeDragSession(contract) => contract.action(),
+            Self::ConnectEdgeSession(contract) => contract.action(),
+            Self::ViewportDragPanSession(contract) => contract.action(),
+        }
+    }
+
+    pub(crate) fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
+        match self {
+            Self::NodeDragSession(contract) => contract.expected_trace(),
+            Self::ConnectEdgeSession(contract) => contract.expected_trace(),
+            Self::ViewportDragPanSession(contract) => contract.expected_trace(),
+        }
+    }
+}
+
 /// Behavior contract for a committed node drag session.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceNodeDragSessionContract {
     pub primary: NodeId,
     pub nodes: Vec<NodeId>,
@@ -95,7 +136,7 @@ impl ConformanceNodeDragSessionContract {
 }
 
 /// Behavior contract for a committed connect-edge session.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceConnectEdgeSessionContract {
     pub start: ConnectStart,
     pub request: ConnectEdgeRequest,
@@ -152,7 +193,7 @@ impl ConformanceConnectEdgeSessionContract {
 }
 
 /// Behavior contract for an accepted viewport drag-pan session.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceViewportDragPanSessionContract {
     pub context: ViewportGestureContext,
     pub input: ViewportDragPanInput,
@@ -224,23 +265,20 @@ impl ConformanceScenario {
         self,
         contract: ConformanceNodeDragSessionContract,
     ) -> Self {
-        self.with_actions([contract.action()])
-            .with_expected_trace(contract.expected_trace())
+        self.with_behavior(ConformanceBehavior::node_drag_session(contract))
     }
 
     pub fn with_connect_edge_session_contract(
         self,
         contract: ConformanceConnectEdgeSessionContract,
     ) -> Self {
-        self.with_actions([contract.action()])
-            .with_expected_trace(contract.expected_trace())
+        self.with_behavior(ConformanceBehavior::connect_edge_session(contract))
     }
 
     pub fn with_viewport_drag_pan_session_contract(
         self,
         contract: ConformanceViewportDragPanSessionContract,
     ) -> Self {
-        self.with_actions([contract.action()])
-            .with_expected_trace(contract.expected_trace())
+        self.with_behavior(ConformanceBehavior::viewport_drag_pan_session(contract))
     }
 }

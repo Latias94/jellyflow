@@ -12,7 +12,7 @@ pub use action::{
     ConformanceNodeResizeRequest,
 };
 pub use behavior::{
-    ConformanceConnectEdgeSessionContract, ConformanceNodeDragSessionContract,
+    ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceNodeDragSessionContract,
     ConformanceViewportDragPanSessionContract,
 };
 pub(crate) use callback_recorder::ConformanceCallbackTraceRecorder;

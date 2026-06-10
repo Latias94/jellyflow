@@ -96,10 +96,12 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
   an adapter only needs deterministic group/node/edge order and visible node/edge ids;
 - `runtime::conformance` defines reusable fixture scenarios and a runner that drive a real
   `NodeGraphStore` and compare normalized traces for graph transactions, view changes, gesture
-  lifecycle events, and XyFlow compatibility callbacks; adapter crates can group scenarios into
-  suites, save them as JSON golden fixtures, discover fixture directories, and explicitly approve
-  actual headless traces back into golden files through the `conformance_harness` example for
-  aggregate pre-render conformance reports;
+  lifecycle events, and XyFlow compatibility callbacks. Session behavior contracts expand into
+  runtime actions and expected traces so ordinary adapter fixtures can describe behavior instead of
+  hand-writing callback choreography; adapter crates can group scenarios into suites, save them as
+  JSON golden fixtures, discover fixture directories, and explicitly approve actual headless traces
+  back into golden files through the `conformance_harness` example for aggregate pre-render
+  conformance reports;
 - runtime adapter-conformance tests use those fixtures for connect, delete, node drag, node drag
   parent expansion, node resize, visible node ids, visible edge ids, render order, viewport,
   viewport animation planning, pan inertia replay, double-click zoom, and auto-pan behavior before

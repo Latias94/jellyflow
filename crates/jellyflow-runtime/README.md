@@ -102,9 +102,9 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::xyflow` projections for XyFlow-style node/edge changes, callbacks, and exact
   adapter-owned ordered-array apply helpers;
 - `runtime::conformance::{ConformanceScenario, ConformanceSuite, ConformanceFixtureDirectory,
-  ConformanceAction, ConformanceTraceEvent, run_conformance_scenario, run_conformance_suite}` for
-  reusable fixture checks, fixture discovery, and explicit golden approval updates around a real
-  `NodeGraphStore`.
+  ConformanceBehavior, ConformanceAction, ConformanceTraceEvent, run_conformance_scenario,
+  run_conformance_suite}` for reusable behavior contracts, fixture checks, fixture discovery, and
+  explicit golden approval updates around a real `NodeGraphStore`.
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
@@ -145,9 +145,10 @@ focus/input suppression, confirmation dialogs, async scheduling, renderer feedba
 and pixels.
 
 `ConformanceAction::dispatch_transaction` is intentionally kept as a low-level graph-operation
-fixture escape hatch; adapter feel fixtures should prefer interaction-specific actions such as
-node drag, node resize, connect/reconnect, delete, viewport gestures, viewport animation frames,
-and double-click zoom plan or rejection assertions. Visible-node fixtures should use
+fixture escape hatch; adapter feel fixtures should prefer `ConformanceBehavior` session contracts
+or interaction-specific actions such as node drag, node resize, connect/reconnect, delete,
+viewport gestures, viewport animation frames, and double-click zoom plan or rejection assertions.
+Visible-node fixtures should use
 `ConformanceAction::assert_visible_node_ids`, which asserts `NodeGraphStore::visible_node_ids`
 without producing renderer traces. Pre-render paint-order fixtures should use
 `ConformanceAction::assert_visible_node_render_order`, which asserts
