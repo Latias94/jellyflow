@@ -15,7 +15,6 @@ use jellyflow_runtime::runtime::conformance::{
 };
 use jellyflow_runtime::runtime::connection::{ConnectionHandleRef, ConnectionHandleValidity};
 use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
-use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::events::{
     NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
 };
@@ -376,25 +375,15 @@ fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
     let node_id = NodeId::from_u128(3);
     let parent_id = GroupId::from_u128(30);
     let graph = graph_with_parent_expanding_node(node_id, parent_id);
+    let start = CanvasPoint { x: 50.0, y: 50.0 };
     let target = CanvasPoint { x: 95.0, y: 95.0 };
 
     ConformanceScenario::new("template node drag parent expansion", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([ConformanceAction::apply_node_drag(node_id, target)])
-        .with_expected_trace([
-            ConformanceTraceEvent::graph_commit(
-                Some(NODE_DRAG_TRANSACTION_LABEL),
-                ["set_node_pos", "set_group_rect"],
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 1,
-                edges: 0,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-        ])
+        .with_node_drag_session_contract(
+            ConformanceNodeDragSessionContract::new(node_id, start, target)
+                .with_commit_op_kinds(["set_node_pos", "set_group_rect"]),
+        )
 }
 
 fn node_resize_scenario() -> ConformanceScenario {

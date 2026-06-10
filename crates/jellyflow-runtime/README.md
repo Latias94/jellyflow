@@ -59,12 +59,18 @@ validate behavior before rendering. The runtime crate supports that split with:
 - `runtime::connection::{resolve_connection_target_from_handles, ConnectionTargetCandidate}` for
   resolving adapter-provided handle geometry and connectability into XyFlow-style target feedback
   without owning DOM hit testing;
+- `runtime::gesture::{PointerSessionClaimInput, PointerSessionClaimOutcome}` plus
+  `NodeGraphStore::resolve_pointer_session_claim` for deterministic pointer ownership arbitration
+  with stable rejection reasons, and `NodeGraphStore::{apply_node_drag_session,
+  apply_connect_edge_session, apply_viewport_drag_pan_session}` for ordinary adapter gesture
+  lifecycles through store commits and gesture events;
 - `NodeGraphStore::plan_node_drag`, `NodeGraphStore::apply_node_drag`, and `runtime::drag` for
   deterministic canvas-space node dragging with selected-node co-dragging, policy filtering,
   snap-to-grid, global/per-node extents, node-origin-aware clamping, and parent group expansion;
 - `NodeGraphStore::plan_node_resize`, `NodeGraphStore::apply_node_resize`, and `runtime::resize`
   for deterministic target-size node resizing with min/max bounds, XyFlow-style control directions,
-  node-origin-aware position updates for left/top controls, and normal graph transactions;
+  node-origin-aware position updates for left/top controls, normal graph transactions, and
+  pointer-resize session lifecycle helpers;
 - `runtime::viewport::{ViewportTransform, ViewportPanRequest, ViewportZoomRequest}` plus
   `NodeGraphStore::apply_viewport_pan` and `NodeGraphStore::apply_viewport_zoom` for deterministic
   drag-pan and zoom-around-pointer state changes;

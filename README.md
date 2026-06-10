@@ -66,6 +66,10 @@ Jellyflow keeps XyFlow-feel checks at the headless runtime boundary before rende
 - `runtime::delete` and `runtime::keyboard` turn normalized delete-selection intent and key-bound
   keyboard intent into deterministic delete transactions, cascaded edge deletion, XyFlow-style
   callbacks, and stale selection cleanup;
+- `runtime::gesture` resolves normalized pointer targets and gesture context into
+  `PointerSessionClaimOutcome`, including a stable claim and rejection reason, then
+  `NodeGraphStore` session methods apply node drag, connect, and viewport drag-pan lifecycle events
+  through the same store commit and callback paths adapters observe;
 - `runtime::drag` turns canvas-space node drag intent into deterministic drag items and normal
   `SetNodePos` transactions, including selection co-dragging, snap-to-grid, extents, node origin,
   parent group expansion through `SetGroupRect`, and renderer-neutral gesture payloads;

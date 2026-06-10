@@ -254,6 +254,12 @@ fn explicit_modules_expose_their_owned_surfaces() {
         gesture::PointerSessionClaim::NodeDrag,
         gesture::PointerSessionClaim::NodeDrag
     );
+    let _ = std::mem::size_of::<gesture::PointerSessionClaimOutcome>();
+    let _ = std::mem::size_of::<gesture::PointerSessionClaimRejection>();
+    let _: fn(
+        &NodeGraphStore,
+        gesture::PointerSessionClaimInput,
+    ) -> gesture::PointerSessionClaimOutcome = NodeGraphStore::resolve_pointer_session_claim;
     let measured_handle = measurement::MeasuredHandle::new(
         from_handle,
         geometry::HandleBounds {
@@ -626,11 +632,6 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         nodes: vec![node_id],
         pointer: CanvasPoint { x: 1.0, y: 2.0 },
     };
-    let drag_update = events::NodeDragUpdate {
-        primary: node_id,
-        nodes: vec![node_id],
-        pointer: target,
-    };
     let resize_start = events::NodeResizeStart {
         node: node_id,
         direction: resize::NodeResizeDirection::BottomRight,
@@ -997,35 +998,19 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         .with_view_state(NodeGraphViewState::default())
         .with_editor_config(NodeGraphEditorConfig::default())
         .with_trace_config(conformance::ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([
-            conformance::ConformanceAction::emit_gesture(
-                events::NodeGraphGestureEvent::NodeDragStart(drag_start.clone()),
-            ),
-            conformance::ConformanceAction::apply_node_drag(node_id, target),
-            conformance::ConformanceAction::emit_gesture(
-                events::NodeGraphGestureEvent::NodeDragUpdate(drag_update.clone()),
-            ),
-        ])
-        .with_expected_trace([
-            conformance::ConformanceTraceEvent::gesture(
-                events::NodeGraphGestureEvent::NodeDragStart(drag_start.clone()),
-            ),
-            conformance::ConformanceTraceEvent::graph_commit(
-                Some(drag::NODE_DRAG_TRANSACTION_LABEL),
-                ["set_node_pos"],
-            ),
-            conformance::ConformanceTraceEvent::callback(
-                conformance::ConformanceCallbackEvent::NodeDrag(drag_update),
-            ),
-        ]);
+        .with_node_drag_session_contract(conformance::ConformanceNodeDragSessionContract::new(
+            node_id,
+            drag_start.pointer,
+            target,
+        ));
 
     assert_eq!(
         scenario.schema_version,
         conformance::CONFORMANCE_FIXTURE_SCHEMA_VERSION,
     );
     assert!(scenario.setup.trace.record_xyflow_callbacks);
-    assert_eq!(scenario.actions.len(), 3);
-    assert_eq!(scenario.expected_trace.len(), 3);
+    assert_eq!(scenario.actions.len(), 1);
+    assert!(!scenario.expected_trace.is_empty());
 
     let encoded = serde_json::to_value(&scenario).expect("serialize fixture");
     let decoded: conformance::ConformanceScenario =

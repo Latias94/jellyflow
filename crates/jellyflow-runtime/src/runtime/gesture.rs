@@ -71,6 +71,44 @@ pub enum PointerSessionClaim {
     ViewportPan,
 }
 
+/// Stable reason a normalized pointer session claim was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum PointerSessionClaimRejection {
+    TargetUnavailable,
+    TargetPolicyBlocked,
+    ActivationThresholdNotMet,
+    ViewportGesture(ViewportGestureRejection),
+}
+
+/// Result of resolving pointer ownership for a normalized adapter drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerSessionClaimOutcome {
+    pub claim: PointerSessionClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<PointerSessionClaimRejection>,
+}
+
+impl PointerSessionClaimOutcome {
+    pub fn claimed(claim: PointerSessionClaim) -> Self {
+        Self {
+            claim,
+            rejection: None,
+        }
+    }
+
+    pub fn rejected(rejection: PointerSessionClaimRejection) -> Self {
+        Self {
+            claim: PointerSessionClaim::None,
+            rejection: Some(rejection),
+        }
+    }
+
+    pub fn is_claimed(self) -> bool {
+        self.claim != PointerSessionClaim::None
+    }
+}
+
 /// One headless node-drag session from pointer start to final pointer update.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeDragSession {
@@ -180,12 +218,12 @@ impl NodeGraphStore {
     pub fn resolve_pointer_session_claim(
         &self,
         input: PointerSessionClaimInput,
-    ) -> PointerSessionClaim {
+    ) -> PointerSessionClaimOutcome {
         if input.context.connection_in_progress {
-            return PointerSessionClaim::Connection;
+            return PointerSessionClaimOutcome::claimed(PointerSessionClaim::Connection);
         }
         if input.context.user_selection_active {
-            return PointerSessionClaim::Selection;
+            return PointerSessionClaimOutcome::claimed(PointerSessionClaim::Selection);
         }
 
         let interaction = self.resolved_interaction_state();
@@ -197,11 +235,14 @@ impl NodeGraphStore {
             input.context.user_selection_active,
         ));
         if selection_claim != SelectionPointerClaim::Unclaimed {
-            return PointerSessionClaim::Selection;
+            return PointerSessionClaimOutcome::claimed(PointerSessionClaim::Selection);
         }
 
         match input.target {
-            PointerSessionTarget::Node(_) => {
+            PointerSessionTarget::Node(node) => {
+                if let Err(rejection) = self.pointer_target_can_start_node_drag(node) {
+                    return PointerSessionClaimOutcome::rejected(rejection);
+                }
                 if pointer_claim_reaches_node_drag(PointerGestureClaimInput::new(
                     input.screen_delta,
                     false,
@@ -210,23 +251,28 @@ impl NodeGraphStore {
                     pan.pane_click_distance,
                     interaction.node_drag_interaction().node_drag_threshold,
                 )) {
-                    PointerSessionClaim::NodeDrag
+                    PointerSessionClaimOutcome::claimed(PointerSessionClaim::NodeDrag)
                 } else {
-                    PointerSessionClaim::None
+                    PointerSessionClaimOutcome::rejected(
+                        PointerSessionClaimRejection::ActivationThresholdNotMet,
+                    )
                 }
             }
             PointerSessionTarget::ConnectionHandle(handle) => {
-                if self.pointer_target_can_start_connection(handle)
-                    && connection_drag_threshold_met(ConnectionDragActivationInput::new(
-                        input.screen_delta,
-                        interaction
-                            .connection_interaction()
-                            .connection_drag_threshold,
-                    ))
-                {
-                    PointerSessionClaim::Connection
+                if let Err(rejection) = self.pointer_target_can_start_connection(handle) {
+                    return PointerSessionClaimOutcome::rejected(rejection);
+                }
+                if connection_drag_threshold_met(ConnectionDragActivationInput::new(
+                    input.screen_delta,
+                    interaction
+                        .connection_interaction()
+                        .connection_drag_threshold,
+                )) {
+                    PointerSessionClaimOutcome::claimed(PointerSessionClaim::Connection)
                 } else {
-                    PointerSessionClaim::None
+                    PointerSessionClaimOutcome::rejected(
+                        PointerSessionClaimRejection::ActivationThresholdNotMet,
+                    )
                 }
             }
             PointerSessionTarget::Pane { button } => {
@@ -236,37 +282,76 @@ impl NodeGraphStore {
                     ViewportDragPanInput::new(button, input.screen_delta),
                 );
                 match result {
-                    Ok(_) => PointerSessionClaim::ViewportPan,
+                    Ok(_) => PointerSessionClaimOutcome::claimed(PointerSessionClaim::ViewportPan),
                     Err(ViewportGestureRejection::UserSelectionActive) => {
-                        PointerSessionClaim::Selection
+                        PointerSessionClaimOutcome::claimed(PointerSessionClaim::Selection)
                     }
                     Err(ViewportGestureRejection::ConnectionInProgress) => {
-                        PointerSessionClaim::Connection
+                        PointerSessionClaimOutcome::claimed(PointerSessionClaim::Connection)
                     }
-                    Err(_) => PointerSessionClaim::None,
+                    Err(rejection) => PointerSessionClaimOutcome::rejected(
+                        PointerSessionClaimRejection::ViewportGesture(rejection),
+                    ),
                 }
             }
         }
     }
 
-    fn pointer_target_can_start_connection(&self, handle: ConnectionHandleRef) -> bool {
+    fn pointer_target_can_start_node_drag(
+        &self,
+        node: NodeId,
+    ) -> Result<(), PointerSessionClaimRejection> {
+        let Some(node) = self.graph().nodes.get(&node) else {
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
+        };
+        if node.hidden || !node.pos.is_finite() {
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
+        }
+        if node
+            .parent
+            .is_some_and(|parent| self.view_state().selected_groups.contains(&parent))
+        {
+            return Err(PointerSessionClaimRejection::TargetPolicyBlocked);
+        }
+
+        if self
+            .resolved_interaction_state()
+            .node_interaction_policy(node)
+            .draggable
+        {
+            Ok(())
+        } else {
+            Err(PointerSessionClaimRejection::TargetPolicyBlocked)
+        }
+    }
+
+    fn pointer_target_can_start_connection(
+        &self,
+        handle: ConnectionHandleRef,
+    ) -> Result<(), PointerSessionClaimRejection> {
         let Some(node) = self.graph().nodes.get(&handle.node) else {
-            return false;
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
         };
         if node.hidden || !node.ports.contains(&handle.port) {
-            return false;
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
         }
 
         let Some(port) = self.graph().ports.get(&handle.port) else {
-            return false;
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
         };
         if port.node != handle.node || port.dir != handle.direction {
-            return false;
+            return Err(PointerSessionClaimRejection::TargetUnavailable);
         }
 
-        self.resolved_interaction_state()
+        if self
+            .resolved_interaction_state()
             .port_interaction_policy(node, port)
             .can_start_connection()
+        {
+            Ok(())
+        } else {
+            Err(PointerSessionClaimRejection::TargetPolicyBlocked)
+        }
     }
 
     /// Applies a full node-drag gesture session through gesture events and normal store dispatch.
