@@ -16,7 +16,6 @@ mod traits;
 mod types;
 
 pub use crate::runtime::events::{ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart};
-pub use dispatch::{connection_changes_from_transaction, delete_changes_from_transaction};
 pub use install::install_callbacks;
 pub use traits::{
     NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,

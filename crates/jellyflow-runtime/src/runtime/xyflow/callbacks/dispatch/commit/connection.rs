@@ -1,13 +1,11 @@
 use super::super::super::traits::NodeGraphCallbacks;
 use super::super::super::types::ConnectionChange;
-use super::super::connection_changes_from_transaction;
-use jellyflow_core::ops::GraphTransaction;
 
 pub(super) fn dispatch_connection_callbacks(
     callbacks: &mut dyn NodeGraphCallbacks,
-    tx: &GraphTransaction,
+    changes: &[ConnectionChange],
 ) {
-    for change in connection_changes_from_transaction(tx) {
+    for change in changes.iter().copied() {
         callbacks.on_connection_change(change);
         match change {
             ConnectionChange::Connected(conn) => callbacks.on_connect(conn),

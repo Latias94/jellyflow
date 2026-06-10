@@ -2,14 +2,25 @@ mod edges;
 mod nodes;
 
 use crate::runtime::xyflow::changes::NodeGraphChanges;
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::ops::GraphOp;
 
-pub(super) fn node_graph_changes_from_transaction(tx: &GraphTransaction) -> NodeGraphChanges {
-    let mut out = NodeGraphChanges::default();
-    for op in tx.ops() {
-        push_node_graph_change(op, &mut out);
+#[derive(Debug, Default)]
+pub(super) struct NodeGraphChangeAccumulator {
+    out: NodeGraphChanges,
+}
+
+impl NodeGraphChangeAccumulator {
+    pub(super) fn new() -> Self {
+        Self::default()
     }
-    out
+
+    pub(super) fn push_op(&mut self, op: &GraphOp) {
+        push_node_graph_change(op, &mut self.out);
+    }
+
+    pub(super) fn finish(self) -> NodeGraphChanges {
+        self.out
+    }
 }
 
 fn push_node_graph_change(op: &GraphOp, out: &mut NodeGraphChanges) {

@@ -2,6 +2,7 @@ use super::apply::{
     ApplyChangesReport, apply_edge_changes, apply_graph_changes, apply_node_changes,
 };
 use super::changes::{EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch};
+use super::projection::XyFlowCommitProjection;
 use jellyflow_core::core::Graph;
 
 /// XyFlow-style controlled graph state for adapter-owned node/edge arrays.
@@ -32,8 +33,8 @@ impl ControlledGraph {
     }
 
     pub fn apply_patch_changes(&mut self, patch: &NodeGraphPatch) -> ApplyChangesReport {
-        let changes = NodeGraphChanges::from_patch(patch);
-        self.apply_changes(&changes)
+        let projection = XyFlowCommitProjection::from_patch(patch);
+        self.apply_changes(projection.node_edge_changes())
     }
 
     pub fn apply_node_changes(&mut self, changes: &[NodeChange]) -> ApplyChangesReport {

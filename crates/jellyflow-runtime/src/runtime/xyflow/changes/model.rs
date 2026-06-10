@@ -52,14 +52,16 @@ impl NodeGraphChanges {
     }
 
     pub fn from_patch(patch: &NodeGraphPatch) -> Self {
-        Self::from_transaction(patch.transaction())
+        crate::runtime::xyflow::projection::XyFlowCommitProjection::from_patch(patch)
+            .into_node_edge_changes()
     }
 
     /// Derives change events from a reversible graph transaction.
     ///
     /// This is intended for XyFlow-style callbacks such as "on_nodes_change".
     pub fn from_transaction(tx: &GraphTransaction) -> Self {
-        crate::runtime::xyflow::projection::node_graph_changes_from_transaction(tx)
+        crate::runtime::xyflow::projection::XyFlowCommitProjection::from_transaction(tx)
+            .into_node_edge_changes()
     }
 
     /// Converts change events into a reversible transaction by looking up "from" values in the

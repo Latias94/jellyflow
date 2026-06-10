@@ -3,11 +3,14 @@ use super::super::super::fixtures::{make_graph, make_store};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::ControlledGraph;
 use crate::runtime::xyflow::callbacks::{
-    EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks, NodeGraphViewCallbacks,
-    install_callbacks,
+    DeleteChange, EdgeConnection, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
+    NodeGraphViewCallbacks, install_callbacks,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{CanvasPoint, EdgeId, EdgeReconnectable, NodeId};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeReconnectable, Group, GroupId, NodeId,
+    StickyNote, StickyNoteId,
+};
 use jellyflow_core::ops::{GraphOp, GraphOpBuilderExt, GraphTransaction};
 
 #[test]
@@ -196,7 +199,7 @@ fn install_callbacks_preserves_commit_callback_order_for_controlled_updates() {
 }
 
 #[test]
-fn install_callbacks_calls_delete_hooks_for_remove_node() {
+fn install_callbacks_calls_delete_hooks_for_removed_resources() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -204,6 +207,9 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
     struct Recorder {
         nodes_deleted: Rc<RefCell<Vec<NodeId>>>,
         edges_deleted: Rc<RefCell<Vec<EdgeId>>>,
+        groups_deleted: Rc<RefCell<Vec<GroupId>>>,
+        sticky_notes_deleted: Rc<RefCell<Vec<StickyNoteId>>>,
+        deleted: Rc<RefCell<Vec<DeleteChange>>>,
         disconnected: Rc<RefCell<Vec<EdgeId>>>,
     }
 
@@ -216,6 +222,20 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
             self.edges_deleted.borrow_mut().extend_from_slice(edges);
         }
 
+        fn on_groups_delete(&mut self, groups: &[GroupId]) {
+            self.groups_deleted.borrow_mut().extend_from_slice(groups);
+        }
+
+        fn on_sticky_notes_delete(&mut self, notes: &[StickyNoteId]) {
+            self.sticky_notes_deleted
+                .borrow_mut()
+                .extend_from_slice(notes);
+        }
+
+        fn on_delete(&mut self, change: DeleteChange) {
+            self.deleted.borrow_mut().push(change);
+        }
+
         fn on_disconnect(&mut self, conn: EdgeConnection) {
             self.disconnected.borrow_mut().push(conn.edge);
         }
@@ -225,11 +245,35 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
 
     impl NodeGraphGestureCallbacks for Recorder {}
 
-    let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
+    let (mut g0, a, _b, _out_port, _in_port, eid) = make_graph();
+    let group_id = GroupId::new();
+    let sticky_note_id = StickyNoteId::new();
+    let rect = CanvasRect {
+        origin: CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 10.0,
+            height: 10.0,
+        },
+    };
+    let group = Group {
+        title: "delete group".to_owned(),
+        rect,
+        color: None,
+    };
+    let sticky_note = StickyNote {
+        text: "delete note".to_owned(),
+        rect,
+        color: None,
+    };
+    g0.groups.insert(group_id, group.clone());
+    g0.sticky_notes.insert(sticky_note_id, sticky_note.clone());
     let mut store = make_store(g0);
 
     let nodes_deleted: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));
     let edges_deleted: Rc<RefCell<Vec<EdgeId>>> = Rc::new(RefCell::new(Vec::new()));
+    let groups_deleted: Rc<RefCell<Vec<GroupId>>> = Rc::new(RefCell::new(Vec::new()));
+    let sticky_notes_deleted: Rc<RefCell<Vec<StickyNoteId>>> = Rc::new(RefCell::new(Vec::new()));
+    let deleted: Rc<RefCell<Vec<DeleteChange>>> = Rc::new(RefCell::new(Vec::new()));
     let disconnected: Rc<RefCell<Vec<EdgeId>>> = Rc::new(RefCell::new(Vec::new()));
 
     let _token = install_callbacks(
@@ -237,6 +281,9 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
         Recorder {
             nodes_deleted: nodes_deleted.clone(),
             edges_deleted: edges_deleted.clone(),
+            groups_deleted: groups_deleted.clone(),
+            sticky_notes_deleted: sticky_notes_deleted.clone(),
+            deleted: deleted.clone(),
             disconnected: disconnected.clone(),
         },
     );
@@ -245,10 +292,32 @@ fn install_callbacks_calls_delete_hooks_for_remove_node() {
         .graph()
         .build_remove_node_op(a)
         .expect("remove node op");
-    let tx = GraphTransaction::from_ops([op]);
+    let tx = GraphTransaction::from_ops([
+        op,
+        GraphOp::RemoveGroup {
+            id: group_id,
+            group,
+            detached: Vec::new(),
+        },
+        GraphOp::RemoveStickyNote {
+            id: sticky_note_id,
+            note: sticky_note,
+        },
+    ]);
     let _ = store.dispatch_transaction(&tx).expect("dispatch remove");
 
-    assert!(nodes_deleted.borrow().contains(&a));
-    assert!(edges_deleted.borrow().contains(&eid));
-    assert!(disconnected.borrow().contains(&eid));
+    assert_eq!(nodes_deleted.borrow().as_slice(), &[a]);
+    assert_eq!(edges_deleted.borrow().as_slice(), &[eid]);
+    assert_eq!(groups_deleted.borrow().as_slice(), &[group_id]);
+    assert_eq!(sticky_notes_deleted.borrow().as_slice(), &[sticky_note_id]);
+    assert_eq!(
+        deleted.borrow().as_slice(),
+        &[DeleteChange::from_parts(
+            vec![a],
+            vec![eid],
+            vec![group_id],
+            vec![sticky_note_id],
+        )],
+    );
+    assert_eq!(disconnected.borrow().as_slice(), &[eid]);
 }

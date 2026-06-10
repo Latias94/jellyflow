@@ -1,23 +1,15 @@
 use crate::runtime::xyflow::callbacks::DeleteChange;
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::ops::GraphOp;
 
 use super::removed_edges::visit_removed_edges;
 
-pub(super) fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
-    let mut accumulator = DeleteChangeAccumulator::default();
-    for op in tx.ops() {
-        accumulator.push_op(op);
-    }
-    accumulator.finish()
-}
-
 #[derive(Default)]
-struct DeleteChangeAccumulator {
+pub(super) struct DeleteChangeAccumulator {
     change: DeleteChange,
 }
 
 impl DeleteChangeAccumulator {
-    fn push_op(&mut self, op: &GraphOp) {
+    pub(super) fn push_op(&mut self, op: &GraphOp) {
         match op {
             GraphOp::RemoveNode { id, .. } => {
                 self.change.push_node(*id);
@@ -38,7 +30,7 @@ impl DeleteChangeAccumulator {
         });
     }
 
-    fn finish(mut self) -> DeleteChange {
+    pub(super) fn finish(mut self) -> DeleteChange {
         self.change.sort_dedup();
         self.change
     }

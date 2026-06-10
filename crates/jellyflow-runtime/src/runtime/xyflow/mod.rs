@@ -26,8 +26,7 @@ pub use callbacks::{
     NodeDragUpdate, NodeGraphCallbacks, NodeGraphCommitCallbacks, NodeGraphGestureCallbacks,
     NodeGraphViewCallbacks, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
     SelectionChange, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome, ViewportMoveKind,
-    ViewportMoveStart, connection_changes_from_transaction, delete_changes_from_transaction,
-    install_callbacks,
+    ViewportMoveStart, install_callbacks,
 };
 pub use changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges, NodeGraphPatch,

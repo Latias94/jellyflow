@@ -3,10 +3,7 @@ mod gesture;
 mod view;
 
 use super::traits::NodeGraphCallbacks;
-use super::types::{ConnectionChange, DeleteChange};
 use crate::runtime::events::{NodeGraphGestureEvent, NodeGraphStoreEvent};
-use crate::runtime::xyflow::projection;
-use jellyflow_core::ops::GraphTransaction;
 
 pub fn dispatch_store_event_callbacks(
     callbacks: &mut dyn NodeGraphCallbacks,
@@ -28,12 +25,4 @@ pub(super) fn dispatch_gesture_callbacks(
     ev: NodeGraphGestureEvent,
 ) {
     gesture::dispatch_gesture_callbacks(callbacks, ev);
-}
-
-pub fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
-    projection::connection_changes_from_transaction(tx)
-}
-
-pub fn delete_changes_from_transaction(tx: &GraphTransaction) -> DeleteChange {
-    projection::delete_changes_from_transaction(tx)
 }

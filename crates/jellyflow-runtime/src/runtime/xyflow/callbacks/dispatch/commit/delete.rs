@@ -1,12 +1,10 @@
 use super::super::super::traits::NodeGraphCallbacks;
-use super::super::delete_changes_from_transaction;
-use jellyflow_core::ops::GraphTransaction;
+use super::super::super::types::DeleteChange;
 
 pub(super) fn dispatch_delete_callbacks(
     callbacks: &mut dyn NodeGraphCallbacks,
-    tx: &GraphTransaction,
+    deleted: &DeleteChange,
 ) {
-    let deleted = delete_changes_from_transaction(tx);
     if !deleted.nodes().is_empty() {
         callbacks.on_nodes_delete(deleted.nodes());
     }
@@ -20,6 +18,6 @@ pub(super) fn dispatch_delete_callbacks(
         callbacks.on_sticky_notes_delete(deleted.sticky_notes());
     }
     if !deleted.is_empty() {
-        callbacks.on_delete(deleted);
+        callbacks.on_delete(deleted.clone());
     }
 }

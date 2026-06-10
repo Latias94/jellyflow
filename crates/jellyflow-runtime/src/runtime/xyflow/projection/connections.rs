@@ -2,25 +2,17 @@ use std::collections::BTreeSet;
 
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{Edge, EdgeId};
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::ops::GraphOp;
 
 use super::removed_edges::visit_removed_edges;
 
-pub(super) fn connection_changes_from_transaction(tx: &GraphTransaction) -> Vec<ConnectionChange> {
-    let mut accumulator = ConnectionChangeAccumulator::new(tx.len());
-    for op in tx.ops() {
-        accumulator.push_op(op);
-    }
-    accumulator.finish()
-}
-
-struct ConnectionChangeAccumulator {
+pub(super) struct ConnectionChangeAccumulator {
     out: Vec<ConnectionChange>,
     removed_edges: BTreeSet<EdgeId>,
 }
 
 impl ConnectionChangeAccumulator {
-    fn new(op_count: usize) -> Self {
+    pub(super) fn new(op_count: usize) -> Self {
         let mut out = Vec::new();
         out.reserve(op_count.min(8));
         Self {
@@ -29,7 +21,7 @@ impl ConnectionChangeAccumulator {
         }
     }
 
-    fn push_op(&mut self, op: &GraphOp) {
+    pub(super) fn push_op(&mut self, op: &GraphOp) {
         if visit_removed_edges(op, |id, edge| self.push_disconnected_edge(id, edge)) {
             return;
         }
@@ -48,6 +40,7 @@ impl ConnectionChangeAccumulator {
     }
 
     fn push_connected(&mut self, id: EdgeId, edge: &Edge) {
+        self.removed_edges.remove(&id);
         self.out
             .push(ConnectionChange::Connected(EdgeConnection::from_edge(
                 id, edge,
@@ -63,7 +56,7 @@ impl ConnectionChangeAccumulator {
         }
     }
 
-    fn finish(self) -> Vec<ConnectionChange> {
+    pub(super) fn finish(self) -> Vec<ConnectionChange> {
         self.out
     }
 }
