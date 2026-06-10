@@ -69,28 +69,23 @@ mod tests {
 
     #[test]
     fn commit_projection_maps_edge_connection_ops() {
-        let out_port = PortId::new();
-        let in_port = PortId::new();
-        let edge_id = EdgeId::new();
-        let edge = test_edge(out_port, in_port);
+        let edge = TestEdgeFixture::new(PortId::new(), PortId::new());
+        let unchanged = edge.endpoints();
 
         let tx = GraphTransaction::from_ops([
             GraphOp::AddEdge {
-                id: edge_id,
-                edge: edge.clone(),
+                id: edge.id,
+                edge: edge.edge(),
             },
             GraphOp::SetEdgeEndpoints {
-                id: edge_id,
-                from: EdgeEndpoints {
-                    from: out_port,
-                    to: in_port,
-                },
-                to: EdgeEndpoints {
-                    from: out_port,
-                    to: in_port,
-                },
+                id: edge.id,
+                from: unchanged,
+                to: unchanged,
             },
-            GraphOp::RemoveEdge { id: edge_id, edge },
+            GraphOp::RemoveEdge {
+                id: edge.id,
+                edge: edge.edge(),
+            },
         ]);
 
         let projection = XyFlowCommitProjection::from_transaction(&tx);
@@ -112,21 +107,21 @@ mod tests {
 
     #[test]
     fn commit_projection_resets_connection_remove_dedup_after_edge_add() {
-        let out_port = PortId::new();
-        let in_port = PortId::new();
-        let edge_id = EdgeId::new();
-        let edge = test_edge(out_port, in_port);
+        let edge = TestEdgeFixture::new(PortId::new(), PortId::new());
 
         let tx = GraphTransaction::from_ops([
             GraphOp::RemoveEdge {
-                id: edge_id,
-                edge: edge.clone(),
+                id: edge.id,
+                edge: edge.edge(),
             },
             GraphOp::AddEdge {
-                id: edge_id,
-                edge: edge.clone(),
+                id: edge.id,
+                edge: edge.edge(),
             },
-            GraphOp::RemoveEdge { id: edge_id, edge },
+            GraphOp::RemoveEdge {
+                id: edge.id,
+                edge: edge.edge(),
+            },
         ]);
 
         let projection = XyFlowCommitProjection::from_transaction(&tx);
@@ -137,57 +132,37 @@ mod tests {
                 ConnectionChange::Disconnected(first),
                 ConnectionChange::Connected(connected),
                 ConnectionChange::Disconnected(second),
-            ] if first.edge == edge_id && connected.edge == edge_id && second.edge == edge_id
+            ] if first.edge == edge.id && connected.edge == edge.id && second.edge == edge.id
         ));
     }
 
     #[test]
     fn commit_projection_maps_resource_deletions_and_cascaded_edges() {
-        let node_id = NodeId::new();
-        let out_port = PortId::new();
-        let in_port = PortId::new();
-        let edge_id = EdgeId::new();
-        let group_id = GroupId::new();
-        let note_id = StickyNoteId::new();
-        let node = test_node(out_port);
-        let port = test_port(node_id);
-        let edge = test_edge(out_port, in_port);
-        let rect = CanvasRect {
-            origin: CanvasPoint { x: 0.0, y: 0.0 },
-            size: CanvasSize {
-                width: 10.0,
-                height: 10.0,
-            },
-        };
+        let node = TestNodeFixture::new();
+        let edge = TestEdgeFixture::new(node.port, PortId::new());
+        let group = TestGroupFixture::new("group");
+        let sticky_note = TestStickyNoteFixture::new("note");
 
         let tx = GraphTransaction::from_ops([
             GraphOp::RemoveNode {
-                id: node_id,
-                node,
-                ports: vec![(out_port, port.clone())],
-                edges: vec![(edge_id, edge.clone())],
+                id: node.id,
+                node: node.node(),
+                ports: vec![(node.port, node.port())],
+                edges: vec![(edge.id, edge.edge())],
             },
             GraphOp::RemovePort {
-                id: out_port,
-                port,
-                edges: vec![(edge_id, edge)],
+                id: node.port,
+                port: node.port(),
+                edges: vec![(edge.id, edge.edge())],
             },
             GraphOp::RemoveGroup {
-                id: group_id,
-                group: Group {
-                    title: "group".to_owned(),
-                    rect,
-                    color: None,
-                },
-                detached: vec![(node_id, None)],
+                id: group.id,
+                group: group.group(),
+                detached: vec![(node.id, None)],
             },
             GraphOp::RemoveStickyNote {
-                id: note_id,
-                note: StickyNote {
-                    text: "note".to_owned(),
-                    rect,
-                    color: None,
-                },
+                id: sticky_note.id,
+                note: sticky_note.note(),
             },
         ]);
 
@@ -199,68 +174,159 @@ mod tests {
                 .node_edge_changes()
                 .nodes()
                 .iter()
-                .any(|change| matches!(change, NodeChange::Remove { id } if *id == node_id))
+                .any(|change| matches!(change, NodeChange::Remove { id } if *id == node.id))
         );
         assert!(
-            matches!(projection.node_edge_changes().edges(), [EdgeChange::Remove { id }] if *id == edge_id)
+            matches!(projection.node_edge_changes().edges(), [EdgeChange::Remove { id }] if *id == edge.id)
         );
         assert!(
-            matches!(projection.connection_changes(), [ConnectionChange::Disconnected(conn)] if conn.edge == edge_id)
+            matches!(projection.connection_changes(), [ConnectionChange::Disconnected(conn)] if conn.edge == edge.id)
         );
-        assert_eq!(delete_change.nodes(), &[node_id]);
-        assert_eq!(delete_change.edges(), &[edge_id]);
-        assert_eq!(delete_change.groups(), &[group_id]);
-        assert_eq!(delete_change.sticky_notes(), &[note_id]);
+        assert_eq!(delete_change.nodes(), &[node.id]);
+        assert_eq!(delete_change.edges(), &[edge.id]);
+        assert_eq!(delete_change.groups(), &[group.id]);
+        assert_eq!(delete_change.sticky_notes(), &[sticky_note.id]);
     }
 
-    fn test_node(port: PortId) -> Node {
-        Node {
-            kind: NodeKindKey::new("test.node"),
-            kind_version: 1,
-            pos: CanvasPoint { x: 0.0, y: 0.0 },
-            origin: None,
-            selectable: None,
-            focusable: None,
-            draggable: None,
-            connectable: None,
-            deletable: None,
-            parent: None,
-            extent: None,
-            expand_parent: None,
-            size: None,
-            hidden: false,
-            collapsed: false,
-            ports: vec![port],
-            data: serde_json::Value::Null,
+    struct TestNodeFixture {
+        id: NodeId,
+        port: PortId,
+    }
+
+    impl TestNodeFixture {
+        fn new() -> Self {
+            Self {
+                id: NodeId::new(),
+                port: PortId::new(),
+            }
+        }
+
+        fn node(&self) -> Node {
+            Node {
+                kind: NodeKindKey::new("test.node"),
+                kind_version: 1,
+                pos: CanvasPoint { x: 0.0, y: 0.0 },
+                origin: None,
+                selectable: None,
+                focusable: None,
+                draggable: None,
+                connectable: None,
+                deletable: None,
+                parent: None,
+                extent: None,
+                expand_parent: None,
+                size: None,
+                hidden: false,
+                collapsed: false,
+                ports: vec![self.port],
+                data: serde_json::Value::Null,
+            }
+        }
+
+        fn port(&self) -> Port {
+            Port {
+                node: self.id,
+                key: PortKey::new("out"),
+                dir: PortDirection::Out,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Multi,
+                connectable: None,
+                connectable_start: None,
+                connectable_end: None,
+                ty: None,
+                data: serde_json::Value::Null,
+            }
         }
     }
 
-    fn test_port(node: NodeId) -> Port {
-        Port {
-            node,
-            key: PortKey::new("out"),
-            dir: PortDirection::Out,
-            kind: PortKind::Data,
-            capacity: PortCapacity::Multi,
-            connectable: None,
-            connectable_start: None,
-            connectable_end: None,
-            ty: None,
-            data: serde_json::Value::Null,
+    struct TestEdgeFixture {
+        id: EdgeId,
+        from: PortId,
+        to: PortId,
+    }
+
+    impl TestEdgeFixture {
+        fn new(from: PortId, to: PortId) -> Self {
+            Self {
+                id: EdgeId::new(),
+                from,
+                to,
+            }
+        }
+
+        fn edge(&self) -> Edge {
+            Edge {
+                kind: EdgeKind::Data,
+                from: self.from,
+                to: self.to,
+                hidden: false,
+                selectable: None,
+                focusable: None,
+                interaction_width: None,
+                deletable: None,
+                reconnectable: None,
+            }
+        }
+
+        fn endpoints(&self) -> EdgeEndpoints {
+            EdgeEndpoints {
+                from: self.from,
+                to: self.to,
+            }
         }
     }
 
-    fn test_edge(from: PortId, to: PortId) -> Edge {
-        Edge {
-            kind: EdgeKind::Data,
-            from,
-            to,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
+    struct TestGroupFixture {
+        id: GroupId,
+        title: &'static str,
+    }
+
+    impl TestGroupFixture {
+        fn new(title: &'static str) -> Self {
+            Self {
+                id: GroupId::new(),
+                title,
+            }
+        }
+
+        fn group(&self) -> Group {
+            Group {
+                title: self.title.to_owned(),
+                rect: test_rect(),
+                color: None,
+            }
+        }
+    }
+
+    struct TestStickyNoteFixture {
+        id: StickyNoteId,
+        text: &'static str,
+    }
+
+    impl TestStickyNoteFixture {
+        fn new(text: &'static str) -> Self {
+            Self {
+                id: StickyNoteId::new(),
+                text,
+            }
+        }
+
+        fn note(&self) -> StickyNote {
+            StickyNote {
+                text: self.text.to_owned(),
+                rect: test_rect(),
+                color: None,
+            }
+        }
+    }
+
+    fn test_rect() -> CanvasRect {
+        CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
         }
     }
 }
