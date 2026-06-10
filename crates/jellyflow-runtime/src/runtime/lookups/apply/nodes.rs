@@ -65,7 +65,11 @@ impl NodeGraphLookups {
     }
 
     pub(super) fn apply_set_node_ports(&mut self, id: NodeId, ports: &[PortId]) -> bool {
-        self.update_existing_node_lookup(id, |node| node.ports = ports.to_vec())
+        self.update_existing_node_lookup(id, |node| {
+            node.ports = ports.to_vec();
+            node.measured_handles
+                .retain(|measured| node.ports.contains(&measured.handle.port));
+        })
     }
 
     fn update_node_lookup_or_insert(

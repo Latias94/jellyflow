@@ -18,6 +18,10 @@ impl NodeGraphStore {
         &self.lookups
     }
 
+    pub(crate) fn lookups_mut(&mut self) -> &mut NodeGraphLookups {
+        &mut self.lookups
+    }
+
     /// Replaces the entire graph document.
     ///
     /// This is a controlled-mode helper: callers that own graph state can swap the document

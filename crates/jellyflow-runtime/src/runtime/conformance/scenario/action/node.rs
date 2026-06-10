@@ -13,6 +13,7 @@ use super::{ConformanceAction, is_false};
 pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
     Some(match action {
         ConformanceAction::ApplyNodeDrag { .. } => "apply_node_drag",
+        ConformanceAction::ApplyNodeDragSession { .. } => "apply_node_drag_session",
         ConformanceAction::ApplyNodeResize { .. } => "apply_node_resize",
         ConformanceAction::ApplyNodePointerResize { .. } => "apply_node_pointer_resize",
         ConformanceAction::ApplyNodePointerResizeSession { .. } => {
@@ -266,6 +267,10 @@ impl ConformanceNodeNudgeDirection {
 impl ConformanceAction {
     pub fn apply_node_drag(node: NodeId, to: CanvasPoint) -> Self {
         Self::ApplyNodeDrag { node, to }
+    }
+
+    pub fn apply_node_drag_session(node: NodeId, start: CanvasPoint, to: CanvasPoint) -> Self {
+        Self::ApplyNodeDragSession { node, start, to }
     }
 
     pub fn apply_node_resize(request: NodeResizeRequest) -> Self {

@@ -11,8 +11,8 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, delete, drag, events, geometry, keyboard, rendering,
-    resize, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
+    measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -235,6 +235,65 @@ fn explicit_modules_expose_their_owned_surfaces() {
         from: CanvasPoint::default(),
         to: CanvasPoint::default(),
     };
+    let _node_drag_session = gesture::NodeDragSession::new(
+        NodeId::new(),
+        CanvasPoint::default(),
+        CanvasPoint { x: 8.0, y: 8.0 },
+    );
+    let _connection_handle_target = gesture::PointerSessionTarget::ConnectionHandle(from_handle);
+    let _ = std::mem::size_of::<gesture::ConnectEdgeSession>();
+    let _viewport_drag_pan_session = gesture::ViewportDragPanSession::new(
+        viewport::ViewportGestureContext::idle(),
+        viewport::ViewportDragPanInput::new(
+            viewport::ViewportPointerButton::Left,
+            CanvasPoint { x: 3.0, y: 4.0 },
+        ),
+    );
+    assert_eq!(
+        gesture::PointerSessionClaim::NodeDrag,
+        gesture::PointerSessionClaim::NodeDrag
+    );
+    let measured_handle = measurement::MeasuredHandle::new(
+        from_handle,
+        geometry::HandleBounds {
+            rect: CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+            position: geometry::HandlePosition::Right,
+        },
+    );
+    let _node_measurement = measurement::NodeMeasurement::new(NodeId::new())
+        .with_size(Some(CanvasSize {
+            width: 100.0,
+            height: 80.0,
+        }))
+        .with_handles([measured_handle]);
+    let _ = std::mem::size_of::<measurement::NodeMeasurementOutcome>();
+    let _ = std::mem::size_of::<measurement::NodeMeasurementError>();
+    let _: fn(
+        &mut NodeGraphStore,
+        measurement::NodeMeasurement,
+    )
+        -> Result<measurement::NodeMeasurementOutcome, measurement::NodeMeasurementError> =
+        NodeGraphStore::report_node_measurement;
+    let _: fn(&mut NodeGraphStore, NodeId) -> measurement::NodeMeasurementOutcome =
+        NodeGraphStore::clear_node_measurement;
+    let _: fn(&NodeGraphStore, NodeId) -> Option<measurement::NodeMeasurement> =
+        NodeGraphStore::node_measurement;
+    let _: fn(&NodeGraphStore) -> Vec<connection::ConnectionTargetCandidate> =
+        NodeGraphStore::connection_target_candidates_from_measurements;
+    let _: fn(
+        &NodeGraphStore,
+        CanvasPoint,
+        connection::ConnectionHandleRef,
+    ) -> connection::ResolvedConnectionTarget =
+        NodeGraphStore::resolve_connection_target_from_measurements;
+    let _: fn(&NodeGraphStore, EdgeId) -> Option<geometry::EdgePosition> =
+        NodeGraphStore::edge_position_from_measurements;
     let _ = std::mem::size_of::<selection::NodePointerDownDecision>();
     assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
     let _ = std::mem::size_of::<drag::NodeDragPlan>();

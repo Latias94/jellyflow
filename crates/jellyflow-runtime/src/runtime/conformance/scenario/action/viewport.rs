@@ -37,6 +37,7 @@ pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
         }
         ConformanceAction::ApplyViewportScrollGesture { .. } => "apply_viewport_scroll_gesture",
         ConformanceAction::ApplyViewportDragPanGesture { .. } => "apply_viewport_drag_pan_gesture",
+        ConformanceAction::ApplyViewportDragPanSession { .. } => "apply_viewport_drag_pan_session",
         _ => return None,
     })
 }
@@ -208,6 +209,29 @@ impl ConformanceAction {
         rejection: ViewportGestureRejection,
     ) -> Self {
         Self::ApplyViewportDragPanGesture {
+            context,
+            input,
+            expect_rejection: Some(rejection),
+        }
+    }
+
+    pub fn apply_viewport_drag_pan_session(
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+    ) -> Self {
+        Self::ApplyViewportDragPanSession {
+            context,
+            input,
+            expect_rejection: None,
+        }
+    }
+
+    pub fn expect_viewport_drag_pan_session_rejected(
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+        rejection: ViewportGestureRejection,
+    ) -> Self {
+        Self::ApplyViewportDragPanSession {
             context,
             input,
             expect_rejection: Some(rejection),

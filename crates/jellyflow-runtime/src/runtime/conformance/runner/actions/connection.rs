@@ -2,6 +2,8 @@ use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
     resolve_connection_target, resolve_connection_target_from_handles,
 };
+use crate::runtime::events::ConnectStart;
+use crate::runtime::gesture::ConnectEdgeSession;
 use crate::runtime::store::NodeGraphStore;
 
 use super::super::super::scenario::{
@@ -21,6 +23,9 @@ pub(super) fn execute_action(
             assert_connection_target_from_handles(input, *expected)
         }
         ConformanceAction::ApplyConnectEdge { request } => apply_connect_edge(store, *request),
+        ConformanceAction::ApplyConnectEdgeSession { start, request } => {
+            apply_connect_edge_session(store, start.clone(), *request)
+        }
         ConformanceAction::ApplyReconnectEdge { request } => apply_reconnect_edge(store, *request),
         _ => return None,
     })
@@ -59,6 +64,21 @@ pub(super) fn apply_connect_edge(
     request: ConnectEdgeRequest,
 ) -> Result<(), String> {
     require_commit(store.apply_connect_edge(request), "apply_connect_edge")
+}
+
+pub(super) fn apply_connect_edge_session(
+    store: &mut NodeGraphStore,
+    start: ConnectStart,
+    request: ConnectEdgeRequest,
+) -> Result<(), String> {
+    let outcome = store
+        .apply_connect_edge_session(ConnectEdgeSession::new(start, request))
+        .map_err(|err| err.to_string())?;
+    if outcome.committed_update().is_some() {
+        Ok(())
+    } else {
+        Err("apply_connect_edge_session produced no commit".to_owned())
+    }
 }
 
 pub(super) fn apply_reconnect_edge(

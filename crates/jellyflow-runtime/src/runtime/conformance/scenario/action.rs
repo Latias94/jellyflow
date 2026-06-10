@@ -18,7 +18,7 @@ use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
-use crate::runtime::events::NodeGraphGestureEvent;
+use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -49,6 +49,11 @@ pub enum ConformanceAction {
         node: NodeId,
         to: CanvasPoint,
     },
+    ApplyNodeDragSession {
+        node: NodeId,
+        start: CanvasPoint,
+        to: CanvasPoint,
+    },
     AssertNodePosition {
         node: NodeId,
         expected: CanvasPoint,
@@ -77,6 +82,10 @@ pub enum ConformanceAction {
         expected: ResolvedConnectionTarget,
     },
     ApplyConnectEdge {
+        request: ConnectEdgeRequest,
+    },
+    ApplyConnectEdgeSession {
+        start: ConnectStart,
         request: ConnectEdgeRequest,
     },
     ApplyReconnectEdge {
@@ -152,6 +161,12 @@ pub enum ConformanceAction {
         expect_rejection: Option<ViewportGestureRejection>,
     },
     ApplyViewportDragPanGesture {
+        context: ViewportGestureContext,
+        input: ViewportDragPanInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_rejection: Option<ViewportGestureRejection>,
+    },
+    ApplyViewportDragPanSession {
         context: ViewportGestureContext,
         input: ViewportDragPanInput,
         #[serde(default, skip_serializing_if = "Option::is_none")]

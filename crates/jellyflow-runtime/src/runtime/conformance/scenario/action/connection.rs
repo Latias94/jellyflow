@@ -4,6 +4,7 @@ use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetCandidate, ConnectionTargetFromHandlesInput,
     ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
+use crate::runtime::events::ConnectStart;
 use jellyflow_core::core::CanvasPoint;
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
@@ -16,6 +17,7 @@ pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
             "assert_connection_target_from_handles"
         }
         ConformanceAction::ApplyConnectEdge { .. } => "apply_connect_edge",
+        ConformanceAction::ApplyConnectEdgeSession { .. } => "apply_connect_edge_session",
         ConformanceAction::ApplyReconnectEdge { .. } => "apply_reconnect_edge",
         _ => return None,
     })
@@ -80,6 +82,10 @@ impl ConformanceAction {
 
     pub fn apply_connect_edge(request: ConnectEdgeRequest) -> Self {
         Self::ApplyConnectEdge { request }
+    }
+
+    pub fn apply_connect_edge_session(start: ConnectStart, request: ConnectEdgeRequest) -> Self {
+        Self::ApplyConnectEdgeSession { start, request }
     }
 
     pub fn apply_reconnect_edge(request: ReconnectEdgeRequest) -> Self {

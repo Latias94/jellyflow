@@ -25,6 +25,7 @@ pub use runner::{ConformanceRunner, run_conformance_scenario, run_conformance_su
 pub(crate) use scenario::ConformanceCallbackTraceRecorder;
 pub use scenario::{
     CONFORMANCE_FIXTURE_SCHEMA_VERSION, ConformanceAction, ConformanceCallbackEvent,
-    ConformanceScenario, ConformanceSetup, ConformanceSuite, ConformanceTraceConfig,
-    ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceConnectEdgeSessionContract, ConformanceNodeDragSessionContract, ConformanceScenario,
+    ConformanceSetup, ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };

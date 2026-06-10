@@ -1,4 +1,5 @@
 use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
+use crate::runtime::gesture::ViewportDragPanSession;
 use crate::runtime::store::NodeGraphStore;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -76,6 +77,11 @@ pub(super) fn execute_action(
             input,
             expect_rejection,
         } => apply_drag_pan_gesture(store, *context, *input, *expect_rejection),
+        ConformanceAction::ApplyViewportDragPanSession {
+            context,
+            input,
+            expect_rejection,
+        } => apply_drag_pan_session(store, *context, *input, *expect_rejection),
         _ => return None,
     })
 }
@@ -279,6 +285,33 @@ pub(super) fn apply_drag_pan_gesture(
     let interaction = store.resolved_interaction_state();
     let result = resolve_viewport_drag_pan_gesture(&interaction.pan_interaction(), context, input);
     apply_viewport_gesture_result(store, result, expect_rejection)
+}
+
+pub(super) fn apply_drag_pan_session(
+    store: &mut NodeGraphStore,
+    context: ViewportGestureContext,
+    input: ViewportDragPanInput,
+    expect_rejection: Option<ViewportGestureRejection>,
+) -> Result<(), String> {
+    match (
+        store.apply_viewport_drag_pan_session(ViewportDragPanSession::new(context, input)),
+        expect_rejection,
+    ) {
+        (Ok(_), None) => Ok(()),
+        (Ok(actual), Some(expected)) => Err(format!(
+            "viewport drag-pan session was accepted as {:?}, expected rejection {:?}",
+            actual.kind, expected
+        )),
+        (Err(actual), Some(expected)) if actual == expected => Ok(()),
+        (Err(actual), Some(expected)) => Err(format!(
+            "viewport drag-pan session rejected with {:?}, expected {:?}",
+            actual, expected
+        )),
+        (Err(actual), None) => Err(format!(
+            "viewport drag-pan session was rejected: {:?}",
+            actual
+        )),
+    }
 }
 
 fn apply_viewport_animation_frame(

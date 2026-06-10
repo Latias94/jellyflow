@@ -1,4 +1,5 @@
 use crate::runtime::drag::NodeDragRequest;
+use crate::runtime::gesture::NodeDragSession;
 use crate::runtime::keyboard::KeyboardIntent;
 use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, NodeId};
@@ -15,6 +16,9 @@ pub(super) fn execute_action(
 ) -> Option<Result<(), String>> {
     Some(match action {
         ConformanceAction::ApplyNodeDrag { node, to } => apply_node_drag(store, *node, *to),
+        ConformanceAction::ApplyNodeDragSession { node, start, to } => {
+            apply_node_drag_session(store, *node, *start, *to)
+        }
         ConformanceAction::ApplyNodeResize { request } => apply_node_resize(store, *request),
         ConformanceAction::ApplyNodePointerResize { request } => {
             apply_node_pointer_resize(store, *request)
@@ -40,6 +44,22 @@ pub(super) fn apply_node_drag(
         store.apply_node_drag(NodeDragRequest { node, to }),
         "apply_node_drag",
     )
+}
+
+pub(super) fn apply_node_drag_session(
+    store: &mut NodeGraphStore,
+    node: NodeId,
+    start: CanvasPoint,
+    to: CanvasPoint,
+) -> Result<(), String> {
+    let outcome = store
+        .apply_node_drag_session(NodeDragSession::new(node, start, to))
+        .map_err(|err| err.to_string())?;
+    if outcome.committed_update().is_some() {
+        Ok(())
+    } else {
+        Err("apply_node_drag_session produced no commit".to_owned())
+    }
 }
 
 pub(super) fn apply_node_resize(

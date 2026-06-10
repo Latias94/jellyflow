@@ -5,19 +5,20 @@ use crate::io::{NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons, NodeGraphP
 use crate::rules::EdgeEndpoint;
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceConnectEdgeSessionContract,
+    ConformanceNodeDragSessionContract, ConformanceScenario, ConformanceTraceConfig,
     ConformanceTraceEvent, ConformanceViewChange,
 };
 use crate::runtime::connection::{
-    CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest, ConnectionHandleConnection,
-    ConnectionHandleRef, ConnectionHandleValidity, ConnectionTargetCandidate,
-    ConnectionTargetFromHandlesInput, ConnectionTargetHandle, ConnectionTargetInput,
-    RECONNECT_EDGE_TRANSACTION_LABEL, ReconnectEdgeRequest, ResolvedConnectionTarget,
+    ConnectEdgeRequest, ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
+    ConnectionTargetCandidate, ConnectionTargetFromHandlesInput, ConnectionTargetHandle,
+    ConnectionTargetInput, RECONNECT_EDGE_TRANSACTION_LABEL, ReconnectEdgeRequest,
+    ResolvedConnectionTarget,
 };
 use crate::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use crate::runtime::events::{
     ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart, NodeDragEnd, NodeDragEndOutcome,
-    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent,
+    NodeDragStart, NodeGraphGestureEvent,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::resize::{

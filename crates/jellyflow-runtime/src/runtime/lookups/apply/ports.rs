@@ -10,6 +10,8 @@ impl NodeGraphLookups {
     ) -> bool {
         if let Some(n) = self.node_lookup.get_mut(&port.node) {
             n.ports.retain(|port_id| *port_id != id);
+            n.measured_handles
+                .retain(|measured| measured.handle.port != id);
         }
         self.remove_edges_from_lookups(edges);
         true

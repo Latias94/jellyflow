@@ -9,23 +9,26 @@ use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, No
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceFixtureDirectory,
     ConformanceFixtureDirectoryApprovalReport, ConformanceFixtureDirectoryReport,
-    ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
-    ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceNodeDragSessionContract, ConformanceRunReport, ConformanceScenario,
+    ConformanceSuite, ConformanceSuiteReport, ConformanceTraceConfig, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };
+use jellyflow_runtime::runtime::connection::{ConnectionHandleRef, ConnectionHandleValidity};
 use jellyflow_runtime::runtime::delete::DELETE_SELECTION_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
 use jellyflow_runtime::runtime::events::{
-    NodeDragStart, NodeDragUpdate, NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome,
-    NodeResizeStart, NodeResizeUpdate, ViewportMove, ViewportMoveEnd, ViewportMoveEndOutcome,
-    ViewportMoveKind, ViewportMoveStart,
+    NodeGraphGestureEvent, NodeResizeEnd, NodeResizeEndOutcome, NodeResizeStart, NodeResizeUpdate,
 };
+use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
+use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow_runtime::runtime::resize::{
     NODE_RESIZE_TRANSACTION_LABEL, NodePointerResizeRequest, NodeResizeDirection, NodeResizeRequest,
 };
 use jellyflow_runtime::runtime::viewport::{
     ViewportAnimationEasing, ViewportAnimationOptions, ViewportAnimationPlan,
-    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportPanInertiaRequest,
-    ViewportPanRequest, ViewportTransform, plan_viewport_pan_inertia,
+    ViewportAnimationRequest, ViewportDoubleClickZoomInput, ViewportDragPanInput,
+    ViewportGestureContext, ViewportPanInertiaRequest, ViewportPanRequest, ViewportPointerButton,
+    ViewportTransform, plan_viewport_pan_inertia,
 };
 use jellyflow_runtime::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
@@ -244,48 +247,129 @@ pub fn run_rendering_query_smoke() -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_measurement_smoke() -> Result<(), String> {
+    let source_id = NodeId::from_u128(90);
+    let target_id = NodeId::from_u128(91);
+    let out_port = PortId::from_u128(92);
+    let in_port = PortId::from_u128(93);
+    let edge_id = EdgeId::from_u128(94);
+    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
+    graph.nodes.get_mut(&source_id).expect("source exists").size = None;
+    graph.nodes.get_mut(&target_id).expect("target exists").size = None;
+
+    let mut store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let viewport = CanvasSize {
+        width: 300.0,
+        height: 100.0,
+    };
+    if !store.rendering_query(viewport).visible_node_ids.is_empty() {
+        return Err("unmeasured nodes should not participate in visible-node culling".to_owned());
+    }
+
+    let source_handle = ConnectionHandleRef::new(source_id, out_port, PortDirection::Out);
+    let target_handle = ConnectionHandleRef::new(target_id, in_port, PortDirection::In);
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(source_id)
+                .with_size(Some(CanvasSize {
+                    width: 160.0,
+                    height: 80.0,
+                }))
+                .with_handles([MeasuredHandle::new(
+                    source_handle,
+                    HandleBounds {
+                        rect: CanvasRect {
+                            origin: CanvasPoint { x: 152.0, y: 32.0 },
+                            size: CanvasSize {
+                                width: 8.0,
+                                height: 16.0,
+                            },
+                        },
+                        position: HandlePosition::Right,
+                    },
+                )]),
+        )
+        .map_err(|err| err.to_string())?;
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(target_id)
+                .with_size(Some(CanvasSize {
+                    width: 160.0,
+                    height: 80.0,
+                }))
+                .with_handles([MeasuredHandle::new(
+                    target_handle,
+                    HandleBounds {
+                        rect: CanvasRect {
+                            origin: CanvasPoint { x: 0.0, y: 32.0 },
+                            size: CanvasSize {
+                                width: 8.0,
+                                height: 16.0,
+                            },
+                        },
+                        position: HandlePosition::Left,
+                    },
+                )]),
+        )
+        .map_err(|err| err.to_string())?;
+
+    let query = store.rendering_query(viewport);
+    if query.visible_node_ids != vec![source_id, target_id] {
+        return Err(format!(
+            "expected measured visible nodes {:?}, got {:?}",
+            vec![source_id, target_id],
+            query.visible_node_ids
+        ));
+    }
+    if query.visible_edge_ids != vec![edge_id] {
+        return Err(format!(
+            "expected measured visible edge {:?}, got {:?}",
+            edge_id, query.visible_edge_ids
+        ));
+    }
+
+    let endpoints = store
+        .edge_position_from_measurements(edge_id)
+        .ok_or_else(|| "expected measured edge endpoints".to_owned())?;
+    if endpoints.source.point != (CanvasPoint { x: 170.0, y: 60.0 }) {
+        return Err(format!(
+            "expected source endpoint at (170, 60), got {:?}",
+            endpoints.source.point
+        ));
+    }
+    if endpoints.target.point != (CanvasPoint { x: 260.0, y: 60.0 }) {
+        return Err(format!(
+            "expected target endpoint at (260, 60), got {:?}",
+            endpoints.target.point
+        ));
+    }
+
+    let target = store.resolve_connection_target_from_measurements(
+        CanvasPoint { x: 264.0, y: 60.0 },
+        source_handle,
+    );
+    if target.feedback != ConnectionHandleValidity::Valid || !target.is_handle_valid {
+        return Err(format!("expected valid measured target, got {target:?}"));
+    }
+
+    Ok(())
+}
+
 fn node_drag_scenario() -> ConformanceScenario {
     let node_id = NodeId::from_u128(2);
     let graph = graph_with_node(node_id);
-    let start = NodeDragStart {
-        primary: node_id,
-        nodes: vec![node_id],
-        pointer: CanvasPoint { x: 12.0, y: 16.0 },
-    };
+    let start = CanvasPoint { x: 12.0, y: 16.0 };
     let target = CanvasPoint { x: 96.0, y: 128.0 };
-    let update = NodeDragUpdate {
-        primary: node_id,
-        nodes: vec![node_id],
-        pointer: target,
-    };
-    let start_event = NodeGraphGestureEvent::NodeDragStart(start.clone());
-    let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
 
     ConformanceScenario::new("template node drag", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([
-            ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::apply_node_drag(node_id, target),
-            ConformanceAction::emit_gesture(update_event.clone()),
-        ])
-        .with_expected_trace([
-            ConformanceTraceEvent::gesture(start_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDragStart(start)),
-            ConformanceTraceEvent::graph_commit(
-                Some(NODE_DRAG_TRANSACTION_LABEL),
-                ["set_node_pos"],
-            ),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(NODE_DRAG_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 1,
-                edges: 0,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
-            ConformanceTraceEvent::gesture(update_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeDrag(update)),
-        ])
+        .with_node_drag_session_contract(ConformanceNodeDragSessionContract::new(
+            node_id, start, target,
+        ))
 }
 
 fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
@@ -459,51 +543,18 @@ fn delete_selection_scenario() -> ConformanceScenario {
 
 fn viewport_pan_scenario() -> ConformanceScenario {
     let graph = Graph::new(GraphId::from_u128(10));
-    let start = ViewportMoveStart {
-        kind: ViewportMoveKind::PanDrag,
-        pan: CanvasPoint::default(),
-        zoom: 1.0,
-    };
-    let start_event = NodeGraphGestureEvent::ViewportMoveStart(start);
     let pan = CanvasPoint { x: 40.0, y: -10.0 };
-    let update = ViewportMove {
-        kind: ViewportMoveKind::PanDrag,
-        pan,
-        zoom: 1.0,
-    };
-    let update_event = NodeGraphGestureEvent::ViewportMove(update);
-    let end = ViewportMoveEnd {
-        kind: ViewportMoveKind::PanDrag,
-        pan,
-        zoom: 1.0,
-        outcome: ViewportMoveEndOutcome::Ended,
-    };
-    let end_event = NodeGraphGestureEvent::ViewportMoveEnd(end);
+    let start = ViewportTransform::new(CanvasPoint::default(), 1.0).expect("valid viewport");
+    let end = ViewportTransform::new(pan, 1.0).expect("valid viewport");
 
     ConformanceScenario::new("template viewport pan", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([
-            ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::apply_viewport_pan(ViewportPanRequest::new(pan)),
-            ConformanceAction::emit_gesture(update_event.clone()),
-            ConformanceAction::emit_gesture(end_event.clone()),
-        ])
-        .with_expected_trace([
-            ConformanceTraceEvent::gesture(start_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMoveStart(start)),
-            ConformanceTraceEvent::viewport(pan, 1.0),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewChange {
-                changes: vec![ConformanceViewChange::Viewport { pan, zoom: 1.0 }],
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportChange {
-                pan,
-                zoom: 1.0,
-            }),
-            ConformanceTraceEvent::gesture(update_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMove(update)),
-            ConformanceTraceEvent::gesture(end_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ViewportMoveEnd(end)),
-        ])
+        .with_viewport_drag_pan_session_contract(ConformanceViewportDragPanSessionContract::new(
+            ViewportGestureContext::idle(),
+            ViewportDragPanInput::new(ViewportPointerButton::Left, pan),
+            start,
+            end,
+        ))
 }
 
 fn viewport_constrained_pan_scenario() -> ConformanceScenario {
@@ -1082,6 +1133,11 @@ mod tests {
     #[test]
     fn rendering_query_smoke_resolves_order_and_visibility() {
         run_rendering_query_smoke().expect("rendering query smoke runs");
+    }
+
+    #[test]
+    fn measurement_smoke_resolves_runtime_layout_facts() {
+        run_measurement_smoke().expect("measurement smoke runs");
     }
 
     #[test]

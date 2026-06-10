@@ -121,46 +121,15 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
         kind: kind.clone(),
         mode: NodeGraphConnectionMode::Strict,
     };
-    let start_event = NodeGraphGestureEvent::ConnectStart(start.clone());
     let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
-
-    let end = ConnectEnd {
-        kind,
-        mode: NodeGraphConnectionMode::Strict,
-        target: Some(next_in),
-        outcome: ConnectEndOutcome::Committed,
-    };
-    let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
+    let request = ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
+        .with_edge_id(edge_id);
 
     let scenario = ConformanceScenario::new("connect gesture transaction callbacks", graph)
         .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
-        .with_actions([
-            ConformanceAction::emit_gesture(start_event.clone()),
-            ConformanceAction::apply_connect_edge(
-                ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
-                    .with_edge_id(edge_id),
-            ),
-            ConformanceAction::emit_gesture(end_event.clone()),
-        ])
-        .with_expected_trace([
-            ConformanceTraceEvent::gesture(start_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectStart(start)),
-            ConformanceTraceEvent::graph_commit(Some(CONNECT_EDGE_TRANSACTION_LABEL), ["add_edge"]),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::GraphCommit {
-                label: Some(CONNECT_EDGE_TRANSACTION_LABEL.to_owned()),
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodeEdgeChanges {
-                nodes: 0,
-                edges: 1,
-            }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::EdgesChange { count: 1 }),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectionChange(
-                ConnectionChange::Connected(connection),
-            )),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::Connect(connection)),
-            ConformanceTraceEvent::gesture(end_event),
-            ConformanceTraceEvent::callback(ConformanceCallbackEvent::ConnectEnd(end)),
-        ]);
+        .with_connect_edge_session_contract(ConformanceConnectEdgeSessionContract::new(
+            start, request, connection,
+        ));
 
     assert_conformance_trace(&scenario);
 }

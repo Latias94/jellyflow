@@ -1,4 +1,5 @@
 mod action;
+mod behavior;
 mod callback_recorder;
 mod constants;
 mod setup;
@@ -9,6 +10,10 @@ pub use action::{
     ConformanceAction, ConformanceConnectionTargetFromHandlesInput, ConformanceNodeNudgeRequest,
     ConformanceNodePointerDownInput, ConformanceNodePointerResizeRequest,
     ConformanceNodeResizeRequest,
+};
+pub use behavior::{
+    ConformanceConnectEdgeSessionContract, ConformanceNodeDragSessionContract,
+    ConformanceViewportDragPanSessionContract,
 };
 pub(crate) use callback_recorder::ConformanceCallbackTraceRecorder;
 pub use constants::CONFORMANCE_FIXTURE_SCHEMA_VERSION;

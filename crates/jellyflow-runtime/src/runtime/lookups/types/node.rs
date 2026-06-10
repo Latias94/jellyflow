@@ -2,6 +2,8 @@ use jellyflow_core::core::{
     CanvasPoint, CanvasSize, GroupId, Node, NodeKindKey, NodeOrigin, PortId,
 };
 
+use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLookupEntry {
     pub kind: NodeKindKey,
@@ -13,6 +15,8 @@ pub struct NodeLookupEntry {
     pub hidden: bool,
     pub collapsed: bool,
     pub ports: Vec<PortId>,
+    pub measured_size: Option<CanvasSize>,
+    pub measured_handles: Vec<MeasuredHandle>,
 }
 
 impl NodeLookupEntry {
@@ -27,6 +31,8 @@ impl NodeLookupEntry {
             hidden: node.hidden,
             collapsed: node.collapsed,
             ports: node.ports.clone(),
+            measured_size: None,
+            measured_handles: Vec::new(),
         }
     }
 
@@ -35,6 +41,35 @@ impl NodeLookupEntry {
     }
 
     pub(crate) fn resolved_size(&self, fallback_size: Option<CanvasSize>) -> Option<CanvasSize> {
-        self.size.or(fallback_size)
+        self.size.or(self.measured_size).or(fallback_size)
+    }
+
+    pub(crate) fn apply_measurement(&mut self, measurement: &NodeMeasurement) -> bool {
+        let changed =
+            self.measured_size != measurement.size || self.measured_handles != measurement.handles;
+        self.measured_size = measurement.size;
+        self.measured_handles = measurement.handles.clone();
+        changed
+    }
+
+    pub(crate) fn clear_measurement(&mut self) -> bool {
+        let changed = self.measured_size.is_some() || !self.measured_handles.is_empty();
+        self.measured_size = None;
+        self.measured_handles.clear();
+        changed
+    }
+
+    pub(crate) fn measurement(
+        &self,
+        node: jellyflow_core::core::NodeId,
+    ) -> Option<NodeMeasurement> {
+        if self.measured_size.is_none() && self.measured_handles.is_empty() {
+            return None;
+        }
+        Some(NodeMeasurement {
+            node,
+            size: self.measured_size,
+            handles: self.measured_handles.clone(),
+        })
     }
 }
