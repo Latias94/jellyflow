@@ -1,6 +1,6 @@
 # ADR 0006: Mind Map Layout Strategy
 
-Status: Proposed
+Status: Accepted
 Date: 2026-06-11
 
 ## Context
@@ -107,8 +107,9 @@ from scratch.
 
 ## Follow-Up
 
-- Build the first native mind-map engine in `jellyflow-layout`.
-- Define fixture families for radial, freeform, and mixed image/note boards.
+- Expand the fixture corpus for radial, freeform, and mixed image/note boards.
+- Keep tuning the freeform relax path only if overlap resolution alone is not enough for a host
+  product.
 - Decide which hooks are truly stable before any additional modes or external adapters are added.
 - Re-evaluate external libraries only if the native port cannot match the fixture corpus or performance
   targets.
@@ -118,5 +119,9 @@ from scratch.
 - `docs/adr/0005-layout-engine-extension-boundary.md`
 - `crates/jellyflow-layout/src/engine.rs`
 - `crates/jellyflow-layout/src/dugong.rs`
+- `crates/jellyflow-layout/src/freeform.rs`
+- `crates/jellyflow-layout/src/mind_map.rs`
+- `crates/jellyflow-layout/src/tests/freeform.rs`
+- `crates/jellyflow-layout/src/tests/mind_map.rs`
 - `crates/jellyflow-runtime/src/runtime/layout.rs`
 - `crates/jellyflow-runtime/src/runtime/measurement.rs`

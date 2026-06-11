@@ -3,6 +3,7 @@ use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph};
 use crate::runtime::layout::{
     DugongLayoutApplyOutcome, LayoutContext, LayoutEngine, LayoutEngineId, LayoutEngineRegistry,
     LayoutEngineRequest, LayoutError, LayoutNodePosition, LayoutRequest, LayoutResult,
+    builtin_layout_engine_registry,
 };
 use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::tests::fixtures::{make_graph, make_store};
@@ -101,6 +102,26 @@ fn apply_dugong_layout_returns_layout_and_dispatch_outcome() {
     assert!(layout.node_position(a).is_some());
     let dispatch = dispatch.expect("layout changed node positions");
     assert_eq!(dispatch.committed().label(), Some("Layout graph"));
+}
+
+#[test]
+fn apply_freeform_layout_returns_layout_and_dispatch_outcome() {
+    let (graph, a, _b, _out, _in, _edge) = make_graph();
+    let mut store = make_store(graph);
+    let request = LayoutEngineRequest::mind_map_freeform(LayoutRequest::all());
+
+    let outcome = store
+        .apply_layout(&request, &builtin_layout_engine_registry())
+        .expect("apply freeform layout");
+
+    assert!(outcome.layout.node_position(a).is_some());
+    assert_eq!(
+        outcome
+            .committed()
+            .expect("layout changed node positions")
+            .label(),
+        Some("Layout graph")
+    );
 }
 
 #[test]

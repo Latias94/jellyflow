@@ -9,10 +9,13 @@ pub use jellyflow_layout::{
     DUGONG_LAYOUT_ENGINE_ID, DugongLayoutEngine, LayoutContext, LayoutDirection, LayoutEdgeRoute,
     LayoutEngine, LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutError,
     LayoutNodePosition, LayoutOptions, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, MindMapRadialLayoutEngine, builtin_layout_engine_registry,
+    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
+    MindMapFreeformLayoutEngine, MindMapRadialLayoutEngine, builtin_layout_engine_registry,
     layout_graph_to_transaction_with_dugong, layout_graph_to_transaction_with_engine,
+    layout_graph_to_transaction_with_mind_map_freeform,
     layout_graph_to_transaction_with_mind_map_radial, layout_graph_with_dugong,
-    layout_graph_with_engine, layout_graph_with_mind_map_radial,
+    layout_graph_with_engine, layout_graph_with_mind_map_freeform,
+    layout_graph_with_mind_map_radial,
 };
 
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};

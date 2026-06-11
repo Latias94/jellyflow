@@ -17,6 +17,9 @@ transactions so hosts can decide when to apply or animate layout results.
 The built-in `dugong` engine is registered under `DUGONG_LAYOUT_ENGINE_ID` (`"dugong"`).
 The built-in radial mind-map engine is registered under `MIND_MAP_RADIAL_LAYOUT_ENGINE_ID`
 (`"mind_map_radial"`).
+The built-in freeform mind-map engine is registered under `MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID`
+(`"mind_map_freeform"`).
+It currently keeps the input canvas feel and only resolves overlaps while preserving pinned nodes.
 Compatibility helpers such as `layout_graph_with_dugong` remain available, but new host code should
 prefer the registry path when it needs runtime selection or custom engines.
 

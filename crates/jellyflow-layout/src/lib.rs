@@ -8,6 +8,7 @@
 
 mod dugong;
 mod engine;
+mod freeform;
 mod mind_map;
 
 pub use dugong::{
@@ -17,8 +18,12 @@ pub use engine::{
     DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutDirection, LayoutEdgeRoute, LayoutEngine,
     LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutError, LayoutNodePosition,
     LayoutOptions, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, layout_graph_to_transaction_with_engine,
-    layout_graph_with_engine,
+    MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
+    layout_graph_to_transaction_with_engine, layout_graph_with_engine,
+};
+pub use freeform::{
+    MindMapFreeformLayoutEngine, layout_graph_to_transaction_with_mind_map_freeform,
+    layout_graph_with_mind_map_freeform,
 };
 pub use mind_map::{
     MindMapRadialLayoutEngine, layout_graph_to_transaction_with_mind_map_radial,
@@ -37,6 +42,11 @@ pub fn builtin_layout_engine_registry() -> LayoutEngineRegistry {
     debug_assert!(
         inserted_mind_map.is_ok(),
         "built-in mind-map engine should be unique"
+    );
+    let inserted_freeform = registry.insert(MindMapFreeformLayoutEngine);
+    debug_assert!(
+        inserted_freeform.is_ok(),
+        "built-in freeform engine should be unique"
     );
     registry
 }

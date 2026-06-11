@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub const DUGONG_LAYOUT_ENGINE_ID: &str = "dugong";
 /// Stable engine id for the built-in radial mind-map engine.
 pub const MIND_MAP_RADIAL_LAYOUT_ENGINE_ID: &str = "mind_map_radial";
+/// Stable engine id for the built-in freeform mind-map engine.
+pub const MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID: &str = "mind_map_freeform";
 
 /// Stable identifier for a layout engine.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -31,6 +33,11 @@ impl LayoutEngineId {
     /// Returns the built-in radial mind-map engine id.
     pub fn mind_map_radial() -> Self {
         Self::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID)
+    }
+
+    /// Returns the built-in freeform mind-map engine id.
+    pub fn mind_map_freeform() -> Self {
+        Self::new(MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID)
     }
 
     /// Returns this id as a string slice.
@@ -240,6 +247,16 @@ impl LayoutEngineRequest {
     /// Creates a request for the built-in `dugong` engine.
     pub fn dugong(layout: LayoutRequest) -> Self {
         Self::new(LayoutEngineId::dugong(), layout)
+    }
+
+    /// Creates a request for the built-in radial mind-map engine.
+    pub fn mind_map_radial(layout: LayoutRequest) -> Self {
+        Self::new(LayoutEngineId::mind_map_radial(), layout)
+    }
+
+    /// Creates a request for the built-in freeform mind-map engine.
+    pub fn mind_map_freeform(layout: LayoutRequest) -> Self {
+        Self::new(LayoutEngineId::mind_map_freeform(), layout)
     }
 
     /// Uses a different engine id.

@@ -66,8 +66,8 @@ def jellyflow_runtime_main_rs() -> str:
                 Node, NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey,
             };
             use jellyflow_layout::{
-                LayoutContext, LayoutEngineRequest, LayoutRequest, builtin_layout_engine_registry,
-                layout_graph_with_engine,
+                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutRequest,
+                builtin_layout_engine_registry, layout_graph_with_engine,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
             use jellyflow_runtime::runtime::conformance::{
@@ -146,6 +146,20 @@ def jellyflow_runtime_main_rs() -> str:
                 )
                 .expect("direct layout crate planning succeeds");
                 assert!(graph_layout.node_position(node_id).is_some());
+
+                let freeform_request = LayoutEngineRequest::new(
+                    LayoutEngineId::mind_map_freeform(),
+                    LayoutRequest::all(),
+                );
+                let freeform_layout = layout_graph_with_engine(
+                    store.graph(),
+                    &freeform_request,
+                    &layout_registry,
+                    &LayoutContext::new(),
+                )
+                .expect("freeform layout planning succeeds");
+                assert!(freeform_layout.node_position(node_id).is_some());
+
                 let runtime_layout = store
                     .plan_layout(&layout_request, &layout_registry)
                     .expect("runtime layout planning succeeds");
