@@ -49,6 +49,7 @@ def jellyflow_runtime_cargo_toml(repo_root: Path) -> str:
 
             [dependencies]
             jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}
+            jellyflow-layout = {{ path = "{(repo_root / "crates/jellyflow-layout").as_posix()}" }}
             jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}
             """
         ).strip()
@@ -63,6 +64,10 @@ def jellyflow_runtime_main_rs() -> str:
             use jellyflow_core::{
                 CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, GraphOp, GraphTransaction,
                 Node, NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey,
+            };
+            use jellyflow_layout::{
+                LayoutContext, LayoutEngineRequest, LayoutRequest, builtin_layout_engine_registry,
+                layout_graph_with_engine,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
             use jellyflow_runtime::runtime::conformance::{
@@ -130,6 +135,21 @@ def jellyflow_runtime_main_rs() -> str:
                     .expect("store dispatch succeeds");
                 assert_eq!(outcome.committed().ops.len(), 1);
                 assert_eq!(store.graph().nodes[&node_id].pos, CanvasPoint { x: 32.0, y: 48.0 });
+
+                let layout_registry = builtin_layout_engine_registry();
+                let layout_request = LayoutEngineRequest::dugong(LayoutRequest::all());
+                let graph_layout = layout_graph_with_engine(
+                    store.graph(),
+                    &layout_request,
+                    &layout_registry,
+                    &LayoutContext::new(),
+                )
+                .expect("direct layout crate planning succeeds");
+                assert!(graph_layout.node_position(node_id).is_some());
+                let runtime_layout = store
+                    .plan_layout(&layout_request, &layout_registry)
+                    .expect("runtime layout planning succeeds");
+                assert!(runtime_layout.node_position(node_id).is_some());
 
                 let conformance_scenario =
                     ConformanceScenario::new("external node drag fixture", store.graph().clone())

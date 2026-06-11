@@ -121,8 +121,34 @@ fn explicit_modules_expose_their_owned_surfaces() {
         to: CanvasPoint::default(),
     };
     let _layout_request = layout::LayoutRequest::all();
+    let _layout_context = layout::LayoutContext::new();
+    let layout_engine_request = layout::LayoutEngineRequest::dugong(layout::LayoutRequest::all());
+    let layout_registry = layout::builtin_layout_engine_registry();
+    assert!(
+        layout_registry
+            .get(&layout::LayoutEngineId::dugong())
+            .is_some()
+    );
+    let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
+    let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
+    let _ = std::mem::size_of::<layout::LayoutApplyOutcome>();
+    let _ = std::mem::size_of::<layout::LayoutApplyError>();
     let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();
     let _ = std::mem::size_of::<layout::DugongLayoutApplyError>();
+    let _: fn(&NodeGraphStore) -> layout::LayoutContext = layout::layout_context_from_store;
+    let _: fn(
+        &Graph,
+        &layout::LayoutEngineRequest,
+        &layout::LayoutEngineRegistry,
+        &layout::LayoutContext,
+    ) -> Result<layout::LayoutResult, layout::LayoutError> = layout::plan_layout;
+    let _: fn(
+        &Graph,
+        &layout::LayoutEngineRequest,
+        &layout::LayoutEngineRegistry,
+        &layout::LayoutContext,
+    ) -> Result<GraphTransaction, layout::LayoutError> = layout::layout_transaction;
+    let _ = layout_engine_request;
     assert!(connection::connection_drag_threshold_met(
         connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));

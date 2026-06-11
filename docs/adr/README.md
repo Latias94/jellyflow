@@ -8,5 +8,6 @@ This directory uses standalone Jellyflow ADR numbering.
 | [ADR 0002](0002-jellyflow-model-policy-boundary.md) | Accepted | Jellyflow Model Policy Boundary |
 | [ADR 0003](0003-headless-adapter-testing-and-renderer-boundary.md) | Accepted | Headless Adapter Testing and Renderer Boundary |
 | [ADR 0004](0004-resize-containment-and-lifecycle-boundary.md) | Accepted | Resize Containment and Lifecycle Boundary |
+| [ADR 0005](0005-layout-engine-extension-boundary.md) | Accepted | Layout Engine Extension Boundary |
 
 Future records should use the next zero-padded number.
