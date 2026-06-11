@@ -1,0 +1,30 @@
+[package]
+name = "jellyflow-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/jellyflow-layout"
+readme = "README.md"
+description = "Optional headless graph layout adapters for Jellyflow."
+keywords = ["graph", "node-graph", "layout", "dagre", "headless"]
+categories = ["algorithms", "gui"]
+
+[dependencies]
+dugong.workspace = true
+jellyflow-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints.rust]
+dead_code = "allow"
+
+[lints.clippy]
+doc_lazy_continuation = "allow"
+new_without_default = "allow"
