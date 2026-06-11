@@ -13,7 +13,7 @@ use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraph
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
     auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
-    measurement, rendering, resize, selection, store, viewport, xyflow,
+    layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -120,6 +120,9 @@ fn explicit_modules_expose_their_owned_surfaces() {
         node: NodeId::new(),
         to: CanvasPoint::default(),
     };
+    let _layout_request = layout::LayoutRequest::all();
+    let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();
+    let _ = std::mem::size_of::<layout::DugongLayoutApplyError>();
     assert!(connection::connection_drag_threshold_met(
         connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));

@@ -8,6 +8,7 @@ mod fixtures;
 mod gesture;
 mod harness;
 mod keyboard;
+mod layout;
 mod lookups;
 mod measurement;
 mod rendering;

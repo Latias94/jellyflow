@@ -15,6 +15,7 @@ pub mod fit_view;
 pub mod geometry;
 pub mod gesture;
 pub mod keyboard;
+pub mod layout;
 pub mod lookups;
 pub mod measurement;
 pub mod middleware;
