@@ -13,10 +13,9 @@ use jellyflow_runtime::runtime::conformance::{
     ConformanceFixtureDirectoryReport, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
-    ConformanceRenderingQueryContract, ConformanceRunReport, ConformanceScenario,
-    ConformanceSuite, ConformanceSuiteReport, ConformanceTraceConfig, ConformanceTraceEvent,
-    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract,
+    ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
+    ConformanceTraceEvent, ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };
 use jellyflow_runtime::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
@@ -360,7 +359,7 @@ fn node_drag_scenario() -> ConformanceScenario {
     let target = CanvasPoint { x: 96.0, y: 128.0 };
 
     ConformanceScenario::new("template node drag", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_drag_session_contract(ConformanceNodeDragSessionContract::new(
             node_id, start, target,
         ))
@@ -374,7 +373,7 @@ fn node_drag_parent_expansion_scenario() -> ConformanceScenario {
     let target = CanvasPoint { x: 95.0, y: 95.0 };
 
     ConformanceScenario::new("template node drag parent expansion", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_drag_session_contract(
             ConformanceNodeDragSessionContract::new(node_id, start, target)
                 .with_commit_op_kinds(["set_node_pos", "set_group_rect"]),
@@ -401,7 +400,7 @@ fn node_resize_scenario() -> ConformanceScenario {
     };
 
     ConformanceScenario::new("template node resize", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_node_resize(
                 NodeResizeRequest::new(
@@ -429,7 +428,7 @@ fn node_resize_scenario() -> ConformanceScenario {
             ConformanceTraceEvent::callback(ConformanceCallbackEvent::NodesChange { count: 1 }),
         ])
         .with_node_resize_session_contract(ConformanceNodeResizeSessionContract::new(
-            ConformanceNodePointerResizeRequest::from_runtime(session_request),
+            session_request,
             update,
         ))
 }
@@ -535,7 +534,7 @@ fn delete_selection_scenario() -> ConformanceScenario {
 
     ConformanceScenario::new("template delete selection", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_delete_selection_contract(
             ConformanceDeleteSelectionContract::new(1, 1)
                 .for_key(keyboard_types::Code::Backspace)
@@ -567,7 +566,7 @@ fn delete_during_active_drag_scenario() -> ConformanceScenario {
 
     ConformanceScenario::new("template delete during active node drag", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_delete_selection_during_node_drag_contract(
             ConformanceDeleteSelectionDuringNodeDragContract::new(
                 start,
@@ -586,7 +585,7 @@ fn viewport_pan_scenario() -> ConformanceScenario {
     let end = ViewportTransform::new(pan, 1.0).expect("valid viewport");
 
     ConformanceScenario::new("template viewport pan", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_viewport_drag_pan_session_contract(ConformanceViewportDragPanSessionContract::new(
             ViewportGestureContext::idle(),
             ViewportDragPanInput::new(ViewportPointerButton::Left, pan),
@@ -613,7 +612,7 @@ fn viewport_constrained_pan_scenario() -> ConformanceScenario {
 
     ConformanceScenario::new("template viewport constrained pan", graph)
         .with_editor_config(editor_config)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_viewport_pan_constrained(
             ViewportPanRequest::new(requested_pan),
             CanvasSize {
@@ -806,7 +805,7 @@ fn viewport_animation_scenario() -> ConformanceScenario {
     };
 
     ConformanceScenario::new("template viewport animation", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_viewport_animation_frames(
                 ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
@@ -868,7 +867,7 @@ fn viewport_pan_inertia_scenario() -> ConformanceScenario {
     let terminal = plan.terminal_frame().expect("terminal inertia frame");
 
     ConformanceScenario::new("template viewport pan inertia", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_viewport_pan_inertia_frames(
                 request,
