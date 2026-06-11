@@ -129,8 +129,15 @@ fn explicit_modules_expose_their_owned_surfaces() {
             .get(&layout::LayoutEngineId::dugong())
             .is_some()
     );
+    assert!(
+        layout_registry
+            .get(&layout::LayoutEngineId::mind_map_radial())
+            .is_some()
+    );
     let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
+    let _ = layout::MIND_MAP_RADIAL_LAYOUT_ENGINE_ID;
     let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
+    let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
     let _ = std::mem::size_of::<layout::LayoutApplyOutcome>();
     let _ = std::mem::size_of::<layout::LayoutApplyError>();
     let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();

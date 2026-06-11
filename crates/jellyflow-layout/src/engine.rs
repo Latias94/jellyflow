@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 /// Stable engine id for the built-in Dagre-compatible `dugong` engine.
 pub const DUGONG_LAYOUT_ENGINE_ID: &str = "dugong";
+/// Stable engine id for the built-in radial mind-map engine.
+pub const MIND_MAP_RADIAL_LAYOUT_ENGINE_ID: &str = "mind_map_radial";
 
 /// Stable identifier for a layout engine.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -24,6 +26,11 @@ impl LayoutEngineId {
     /// Returns the built-in `dugong` engine id.
     pub fn dugong() -> Self {
         Self::new(DUGONG_LAYOUT_ENGINE_ID)
+    }
+
+    /// Returns the built-in radial mind-map engine id.
+    pub fn mind_map_radial() -> Self {
+        Self::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID)
     }
 
     /// Returns this id as a string slice.

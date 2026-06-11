@@ -15,6 +15,8 @@ transactions so hosts can decide when to apply or animate layout results.
 - `LayoutContext` carries runtime-only facts such as measured node sizes and fallback node origin.
 
 The built-in `dugong` engine is registered under `DUGONG_LAYOUT_ENGINE_ID` (`"dugong"`).
+The built-in radial mind-map engine is registered under `MIND_MAP_RADIAL_LAYOUT_ENGINE_ID`
+(`"mind_map_radial"`).
 Compatibility helpers such as `layout_graph_with_dugong` remain available, but new host code should
 prefer the registry path when it needs runtime selection or custom engines.
 
