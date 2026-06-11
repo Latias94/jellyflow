@@ -51,6 +51,37 @@ fn freeform_fixture_snapshot_stays_stable() {
     );
 }
 
+#[test]
+fn freeform_mixed_board_separates_overlaps_and_uses_context_sizes() {
+    let (graph, root, note, image, detached, hidden) = mixed_freeform_fixture_graph();
+    let request = freeform_request();
+    let measured_note_size = CanvasSize {
+        width: 280.0,
+        height: 180.0,
+    };
+    let context = LayoutContext::new()
+        .with_measured_node_sizes([(note, measured_note_size)])
+        .with_pinned_nodes([root]);
+
+    let result = MindMapFreeformLayoutEngine
+        .layout(&graph, &request, &context)
+        .expect("layout");
+
+    let root = result.node_position(root).expect("root");
+    let note = result.node_position(note).expect("note");
+    let image = result.node_position(image).expect("image");
+    let detached = result.node_position(detached).expect("detached");
+
+    assert!(result.node_position(hidden).is_none());
+    assert_eq!(root.pos, CanvasPoint { x: 0.0, y: 0.0 });
+    assert_eq!(note.size, measured_note_size);
+    assert!(image.center.y > root.center.y);
+    assert!(note.center.y > image.center.y);
+    assert_eq!(detached.pos, CanvasPoint { x: 520.0, y: 40.0 });
+    assert_pairwise_separated(&[root, note, image, detached], 24.0);
+    assert_eq!(result.edge_routes.len(), 3);
+}
+
 fn freeform_request() -> LayoutRequest {
     LayoutRequest::all().with_options(LayoutOptions {
         direction: LayoutDirection::TopToBottom,
@@ -127,6 +158,90 @@ fn freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
         .insert(EdgeId::from_u128(22), edge(branch_a_out, separate_in));
 
     (graph, root, branch_a, branch_b, separate)
+}
+
+fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
+    let mut graph = Graph::new(GraphId::from_u128(2));
+    let root = NodeId::from_u128(11);
+    let note = NodeId::from_u128(12);
+    let image = NodeId::from_u128(13);
+    let detached = NodeId::from_u128(14);
+    let hidden = NodeId::from_u128(15);
+    let root_out = PortId::from_u128(30);
+    let note_in = PortId::from_u128(31);
+    let note_out = PortId::from_u128(32);
+    let image_in = PortId::from_u128(33);
+    let image_out = PortId::from_u128(34);
+    let detached_in = PortId::from_u128(35);
+    let hidden_in = PortId::from_u128(36);
+
+    graph.nodes.insert(root, node("demo.root", vec![root_out]));
+    graph.nodes.get_mut(&root).unwrap().size = Some(CanvasSize {
+        width: 140.0,
+        height: 72.0,
+    });
+    graph
+        .nodes
+        .insert(note, node("demo.note", vec![note_in, note_out]));
+    graph.nodes.get_mut(&note).unwrap().size = None;
+    graph
+        .nodes
+        .insert(image, node("demo.image", vec![image_in, image_out]));
+    graph.nodes.get_mut(&image).unwrap().pos = CanvasPoint { x: 60.0, y: 20.0 };
+    graph.nodes.get_mut(&image).unwrap().size = Some(CanvasSize {
+        width: 96.0,
+        height: 96.0,
+    });
+    graph
+        .nodes
+        .insert(detached, node("demo.detached", vec![detached_in]));
+    graph.nodes.get_mut(&detached).unwrap().pos = CanvasPoint { x: 520.0, y: 40.0 };
+    graph.nodes.get_mut(&detached).unwrap().size = Some(CanvasSize {
+        width: 180.0,
+        height: 110.0,
+    });
+    graph
+        .nodes
+        .insert(hidden, node("demo.hidden", vec![hidden_in]));
+    graph.nodes.get_mut(&hidden).unwrap().pos = CanvasPoint { x: 30.0, y: 30.0 };
+    graph.nodes.get_mut(&hidden).unwrap().hidden = true;
+
+    graph
+        .ports
+        .insert(root_out, port(root, "out", PortDirection::Out));
+    graph
+        .ports
+        .insert(note_in, port(note, "in", PortDirection::In));
+    graph
+        .ports
+        .insert(note_out, port(note, "out", PortDirection::Out));
+    graph
+        .ports
+        .insert(image_in, port(image, "in", PortDirection::In));
+    graph
+        .ports
+        .insert(image_out, port(image, "out", PortDirection::Out));
+    graph
+        .ports
+        .insert(detached_in, port(detached, "in", PortDirection::In));
+    graph
+        .ports
+        .insert(hidden_in, port(hidden, "in", PortDirection::In));
+
+    graph
+        .edges
+        .insert(EdgeId::from_u128(40), edge(root_out, note_in));
+    graph
+        .edges
+        .insert(EdgeId::from_u128(41), edge(note_out, image_in));
+    graph
+        .edges
+        .insert(EdgeId::from_u128(42), edge(image_out, detached_in));
+    graph
+        .edges
+        .insert(EdgeId::from_u128(43), edge(root_out, hidden_in));
+
+    (graph, root, note, image, detached, hidden)
 }
 
 fn freeform_expected_snapshot(
@@ -214,6 +329,37 @@ fn route(edge: EdgeId, from: CanvasPoint, to: CanvasPoint) -> crate::LayoutEdgeR
         edge,
         points: vec![from, to],
     }
+}
+
+fn assert_pairwise_separated(nodes: &[crate::LayoutNodePosition], gap: f32) {
+    for (left_index, left) in nodes.iter().enumerate() {
+        for right in nodes.iter().skip(left_index + 1) {
+            assert!(
+                !rects_overlap_with_gap(left, right, gap),
+                "nodes {:?} and {:?} still overlap within gap {gap}",
+                left.node,
+                right.node
+            );
+        }
+    }
+}
+
+fn rects_overlap_with_gap(
+    left: &crate::LayoutNodePosition,
+    right: &crate::LayoutNodePosition,
+    gap: f32,
+) -> bool {
+    let right_origin_x = right.pos.x - gap;
+    let right_origin_y = right.pos.y - gap;
+    let right_extent_x = right.pos.x + right.size.width + gap;
+    let right_extent_y = right.pos.y + right.size.height + gap;
+    let left_extent_x = left.pos.x + left.size.width;
+    let left_extent_y = left.pos.y + left.size.height;
+
+    left.pos.x < right_extent_x
+        && left_extent_x > right_origin_x
+        && left.pos.y < right_extent_y
+        && left_extent_y > right_origin_y
 }
 
 fn node(kind: &str, ports: Vec<PortId>) -> Node {
