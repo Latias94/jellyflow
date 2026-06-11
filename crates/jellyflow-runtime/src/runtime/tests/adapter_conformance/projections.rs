@@ -5,8 +5,8 @@ use super::support::{assert_conformance_trace, insert_input_port};
 use crate::io::NodeGraphViewState;
 use crate::rules::EdgeEndpoint;
 use crate::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceConfig,
-    ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceScenario, ConformanceTraceEvent,
+    ConformanceViewChange,
 };
 use crate::runtime::connection::{
     CONNECT_EDGE_TRANSACTION_LABEL, ConnectEdgeRequest, RECONNECT_EDGE_TRANSACTION_LABEL,
@@ -27,7 +27,7 @@ fn adapter_conformance_connect_dispatches_patch_and_xyflow_projection() {
 
     let connection = EdgeConnection::new(edge_id, out_port, next_in, EdgeKind::Data);
     let scenario = ConformanceScenario::new("connect dispatches patch and projection", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_connect_edge(
             ConnectEdgeRequest::new(out_port, next_in, NodeGraphConnectionMode::Strict)
                 .with_edge_id(edge_id),

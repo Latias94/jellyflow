@@ -14,16 +14,14 @@ use crate::runtime::events::{
 use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::rendering::RenderingQueryResult;
 use crate::runtime::resize::NODE_RESIZE_TRANSACTION_LABEL;
-use crate::runtime::selection::SelectionBoxInput;
+use crate::runtime::resize::NodePointerResizeRequest;
+use crate::runtime::selection::{NodePointerDownInput, SelectionBoxInput};
 use crate::runtime::viewport::{ViewportDragPanInput, ViewportGestureContext, ViewportTransform};
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use keyboard_types::Code as KeyCode;
 
-use super::action::{
-    ConformanceAction, ConformanceLayoutFactsExpectation, ConformanceNodePointerDownInput,
-    ConformanceNodePointerResizeRequest,
-};
+use super::action::{ConformanceAction, ConformanceLayoutFactsExpectation};
 use super::suite::ConformanceScenario;
 use super::trace::{ConformanceCallbackEvent, ConformanceTraceEvent, ConformanceViewChange};
 
@@ -260,13 +258,13 @@ impl ConformanceConnectEdgeSessionContract {
 /// Behavior contract for a committed pointer-driven node resize session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceNodeResizeSessionContract {
-    pub request: ConformanceNodePointerResizeRequest,
+    pub request: NodePointerResizeRequest,
     pub update: NodeResizeUpdate,
     pub commit_op_kinds: Vec<String>,
 }
 
 impl ConformanceNodeResizeSessionContract {
-    pub fn new(request: ConformanceNodePointerResizeRequest, update: NodeResizeUpdate) -> Self {
+    pub fn new(request: NodePointerResizeRequest, update: NodeResizeUpdate) -> Self {
         Self {
             request,
             update,
@@ -283,18 +281,18 @@ impl ConformanceNodeResizeSessionContract {
     }
 
     fn action(&self) -> ConformanceAction {
-        ConformanceAction::apply_node_pointer_resize_session(self.request.into_runtime())
+        ConformanceAction::apply_node_pointer_resize_session(self.request)
     }
 
     fn expected_trace(&self) -> Vec<ConformanceTraceEvent> {
         let start = NodeResizeStart {
             node: self.request.node,
-            direction: self.request.direction.into_runtime(),
+            direction: self.request.direction,
             pointer: self.request.start,
         };
         let end = NodeResizeEnd {
             node: self.request.node,
-            direction: self.request.direction.into_runtime(),
+            direction: self.request.direction,
             pointer: self.request.current,
             outcome: NodeResizeEndOutcome::Committed,
         };
@@ -597,7 +595,7 @@ impl ConformanceDeleteSelectionDuringNodeDragContract {
 /// Behavior contract for a node pointer-down selection update and drag claim assertion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConformanceNodePointerDownSelectionContract {
-    pub input: ConformanceNodePointerDownInput,
+    pub input: NodePointerDownInput,
     pub expected_claim: PointerGestureClaim,
     pub nodes: Vec<NodeId>,
     pub edges: Vec<EdgeId>,
@@ -607,7 +605,7 @@ pub struct ConformanceNodePointerDownSelectionContract {
 
 impl ConformanceNodePointerDownSelectionContract {
     pub fn new(
-        input: ConformanceNodePointerDownInput,
+        input: NodePointerDownInput,
         expected_claim: PointerGestureClaim,
         nodes: impl IntoIterator<Item = NodeId>,
         edges: impl IntoIterator<Item = EdgeId>,

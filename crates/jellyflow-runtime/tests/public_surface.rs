@@ -1015,7 +1015,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)
         .with_view_state(NodeGraphViewState::default())
         .with_editor_config(NodeGraphEditorConfig::default())
-        .with_trace_config(conformance::ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_drag_session_contract(conformance::ConformanceNodeDragSessionContract::new(
             node_id,
             drag_start.pointer,
@@ -1026,7 +1026,11 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         scenario.schema_version,
         conformance::CONFORMANCE_FIXTURE_SCHEMA_VERSION,
     );
-    assert!(scenario.setup.trace.record_xyflow_callbacks);
+    let scenario_json = serde_json::to_value(&scenario).expect("serialize public scenario");
+    assert_eq!(
+        scenario_json["setup"]["trace"]["record_xyflow_callbacks"],
+        true
+    );
     assert!(scenario.actions.is_empty());
     assert_eq!(scenario.behaviors.len(), 1);
     assert_eq!(scenario.expanded_actions().len(), 1);
@@ -1053,11 +1057,7 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
         .for_key(keyboard_types::Code::Delete)
         .with_commit_op_kinds(["remove_node"]);
     let node_pointer_down_contract = conformance::ConformanceNodePointerDownSelectionContract::new(
-        conformance::ConformanceNodePointerDownInput {
-            node: node_id,
-            multi_selection_active: false,
-            screen_delta: CanvasPoint { x: 3.0, y: 4.0 },
-        },
+        selection::NodePointerDownInput::new(node_id, false, CanvasPoint { x: 3.0, y: 4.0 }),
         drag::PointerGestureClaim::NodeDrag,
         [node_id],
         std::iter::empty::<EdgeId>(),
@@ -1139,7 +1139,10 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
     let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionContract>();
     let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionDuringNodeDragContract>();
     let _ = std::mem::size_of::<conformance::ConformanceNodePointerDownSelectionContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceNodePointerDownInput>();
+    let _ = std::mem::size_of::<selection::NodePointerDownInput>();
+    let _ = std::mem::size_of::<resize::NodeResizeRequest>();
+    let _ = std::mem::size_of::<resize::NodePointerResizeRequest>();
+    let _ = std::mem::size_of::<drag::NodeNudgeRequest>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
     let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();

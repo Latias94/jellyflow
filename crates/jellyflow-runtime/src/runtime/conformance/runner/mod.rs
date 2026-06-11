@@ -53,16 +53,17 @@ impl<'a> ConformanceRunner<'a> {
     }
 
     pub fn run(&self) -> Result<ConformanceRunReport, ConformanceRunError> {
+        let compiled = self.scenario.compiled();
+        let setup = self.scenario.setup();
         let mut store = NodeGraphStore::new(
-            self.scenario.setup.graph.clone(),
-            self.scenario.setup.view_state.clone(),
-            self.scenario.setup.editor_config.clone(),
+            setup.graph.clone(),
+            setup.view_state.clone(),
+            setup.editor_config.clone(),
         );
         let trace = Rc::new(RefCell::new(Vec::new()));
-        install_trace_recorders(&mut store, self.scenario.setup.trace, trace.clone());
+        install_trace_recorders(&mut store, setup.trace, trace.clone());
 
-        let actions = self.scenario.expanded_actions();
-        for (index, action) in actions.iter().enumerate() {
+        for (index, action) in compiled.actions().iter().enumerate() {
             execute_action(&mut store, action).map_err(|message| ConformanceRunError {
                 scenario: self.scenario.name.clone(),
                 action_index: index,
@@ -70,12 +71,11 @@ impl<'a> ConformanceRunner<'a> {
                 message,
             })?;
         }
-        let expected_trace = self.scenario.expanded_expected_trace();
 
         Ok(ConformanceRunReport::new(
             self.scenario.name.clone(),
             trace.borrow().clone(),
-            &expected_trace,
+            compiled.expected_trace(),
         ))
     }
 }

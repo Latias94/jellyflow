@@ -3,13 +3,19 @@ use jellyflow_core::core::{CanvasPoint, CanvasSize, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Default transaction label used for committed node resize updates.
 pub const NODE_RESIZE_TRANSACTION_LABEL: &str = "node resize";
 
 /// Optional canvas-space size bounds for a node resize request.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeResizeConstraints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<CanvasSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<CanvasSize>,
 }
 
@@ -120,7 +126,8 @@ impl NodeResizeDirection {
 }
 
 /// Optional resize-axis filter for pointer-derived resize geometry.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeResizeAxis {
     #[default]
     Both,
@@ -139,15 +146,17 @@ impl NodeResizeAxis {
 }
 
 /// Canvas-space request for resizing one node to an explicit size.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeResizeRequest {
     /// Node being resized.
     pub node: NodeId,
     /// Requested explicit node size in canvas space.
     pub to: CanvasSize,
     /// Optional min/max bounds applied before planning.
+    #[serde(default)]
     pub constraints: NodeResizeConstraints,
     /// Resize control direction that determines affected axes and position updates.
+    #[serde(default)]
     pub direction: NodeResizeDirection,
 }
 
@@ -173,7 +182,7 @@ impl NodeResizeRequest {
 }
 
 /// Canvas-space request for resizing one node from pointer movement.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodePointerResizeRequest {
     /// Node being resized.
     pub node: NodeId,
@@ -182,12 +191,16 @@ pub struct NodePointerResizeRequest {
     /// Current pointer position in canvas space.
     pub current: CanvasPoint,
     /// Resize control direction that determines affected axes and position updates.
+    #[serde(default)]
     pub direction: NodeResizeDirection,
     /// Optional min/max bounds applied before planning.
+    #[serde(default)]
     pub constraints: NodeResizeConstraints,
     /// Whether pointer-derived dimensions preserve the starting aspect ratio.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub keep_aspect_ratio: bool,
     /// Optional axis filter for pointer-derived dimensions.
+    #[serde(default)]
     pub axis: NodeResizeAxis,
 }
 

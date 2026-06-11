@@ -13,20 +13,18 @@ pub use layout_facts::{
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsExpectation,
 };
-pub use node::{
-    ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
-};
 
 use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::connection::{
     ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
-use crate::runtime::drag::PointerGestureClaim;
+use crate::runtime::drag::{NodeNudgeRequest, PointerGestureClaim};
 use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
 use crate::runtime::measurement::NodeMeasurement;
 use crate::runtime::rendering::RenderingQueryResult;
+use crate::runtime::resize::{NodePointerResizeRequest, NodeResizeRequest};
+use crate::runtime::selection::NodePointerDownInput;
 use crate::runtime::selection::SelectionBoxInput;
 use crate::runtime::viewport::{
     ViewportAnimationFrame, ViewportAnimationPlan, ViewportAnimationRequest,
@@ -36,10 +34,6 @@ use crate::runtime::viewport::{
 };
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
-
-pub(super) fn is_false(value: &bool) -> bool {
-    !*value
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -67,16 +61,16 @@ pub enum ConformanceAction {
         expected: CanvasPoint,
     },
     ApplyNodeResize {
-        request: ConformanceNodeResizeRequest,
+        request: NodeResizeRequest,
     },
     ApplyNodePointerResize {
-        request: ConformanceNodePointerResizeRequest,
+        request: NodePointerResizeRequest,
     },
     ApplyNodePointerResizeSession {
-        request: ConformanceNodePointerResizeRequest,
+        request: NodePointerResizeRequest,
     },
     ApplyNodePointerDown {
-        input: ConformanceNodePointerDownInput,
+        input: NodePointerDownInput,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_claim: Option<PointerGestureClaim>,
     },
@@ -102,7 +96,7 @@ pub enum ConformanceAction {
         request: ReconnectEdgeRequest,
     },
     ApplyNodeNudge {
-        request: ConformanceNodeNudgeRequest,
+        request: NodeNudgeRequest,
     },
     ApplyDeleteSelection,
     ApplyDeleteSelectionForKey {

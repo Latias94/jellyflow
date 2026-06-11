@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use jellyflow_core::core::{CanvasPoint, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
@@ -20,7 +22,8 @@ pub struct NodeDragRequest {
 }
 
 /// Keyboard nudge direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeNudgeDirection {
     Up,
     Down,
@@ -40,7 +43,7 @@ impl NodeNudgeDirection {
 }
 
 /// Request for nudging the current selected nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeNudgeRequest {
     pub direction: NodeNudgeDirection,
     pub fast: bool,

@@ -7,11 +7,10 @@ use crate::runtime::conformance::{
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
-    ConformanceNodePointerDownInput, ConformanceNodePointerDownSelectionContract,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
+    ConformanceNodePointerDownSelectionContract, ConformanceNodeResizeSessionContract,
     ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSelectionBoxContract,
-    ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent, ConformanceViewChange,
-    run_conformance_scenario, run_conformance_suite,
+    ConformanceSuite, ConformanceTraceEvent, ConformanceViewChange, run_conformance_scenario,
+    run_conformance_suite,
 };
 use crate::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,

@@ -20,7 +20,7 @@ pub use fixtures::{
 pub use reports::{
     ConformanceRunError, ConformanceRunReport, ConformanceSuiteReport, ConformanceTraceMismatch,
 };
-pub use runner::{ConformanceRunner, run_conformance_scenario, run_conformance_suite};
+pub use runner::{run_conformance_scenario, run_conformance_suite};
 #[cfg(test)]
 pub(crate) use scenario::ConformanceCallbackTraceRecorder;
 pub use scenario::{
@@ -30,9 +30,8 @@ pub use scenario::{
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
-    ConformanceNodePointerDownInput, ConformanceNodePointerDownSelectionContract,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeSessionContract,
+    ConformanceNodePointerDownSelectionContract, ConformanceNodeResizeSessionContract,
     ConformanceRenderingQueryContract, ConformanceScenario, ConformanceSelectionBoxContract,
-    ConformanceSetup, ConformanceSuite, ConformanceTraceConfig, ConformanceTraceEvent,
-    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceSuite, ConformanceTraceEvent, ConformanceViewChange,
+    ConformanceViewportDragPanSessionContract,
 };

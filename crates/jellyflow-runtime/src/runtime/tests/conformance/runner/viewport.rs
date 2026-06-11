@@ -18,7 +18,7 @@ fn viewport_drag_rejection_scenario(
 
     ConformanceScenario::new(name, graph)
         .with_editor_config(editor_config)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::expect_viewport_drag_pan_gesture_rejected(context, input, rejection),
         ])
@@ -72,7 +72,7 @@ fn conformance_runner_records_viewport_pan_zoom_fixture_and_callbacks() {
     let zoom_end_event = NodeGraphGestureEvent::ViewportMoveEnd(zoom_end);
 
     let scenario = ConformanceScenario::new("viewport pan zoom fixture", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::emit_gesture(pan_start_event.clone()),
             ConformanceAction::apply_viewport_pan(ViewportPanRequest::new(CanvasPoint {
@@ -176,7 +176,7 @@ fn conformance_runner_records_auto_pan_fixture_and_callbacks() {
     let pan = CanvasPoint { x: -50.0, y: 0.0 };
     let scenario = ConformanceScenario::new("auto-pan fixture", graph)
         .with_editor_config(editor_config)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_auto_pan(AutoPanRequest::new(
             AutoPanActivation::Always,
             CanvasPoint { x: 190.0, y: 50.0 },
@@ -215,7 +215,7 @@ fn conformance_runner_records_selection_auto_pan_fixture_and_callbacks() {
     let pan = CanvasPoint { x: -50.0, y: 0.0 };
     let scenario = ConformanceScenario::new("selection auto-pan fixture", graph)
         .with_editor_config(editor_config)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_selection_auto_pan(
             SelectionAutoPanRequest::new(
                 CanvasPoint { x: 190.0, y: 50.0 },
@@ -327,7 +327,7 @@ fn conformance_runner_applies_viewport_animation_frame_with_trace() {
     let zoom = 1.5;
 
     let scenario = ConformanceScenario::new("viewport animation frame apply", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_viewport_animation_frame(
             ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
             0.5,
@@ -354,7 +354,7 @@ fn conformance_runner_applies_viewport_animation_frames_with_trace() {
     let endpoint_pan = CanvasPoint { x: 80.0, y: -40.0 };
 
     let scenario = ConformanceScenario::new("viewport animation frame sequence", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_viewport_animation_frames(
             ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
             [0.5, 1.0],
@@ -427,7 +427,7 @@ fn conformance_runner_applies_viewport_pan_inertia_frames_with_trace() {
     let terminal = plan.terminal_frame().expect("terminal inertia frame");
 
     let scenario = ConformanceScenario::new("viewport pan inertia frame sequence", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_viewport_pan_inertia_frames(
             request,
             [0.5, plan.duration_seconds],

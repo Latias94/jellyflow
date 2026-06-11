@@ -126,7 +126,7 @@ fn adapter_conformance_fixture_runner_records_connect_gesture_transaction_and_ca
         .with_edge_id(edge_id);
 
     let scenario = ConformanceScenario::new("connect gesture transaction callbacks", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_connect_edge_session_contract(ConformanceConnectEdgeSessionContract::new(
             start, request, connection,
         ));
@@ -188,7 +188,7 @@ fn adapter_conformance_fixture_runner_records_reconnect_transaction_and_callback
     let end_event = NodeGraphGestureEvent::ConnectEnd(end.clone());
 
     let scenario = ConformanceScenario::new("reconnect gesture transaction callbacks", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::emit_gesture(start_event.clone()),
             ConformanceAction::apply_reconnect_edge(ReconnectEdgeRequest::new(

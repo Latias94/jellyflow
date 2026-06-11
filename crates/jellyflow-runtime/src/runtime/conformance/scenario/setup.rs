@@ -6,7 +6,7 @@ use jellyflow_core::core::Graph;
 use super::constants::default_true;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConformanceSetup {
+pub(crate) struct ConformanceSetup {
     #[serde(default)]
     pub graph: Graph,
     #[serde(default)]
@@ -35,7 +35,7 @@ impl ConformanceSetup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConformanceTraceConfig {
+pub(crate) struct ConformanceTraceConfig {
     #[serde(default = "default_true")]
     pub record_store_events: bool,
     #[serde(default = "default_true")]

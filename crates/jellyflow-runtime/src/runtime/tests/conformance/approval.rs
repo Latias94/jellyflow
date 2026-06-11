@@ -2,7 +2,7 @@ use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest};
 use crate::runtime::conformance::{
     ConformanceAction, ConformanceBehavior, ConformanceFixtureDirectory,
     ConformanceFixtureFileError, ConformanceNodeDragSessionContract, ConformanceScenario,
-    ConformanceSuite, ConformanceSuiteFile, ConformanceTraceConfig,
+    ConformanceSuite, ConformanceSuiteFile,
 };
 use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId};
 
@@ -34,7 +34,7 @@ fn conformance_approval_keeps_behavior_contract_trace_out_of_expected_trace() {
     let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let suite = ConformanceSuite::new("behavior approval suite").with_scenarios([
         ConformanceScenario::new("behavior approval", graph)
-            .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+            .with_xyflow_callbacks()
             .with_behaviors([ConformanceBehavior::node_drag_session(
                 ConformanceNodeDragSessionContract::new(
                     node_id,

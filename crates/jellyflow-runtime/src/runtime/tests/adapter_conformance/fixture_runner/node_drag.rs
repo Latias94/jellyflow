@@ -8,7 +8,7 @@ fn adapter_conformance_fixture_runner_records_node_drag_gesture_transaction_and_
     let start = CanvasPoint { x: 1.0, y: 2.0 };
     let target = CanvasPoint { x: 32.0, y: 16.0 };
     let scenario = ConformanceScenario::new("node drag gesture transaction callbacks", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_drag_session_contract(ConformanceNodeDragSessionContract::new(
             node_id, start, target,
         ));
@@ -45,7 +45,7 @@ fn adapter_conformance_fixture_runner_records_node_drag_parent_expansion_transac
 
     let target = CanvasPoint { x: 95.0, y: 95.0 };
     let scenario = ConformanceScenario::new("node drag parent expansion", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_drag(node_id, target)])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
@@ -95,7 +95,7 @@ fn adapter_conformance_fixture_runner_records_nested_parent_canvas_space_drag() 
 
     let target = CanvasPoint { x: 260.0, y: 265.0 };
     let scenario = ConformanceScenario::new("nested parent canvas-space drag", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_node_drag(node_id, target),
             ConformanceAction::assert_node_position(node_id, target),
@@ -138,7 +138,7 @@ fn adapter_conformance_fixture_runner_records_delete_during_active_drag_lifecycl
     let disconnected = EdgeConnection::new(edge_id, out_port, in_port, EdgeKind::Data);
     let scenario = ConformanceScenario::new("delete during active node drag", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_delete_selection_during_node_drag_contract(
             ConformanceDeleteSelectionDuringNodeDragContract::new(
                 start,

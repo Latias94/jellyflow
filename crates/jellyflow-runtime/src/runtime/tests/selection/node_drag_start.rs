@@ -131,10 +131,7 @@ fn node_pointer_down_combines_selection_and_drag_readiness() {
         &graph,
         &view_state,
         &NodeGraphInteractionState::default(),
-        NodePointerDownInput::new(
-            NodeDragStartSelectionInput::new(node, false),
-            CanvasPoint { x: 3.0, y: 4.0 },
-        ),
+        NodePointerDownInput::new(node, false, CanvasPoint { x: 3.0, y: 4.0 }),
     );
 
     assert_eq!(
@@ -156,10 +153,7 @@ fn node_pointer_down_keeps_drag_unclaimed_without_threshold_crossing() {
         &graph,
         &view_state,
         &NodeGraphInteractionState::default(),
-        NodePointerDownInput::new(
-            NodeDragStartSelectionInput::new(node, false),
-            CanvasPoint::default(),
-        ),
+        NodePointerDownInput::new(node, false, CanvasPoint::default()),
     );
 
     assert_eq!(
@@ -182,7 +176,8 @@ fn store_apply_node_pointer_down_updates_selection_and_returns_decision() {
     let decision = harness
         .store_mut()
         .apply_node_pointer_down(NodePointerDownInput::new(
-            NodeDragStartSelectionInput::new(node, false),
+            node,
+            false,
             CanvasPoint { x: 3.0, y: 4.0 },
         ));
 
@@ -211,7 +206,8 @@ fn store_apply_node_pointer_down_keeps_hidden_and_non_selectable_nodes_unchanged
     let decision = harness
         .store_mut()
         .apply_node_pointer_down(NodePointerDownInput::new(
-            NodeDragStartSelectionInput::new(node, true),
+            node,
+            true,
             CanvasPoint::default(),
         ));
 
@@ -237,7 +233,8 @@ fn store_apply_node_pointer_down_keeps_hidden_and_non_selectable_nodes_unchanged
     let decision = harness
         .store_mut()
         .apply_node_pointer_down(NodePointerDownInput::new(
-            NodeDragStartSelectionInput::new(node, false),
+            node,
+            false,
             CanvasPoint::default(),
         ));
 

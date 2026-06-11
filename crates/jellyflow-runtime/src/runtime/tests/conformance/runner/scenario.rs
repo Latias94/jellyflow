@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::selection::NodePointerDownInput;
 use jellyflow_core::core::{EdgeId, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -39,7 +40,7 @@ fn conformance_runner_executes_keyboard_nudge_fixture_and_matches_trace() {
 
     let scenario = ConformanceScenario::new("keyboard nudge runner", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_nudge(NodeNudgeRequest {
             direction: NodeNudgeDirection::Right,
             fast: false,
@@ -74,7 +75,7 @@ fn conformance_runner_executes_delete_selection_fixture_and_matches_trace() {
 
     let scenario = ConformanceScenario::new("delete selection runner", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_delete_selection_contract(
             ConformanceDeleteSelectionContract::new(1, 1)
                 .for_key(keyboard_types::Code::Backspace)
@@ -110,7 +111,7 @@ fn conformance_runner_expands_delete_selection_during_node_drag_behavior_contrac
 
     let scenario = ConformanceScenario::new("delete during node drag behavior contract", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_delete_selection_during_node_drag_contract(
             ConformanceDeleteSelectionDuringNodeDragContract::new(
                 start,
@@ -200,7 +201,7 @@ fn conformance_runner_executes_node_drag_fixture_and_matches_trace() {
     let update_event = NodeGraphGestureEvent::NodeDragUpdate(update.clone());
 
     let scenario = ConformanceScenario::new("node drag runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::emit_gesture(start_event.clone()),
             ConformanceAction::apply_node_drag(node_id, target),
@@ -238,7 +239,7 @@ fn conformance_runner_expands_behavior_contracts_and_matches_trace() {
     let start = CanvasPoint { x: 1.0, y: 2.0 };
     let target = CanvasPoint { x: 32.0, y: 16.0 };
     let scenario = ConformanceScenario::new("node drag behavior contract runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_behaviors([ConformanceBehavior::node_drag_session(
             ConformanceNodeDragSessionContract::new(node_id, start, target),
         )]);
@@ -278,12 +279,7 @@ fn conformance_runner_expands_node_resize_session_behavior_contract() {
     let direction = NodeResizeDirection::BottomRight;
     let start_pointer = CanvasPoint { x: 110.0, y: 60.0 };
     let current_pointer = CanvasPoint { x: 150.0, y: 90.0 };
-    let request = ConformanceNodePointerResizeRequest::from_runtime(NodePointerResizeRequest::new(
-        node_id,
-        start_pointer,
-        current_pointer,
-        direction,
-    ));
+    let request = NodePointerResizeRequest::new(node_id, start_pointer, current_pointer, direction);
     let update = NodeResizeUpdate {
         node: node_id,
         direction,
@@ -295,7 +291,7 @@ fn conformance_runner_expands_node_resize_session_behavior_contract() {
         },
     };
     let scenario = ConformanceScenario::new("node resize behavior contract runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_resize_session_contract(ConformanceNodeResizeSessionContract::new(
             request, update,
         ));
@@ -456,7 +452,7 @@ fn conformance_runner_executes_node_drag_parent_expansion_fixture_and_matches_tr
 
     let target = CanvasPoint { x: 95.0, y: 95.0 };
     let scenario = ConformanceScenario::new("node drag parent expansion runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_drag(node_id, target)])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
@@ -488,7 +484,7 @@ fn conformance_runner_executes_node_resize_fixture_and_matches_trace() {
     });
 
     let scenario = ConformanceScenario::new("node resize runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_resize(
             NodeResizeRequest::new(
                 node_id,
@@ -529,7 +525,7 @@ fn conformance_runner_executes_node_pointer_resize_fixture_and_matches_trace() {
     });
 
     let scenario = ConformanceScenario::new("node pointer resize runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_pointer_resize(
             NodePointerResizeRequest::new(
                 node_id,
@@ -587,7 +583,7 @@ fn conformance_runner_executes_node_resize_parent_expansion_fixture_and_matches_
     });
 
     let scenario = ConformanceScenario::new("node resize parent expansion runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_pointer_resize(
             NodePointerResizeRequest::new(
                 node_id,
@@ -654,7 +650,7 @@ fn conformance_runner_executes_node_resize_lifecycle_fixture_and_matches_trace()
     let end_event = NodeGraphGestureEvent::NodeResizeEnd(end.clone());
 
     let scenario = ConformanceScenario::new("node resize lifecycle runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_pointer_resize_session(
             NodePointerResizeRequest::new(node_id, start_pointer, current_pointer, direction),
         )])
@@ -776,7 +772,7 @@ fn conformance_runner_keeps_dispatch_transaction_as_low_level_graph_fixture_acti
     .with_label(label);
 
     let scenario = ConformanceScenario::new("low-level graph transaction runner", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::dispatch_transaction(transaction)])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(Some(label), ["set_node_pos"]),
@@ -810,7 +806,7 @@ fn conformance_runner_executes_selection_box_fixture_and_matches_trace() {
 
     let scenario = ConformanceScenario::new("selection box runner", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_selection_box_contract(ConformanceSelectionBoxContract::new(
             SelectionBoxInput::new(
                 rect,
@@ -878,7 +874,7 @@ fn conformance_runner_executes_node_pointer_down_fixture_and_matches_selection_t
 
     let scenario = ConformanceScenario::new("node pointer down runner", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_pointer_down(
             node_id,
             false,
@@ -899,14 +895,10 @@ fn conformance_runner_expands_node_pointer_down_selection_behavior_contract() {
 
     let scenario = ConformanceScenario::new("node pointer down behavior contract runner", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_pointer_down_selection_contract(
             ConformanceNodePointerDownSelectionContract::new(
-                ConformanceNodePointerDownInput {
-                    node: node_id,
-                    multi_selection_active: false,
-                    screen_delta: CanvasPoint { x: 3.0, y: 4.0 },
-                },
+                NodePointerDownInput::new(node_id, false, CanvasPoint { x: 3.0, y: 4.0 }),
                 PointerGestureClaim::NodeDrag,
                 [node_id],
                 std::iter::empty::<EdgeId>(),
@@ -944,14 +936,10 @@ fn conformance_runner_expands_node_pointer_down_selection_behavior_contract_with
 
     let scenario = ConformanceScenario::new("node pointer down behavior contract none", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_node_pointer_down_selection_contract(
             ConformanceNodePointerDownSelectionContract::new(
-                ConformanceNodePointerDownInput {
-                    node: node_id,
-                    multi_selection_active: false,
-                    screen_delta: CanvasPoint::default(),
-                },
+                NodePointerDownInput::new(node_id, false, CanvasPoint::default()),
                 PointerGestureClaim::None,
                 [node_id],
                 std::iter::empty::<EdgeId>(),
@@ -1006,7 +994,7 @@ fn conformance_runner_executes_node_pointer_down_then_drag_chain() {
 
     let scenario = ConformanceScenario::new("node pointer down drag chain", graph)
         .with_view_state(view_state)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_node_pointer_down(
                 node_id,

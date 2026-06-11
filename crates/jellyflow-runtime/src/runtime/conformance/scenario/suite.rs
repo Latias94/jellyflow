@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use jellyflow_core::core::Graph;
 
+use super::ConformanceScenarioCompiled;
 use super::action::ConformanceAction;
 use super::behavior::ConformanceBehavior;
 use super::constants::default_schema_version;
@@ -14,7 +15,7 @@ pub struct ConformanceScenario {
     pub schema_version: u32,
     pub name: String,
     #[serde(default)]
-    pub setup: ConformanceSetup,
+    setup: ConformanceSetup,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ConformanceAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -35,11 +36,6 @@ impl ConformanceScenario {
         }
     }
 
-    pub fn with_setup(mut self, setup: ConformanceSetup) -> Self {
-        self.setup = setup;
-        self
-    }
-
     pub fn with_view_state(mut self, view_state: crate::io::NodeGraphViewState) -> Self {
         self.setup.view_state = view_state;
         self
@@ -50,8 +46,8 @@ impl ConformanceScenario {
         self
     }
 
-    pub fn with_trace_config(mut self, trace: ConformanceTraceConfig) -> Self {
-        self.setup.trace = trace;
+    pub fn with_xyflow_callbacks(mut self) -> Self {
+        self.setup.trace = ConformanceTraceConfig::with_xyflow_callbacks();
         self
     }
 
@@ -81,39 +77,20 @@ impl ConformanceScenario {
         self
     }
 
+    pub(crate) fn compiled(&self) -> ConformanceScenarioCompiled {
+        ConformanceScenarioCompiled::from_scenario(self)
+    }
+
+    pub(crate) fn setup(&self) -> &ConformanceSetup {
+        &self.setup
+    }
+
     pub fn expanded_actions(&self) -> Vec<ConformanceAction> {
-        let mut actions = self.actions.clone();
-        actions.extend(self.behaviors.iter().flat_map(ConformanceBehavior::actions));
-        actions
+        self.compiled().actions().to_vec()
     }
 
     pub fn expanded_expected_trace(&self) -> Vec<ConformanceTraceEvent> {
-        let mut expected_trace = self.expected_trace.clone();
-        expected_trace.extend(self.behavior_expected_trace());
-        expected_trace
-    }
-
-    pub(crate) fn approval_expected_trace(
-        &self,
-        actual_trace: &[ConformanceTraceEvent],
-    ) -> Vec<ConformanceTraceEvent> {
-        let behavior_expected_trace = self.behavior_expected_trace();
-        if behavior_expected_trace.is_empty() {
-            return actual_trace.to_vec();
-        }
-
-        if actual_trace.ends_with(&behavior_expected_trace) {
-            return actual_trace[..actual_trace.len() - behavior_expected_trace.len()].to_vec();
-        }
-
-        self.expected_trace.clone()
-    }
-
-    fn behavior_expected_trace(&self) -> Vec<ConformanceTraceEvent> {
-        self.behaviors
-            .iter()
-            .flat_map(ConformanceBehavior::expected_trace)
-            .collect()
+        self.compiled().expected_trace().to_vec()
     }
 }
 
@@ -145,5 +122,36 @@ impl ConformanceSuite {
 
     pub fn push_scenario(&mut self, scenario: ConformanceScenario) {
         self.scenarios.push(scenario);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::conformance::ConformanceNodeDragSessionContract;
+    use jellyflow_core::core::{CanvasPoint, Graph, GraphId, NodeId};
+
+    #[test]
+    fn compiled_scenario_strips_behavior_trace_suffix_from_approved_trace() {
+        let node_id = NodeId::from_u128(1);
+        let scenario = ConformanceScenario::new("compiled approval", Graph::new(GraphId::new()))
+            .with_behavior(ConformanceBehavior::node_drag_session(
+                ConformanceNodeDragSessionContract::new(
+                    node_id,
+                    CanvasPoint { x: 1.0, y: 2.0 },
+                    CanvasPoint { x: 3.0, y: 4.0 },
+                ),
+            ));
+        let compiled = scenario.compiled();
+        let approved =
+            compiled.approval_expected_trace(&scenario.expected_trace, compiled.expected_trace());
+
+        assert!(scenario.expected_trace.is_empty());
+        assert!(approved.is_empty());
+        assert_eq!(
+            compiled.expected_event_count(),
+            compiled.expected_trace().len()
+        );
+        assert_eq!(compiled.actions().len(), 1);
     }
 }

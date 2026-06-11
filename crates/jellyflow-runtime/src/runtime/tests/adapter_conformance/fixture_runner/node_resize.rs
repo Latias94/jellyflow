@@ -9,7 +9,7 @@ fn adapter_conformance_fixture_runner_records_node_resize_direction_transaction(
     });
 
     let scenario = ConformanceScenario::new("node resize direction transaction", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_resize(
             NodeResizeRequest::new(
                 node_id,
@@ -66,7 +66,7 @@ fn adapter_conformance_fixture_runner_records_node_resize_parent_expansion_trans
     });
 
     let scenario = ConformanceScenario::new("node resize parent expansion", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_node_pointer_resize(
             NodePointerResizeRequest::new(
                 node_id,

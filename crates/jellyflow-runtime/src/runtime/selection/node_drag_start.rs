@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
 use crate::runtime::drag::{
     PointerGestureClaim, PointerGestureClaimInput, resolve_pointer_gesture_claim,
@@ -76,16 +78,19 @@ impl NodePointerDownDecision {
 }
 
 /// Input for resolving the first node pointer-down decision.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodePointerDownInput {
-    pub selection: NodeDragStartSelectionInput,
+    pub node: NodeId,
+    #[serde(default)]
+    pub multi_selection_active: bool,
     pub screen_delta: CanvasPoint,
 }
 
 impl NodePointerDownInput {
-    pub fn new(selection: NodeDragStartSelectionInput, screen_delta: CanvasPoint) -> Self {
+    pub fn new(node: NodeId, multi_selection_active: bool, screen_delta: CanvasPoint) -> Self {
         Self {
-            selection,
+            node,
+            multi_selection_active,
             screen_delta,
         }
     }
@@ -191,11 +196,15 @@ pub fn resolve_node_pointer_down(
     interaction: &NodeGraphInteractionState,
     input: NodePointerDownInput,
 ) -> NodePointerDownDecision {
-    let selection =
-        resolve_node_drag_start_selection(graph, view_state, interaction, input.selection);
+    let selection = resolve_node_drag_start_selection(
+        graph,
+        view_state,
+        interaction,
+        NodeDragStartSelectionInput::new(input.node, input.multi_selection_active),
+    );
     let drag_claim = resolve_pointer_gesture_claim(PointerGestureClaimInput::new(
         input.screen_delta,
-        input.selection.modifier.additive(),
+        input.multi_selection_active,
         false,
         false,
         interaction.node_drag_interaction().node_drag_threshold,
@@ -225,8 +234,12 @@ impl NodeGraphStore {
         &mut self,
         input: NodeDragStartSelectionInput,
     ) -> NodeDragStartSelectionAction {
-        self.apply_node_pointer_down(NodePointerDownInput::new(input, CanvasPoint::default()))
-            .selection
+        self.apply_node_pointer_down(NodePointerDownInput::new(
+            input.node,
+            input.modifier.additive(),
+            CanvasPoint::default(),
+        ))
+        .selection
     }
 
     /// Resolves the node pointer-down decision against current graph, selection, and interaction.

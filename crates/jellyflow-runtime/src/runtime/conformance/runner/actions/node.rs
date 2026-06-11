@@ -1,13 +1,12 @@
-use crate::runtime::drag::{NodeDragRequest, PointerGestureClaim};
+use crate::runtime::drag::{NodeDragRequest, NodeNudgeRequest, PointerGestureClaim};
 use crate::runtime::gesture::NodeDragSession;
 use crate::runtime::keyboard::KeyboardIntent;
+use crate::runtime::resize::{NodePointerResizeRequest, NodeResizeRequest};
+use crate::runtime::selection::NodePointerDownInput;
 use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{CanvasPoint, NodeId};
 
-use super::super::super::scenario::{
-    ConformanceAction, ConformanceNodeNudgeRequest, ConformanceNodePointerDownInput,
-    ConformanceNodePointerResizeRequest, ConformanceNodeResizeRequest,
-};
+use super::super::super::scenario::ConformanceAction;
 use super::require_commit;
 
 pub(super) fn execute_action(
@@ -64,29 +63,35 @@ pub(super) fn apply_node_drag_session(
 
 pub(super) fn apply_node_resize(
     store: &mut NodeGraphStore,
-    request: ConformanceNodeResizeRequest,
+    request: NodeResizeRequest,
 ) -> Result<(), String> {
-    require_commit(
-        store.apply_node_resize(request.into_runtime()),
-        "apply_node_resize",
-    )
+    require_commit(store.apply_node_resize(request), "apply_node_resize")
 }
 
 pub(super) fn apply_node_pointer_resize(
     store: &mut NodeGraphStore,
-    request: ConformanceNodePointerResizeRequest,
+    request: NodePointerResizeRequest,
 ) -> Result<(), String> {
     require_commit(
-        store.apply_node_pointer_resize(request.into_runtime()),
+        store.apply_node_pointer_resize(request),
         "apply_node_pointer_resize",
     )
 }
 
 pub(super) fn apply_node_pointer_resize_session(
     store: &mut NodeGraphStore,
-    request: ConformanceNodePointerResizeRequest,
+    request: NodePointerResizeRequest,
 ) -> Result<(), String> {
-    let (session, update_request) = request.into_runtime_session();
+    let session = crate::runtime::resize::NodeResizeSession::new(
+        request.node,
+        request.start,
+        request.direction,
+    );
+    let update_request =
+        crate::runtime::resize::NodeResizeSessionUpdateRequest::new(request.current)
+            .with_constraints(request.constraints)
+            .with_keep_aspect_ratio(request.keep_aspect_ratio)
+            .with_axis(request.axis);
     let outcome = store
         .apply_node_resize_session(session, update_request)
         .map_err(|err| err.to_string())?;
@@ -99,10 +104,10 @@ pub(super) fn apply_node_pointer_resize_session(
 
 pub(super) fn apply_node_pointer_down(
     store: &mut NodeGraphStore,
-    input: ConformanceNodePointerDownInput,
+    input: NodePointerDownInput,
     expected_claim: Option<PointerGestureClaim>,
 ) -> Result<(), String> {
-    let decision = store.apply_node_pointer_down(input.into_runtime());
+    let decision = store.apply_node_pointer_down(input);
     if let Some(expected_claim) = expected_claim
         && decision.drag_claim != expected_claim
     {
@@ -117,10 +122,10 @@ pub(super) fn apply_node_pointer_down(
 
 pub(super) fn apply_node_nudge(
     store: &mut NodeGraphStore,
-    request: ConformanceNodeNudgeRequest,
+    request: NodeNudgeRequest,
 ) -> Result<(), String> {
     require_commit(
-        store.apply_keyboard_intent(KeyboardIntent::NudgeSelection(request.into_runtime())),
+        store.apply_keyboard_intent(KeyboardIntent::NudgeSelection(request)),
         "apply_node_nudge",
     )
 }

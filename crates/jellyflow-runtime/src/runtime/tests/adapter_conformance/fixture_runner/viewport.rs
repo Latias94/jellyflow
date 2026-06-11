@@ -166,7 +166,7 @@ fn adapter_conformance_fixture_runner_applies_translate_extent_viewport_constrai
 
     let scenario = ConformanceScenario::new("viewport translate extent constraints", graph)
         .with_editor_config(editor_config)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_viewport_pan_constrained(
                 ViewportPanRequest::new(CanvasPoint {
@@ -321,7 +321,7 @@ fn adapter_conformance_fixture_runner_applies_viewport_animation_frames() {
     let endpoint_pan = CanvasPoint { x: 80.0, y: -40.0 };
 
     let scenario = ConformanceScenario::new("viewport animation frame apply", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([ConformanceAction::apply_viewport_animation_frames(
             ViewportAnimationRequest::new(from, to, ViewportAnimationOptions::new(1.0)),
             [0.5, 1.0],
@@ -373,7 +373,7 @@ fn adapter_conformance_fixture_runner_applies_viewport_pan_inertia_frames() {
     let terminal = plan.terminal_frame().expect("terminal inertia frame");
 
     let scenario = ConformanceScenario::new("viewport pan inertia frame apply", graph)
-        .with_trace_config(ConformanceTraceConfig::with_xyflow_callbacks())
+        .with_xyflow_callbacks()
         .with_actions([
             ConformanceAction::apply_viewport_pan_inertia_frames(
                 request,
