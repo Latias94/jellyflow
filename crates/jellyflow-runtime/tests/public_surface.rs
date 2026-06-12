@@ -15,7 +15,10 @@ use jellyflow_runtime::runtime::{
     auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
     layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
-use jellyflow_runtime::schema::{NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl};
+use jellyflow_runtime::schema::{
+    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
+    PortDecl,
+};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -91,6 +94,24 @@ fn explicit_modules_expose_their_owned_surfaces() {
         node_registry
             .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
             .is_some()
+    );
+    let node_instantiation = node_registry
+        .instantiate_node(
+            &jellyflow_core::core::NodeKindKey::new("public.note"),
+            CanvasPoint::default(),
+        )
+        .expect("public node instantiation");
+    let _: &NodeInstantiation = &node_instantiation;
+    assert_eq!(
+        node_instantiation.node.kind,
+        jellyflow_core::core::NodeKindKey::new("public.note")
+    );
+    assert_eq!(
+        NodeInstantiationError::MissingSchema(jellyflow_core::core::NodeKindKey::new(
+            "public.missing"
+        ))
+        .to_string(),
+        "node kind schema not found: NodeKindKey(\"public.missing\")"
     );
 
     let root_patch = NodeGraphPatch::default();

@@ -5,6 +5,7 @@ use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
 
 mod canonicalize;
 mod facades;
+mod instantiation;
 mod migration;
 mod view_descriptor;
 
