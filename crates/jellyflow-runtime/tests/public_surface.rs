@@ -15,6 +15,7 @@ use jellyflow_runtime::runtime::{
     auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
     layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
+use jellyflow_runtime::schema::{NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl};
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
     apply_connect_plan_with_profile, apply_transaction_with_profile,
@@ -67,6 +68,30 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     assert_eq!(editor_file.graph_id, graph.graph_id);
     let _interaction = NodeGraphInteractionConfig::default();
+    let mut node_registry = NodeRegistry::new();
+    node_registry.register(NodeSchema {
+        kind: jellyflow_core::core::NodeKindKey::new("public.note"),
+        latest_kind_version: 1,
+        kind_aliases: Vec::new(),
+        title: "Note".into(),
+        category: Vec::new(),
+        keywords: Vec::new(),
+        renderer_key: None,
+        default_size: Some(CanvasSize {
+            width: 120.0,
+            height: 80.0,
+        }),
+        ports: Vec::<PortDecl>::new(),
+        default_data: serde_json::Value::Null,
+    });
+    let view_descriptors = node_registry.view_descriptors();
+    let _: &NodeKindViewDescriptor = &view_descriptors[0];
+    assert_eq!(view_descriptors[0].renderer_key, "public.note");
+    assert!(
+        node_registry
+            .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
+            .is_some()
+    );
 
     let root_patch = NodeGraphPatch::default();
     let module_patch = commit::NodeGraphPatch::default();

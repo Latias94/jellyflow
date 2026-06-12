@@ -4,7 +4,7 @@ use std::sync::Arc;
 use jellyflow_core::core::NodeKindKey;
 
 use super::migration::NodeKindMigrator;
-use super::types::NodeSchema;
+use super::types::{NodeKindViewDescriptor, NodeSchema};
 
 mod plans;
 
@@ -67,5 +67,18 @@ impl NodeRegistry {
     /// Iterates all registered schemas in deterministic order (by kind key).
     pub fn schemas(&self) -> impl Iterator<Item = &NodeSchema> {
         self.by_kind.values()
+    }
+
+    /// Returns the adapter-facing descriptor for a node kind or alias.
+    pub fn view_descriptor(&self, kind: &NodeKindKey) -> Option<NodeKindViewDescriptor> {
+        let canonical = self.resolve_kind(kind);
+        self.get(canonical).map(NodeKindViewDescriptor::from_schema)
+    }
+
+    /// Returns adapter-facing node-kind descriptors in deterministic order.
+    pub fn view_descriptors(&self) -> Vec<NodeKindViewDescriptor> {
+        self.schemas()
+            .map(NodeKindViewDescriptor::from_schema)
+            .collect()
     }
 }

@@ -7,6 +7,8 @@
 - effective interaction policy resolution under `runtime::policy`;
 - validation rules and diagnostics, including connect/reconnect/delete planners;
 - schema/profile pipeline hooks;
+- renderer-neutral node-kind view descriptors for adapter palettes, inspectors, and custom node
+  renderer lookup;
 - undo/redo store dispatch;
 - XyFlow-style node/edge change projections and ordered adapter-array apply helpers under
   `runtime::xyflow`;
@@ -109,6 +111,13 @@ validate behavior before rendering. The runtime crate supports that split with:
   ConformanceBehavior, ConformanceAction, ConformanceTraceEvent, run_conformance_scenario,
   run_conformance_suite}` for reusable behavior contracts, fixture checks, fixture discovery, and
   explicit golden approval updates around a real `NodeGraphStore`.
+
+Adapters that need XyFlow-style custom nodes should register semantic node kinds through
+`schema::NodeRegistry`, then read `NodeRegistry::view_descriptors()` to build their own
+framework-local renderer registry. `NodeKindViewDescriptor.renderer_key` is adapter-owned data
+rather than a component reference, so React, Svelte, native, and future adapters can map the same
+headless schema to different renderer implementations while preserving node `kind`, ports, default
+data, default size, category, and search metadata.
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
