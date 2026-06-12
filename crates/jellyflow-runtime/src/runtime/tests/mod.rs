@@ -1,5 +1,6 @@
 mod adapter_conformance;
 mod auto_pan;
+mod binding;
 mod conformance;
 mod connection;
 mod delete;
@@ -11,6 +12,7 @@ mod keyboard;
 mod layout;
 mod lookups;
 mod measurement;
+mod query;
 mod rendering;
 mod resize;
 mod selection;

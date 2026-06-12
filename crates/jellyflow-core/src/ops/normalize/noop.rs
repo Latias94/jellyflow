@@ -48,6 +48,10 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
         GraphOp::SetStickyNoteText { from, to, .. } => from == to,
         GraphOp::SetStickyNoteRect { from, to, .. } => from == to,
         GraphOp::SetStickyNoteColor { from, to, .. } => from == to,
+        GraphOp::SetBindingSubject { from, to, .. } => from == to,
+        GraphOp::SetBindingTarget { from, to, .. } => from == to,
+        GraphOp::SetBindingKind { from, to, .. } => from == to,
+        GraphOp::SetBindingMeta { from, to, .. } => from == to,
 
         GraphOp::AddNode { .. }
         | GraphOp::RemoveNode { .. }
@@ -62,6 +66,8 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
         | GraphOp::AddGroup { .. }
         | GraphOp::RemoveGroup { .. }
         | GraphOp::AddStickyNote { .. }
-        | GraphOp::RemoveStickyNote { .. } => false,
+        | GraphOp::RemoveStickyNote { .. }
+        | GraphOp::AddBinding { .. }
+        | GraphOp::RemoveBinding { .. } => false,
     }
 }

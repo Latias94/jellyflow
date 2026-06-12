@@ -5,11 +5,21 @@ pub(super) fn invert_edge_op(op: &GraphOp) -> Vec<GraphOp> {
         GraphOp::AddEdge { id, edge } => vec![GraphOp::RemoveEdge {
             id: *id,
             edge: edge.clone(),
+            bindings: Vec::new(),
         }],
-        GraphOp::RemoveEdge { id, edge } => vec![GraphOp::AddEdge {
-            id: *id,
-            edge: edge.clone(),
-        }],
+        GraphOp::RemoveEdge { id, edge, bindings } => {
+            let mut out = vec![GraphOp::AddEdge {
+                id: *id,
+                edge: edge.clone(),
+            }];
+            for (binding_id, binding) in bindings {
+                out.push(GraphOp::AddBinding {
+                    id: *binding_id,
+                    binding: binding.clone(),
+                });
+            }
+            out
+        }
         GraphOp::SetEdgeKind { id, from, to } => vec![GraphOp::SetEdgeKind {
             id: *id,
             from: *to,

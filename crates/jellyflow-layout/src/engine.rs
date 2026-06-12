@@ -7,6 +7,8 @@ use jellyflow_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::family::{LayoutEngineMetadata, LayoutFamilyId, LayoutFamilyMetadata};
+
 /// Stable engine id for the built-in Dagre-compatible `dugong` engine.
 pub const DUGONG_LAYOUT_ENGINE_ID: &str = "dugong";
 /// Stable engine id for the built-in radial mind-map engine.
@@ -384,6 +386,10 @@ impl LayoutResult {
 pub enum LayoutError {
     #[error("layout engine id is already registered: {0}")]
     DuplicateLayoutEngine(LayoutEngineId),
+    #[error("layout family id is already registered: {0}")]
+    DuplicateLayoutFamily(LayoutFamilyId),
+    #[error("layout engine metadata is already registered: {0}")]
+    DuplicateLayoutEngineMetadata(LayoutEngineId),
     #[error("layout engine is not registered: {0}")]
     MissingLayoutEngine(LayoutEngineId),
     #[error("layout default node size must be positive and finite: {0:?}")]
@@ -432,12 +438,15 @@ pub trait LayoutEngine: Send + Sync {
 #[derive(Default, Clone)]
 pub struct LayoutEngineRegistry {
     engines: BTreeMap<LayoutEngineId, Arc<dyn LayoutEngine>>,
+    families: BTreeMap<LayoutFamilyId, LayoutFamilyMetadata>,
+    metadata: BTreeMap<LayoutEngineId, LayoutEngineMetadata>,
 }
 
 impl fmt::Debug for LayoutEngineRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LayoutEngineRegistry")
             .field("engines", &self.engine_ids().collect::<Vec<_>>())
+            .field("families", &self.family_ids().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -466,14 +475,69 @@ impl LayoutEngineRegistry {
         Ok(())
     }
 
+    /// Registers layout family metadata.
+    pub fn insert_family(&mut self, family: LayoutFamilyMetadata) -> Result<(), LayoutError> {
+        let id = family.id.clone();
+        if self.families.contains_key(&id) {
+            return Err(LayoutError::DuplicateLayoutFamily(id));
+        }
+        self.families.insert(id, family);
+        Ok(())
+    }
+
+    /// Registers layout engine discovery metadata.
+    pub fn insert_metadata(&mut self, metadata: LayoutEngineMetadata) -> Result<(), LayoutError> {
+        let id = metadata.engine.clone();
+        if self.metadata.contains_key(&id) {
+            return Err(LayoutError::DuplicateLayoutEngineMetadata(id));
+        }
+        self.metadata.insert(id, metadata);
+        Ok(())
+    }
+
     /// Returns an engine by id.
     pub fn get(&self, id: &LayoutEngineId) -> Option<&dyn LayoutEngine> {
         self.engines.get(id).map(Arc::as_ref)
     }
 
+    /// Returns family metadata by id.
+    pub fn family(&self, id: &LayoutFamilyId) -> Option<&LayoutFamilyMetadata> {
+        self.families.get(id)
+    }
+
+    /// Returns engine discovery metadata by engine id.
+    pub fn metadata(&self, id: &LayoutEngineId) -> Option<&LayoutEngineMetadata> {
+        self.metadata.get(id)
+    }
+
     /// Returns registered engine ids in deterministic order.
     pub fn engine_ids(&self) -> impl Iterator<Item = &LayoutEngineId> {
         self.engines.keys()
+    }
+
+    /// Returns registered family ids in deterministic order.
+    pub fn family_ids(&self) -> impl Iterator<Item = &LayoutFamilyId> {
+        self.families.keys()
+    }
+
+    /// Returns registered families in deterministic order.
+    pub fn families(&self) -> impl Iterator<Item = &LayoutFamilyMetadata> {
+        self.families.values()
+    }
+
+    /// Returns registered engine metadata in deterministic order.
+    pub fn engine_metadata(&self) -> impl Iterator<Item = &LayoutEngineMetadata> {
+        self.metadata.values()
+    }
+
+    /// Returns engine metadata for one family in deterministic engine-id order.
+    pub fn engines_for_family(
+        &self,
+        family: &LayoutFamilyId,
+    ) -> impl Iterator<Item = &LayoutEngineMetadata> {
+        self.metadata
+            .values()
+            .filter(move |metadata| &metadata.family == family)
     }
 
     /// Runs the engine named by the request.

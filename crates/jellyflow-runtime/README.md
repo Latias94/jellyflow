@@ -20,6 +20,8 @@
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
 - renderer-neutral store-level rendering reads through `NodeGraphStore::rendering_query` and
   `runtime::rendering::RenderingQueryResult`;
+- renderer-neutral binding reads through `NodeGraphStore::binding_query` and binding-derived layout
+  context through `NodeGraphStore::layout_context_with_binding_pins`;
 - renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
   `runtime::keyboard`;
 - fit-view math that uses Jellyflow canvas geometry;
@@ -92,6 +94,9 @@ validate behavior before rendering. The runtime crate supports that split with:
   subscriptions can track `layout_facts_revision` for redraw/re-query decisions.
   `NodeGraphStore::rendering_query` is the narrow read path for deterministic group/node/edge order
   and visible node/edge lists;
+- `NodeGraphStore::binding_query` for renderer-neutral knowledge-canvas binding facts. Core
+  persists the binding records, while runtime resolves graph-local endpoints with measurements,
+  node origin, and handle geometry. Source anchors remain opaque host-owned payloads;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -166,6 +171,7 @@ The runtime crate also includes a thin renderer-free example harness for agents 
 ```text
 cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
 cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
+cargo run -p jellyflow-runtime --example knowledge_canvas
 ```
 
 For a copyable external adapter skeleton, start with the non-workspace headless template:

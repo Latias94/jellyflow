@@ -7,7 +7,7 @@ can be used without Fret UI, renderer, platform, or windowing crates.
 The initial package split is intentionally small:
 
 - `jellyflow-core`: graph IDs, document model, type descriptors, interaction value types, and
-  undoable graph transactions.
+  first-class graph/source bindings, and undoable graph transactions.
 - `jellyflow-runtime`: headless `NodeGraphStore`, view-state/config payloads, policy resolution,
   rules, schema/profile pipeline, explicit `runtime::xyflow` compatibility projections,
   persistence file types without project-path policy, fit-view math, renderer-neutral selection
@@ -16,7 +16,10 @@ The initial package split is intentionally small:
   renderer-neutral viewport pan inertia planning, renderer-neutral auto-pan, renderer-neutral node
   resize planning, renderer-neutral geometry, store-level rendering reads, and public headless
   conformance fixtures. It also exposes renderer-neutral visible-node/edge id and render-order
-  results for XyFlow-style `onlyRenderVisibleElements` adapter behavior before rendering.
+  results for XyFlow-style `onlyRenderVisibleElements` adapter behavior before rendering, plus
+  binding and layout-facts queries for source-linked knowledge-canvas adapters.
+- `jellyflow-layout`: optional headless layout engines, layout-family discovery metadata, and
+  transaction-producing engine dispatch for `dugong`, radial mind maps, and freeform mind maps.
 
 `fret-node` remains the Fret adapter and compatibility facade in the Fret repository. Jellyflow is
 the reusable engine boundary for non-Fret consumers.
@@ -50,6 +53,7 @@ Runnable examples live under the crate example directories:
 cargo run -p jellyflow-core --example build_graph
 cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example geometry_edge
+cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
 cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
 cargo test --manifest-path templates/headless-adapter/Cargo.toml

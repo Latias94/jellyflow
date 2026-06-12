@@ -80,10 +80,16 @@ impl<'a> GraphDiffPlanner<'a> {
     fn push_remove_port_for_replacement(&mut self, id: PortId) -> Vec<EdgeId> {
         let mut removed_edge_ids = Vec::new();
         if let Ok(op) = GraphMutationPlanner::new(self.from).remove_port_op(id) {
-            if let GraphOp::RemovePort { edges, .. } = &op {
+            let op = self.with_target_removed_bindings(op);
+            if let GraphOp::RemovePort {
+                edges, bindings, ..
+            } = &op
+            {
                 removed_edge_ids = edges.iter().map(|(id, _)| *id).collect();
                 self.removed_edges_by_cascade
                     .extend(edges.iter().map(|(id, _)| *id));
+                self.removed_bindings_by_cascade
+                    .extend(bindings.iter().map(|(id, _)| *id));
             }
             self.push_op(op);
         }
@@ -177,9 +183,15 @@ impl<'a> GraphDiffPlanner<'a> {
             }
 
             if let Ok(op) = GraphMutationPlanner::new(from).remove_port_op(*id) {
-                if let GraphOp::RemovePort { edges, .. } = &op {
+                let op = self.with_target_removed_bindings(op);
+                if let GraphOp::RemovePort {
+                    edges, bindings, ..
+                } = &op
+                {
                     self.removed_edges_by_cascade
                         .extend(edges.iter().map(|(id, _)| *id));
+                    self.removed_bindings_by_cascade
+                        .extend(bindings.iter().map(|(id, _)| *id));
                 }
                 self.push_op(op);
             }

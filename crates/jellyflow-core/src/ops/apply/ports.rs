@@ -1,13 +1,18 @@
-use crate::core::{Edge, EdgeId, Graph, Port, PortId};
+use crate::core::{Binding, BindingId, Edge, EdgeId, Graph, Port, PortId};
 use crate::ops::GraphOp;
 
 use super::ApplyError;
-use super::resources::remove_edge_exact;
+use super::resources::{remove_bindings_exact, remove_edge_exact};
 
 pub(super) fn apply_port_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
         GraphOp::AddPort { id, port } => apply_add_port(graph, *id, port)?,
-        GraphOp::RemovePort { id, port, edges } => apply_remove_port(graph, *id, port, edges)?,
+        GraphOp::RemovePort {
+            id,
+            port,
+            edges,
+            bindings,
+        } => apply_remove_port(graph, *id, port, edges, bindings)?,
         GraphOp::SetPortConnectable { id, to, .. } => {
             port_mut(graph, *id)?.connectable = *to;
         }
@@ -44,6 +49,7 @@ fn apply_remove_port(
     id: PortId,
     port: &Port,
     edges: &[(EdgeId, Edge)],
+    bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
     let Some(current) = graph.ports.get(&id) else {
         return Err(ApplyError::MissingPort { id });
@@ -51,6 +57,7 @@ fn apply_remove_port(
     if current.node != port.node || current.key != port.key {
         return Err(ApplyError::RemovePortMismatch { id });
     }
+    remove_bindings_exact(graph, bindings)?;
     for (edge_id, edge) in edges {
         remove_edge_exact(graph, *edge_id, edge)?;
     }

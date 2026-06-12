@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Edge, EdgeId, GraphId, GraphImport, Group, GroupId, Node, NodeId, Port, PortId, StickyNote,
-    StickyNoteId, Symbol, SymbolId,
+    Binding, BindingId, Edge, EdgeId, GraphId, GraphImport, Group, GroupId, Node, NodeId, Port,
+    PortId, StickyNote, StickyNoteId, Symbol, SymbolId,
 };
 
 /// Wrapper version for `GraphFragment`.
@@ -25,6 +25,8 @@ pub struct GraphFragment {
     pub sticky_notes: BTreeMap<StickyNoteId, StickyNote>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub symbols: BTreeMap<SymbolId, Symbol>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<BindingId, Binding>,
 }
 
 impl Default for GraphFragment {
@@ -38,6 +40,7 @@ impl Default for GraphFragment {
             groups: BTreeMap::new(),
             sticky_notes: BTreeMap::new(),
             symbols: BTreeMap::new(),
+            bindings: BTreeMap::new(),
         }
     }
 }

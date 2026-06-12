@@ -2,6 +2,7 @@ use crate::core::Graph;
 use crate::ops::GraphOp;
 
 use super::ApplyError;
+use super::resources::remove_bindings_exact;
 
 pub(super) fn apply_sticky_note_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
@@ -11,7 +12,7 @@ pub(super) fn apply_sticky_note_op(graph: &mut Graph, op: &GraphOp) -> Result<()
             }
             graph.sticky_notes.insert(*id, note.clone());
         }
-        GraphOp::RemoveStickyNote { id, note } => {
+        GraphOp::RemoveStickyNote { id, note, bindings } => {
             let Some(current) = graph.sticky_notes.get(id) else {
                 return Err(ApplyError::MissingStickyNote { id: *id });
             };
@@ -19,6 +20,7 @@ pub(super) fn apply_sticky_note_op(graph: &mut Graph, op: &GraphOp) -> Result<()
             {
                 return Err(ApplyError::RemoveStickyNoteMismatch { id: *id });
             }
+            remove_bindings_exact(graph, bindings)?;
             graph.sticky_notes.remove(id);
         }
         GraphOp::SetStickyNoteText { id, to, .. } => {

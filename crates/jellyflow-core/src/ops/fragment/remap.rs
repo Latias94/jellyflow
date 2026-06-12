@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::core::{EdgeId, GroupId, NodeId, PortId, StickyNoteId, SymbolId};
+use crate::core::{BindingId, EdgeId, GroupId, NodeId, PortId, StickyNoteId, SymbolId};
 
 /// Seed used for deterministic ID remapping.
 ///
@@ -53,5 +53,9 @@ impl IdRemapper {
 
     pub fn remap_symbol(&self, id: SymbolId) -> SymbolId {
         SymbolId(self.remap_uuid(id.0))
+    }
+
+    pub fn remap_binding(&self, id: BindingId) -> BindingId {
+        BindingId(self.remap_uuid(id.0))
     }
 }

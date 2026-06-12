@@ -8,13 +8,15 @@ pub(super) fn invert_node_op(op: &GraphOp) -> Vec<GraphOp> {
             node: node.clone(),
             ports: Vec::new(),
             edges: Vec::new(),
+            bindings: Vec::new(),
         }],
         GraphOp::RemoveNode {
             id,
             node,
             ports,
             edges,
-        } => restore_removed_node(*id, node, ports, edges),
+            bindings,
+        } => restore_removed_node(*id, node, ports, edges, bindings),
         GraphOp::SetNodePos { id, from, to } => vec![GraphOp::SetNodePos {
             id: *id,
             from: *to,
@@ -109,6 +111,7 @@ fn restore_removed_node(
     node: &Node,
     ports: &[(PortId, Port)],
     edges: &[(EdgeId, Edge)],
+    bindings: &[(crate::core::BindingId, crate::core::Binding)],
 ) -> Vec<GraphOp> {
     let mut out: Vec<GraphOp> = Vec::new();
     out.push(GraphOp::AddNode {
@@ -125,6 +128,12 @@ fn restore_removed_node(
         out.push(GraphOp::AddEdge {
             id: *edge_id,
             edge: edge.clone(),
+        });
+    }
+    for (binding_id, binding) in bindings {
+        out.push(GraphOp::AddBinding {
+            id: *binding_id,
+            binding: binding.clone(),
         });
     }
     out

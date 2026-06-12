@@ -1,4 +1,4 @@
-use crate::core::{EdgeId, GroupId, NodeId, PortId};
+use crate::core::{BindingId, EdgeId, GroupId, NodeId, PortId, StickyNoteId};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum GraphMutationError {
@@ -16,6 +16,12 @@ pub enum GraphMutationError {
     MissingEdge(EdgeId),
     #[error("missing group: {0:?}")]
     MissingGroup(GroupId),
+    #[error("binding already exists: {0:?}")]
+    BindingAlreadyExists(BindingId),
+    #[error("missing binding: {0:?}")]
+    MissingBinding(BindingId),
+    #[error("missing sticky note: {0:?}")]
+    MissingStickyNote(StickyNoteId),
     #[error("port owner mismatch: port={port:?} expected={expected:?} got={got:?}")]
     PortOwnerMismatch {
         port: PortId,

@@ -12,11 +12,12 @@ pub mod ops;
 pub mod types;
 
 pub use core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
-    EdgeReconnectableEndpoint, Graph, GraphId, GraphImport, GraphImportClosure, GraphImportError,
-    GraphValidationError, GraphValidationReport, Group, GroupId, Node, NodeExtent, NodeId,
-    NodeKindKey, NodeOrigin, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
-    StickyNote, StickyNoteId, Symbol, SymbolId,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
+    EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, GraphId, GraphImport,
+    GraphImportClosure, GraphImportError, GraphLocalBindingTarget, GraphValidationError,
+    GraphValidationReport, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, NodeOrigin, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor, StickyNote, StickyNoteId,
+    Symbol, SymbolId,
 };
 pub use interaction::{
     NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,

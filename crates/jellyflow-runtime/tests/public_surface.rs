@@ -139,9 +139,31 @@ fn explicit_modules_expose_their_owned_surfaces() {
             .get(&layout::LayoutEngineId::mind_map_freeform())
             .is_some()
     );
+    assert!(
+        layout_registry
+            .family(&layout::LayoutFamilyId::mind_map())
+            .is_some()
+    );
+    assert!(
+        layout_registry
+            .metadata(&layout::LayoutEngineId::mind_map_radial())
+            .is_some()
+    );
+    assert_eq!(
+        layout_registry
+            .engines_for_family(&layout::LayoutFamilyId::mind_map())
+            .count(),
+        2
+    );
     let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_RADIAL_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID;
+    let _ = layout::LAYERED_DAG_LAYOUT_FAMILY_ID;
+    let _ = layout::MIND_MAP_LAYOUT_FAMILY_ID;
+    let _ = std::mem::size_of::<layout::LayoutFamilyId>();
+    let _ = std::mem::size_of::<layout::LayoutFamilyMetadata>();
+    let _ = std::mem::size_of::<layout::LayoutEngineMetadata>();
+    let _ = std::mem::size_of::<layout::LayoutEngineCapability>();
     let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapFreeformLayoutEngine>();
@@ -150,6 +172,8 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();
     let _ = std::mem::size_of::<layout::DugongLayoutApplyError>();
     let _: fn(&NodeGraphStore) -> layout::LayoutContext = layout::layout_context_from_store;
+    let _: fn(&NodeGraphStore) -> layout::LayoutContext =
+        NodeGraphStore::layout_context_with_binding_pins;
     let _: fn(
         &Graph,
         &layout::LayoutEngineRequest,
@@ -163,6 +187,21 @@ fn explicit_modules_expose_their_owned_surfaces() {
         &layout::LayoutContext,
     ) -> Result<GraphTransaction, layout::LayoutError> = layout::layout_transaction;
     let _ = layout_engine_request;
+    let _binding_query = selection_store.binding_query();
+    let _binding_query_with_options = selection_store.binding_query_with_options(
+        jellyflow_runtime::runtime::binding::BindingQueryOptions::default()
+            .include_hidden(true)
+            .with_fallback_node_size(Some(CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            })),
+    );
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingQueryResult>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBinding>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBindingEndpoint>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolution>();
+    let _ =
+        std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus>();
     assert!(connection::connection_drag_threshold_met(
         connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));

@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::EdgeReconnectable;
 use crate::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphId, GraphImport, Group,
-    GroupId, Node, NodeExtent, NodeId, NodeKindKey, NodeOrigin, Port, PortId, StickyNote,
-    StickyNoteId, Symbol, SymbolId,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
+    EdgeKind, EdgeReconnectable, GraphId, GraphImport, Group, GroupId, Node, NodeExtent, NodeId,
+    NodeKindKey, NodeOrigin, Port, PortId, StickyNote, StickyNoteId, Symbol, SymbolId,
 };
 use crate::types::TypeDesc;
 
@@ -29,6 +28,8 @@ pub enum GraphOp {
         ports: Vec<(PortId, Port)>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         edges: Vec<(EdgeId, Edge)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<(BindingId, Binding)>,
     },
     /// Sets a node position.
     SetNodePos {
@@ -134,6 +135,8 @@ pub enum GraphOp {
         port: Port,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         edges: Vec<(EdgeId, Edge)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<(BindingId, Binding)>,
     },
     /// Sets a port connectable override.
     SetPortConnectable {
@@ -169,7 +172,12 @@ pub enum GraphOp {
     /// Adds an edge.
     AddEdge { id: EdgeId, edge: Edge },
     /// Removes an edge.
-    RemoveEdge { id: EdgeId, edge: Edge },
+    RemoveEdge {
+        id: EdgeId,
+        edge: Edge,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<(BindingId, Binding)>,
+    },
     /// Sets an edge kind.
     SetEdgeKind {
         id: EdgeId,
@@ -265,6 +273,8 @@ pub enum GraphOp {
         group: Group,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         detached: Vec<(NodeId, Option<GroupId>)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<(BindingId, Binding)>,
     },
     /// Sets a group's bounds.
     SetGroupRect {
@@ -288,7 +298,12 @@ pub enum GraphOp {
     /// Adds a sticky note.
     AddStickyNote { id: StickyNoteId, note: StickyNote },
     /// Removes a sticky note.
-    RemoveStickyNote { id: StickyNoteId, note: StickyNote },
+    RemoveStickyNote {
+        id: StickyNoteId,
+        note: StickyNote,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<(BindingId, Binding)>,
+    },
     /// Sets a sticky note text body.
     SetStickyNoteText {
         id: StickyNoteId,
@@ -306,5 +321,34 @@ pub enum GraphOp {
         id: StickyNoteId,
         from: Option<String>,
         to: Option<String>,
+    },
+
+    /// Adds a knowledge-canvas binding.
+    AddBinding { id: BindingId, binding: Binding },
+    /// Removes a knowledge-canvas binding.
+    RemoveBinding { id: BindingId, binding: Binding },
+    /// Sets a binding subject endpoint.
+    SetBindingSubject {
+        id: BindingId,
+        from: BindingEndpoint,
+        to: BindingEndpoint,
+    },
+    /// Sets a binding target endpoint.
+    SetBindingTarget {
+        id: BindingId,
+        from: BindingEndpoint,
+        to: BindingEndpoint,
+    },
+    /// Sets a binding relationship label.
+    SetBindingKind {
+        id: BindingId,
+        from: Option<String>,
+        to: Option<String>,
+    },
+    /// Updates a binding metadata payload (domain-owned).
+    SetBindingMeta {
+        id: BindingId,
+        from: serde_json::Value,
+        to: serde_json::Value,
     },
 }

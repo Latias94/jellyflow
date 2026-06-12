@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::ids::{EdgeId, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId};
+use crate::core::ids::{
+    BindingId, EdgeId, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
+};
 use crate::core::imports::GraphImport;
 
+use super::binding::Binding;
 use super::edge::Edge;
 use super::node::Node;
 use super::port::Port;
@@ -44,6 +47,10 @@ pub struct Graph {
     /// Optional sticky notes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sticky_notes: BTreeMap<StickyNoteId, StickyNote>,
+
+    /// Optional knowledge-canvas bindings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<BindingId, Binding>,
 }
 
 impl Default for Graph {
@@ -65,6 +72,7 @@ impl Graph {
             edges: BTreeMap::new(),
             groups: BTreeMap::new(),
             sticky_notes: BTreeMap::new(),
+            bindings: BTreeMap::new(),
         }
     }
 }

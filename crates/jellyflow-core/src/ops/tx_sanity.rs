@@ -114,6 +114,12 @@ impl NonFiniteGeometry {
             | GraphOp::SetGroupColor { .. }
             | GraphOp::SetStickyNoteText { .. }
             | GraphOp::SetStickyNoteColor { .. }
+            | GraphOp::AddBinding { .. }
+            | GraphOp::RemoveBinding { .. }
+            | GraphOp::SetBindingSubject { .. }
+            | GraphOp::SetBindingTarget { .. }
+            | GraphOp::SetBindingKind { .. }
+            | GraphOp::SetBindingMeta { .. }
             | GraphOp::AddPort { .. }
             | GraphOp::RemovePort { .. }
             | GraphOp::AddEdge { .. }

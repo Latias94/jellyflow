@@ -7,8 +7,14 @@ pub(super) fn invert_port_op(op: &GraphOp) -> Vec<GraphOp> {
             id: *id,
             port: port.clone(),
             edges: Vec::new(),
+            bindings: Vec::new(),
         }],
-        GraphOp::RemovePort { id, port, edges } => restore_removed_port(*id, port, edges),
+        GraphOp::RemovePort {
+            id,
+            port,
+            edges,
+            bindings,
+        } => restore_removed_port(*id, port, edges, bindings),
         GraphOp::SetPortConnectable { id, from, to } => vec![GraphOp::SetPortConnectable {
             id: *id,
             from: *to,
@@ -42,7 +48,12 @@ pub(super) fn invert_port_op(op: &GraphOp) -> Vec<GraphOp> {
     }
 }
 
-fn restore_removed_port(id: PortId, port: &Port, edges: &[(EdgeId, Edge)]) -> Vec<GraphOp> {
+fn restore_removed_port(
+    id: PortId,
+    port: &Port,
+    edges: &[(EdgeId, Edge)],
+    bindings: &[(crate::core::BindingId, crate::core::Binding)],
+) -> Vec<GraphOp> {
     let mut out: Vec<GraphOp> = Vec::new();
     out.push(GraphOp::AddPort {
         id,
@@ -52,6 +63,12 @@ fn restore_removed_port(id: PortId, port: &Port, edges: &[(EdgeId, Edge)]) -> Ve
         out.push(GraphOp::AddEdge {
             id: *edge_id,
             edge: edge.clone(),
+        });
+    }
+    for (binding_id, binding) in bindings {
+        out.push(GraphOp::AddBinding {
+            id: *binding_id,
+            binding: binding.clone(),
         });
     }
     out

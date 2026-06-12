@@ -9,7 +9,7 @@ pub(super) fn visit_removed_edges(op: &GraphOp, mut visit: impl FnMut(EdgeId, &E
             }
             true
         }
-        GraphOp::RemoveEdge { id, edge } => {
+        GraphOp::RemoveEdge { id, edge, .. } => {
             visit(*id, edge);
             true
         }

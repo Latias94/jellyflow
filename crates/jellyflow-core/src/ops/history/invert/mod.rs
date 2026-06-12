@@ -1,3 +1,4 @@
+mod binding;
 mod document;
 mod edge;
 mod node;
@@ -74,5 +75,12 @@ fn invert_op(op: &GraphOp) -> Vec<GraphOp> {
         | GraphOp::SetStickyNoteText { .. }
         | GraphOp::SetStickyNoteRect { .. }
         | GraphOp::SetStickyNoteColor { .. } => document::invert_document_op(op),
+
+        GraphOp::AddBinding { .. }
+        | GraphOp::RemoveBinding { .. }
+        | GraphOp::SetBindingSubject { .. }
+        | GraphOp::SetBindingTarget { .. }
+        | GraphOp::SetBindingKind { .. }
+        | GraphOp::SetBindingMeta { .. } => binding::invert_binding_op(op),
     }
 }

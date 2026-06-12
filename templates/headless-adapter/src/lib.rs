@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
-    GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
+    EdgeKind, EdgeReconnectable, Graph, GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction,
+    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity, PortDirection,
+    PortId, PortKey, PortKind, SourceAnchor,
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
+use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceDeleteSelectionContract,
     ConformanceDeleteSelectionDuringNodeDragContract, ConformanceEdgeEndpointPosition,
@@ -23,6 +25,7 @@ use jellyflow_runtime::runtime::connection::{
 };
 use jellyflow_runtime::runtime::events::{NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeResizeUpdate};
 use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
+use jellyflow_runtime::runtime::layout::{LayoutFamilyId, builtin_layout_engine_registry};
 use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow_runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow_runtime::runtime::resize::{
@@ -54,6 +57,7 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
 }
 
 pub fn check_builtin_suite() -> ConformanceSuiteReport {
+    assert_knowledge_canvas_surfaces();
     adapter_smoke_suite().run()
 }
 
@@ -350,6 +354,70 @@ pub fn run_measurement_smoke() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn assert_knowledge_canvas_surfaces() {
+    let node_id = NodeId::from_u128(1);
+    let binding_id = BindingId::from_u128(2);
+    let mut graph = Graph::new(GraphId::from_u128(1));
+    graph.nodes.insert(
+        node_id,
+        Node {
+            kind: NodeKindKey::new("knowledge.note"),
+            kind_version: 1,
+            pos: CanvasPoint { x: 0.0, y: 0.0 },
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(CanvasSize {
+                width: 120.0,
+                height: 72.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({ "title": "Knowledge note" }),
+        },
+    );
+    graph.bindings.insert(
+        binding_id,
+        Binding {
+            subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Node { id: node_id }),
+            target: BindingEndpoint::source(SourceAnchor::new(
+                "source://paper.pdf",
+                serde_json::json!({ "page": 1 }),
+            )),
+            kind: Some("excerpt".to_owned()),
+            meta: serde_json::Value::Null,
+        },
+    );
+
+    let store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    assert_eq!(
+        store
+            .binding_query()
+            .binding(binding_id)
+            .expect("binding reachable")
+            .subject
+            .status(),
+        BindingEndpointResolutionStatus::Resolved
+    );
+    assert_eq!(
+        builtin_layout_engine_registry()
+            .engines_for_family(&LayoutFamilyId::mind_map())
+            .count(),
+        2
+    );
 }
 
 fn node_drag_scenario() -> ConformanceScenario {
@@ -1060,6 +1128,11 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.scenario_count(), 11);
+    }
+
+    #[test]
+    fn knowledge_canvas_surfaces_are_reachable() {
+        assert_knowledge_canvas_surfaces();
     }
 
     #[test]

@@ -2,12 +2,13 @@ use crate::core::{Edge, EdgeId, Graph, PortId};
 use crate::ops::GraphOp;
 
 use super::ApplyError;
-use super::resources::remove_edge_exact;
+use super::resources::{remove_bindings_exact, remove_edge_exact};
 
 pub(super) fn apply_edge_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
         GraphOp::AddEdge { id, edge } => apply_add_edge(graph, *id, edge)?,
-        GraphOp::RemoveEdge { id, edge } => {
+        GraphOp::RemoveEdge { id, edge, bindings } => {
+            remove_bindings_exact(graph, bindings)?;
             remove_edge_exact(graph, *id, edge)?;
         }
         GraphOp::SetEdgeKind { id, to, .. } => {

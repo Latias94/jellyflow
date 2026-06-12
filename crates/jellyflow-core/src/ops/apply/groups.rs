@@ -1,7 +1,8 @@
-use crate::core::{Graph, Group, GroupId, NodeId};
+use crate::core::{Binding, BindingId, Graph, Group, GroupId, NodeId};
 use crate::ops::GraphOp;
 
 use super::ApplyError;
+use super::resources::remove_bindings_exact;
 
 pub(super) fn apply_group_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
@@ -10,7 +11,8 @@ pub(super) fn apply_group_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Appl
             id,
             group,
             detached,
-        } => apply_remove_group(graph, *id, group, detached)?,
+            bindings,
+        } => apply_remove_group(graph, *id, group, detached, bindings)?,
         GraphOp::SetGroupRect { id, to, .. } => {
             group_mut(graph, *id)?.rect = *to;
         }
@@ -38,6 +40,7 @@ fn apply_remove_group(
     id: GroupId,
     group: &Group,
     detached: &[(NodeId, Option<GroupId>)],
+    bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
     let Some(current) = graph.groups.get(&id) else {
         return Err(ApplyError::MissingGroup { id });
@@ -46,6 +49,7 @@ fn apply_remove_group(
         return Err(ApplyError::RemoveGroupMismatch { id });
     }
 
+    remove_bindings_exact(graph, bindings)?;
     for (node_id, expected_parent) in detached {
         let Some(node) = graph.nodes.get_mut(node_id) else {
             return Err(ApplyError::MissingNode { id: *node_id });

@@ -34,6 +34,7 @@ impl<'a> StructuralValidator<'a> {
         }
 
         self.validate_node_bindings();
+        self.validate_binding_relationships();
         let incident_counts = self.validate_edges();
         self.validate_port_capacities(incident_counts);
         self.report
@@ -75,6 +76,42 @@ impl<'a> StructuralValidator<'a> {
             }
             Ok(None) => {}
             Err(err) => self.report.push(err.into()),
+        }
+    }
+
+    fn validate_binding_relationships(&mut self) {
+        for (binding_id, binding) in &self.graph.bindings {
+            for target in [
+                binding.subject.graph_local_target(),
+                binding.target.graph_local_target(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if self.binding_target_exists(target) {
+                    continue;
+                }
+                self.report
+                    .push(GraphValidationError::BindingTargetMissing {
+                        binding: *binding_id,
+                        target,
+                    });
+            }
+        }
+    }
+
+    fn binding_target_exists(&self, target: crate::core::GraphLocalBindingTarget) -> bool {
+        match target {
+            crate::core::GraphLocalBindingTarget::Graph => true,
+            crate::core::GraphLocalBindingTarget::Node { id } => self.graph.nodes.contains_key(&id),
+            crate::core::GraphLocalBindingTarget::Port { id } => self.graph.ports.contains_key(&id),
+            crate::core::GraphLocalBindingTarget::Edge { id } => self.graph.edges.contains_key(&id),
+            crate::core::GraphLocalBindingTarget::Group { id } => {
+                self.graph.groups.contains_key(&id)
+            }
+            crate::core::GraphLocalBindingTarget::StickyNote { id } => {
+                self.graph.sticky_notes.contains_key(&id)
+            }
         }
     }
 

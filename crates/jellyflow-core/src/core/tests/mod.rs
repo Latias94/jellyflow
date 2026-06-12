@@ -1,8 +1,8 @@
 use crate::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphId, GraphImport, GraphImportError, Node,
-    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, Symbol,
-    SymbolId, collect_subgraph_targets, collect_symbol_ref_targets, resolve_import_closure,
-    validate_graph,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphId,
+    GraphImport, GraphImportError, GraphLocalBindingTarget, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor, Symbol, SymbolId,
+    collect_subgraph_targets, collect_symbol_ref_targets, resolve_import_closure, validate_graph,
 };
 use crate::core::{CanvasSize, GraphValidationError, GroupId, validate_graph_structural};
 use crate::core::{
@@ -64,6 +64,7 @@ fn attach_port(graph: &mut Graph, port_id: PortId, port: Port) {
         .push(port_id);
 }
 
+mod binding;
 mod imports;
 mod structural;
 mod subgraph;

@@ -50,12 +50,14 @@ pub(super) fn invert_document_op(op: &GraphOp) -> Vec<GraphOp> {
             id: *id,
             group: group.clone(),
             detached: Vec::new(),
+            bindings: Vec::new(),
         }],
         GraphOp::RemoveGroup {
             id,
             group,
             detached,
-        } => restore_removed_group(*id, group, detached),
+            bindings,
+        } => restore_removed_group(*id, group, detached, bindings),
         GraphOp::SetGroupRect { id, from, to } => vec![GraphOp::SetGroupRect {
             id: *id,
             from: *to,
@@ -75,11 +77,21 @@ pub(super) fn invert_document_op(op: &GraphOp) -> Vec<GraphOp> {
         GraphOp::AddStickyNote { id, note } => vec![GraphOp::RemoveStickyNote {
             id: *id,
             note: note.clone(),
+            bindings: Vec::new(),
         }],
-        GraphOp::RemoveStickyNote { id, note } => vec![GraphOp::AddStickyNote {
-            id: *id,
-            note: note.clone(),
-        }],
+        GraphOp::RemoveStickyNote { id, note, bindings } => {
+            let mut out = vec![GraphOp::AddStickyNote {
+                id: *id,
+                note: note.clone(),
+            }];
+            for (binding_id, binding) in bindings {
+                out.push(GraphOp::AddBinding {
+                    id: *binding_id,
+                    binding: binding.clone(),
+                });
+            }
+            out
+        }
         GraphOp::SetStickyNoteText { id, from, to } => vec![GraphOp::SetStickyNoteText {
             id: *id,
             from: to.clone(),
@@ -103,6 +115,7 @@ fn restore_removed_group(
     id: GroupId,
     group: &Group,
     detached: &[(NodeId, Option<GroupId>)],
+    bindings: &[(crate::core::BindingId, crate::core::Binding)],
 ) -> Vec<GraphOp> {
     let mut out: Vec<GraphOp> = Vec::new();
     out.push(GraphOp::AddGroup {
@@ -114,6 +127,12 @@ fn restore_removed_group(
             id: *node_id,
             from: None,
             to: *parent,
+        });
+    }
+    for (binding_id, binding) in bindings {
+        out.push(GraphOp::AddBinding {
+            id: *binding_id,
+            binding: binding.clone(),
         });
     }
     out

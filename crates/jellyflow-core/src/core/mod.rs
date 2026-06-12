@@ -8,13 +8,15 @@ mod symbol_ref;
 mod validate;
 
 pub use ids::{
-    EdgeId, GraphId, GroupId, NodeId, NodeKindKey, PortId, PortKey, StickyNoteId, SymbolId,
+    BindingId, EdgeId, GraphId, GroupId, NodeId, NodeKindKey, PortId, PortKey, StickyNoteId,
+    SymbolId,
 };
 pub use imports::{GraphImport, GraphImportClosure, GraphImportError, resolve_import_closure};
 pub use model::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable,
-    EdgeReconnectableEndpoint, Graph, Group, Node, NodeExtent, NodeOrigin, Port, PortCapacity,
-    PortDirection, PortKind, StickyNote, Symbol,
+    Binding, BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind,
+    EdgeReconnectable, EdgeReconnectableEndpoint, Graph, GraphLocalBindingTarget, Group, Node,
+    NodeExtent, NodeOrigin, Port, PortCapacity, PortDirection, PortKind, SourceAnchor, StickyNote,
+    Symbol,
 };
 pub use subgraph::{
     SUBGRAPH_NODE_KIND, SubgraphBindingError, SubgraphNodeError, collect_subgraph_targets,

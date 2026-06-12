@@ -5,6 +5,7 @@
 //! a specific rendering or widget layer. XyFlow-compatible projections live in [`xyflow`].
 
 pub mod auto_pan;
+pub mod binding;
 pub mod commit;
 pub mod conformance;
 pub mod connection;
@@ -20,6 +21,7 @@ pub mod lookups;
 pub mod measurement;
 pub mod middleware;
 pub mod policy;
+pub(crate) mod query;
 pub mod rendering;
 pub mod resize;
 pub mod selection;

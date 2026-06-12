@@ -51,6 +51,7 @@ def jellyflow_runtime_cargo_toml(repo_root: Path) -> str:
             jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}
             jellyflow-layout = {{ path = "{(repo_root / "crates/jellyflow-layout").as_posix()}" }}
             jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}
+            serde_json = "1"
             """
         ).strip()
         + "\n"
@@ -62,14 +63,16 @@ def jellyflow_runtime_main_rs() -> str:
         textwrap.dedent(
             """
             use jellyflow_core::{
-                CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, GraphOp, GraphTransaction,
-                Node, NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey,
+                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Graph,
+                GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction, Node,
+                NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey, SourceAnchor,
             };
             use jellyflow_layout::{
-                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutRequest,
+                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutFamilyId, LayoutRequest,
                 builtin_layout_engine_registry, layout_graph_with_engine,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
+            use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
             use jellyflow_runtime::runtime::conformance::{
                 run_conformance_scenario, ConformanceAction, ConformanceFixtureDirectory,
                 ConformanceScenario, ConformanceSuite, ConformanceTraceEvent,
@@ -118,6 +121,21 @@ def jellyflow_runtime_main_rs() -> str:
                 add.push(GraphOp::AddNode { id: node_id, node });
                 add.apply_to(&mut graph).expect("transaction applies");
                 assert!(graph.nodes.contains_key(&node_id));
+                let binding_id = BindingId::from_u128(40);
+                graph.bindings.insert(
+                    binding_id,
+                    Binding {
+                        subject: BindingEndpoint::graph_local(
+                            GraphLocalBindingTarget::Node { id: node_id },
+                        ),
+                        target: BindingEndpoint::source(SourceAnchor::new(
+                            "source://paper.pdf",
+                            serde_json::json!({ "page": 1, "rect": [10, 20, 30, 40] }),
+                        )),
+                        kind: Some("excerpt".to_owned()),
+                        meta: serde_json::Value::Null,
+                    },
+                );
 
                 let mut store = NodeGraphStore::new(
                     graph,
@@ -137,6 +155,12 @@ def jellyflow_runtime_main_rs() -> str:
                 assert_eq!(store.graph().nodes[&node_id].pos, CanvasPoint { x: 32.0, y: 48.0 });
 
                 let layout_registry = builtin_layout_engine_registry();
+                assert_eq!(
+                    layout_registry
+                        .engines_for_family(&LayoutFamilyId::mind_map())
+                        .count(),
+                    2
+                );
                 let layout_request = LayoutEngineRequest::dugong(LayoutRequest::all());
                 let graph_layout = layout_graph_with_engine(
                     store.graph(),
@@ -164,6 +188,21 @@ def jellyflow_runtime_main_rs() -> str:
                     .plan_layout(&layout_request, &layout_registry)
                     .expect("runtime layout planning succeeds");
                 assert!(runtime_layout.node_position(node_id).is_some());
+                assert_eq!(
+                    store
+                        .binding_query()
+                        .binding(binding_id)
+                        .expect("binding query result")
+                        .subject
+                        .status(),
+                    BindingEndpointResolutionStatus::Resolved
+                );
+                assert!(
+                    store
+                        .layout_context_with_binding_pins()
+                        .pinned_nodes
+                        .contains(&node_id)
+                );
 
                 let conformance_scenario =
                     ConformanceScenario::new("external node drag fixture", store.graph().clone())

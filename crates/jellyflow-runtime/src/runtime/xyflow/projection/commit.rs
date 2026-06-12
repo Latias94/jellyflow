@@ -85,6 +85,7 @@ mod tests {
             GraphOp::RemoveEdge {
                 id: edge.id,
                 edge: edge.edge(),
+                bindings: Vec::new(),
             },
         ]);
 
@@ -113,6 +114,7 @@ mod tests {
             GraphOp::RemoveEdge {
                 id: edge.id,
                 edge: edge.edge(),
+                bindings: Vec::new(),
             },
             GraphOp::AddEdge {
                 id: edge.id,
@@ -121,6 +123,7 @@ mod tests {
             GraphOp::RemoveEdge {
                 id: edge.id,
                 edge: edge.edge(),
+                bindings: Vec::new(),
             },
         ]);
 
@@ -149,20 +152,24 @@ mod tests {
                 node: node.node(),
                 ports: vec![(node.port, node.port())],
                 edges: vec![(edge.id, edge.edge())],
+                bindings: Vec::new(),
             },
             GraphOp::RemovePort {
                 id: node.port,
                 port: node.port(),
                 edges: vec![(edge.id, edge.edge())],
+                bindings: Vec::new(),
             },
             GraphOp::RemoveGroup {
                 id: group.id,
                 group: group.group(),
                 detached: vec![(node.id, None)],
+                bindings: Vec::new(),
             },
             GraphOp::RemoveStickyNote {
                 id: sticky_note.id,
                 note: sticky_note.note(),
+                bindings: Vec::new(),
             },
         ]);
 
