@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use jellyflow_core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
@@ -13,21 +15,23 @@ const NODE_SIZE: CanvasSize = CanvasSize {
 const GRID_COLUMNS: usize = 250;
 const GRID_X_SPACING: f32 = 160.0;
 const GRID_Y_SPACING: f32 = 96.0;
+const VIEWPORT_SEQUENCE_STEPS: usize = 16;
 
 fn rendering_query_benchmarks(c: &mut Criterion) {
-    let mut group = c.benchmark_group("runtime_rendering_query");
+    benchmark_single_reads(c);
+    benchmark_first_spatial_reads(c);
+    benchmark_visibility_policies(c);
+    benchmark_viewport_sequences(c);
+}
+
+fn benchmark_single_reads(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_rendering_query_single");
 
     for node_count in [1_000_usize, 10_000, 50_000] {
         group.throughput(Throughput::Elements(node_count as u64));
         let graph = graph_fixture(node_count);
-        let local_viewport = CanvasSize {
-            width: 1_200.0,
-            height: 800.0,
-        };
-        let full_viewport = CanvasSize {
-            width: GRID_COLUMNS as f32 * GRID_X_SPACING,
-            height: (node_count.div_ceil(GRID_COLUMNS)) as f32 * GRID_Y_SPACING,
-        };
+        let local_viewport = local_viewport();
+        let full_viewport = full_viewport(node_count);
 
         for scenario in [
             QueryScenario::new(
@@ -45,28 +49,201 @@ fn rendering_query_benchmarks(c: &mut Criterion) {
             let linear = NodeGraphStore::new(
                 graph.clone(),
                 scenario.view_state.clone(),
-                NodeGraphEditorConfig::default(),
+                editor_config(false, true),
             );
             let spatial = NodeGraphStore::new(
                 graph.clone(),
                 scenario.view_state.clone(),
-                NodeGraphEditorConfig::default().with_spatial_index_enabled(true),
+                editor_config(true, true),
             );
 
             group.bench_with_input(
                 BenchmarkId::new(format!("linear_{}", scenario.name), node_count),
                 &linear,
-                |b, store| b.iter(|| store.rendering_query(scenario.viewport)),
+                |b, store| {
+                    b.iter(|| black_box(store.rendering_query(black_box(scenario.viewport))))
+                },
             );
             group.bench_with_input(
                 BenchmarkId::new(format!("spatial_{}", scenario.name), node_count),
                 &spatial,
-                |b, store| b.iter(|| store.rendering_query(scenario.viewport)),
+                |b, store| {
+                    b.iter(|| black_box(store.rendering_query(black_box(scenario.viewport))))
+                },
             );
         }
     }
 
     group.finish();
+}
+
+fn benchmark_first_spatial_reads(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_rendering_query_first_read");
+    let viewport = local_viewport();
+
+    for node_count in [1_000_usize, 10_000, 50_000] {
+        group.throughput(Throughput::Elements(node_count as u64));
+        let graph = graph_fixture(node_count);
+
+        group.bench_function(
+            BenchmarkId::new("spatial_cold_local_origin", node_count),
+            |b| {
+                b.iter_batched(
+                    || {
+                        NodeGraphStore::new(
+                            graph.clone(),
+                            NodeGraphViewState::default(),
+                            editor_config(true, true),
+                        )
+                    },
+                    |store| black_box(store.rendering_query(black_box(viewport))),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn benchmark_visibility_policies(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_rendering_query_visibility_policy");
+    let viewport = local_viewport();
+
+    for node_count in [10_000_usize, 50_000] {
+        group.throughput(Throughput::Elements(node_count as u64));
+        let graph = graph_fixture(node_count);
+
+        for backend in [
+            BackendScenario::new("linear", false),
+            BackendScenario::new("spatial", true),
+        ] {
+            let culled = NodeGraphStore::new(
+                graph.clone(),
+                NodeGraphViewState::default(),
+                editor_config(backend.spatial_enabled, true),
+            );
+            let unculled = NodeGraphStore::new(
+                graph.clone(),
+                NodeGraphViewState::default(),
+                editor_config(backend.spatial_enabled, false),
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_culled_local_origin", backend.name), node_count),
+                &culled,
+                |b, store| b.iter(|| black_box(store.rendering_query(black_box(viewport)))),
+            );
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_unculled_local_origin", backend.name),
+                    node_count,
+                ),
+                &unculled,
+                |b, store| b.iter(|| black_box(store.rendering_query(black_box(viewport)))),
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn benchmark_viewport_sequences(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_rendering_query_viewport_sequences");
+    let viewport = local_viewport();
+
+    for node_count in [10_000_usize, 50_000] {
+        group.throughput(Throughput::Elements(
+            (node_count * VIEWPORT_SEQUENCE_STEPS) as u64,
+        ));
+        let graph = graph_fixture(node_count);
+        let pan_sequence = pan_sequence();
+        let zoom_sequence = zoom_sequence();
+
+        for backend in [
+            BackendScenario::new("linear", false),
+            BackendScenario::new("spatial", true),
+        ] {
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!(
+                        "{}_pan_sequence_{}_steps",
+                        backend.name, VIEWPORT_SEQUENCE_STEPS
+                    ),
+                    node_count,
+                ),
+                &pan_sequence,
+                |b, sequence| {
+                    b.iter_batched(
+                        || {
+                            let store = NodeGraphStore::new(
+                                graph.clone(),
+                                NodeGraphViewState::default(),
+                                editor_config(backend.spatial_enabled, true),
+                            );
+                            black_box(store.rendering_query(black_box(viewport)));
+                            store
+                        },
+                        |mut store| {
+                            for pan in sequence {
+                                store.set_viewport(*pan, 1.0);
+                                black_box(store.rendering_query(black_box(viewport)));
+                            }
+                        },
+                        BatchSize::LargeInput,
+                    )
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!(
+                        "{}_zoom_sequence_{}_steps",
+                        backend.name, VIEWPORT_SEQUENCE_STEPS
+                    ),
+                    node_count,
+                ),
+                &zoom_sequence,
+                |b, sequence| {
+                    b.iter_batched(
+                        || {
+                            let store = NodeGraphStore::new(
+                                graph.clone(),
+                                NodeGraphViewState::default(),
+                                editor_config(backend.spatial_enabled, true),
+                            );
+                            black_box(store.rendering_query(black_box(viewport)));
+                            store
+                        },
+                        |mut store| {
+                            for (pan, zoom) in sequence {
+                                store.set_viewport(*pan, *zoom);
+                                black_box(store.rendering_query(black_box(viewport)));
+                            }
+                        },
+                        BatchSize::LargeInput,
+                    )
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+#[derive(Clone, Copy)]
+struct BackendScenario {
+    name: &'static str,
+    spatial_enabled: bool,
+}
+
+impl BackendScenario {
+    fn new(name: &'static str, spatial_enabled: bool) -> Self {
+        Self {
+            name,
+            spatial_enabled,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -84,6 +261,52 @@ impl QueryScenario {
             viewport,
         }
     }
+}
+
+fn editor_config(
+    spatial_enabled: bool,
+    only_render_visible_elements: bool,
+) -> NodeGraphEditorConfig {
+    NodeGraphEditorConfig::default()
+        .with_spatial_index_enabled(spatial_enabled)
+        .with_only_render_visible_elements(only_render_visible_elements)
+}
+
+fn local_viewport() -> CanvasSize {
+    CanvasSize {
+        width: 1_200.0,
+        height: 800.0,
+    }
+}
+
+fn full_viewport(node_count: usize) -> CanvasSize {
+    CanvasSize {
+        width: GRID_COLUMNS as f32 * GRID_X_SPACING,
+        height: (node_count.div_ceil(GRID_COLUMNS)) as f32 * GRID_Y_SPACING,
+    }
+}
+
+fn pan_sequence() -> Vec<CanvasPoint> {
+    (0..VIEWPORT_SEQUENCE_STEPS)
+        .map(|step| CanvasPoint {
+            x: -8_000.0 - step as f32 * 72.0,
+            y: -4_000.0 - step as f32 * 48.0,
+        })
+        .collect()
+}
+
+fn zoom_sequence() -> Vec<(CanvasPoint, f32)> {
+    (0..VIEWPORT_SEQUENCE_STEPS)
+        .map(|step| {
+            (
+                CanvasPoint {
+                    x: -8_000.0,
+                    y: -4_000.0,
+                },
+                0.75 + step as f32 * 0.05,
+            )
+        })
+        .collect()
 }
 
 fn panned_view_state(x: f32, y: f32) -> NodeGraphViewState {
