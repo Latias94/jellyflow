@@ -148,7 +148,6 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
             enabled: true,
             cell_size_screen_px: 300.0,
             min_cell_size_screen_px: 20.0,
-            edge_aabb_pad_screen_px: 70.0,
         },
         only_render_visible_elements: false,
         paint_cache_prune: NodeGraphPaintCachePruneTuning {

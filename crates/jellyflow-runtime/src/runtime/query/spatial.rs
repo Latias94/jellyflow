@@ -9,6 +9,10 @@ use crate::runtime::rendering::order::{
     resolve_edge_render_order, resolve_group_render_order, resolve_node_render_order,
 };
 use crate::runtime::rendering::query::RenderingQueryResult;
+use crate::runtime::rendering::visibility::{
+    all_non_hidden_edge_ids, all_non_hidden_node_ids, resolve_visible_edge_order_from_ids,
+    resolve_visible_node_order_from_ids,
+};
 use crate::runtime::utils::get_node_rect;
 use crate::runtime::viewport::ViewportTransform;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, GroupId, NodeId};
@@ -202,15 +206,7 @@ fn resolve_spatial_visible_nodes(
     viewport: SpatialViewport,
     node_order: &[NodeId],
 ) -> (Vec<NodeId>, Vec<NodeId>) {
-    let visible_node_ids = index.nodes_intersecting(viewport);
-    let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
-    let visible_node_render_order = node_order
-        .iter()
-        .copied()
-        .filter(|id| visible.contains(id))
-        .collect();
-
-    (visible_node_ids, visible_node_render_order)
+    resolve_visible_node_order_from_ids(index.nodes_intersecting(viewport), node_order)
 }
 
 fn resolve_spatial_visible_edges(
@@ -237,46 +233,21 @@ fn resolve_spatial_visible_edges(
         })
         .collect::<Vec<_>>();
     visible_edge_ids.sort();
-    let visible = visible_edge_ids.iter().copied().collect::<BTreeSet<_>>();
-    let visible_edge_render_order = edge_order
-        .iter()
-        .copied()
-        .filter(|id| visible.contains(id))
-        .collect();
-
-    (visible_edge_ids, visible_edge_render_order)
+    resolve_visible_edge_order_from_ids(visible_edge_ids, edge_order)
 }
 
 fn resolve_all_non_hidden_visible_nodes(
     snapshot: &NodeGraphQuerySnapshot<'_>,
     node_order: &[NodeId],
 ) -> (Vec<NodeId>, Vec<NodeId>) {
-    let visible_node_ids = all_non_hidden_node_ids(snapshot);
-    let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
-    (
-        visible_node_ids,
-        node_order
-            .iter()
-            .copied()
-            .filter(|id| visible.contains(id))
-            .collect(),
-    )
+    resolve_visible_node_order_from_ids(all_non_hidden_node_ids(snapshot.lookups), node_order)
 }
 
 fn resolve_all_non_hidden_visible_edges(
     snapshot: &NodeGraphQuerySnapshot<'_>,
     edge_order: &[EdgeId],
 ) -> (Vec<EdgeId>, Vec<EdgeId>) {
-    let visible_edge_ids = all_non_hidden_edge_ids(snapshot);
-    let visible = visible_edge_ids.iter().copied().collect::<BTreeSet<_>>();
-    (
-        visible_edge_ids,
-        edge_order
-            .iter()
-            .copied()
-            .filter(|id| visible.contains(id))
-            .collect(),
-    )
+    resolve_visible_edge_order_from_ids(all_non_hidden_edge_ids(snapshot.graph), edge_order)
 }
 
 fn spatial_viewport(
@@ -397,24 +368,4 @@ fn spatial_cell_size(transform: ViewportTransform, tuning: NodeGraphSpatialIndex
     let preferred = tuning.cell_size_screen_px / transform.zoom;
     let min = tuning.min_cell_size_screen_px / transform.zoom;
     preferred.max(min).max(1.0)
-}
-
-fn all_non_hidden_node_ids(snapshot: &NodeGraphQuerySnapshot<'_>) -> Vec<NodeId> {
-    let mut ids = snapshot
-        .lookups
-        .node_lookup
-        .iter()
-        .filter_map(|(id, entry)| entry.is_visible_with_hidden_policy(false).then_some(*id))
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids
-}
-
-fn all_non_hidden_edge_ids(snapshot: &NodeGraphQuerySnapshot<'_>) -> Vec<EdgeId> {
-    snapshot
-        .graph
-        .edges
-        .iter()
-        .filter_map(|(id, edge)| (!edge.hidden).then_some(*id))
-        .collect()
 }
