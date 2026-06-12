@@ -370,7 +370,7 @@ fn spatial_rendering_query_rebuilds_cached_node_index_when_geometry_inputs_chang
     assert_eq!(
         spatial_node_index_build_count(&store),
         4,
-        "zoom changes cell size and must rebuild the cached index"
+        "zoom changes that cross a spatial cell-size bucket must rebuild the cached index"
     );
 
     store.update_editor_config(|config| {
@@ -381,6 +381,41 @@ fn spatial_rendering_query_rebuilds_cached_node_index_when_geometry_inputs_chang
         spatial_node_index_build_count(&store),
         5,
         "node-origin changes alter node bounds and must rebuild the cached index"
+    );
+}
+
+#[test]
+fn spatial_rendering_query_reuses_cached_node_index_for_small_zoom_changes() {
+    let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
+        graph_for_spatial_rendering_query();
+    let mut store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        spatial_editor_config(),
+    );
+    report_measured_size(&mut store, measured);
+    let viewport = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+
+    let _ = store.rendering_query(viewport);
+    assert_eq!(spatial_node_index_build_count(&store), 1);
+
+    store.set_viewport(CanvasPoint::default(), 1.01);
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        1,
+        "small zoom changes that stay in the same spatial cell-size bucket should reuse the cached index"
+    );
+
+    store.set_viewport(CanvasPoint::default(), 2.0);
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        2,
+        "larger zoom changes should rebuild once they cross a spatial cell-size bucket"
     );
 }
 

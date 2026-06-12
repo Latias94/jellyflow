@@ -81,7 +81,7 @@ struct SpatialNodeIndexCacheKey {
     graph_revision: u64,
     layout_facts_revision: u64,
     node_origin: (f32, f32),
-    zoom: f32,
+    cell_size: f32,
     tuning: NodeGraphSpatialIndexTuning,
 }
 
@@ -95,7 +95,7 @@ impl SpatialNodeIndexCacheKey {
             graph_revision: snapshot.graph_revision,
             layout_facts_revision: snapshot.layout_facts_revision,
             node_origin: snapshot.node_origin(),
-            zoom: transform.zoom,
+            cell_size: spatial_cell_size(transform, tuning),
             tuning,
         }
     }
@@ -367,5 +367,13 @@ fn cell_index(value: f32, cell_size: f32) -> i32 {
 fn spatial_cell_size(transform: ViewportTransform, tuning: NodeGraphSpatialIndexTuning) -> f32 {
     let preferred = tuning.cell_size_screen_px / transform.zoom;
     let min = tuning.min_cell_size_screen_px / transform.zoom;
-    preferred.max(min).max(1.0)
+    quantize_spatial_cell_size(preferred.max(min).max(1.0))
+}
+
+fn quantize_spatial_cell_size(cell_size: f32) -> f32 {
+    if !cell_size.is_finite() {
+        return 1.0;
+    }
+    // Quantizing only changes candidate buckets; exact bounds checks still decide visibility.
+    cell_size.max(1.0).log2().ceil().exp2()
 }
