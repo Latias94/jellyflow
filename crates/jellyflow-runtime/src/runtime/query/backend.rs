@@ -1,9 +1,13 @@
+use std::cell::RefCell;
+
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};
 use crate::runtime::binding::{BindingQueryOptions, BindingQueryResult};
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::measurement::LayoutFactsQueryResult;
 use crate::runtime::rendering::RenderingQueryResult;
 use jellyflow_core::core::{CanvasSize, Graph};
+
+use super::spatial::SpatialQueryCache;
 
 /// Runtime query implementation kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,26 +20,32 @@ pub(crate) enum QueryBackendKind {
 #[derive(Debug, Clone)]
 pub(crate) struct NodeGraphQuerySnapshot<'a> {
     pub(crate) graph: &'a Graph,
+    pub(crate) graph_revision: u64,
     pub(crate) lookups: &'a NodeGraphLookups,
     pub(crate) view_state: &'a NodeGraphViewState,
     pub(crate) interaction: NodeGraphInteractionState,
     pub(crate) layout_facts_revision: u64,
+    pub(crate) spatial_cache: &'a RefCell<SpatialQueryCache>,
 }
 
 impl<'a> NodeGraphQuerySnapshot<'a> {
     pub(crate) fn new(
         graph: &'a Graph,
+        graph_revision: u64,
         lookups: &'a NodeGraphLookups,
         view_state: &'a NodeGraphViewState,
         interaction: NodeGraphInteractionState,
         layout_facts_revision: u64,
+        spatial_cache: &'a RefCell<SpatialQueryCache>,
     ) -> Self {
         Self {
             graph,
+            graph_revision,
             lookups,
             view_state,
             interaction,
             layout_facts_revision,
+            spatial_cache,
         }
     }
 

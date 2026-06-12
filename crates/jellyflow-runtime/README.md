@@ -182,9 +182,10 @@ same public query result contract:
 let editor_config = NodeGraphEditorConfig::default().with_spatial_index_enabled(true);
 ```
 
-Measure local workloads before enabling it broadly. The current spatial backend rebuilds its index
-from the query snapshot, so it is a correctness-preserving optimization seam rather than a guaranteed
-speedup. The runtime crate includes a benchmark for 1k/10k/50k node rendering-query workloads:
+Measure local workloads before enabling it broadly. The current spatial backend keeps a store-local
+node index cache and rebuilds it when graph/layout facts, node origin, zoom, or spatial tuning
+changes. Pan-only queries reuse the same index. The runtime crate includes a benchmark for
+1k/10k/50k node rendering-query workloads:
 
 ```text
 cargo bench -p jellyflow-runtime --bench rendering_query

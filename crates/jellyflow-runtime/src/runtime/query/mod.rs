@@ -27,10 +27,12 @@ use spatial::SpatialQueryBackend;
 pub(crate) fn store_query_snapshot(store: &NodeGraphStore) -> NodeGraphQuerySnapshot<'_> {
     NodeGraphQuerySnapshot::new(
         store.graph(),
+        store.graph_revision(),
         store.lookups(),
         store.view_state(),
         store.resolved_interaction_state(),
         store.layout_facts_revision(),
+        store.spatial_query_cache(),
     )
 }
 

@@ -209,6 +209,41 @@ fn spatial_rendering_query_matches_linear_with_culling_disabled() {
 }
 
 #[test]
+fn spatial_rendering_query_matches_linear_for_invalid_viewport_with_culling_disabled() {
+    let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
+        graph_for_spatial_rendering_query();
+    let linear_config = NodeGraphEditorConfig::default().with_only_render_visible_elements(false);
+    let spatial_config = spatial_editor_config().with_only_render_visible_elements(false);
+    let mut linear =
+        NodeGraphStore::new(graph.clone(), NodeGraphViewState::default(), linear_config);
+    let mut spatial = NodeGraphStore::new(graph, NodeGraphViewState::default(), spatial_config);
+    report_measured_size(&mut linear, measured);
+    report_measured_size(&mut spatial, measured);
+
+    let viewport = CanvasSize {
+        width: 0.0,
+        height: 100.0,
+    };
+
+    assert_eq!(
+        spatial.rendering_query(viewport),
+        linear.rendering_query(viewport)
+    );
+    assert!(
+        spatial
+            .rendering_query(viewport)
+            .visible_node_ids
+            .is_empty()
+    );
+    assert!(
+        spatial
+            .rendering_query(viewport)
+            .visible_edge_ids
+            .is_empty()
+    );
+}
+
+#[test]
 fn spatial_rendering_query_matches_linear_for_node_origin_override() {
     let node = NodeId::from_u128(900);
     let mut graph = Graph::new(GraphId::from_u128(900));
@@ -253,6 +288,102 @@ fn spatial_rendering_query_matches_linear_for_node_origin_override() {
     );
 }
 
+#[test]
+fn spatial_rendering_query_reuses_cached_node_index_for_repeated_and_panned_reads() {
+    let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
+        graph_for_spatial_rendering_query();
+    let mut store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        spatial_editor_config(),
+    );
+    report_measured_size(&mut store, measured);
+    let viewport = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+
+    assert_eq!(spatial_node_index_build_count(&store), 0);
+    let first = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        1,
+        "one rendering query should build one shared spatial node index for nodes and edges"
+    );
+    assert_eq!(store.rendering_query(viewport), first);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        1,
+        "repeated reads over the same graph/layout/config should reuse the cached index"
+    );
+
+    store.set_viewport(CanvasPoint { x: -24.0, y: -16.0 }, 1.0);
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        1,
+        "pan-only viewport changes query different cells without rebuilding the node index"
+    );
+}
+
+#[test]
+fn spatial_rendering_query_rebuilds_cached_node_index_when_geometry_inputs_change() {
+    let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
+        graph_for_spatial_rendering_query();
+    let mut store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        spatial_editor_config(),
+    );
+    let viewport = CanvasSize {
+        width: 100.0,
+        height: 100.0,
+    };
+
+    let _ = store.rendering_query(viewport);
+    assert_eq!(spatial_node_index_build_count(&store), 1);
+
+    report_measured_size(&mut store, measured);
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        2,
+        "measurement changes affect node bounds and must invalidate the cached index"
+    );
+
+    store
+        .dispatch_transaction(&GraphTransaction::from_ops([GraphOp::SetNodePos {
+            id: measured,
+            from: CanvasPoint { x: 30.0, y: 0.0 },
+            to: CanvasPoint { x: 32.0, y: 0.0 },
+        }]))
+        .expect("move measured node");
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        3,
+        "graph edits must invalidate the cached index"
+    );
+
+    store.set_viewport(CanvasPoint::default(), 2.0);
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        4,
+        "zoom changes cell size and must rebuild the cached index"
+    );
+
+    store.update_editor_config(|config| {
+        config.interaction.node_origin = NodeGraphNodeOrigin { x: 0.5, y: 0.0 };
+    });
+    let _ = store.rendering_query(viewport);
+    assert_eq!(
+        spatial_node_index_build_count(&store),
+        5,
+        "node-origin changes alter node bounds and must rebuild the cached index"
+    );
+}
+
 fn source_binding(node: jellyflow_core::NodeId) -> Binding {
     Binding {
         subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Node { id: node }),
@@ -270,6 +401,13 @@ fn spatial_editor_config() -> NodeGraphEditorConfig {
     config.runtime_tuning.spatial_index.cell_size_screen_px = 8.0;
     config.runtime_tuning.spatial_index.min_cell_size_screen_px = 4.0;
     config
+}
+
+fn spatial_node_index_build_count(store: &NodeGraphStore) -> u64 {
+    store
+        .spatial_query_cache()
+        .borrow()
+        .node_index_build_count()
 }
 
 type SpatialRenderingFixture = (
@@ -348,6 +486,18 @@ fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
         (partial_in, port_model(partial, PortDirection::In)),
     ] {
         graph.ports.insert(id, port);
+    }
+    for (node, ports) in [
+        (outside_left, vec![left_out]),
+        (outside_right, vec![right_in]),
+        (outside_far_a, vec![far_out]),
+        (outside_far_b, vec![far_in]),
+        (inside, vec![inside_out]),
+        (hidden, vec![hidden_out]),
+        (selected, vec![selected_in]),
+        (partial, vec![partial_in]),
+    ] {
+        graph.nodes.get_mut(&node).expect("fixture node").ports = ports;
     }
 
     let spanning = EdgeId::from_u128(201);

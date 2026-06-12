@@ -11,15 +11,91 @@ use crate::runtime::rendering::order::{
 use crate::runtime::rendering::query::RenderingQueryResult;
 use crate::runtime::utils::get_node_rect;
 use crate::runtime::viewport::ViewportTransform;
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, GroupId, NodeId};
 
 use super::backend::{NodeGraphQuerySnapshot, QueryBackend, QueryBackendKind};
 use super::bindings::resolve_binding_read_model;
 use super::layout_facts::resolve_layout_facts_read_model;
 
-/// Snapshot-built spatial query backend.
+/// Store-cached spatial query backend.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SpatialQueryBackend;
+
+/// Cached spatial read-model data derived from the current store snapshot.
+#[derive(Debug, Default)]
+pub(crate) struct SpatialQueryCache {
+    node_index: Option<CachedSpatialNodeIndex>,
+    #[cfg(test)]
+    node_index_build_count: u64,
+}
+
+impl SpatialQueryCache {
+    fn node_index(
+        &mut self,
+        snapshot: &NodeGraphQuerySnapshot<'_>,
+        transform: ViewportTransform,
+        tuning: NodeGraphSpatialIndexTuning,
+    ) -> &SpatialNodeIndex {
+        let key = SpatialNodeIndexCacheKey::new(snapshot, transform, tuning);
+        let needs_rebuild = self
+            .node_index
+            .as_ref()
+            .is_none_or(|cached| cached.key != key);
+
+        if needs_rebuild {
+            self.node_index = Some(CachedSpatialNodeIndex {
+                key,
+                index: SpatialNodeIndex::build(snapshot, transform, tuning),
+            });
+            #[cfg(test)]
+            {
+                self.node_index_build_count = self.node_index_build_count.saturating_add(1);
+            }
+        }
+
+        &self
+            .node_index
+            .as_ref()
+            .expect("node index exists after cache lookup")
+            .index
+    }
+
+    #[cfg(test)]
+    pub(crate) fn node_index_build_count(&self) -> u64 {
+        self.node_index_build_count
+    }
+}
+
+#[derive(Debug)]
+struct CachedSpatialNodeIndex {
+    key: SpatialNodeIndexCacheKey,
+    index: SpatialNodeIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SpatialNodeIndexCacheKey {
+    graph_revision: u64,
+    layout_facts_revision: u64,
+    node_origin: (f32, f32),
+    zoom: f32,
+    tuning: NodeGraphSpatialIndexTuning,
+}
+
+impl SpatialNodeIndexCacheKey {
+    fn new(
+        snapshot: &NodeGraphQuerySnapshot<'_>,
+        transform: ViewportTransform,
+        tuning: NodeGraphSpatialIndexTuning,
+    ) -> Self {
+        Self {
+            graph_revision: snapshot.graph_revision,
+            layout_facts_revision: snapshot.layout_facts_revision,
+            node_origin: snapshot.node_origin(),
+            zoom: transform.zoom,
+            tuning,
+        }
+    }
+}
 
 impl QueryBackend for SpatialQueryBackend {
     fn kind(&self) -> QueryBackendKind {
@@ -70,10 +146,29 @@ fn resolve_spatial_rendering_query(
         snapshot.view_state,
         EdgeRenderOrderOptions::from_interaction(&snapshot.interaction),
     );
-    let (visible_node_ids, visible_node_render_order) =
-        resolve_spatial_visible_nodes(snapshot, viewport_size, &node_order);
-    let (visible_edge_ids, visible_edge_render_order) =
-        resolve_spatial_visible_edges(snapshot, viewport_size, &edge_order);
+    let rendering = snapshot.interaction.rendering_interaction();
+    let Some(transform) = ViewportTransform::from_view_state(snapshot.view_state) else {
+        return empty_visibility_rendering_query(group_order, node_order, edge_order);
+    };
+    let Some(viewport) = spatial_viewport(transform, viewport_size) else {
+        return empty_visibility_rendering_query(group_order, node_order, edge_order);
+    };
+    let (
+        (visible_node_ids, visible_node_render_order),
+        (visible_edge_ids, visible_edge_render_order),
+    ) = if !rendering.only_render_visible_elements {
+        (
+            resolve_all_non_hidden_visible_nodes(snapshot, &node_order),
+            resolve_all_non_hidden_visible_edges(snapshot, &edge_order),
+        )
+    } else {
+        let mut cache = snapshot.spatial_cache.borrow_mut();
+        let index = cache.node_index(snapshot, transform, rendering.spatial_index);
+        (
+            resolve_spatial_visible_nodes(index, viewport, &node_order),
+            resolve_spatial_visible_edges(snapshot, index, viewport, &edge_order),
+        )
+    };
 
     RenderingQueryResult {
         group_order,
@@ -86,31 +181,27 @@ fn resolve_spatial_rendering_query(
     }
 }
 
+fn empty_visibility_rendering_query(
+    group_order: Vec<GroupId>,
+    node_order: Vec<NodeId>,
+    edge_order: Vec<EdgeId>,
+) -> RenderingQueryResult {
+    RenderingQueryResult {
+        group_order,
+        node_order,
+        edge_order,
+        visible_node_ids: Vec::new(),
+        visible_node_render_order: Vec::new(),
+        visible_edge_ids: Vec::new(),
+        visible_edge_render_order: Vec::new(),
+    }
+}
+
 fn resolve_spatial_visible_nodes(
-    snapshot: &NodeGraphQuerySnapshot<'_>,
-    viewport_size: CanvasSize,
+    index: &SpatialNodeIndex,
+    viewport: SpatialViewport,
     node_order: &[NodeId],
 ) -> (Vec<NodeId>, Vec<NodeId>) {
-    let rendering = snapshot.interaction.rendering_interaction();
-    let Some(transform) = ViewportTransform::from_view_state(snapshot.view_state) else {
-        return (Vec::new(), Vec::new());
-    };
-    if !rendering.only_render_visible_elements {
-        let visible_node_ids = all_non_hidden_node_ids(snapshot);
-        let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
-        return (
-            visible_node_ids,
-            node_order
-                .iter()
-                .copied()
-                .filter(|id| visible.contains(id))
-                .collect(),
-        );
-    }
-    let Some(viewport) = spatial_viewport(transform, viewport_size) else {
-        return (Vec::new(), Vec::new());
-    };
-    let index = SpatialNodeIndex::build(snapshot, transform, rendering.spatial_index);
     let visible_node_ids = index.nodes_intersecting(viewport);
     let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
     let visible_node_render_order = node_order
@@ -124,29 +215,10 @@ fn resolve_spatial_visible_nodes(
 
 fn resolve_spatial_visible_edges(
     snapshot: &NodeGraphQuerySnapshot<'_>,
-    viewport_size: CanvasSize,
+    index: &SpatialNodeIndex,
+    viewport: SpatialViewport,
     edge_order: &[EdgeId],
 ) -> (Vec<EdgeId>, Vec<EdgeId>) {
-    let rendering = snapshot.interaction.rendering_interaction();
-    let Some(transform) = ViewportTransform::from_view_state(snapshot.view_state) else {
-        return (Vec::new(), Vec::new());
-    };
-    if !rendering.only_render_visible_elements {
-        let visible_edge_ids = all_non_hidden_edge_ids(snapshot);
-        let visible = visible_edge_ids.iter().copied().collect::<BTreeSet<_>>();
-        return (
-            visible_edge_ids,
-            edge_order
-                .iter()
-                .copied()
-                .filter(|id| visible.contains(id))
-                .collect(),
-        );
-    }
-    let Some(viewport) = spatial_viewport(transform, viewport_size) else {
-        return (Vec::new(), Vec::new());
-    };
-    let index = SpatialNodeIndex::build(snapshot, transform, rendering.spatial_index);
     let viewport_bounds = viewport.bounds;
     let mut visible_edge_ids = snapshot
         .graph
@@ -173,6 +245,38 @@ fn resolve_spatial_visible_edges(
         .collect();
 
     (visible_edge_ids, visible_edge_render_order)
+}
+
+fn resolve_all_non_hidden_visible_nodes(
+    snapshot: &NodeGraphQuerySnapshot<'_>,
+    node_order: &[NodeId],
+) -> (Vec<NodeId>, Vec<NodeId>) {
+    let visible_node_ids = all_non_hidden_node_ids(snapshot);
+    let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
+    (
+        visible_node_ids,
+        node_order
+            .iter()
+            .copied()
+            .filter(|id| visible.contains(id))
+            .collect(),
+    )
+}
+
+fn resolve_all_non_hidden_visible_edges(
+    snapshot: &NodeGraphQuerySnapshot<'_>,
+    edge_order: &[EdgeId],
+) -> (Vec<EdgeId>, Vec<EdgeId>) {
+    let visible_edge_ids = all_non_hidden_edge_ids(snapshot);
+    let visible = visible_edge_ids.iter().copied().collect::<BTreeSet<_>>();
+    (
+        visible_edge_ids,
+        edge_order
+            .iter()
+            .copied()
+            .filter(|id| visible.contains(id))
+            .collect(),
+    )
 }
 
 fn spatial_viewport(
@@ -203,6 +307,7 @@ struct SpatialViewport {
     bounds: CanvasBounds,
 }
 
+#[derive(Debug)]
 struct SpatialNodeIndex {
     cell_size: f32,
     cells: HashMap<GridCell, Vec<NodeId>>,
