@@ -18,5 +18,10 @@ planning, and sampled viewport pan inertia before rendering. Keep renderer frame
 cancellation policy, `wgpu`, egui, Fret, screenshots, and pixel checks in adapter-specific crates or
 test suites.
 
+Custom node renderers remain adapter-owned. The template demonstrates the extension point with
+`AdapterRendererRegistry`: Jellyflow schema descriptors expose a stable `renderer_key`, declared
+ports, default data, and default size; the adapter maps that key to its own React, Svelte, native,
+or immediate-mode renderer before calling `NodeGraphStore::apply_create_node_from_schema`.
+
 When copying this template into another repository, replace the path dependencies in `Cargo.toml`
 with the Jellyflow version you want to consume.
