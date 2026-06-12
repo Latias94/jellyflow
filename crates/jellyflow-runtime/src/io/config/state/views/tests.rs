@@ -145,9 +145,9 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
         nudge_fast_step_px: 120.0,
         disable_keyboard_a11y: true,
         spatial_index: NodeGraphSpatialIndexTuning {
+            enabled: true,
             cell_size_screen_px: 300.0,
             min_cell_size_screen_px: 20.0,
-            edge_aabb_pad_screen_px: 70.0,
         },
         only_render_visible_elements: false,
         paint_cache_prune: NodeGraphPaintCachePruneTuning {
@@ -220,6 +220,7 @@ fn viewport_drag_keyboard_and_rendering_views_group_related_fields() {
     assert!(keyboard.disable_keyboard_a11y);
 
     let rendering = state.rendering_interaction();
+    assert!(rendering.spatial_index.enabled);
     assert_eq!(rendering.spatial_index.cell_size_screen_px, 300.0);
     assert!(!rendering.only_render_visible_elements);
     assert_eq!(rendering.paint_cache_prune.max_entries, 20);

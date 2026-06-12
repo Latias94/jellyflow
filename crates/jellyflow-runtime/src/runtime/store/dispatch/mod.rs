@@ -62,7 +62,7 @@ impl NodeGraphStore {
                 Ok(DispatchOutcome::from_committed(committed))
             }
             DispatchPipelineResult::Commit { graph, committed } => {
-                Ok(self.commit_dispatch(graph, committed))
+                Ok(self.commit_dispatch(*graph, committed))
             }
         }
     }

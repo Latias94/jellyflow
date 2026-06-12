@@ -39,4 +39,16 @@ impl NodeGraphEditorConfig {
     pub fn resolved_interaction_state(&self) -> NodeGraphInteractionState {
         NodeGraphInteractionState::from_parts(&self.interaction, &self.runtime_tuning)
     }
+
+    pub fn with_spatial_index_enabled(mut self, enabled: bool) -> Self {
+        self.runtime_tuning = self.runtime_tuning.with_spatial_index_enabled(enabled);
+        self
+    }
+
+    pub fn with_only_render_visible_elements(mut self, enabled: bool) -> Self {
+        self.runtime_tuning = self
+            .runtime_tuning
+            .with_only_render_visible_elements(enabled);
+        self
+    }
 }

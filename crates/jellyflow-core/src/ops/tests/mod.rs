@@ -1,4 +1,5 @@
 mod apply;
+mod bindings;
 mod diff;
 mod fixtures;
 mod fragment;
@@ -14,9 +15,10 @@ use fixtures::{
 
 pub(super) use super::{apply::apply_transaction, diff::graph_diff, history::invert_transaction};
 pub(super) use crate::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, GraphImport,
-    Group, GroupId, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
-    PortKind, SUBGRAPH_NODE_KIND, SYMBOL_REF_NODE_KIND, StickyNote, StickyNoteId, Symbol, SymbolId,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
+    EdgeKind, Graph, GraphId, GraphImport, GraphLocalBindingTarget, Group, GroupId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, SUBGRAPH_NODE_KIND,
+    SYMBOL_REF_NODE_KIND, SourceAnchor, StickyNote, StickyNoteId, Symbol, SymbolId,
     subgraph_target_graph_id, symbol_ref_target_symbol_id,
 };
 pub(super) use crate::ops::{

@@ -1,4 +1,4 @@
-use crate::core::{EdgeId, Graph, GroupId, NodeId, PortId};
+use crate::core::{BindingId, EdgeId, Graph, GroupId, NodeId, PortId, StickyNoteId};
 use crate::ops::{GraphMutationPlanner, GraphOp, GraphTransaction};
 
 /// Builder helpers for constructing safe, reversible edit operations.
@@ -43,6 +43,26 @@ pub trait GraphOpBuilderExt {
     fn build_remove_group_tx(
         &self,
         id: GroupId,
+        label: impl Into<String>,
+    ) -> Option<GraphTransaction>;
+
+    /// Builds a `RemoveStickyNote` op for an existing sticky note, including attached bindings.
+    fn build_remove_sticky_note_op(&self, id: StickyNoteId) -> Option<GraphOp>;
+
+    /// Builds a transaction that removes a sticky note and attached bindings.
+    fn build_remove_sticky_note_tx(
+        &self,
+        id: StickyNoteId,
+        label: impl Into<String>,
+    ) -> Option<GraphTransaction>;
+
+    /// Builds a `RemoveBinding` op for an existing binding.
+    fn build_remove_binding_op(&self, id: BindingId) -> Option<GraphOp>;
+
+    /// Builds a transaction that removes a binding.
+    fn build_remove_binding_tx(
+        &self,
+        id: BindingId,
         label: impl Into<String>,
     ) -> Option<GraphTransaction>;
 }
@@ -95,6 +115,36 @@ impl GraphOpBuilderExt for Graph {
     ) -> Option<GraphTransaction> {
         GraphMutationPlanner::new(self)
             .remove_group_tx(id, label)
+            .ok()
+    }
+
+    fn build_remove_sticky_note_op(&self, id: StickyNoteId) -> Option<GraphOp> {
+        GraphMutationPlanner::new(self)
+            .remove_sticky_note_op(id)
+            .ok()
+    }
+
+    fn build_remove_sticky_note_tx(
+        &self,
+        id: StickyNoteId,
+        label: impl Into<String>,
+    ) -> Option<GraphTransaction> {
+        GraphMutationPlanner::new(self)
+            .remove_sticky_note_tx(id, label)
+            .ok()
+    }
+
+    fn build_remove_binding_op(&self, id: BindingId) -> Option<GraphOp> {
+        GraphMutationPlanner::new(self).remove_binding_op(id).ok()
+    }
+
+    fn build_remove_binding_tx(
+        &self,
+        id: BindingId,
+        label: impl Into<String>,
+    ) -> Option<GraphTransaction> {
+        GraphMutationPlanner::new(self)
+            .remove_binding_tx(id, label)
             .ok()
     }
 }

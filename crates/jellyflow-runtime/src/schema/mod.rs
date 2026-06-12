@@ -10,7 +10,9 @@ pub use migration::{
     NodeMigrationMissingSchema, NodeMigrationNewerThanSchema, NodeMigrationUpgraded,
 };
 pub use registry::NodeRegistry;
-pub use types::{NodeSchema, PortDecl};
+pub use types::{
+    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeSchema, PortDecl,
+};
 
 #[cfg(test)]
 mod tests;

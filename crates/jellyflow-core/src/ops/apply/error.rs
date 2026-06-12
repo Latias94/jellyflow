@@ -1,5 +1,6 @@
 use crate::core::{
-    EdgeId, GraphId, GraphValidationError, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
+    BindingId, EdgeId, GraphId, GraphValidationError, GroupId, NodeId, PortId, StickyNoteId,
+    SymbolId,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +31,10 @@ pub enum ApplyError {
     StickyNoteAlreadyExists { id: StickyNoteId },
     #[error("missing sticky note: {id:?}")]
     MissingStickyNote { id: StickyNoteId },
+    #[error("binding already exists: {id:?}")]
+    BindingAlreadyExists { id: BindingId },
+    #[error("missing binding: {id:?}")]
+    MissingBinding { id: BindingId },
     #[error("node ports list contains unknown port: node={node:?} port={port:?}")]
     NodePortsUnknownPort { node: NodeId, port: PortId },
     #[error("edge references missing port: edge={edge:?} port={port:?}")]
@@ -58,6 +63,8 @@ pub enum ApplyError {
     },
     #[error("remove sticky note op did not match current note: {id:?}")]
     RemoveStickyNoteMismatch { id: StickyNoteId },
+    #[error("remove binding op did not match current binding: {id:?}")]
+    RemoveBindingMismatch { id: BindingId },
     #[error("transaction result violates graph invariants: {errors:?}")]
     InvalidTransactionResult { errors: Vec<GraphValidationError> },
 }

@@ -1,11 +1,13 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable, Graph, GraphId,
-    GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    Binding, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind,
+    EdgeReconnectable, Graph, GraphId, GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent,
+    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
+use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
 use jellyflow_runtime::runtime::conformance::{
     ConformanceAction, ConformanceCallbackEvent, ConformanceDeleteSelectionContract,
     ConformanceDeleteSelectionDuringNodeDragContract, ConformanceEdgeEndpointPosition,
@@ -13,16 +15,19 @@ use jellyflow_runtime::runtime::conformance::{
     ConformanceFixtureDirectoryReport, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
-    ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract,
-    ConformanceRunReport, ConformanceScenario, ConformanceSuite, ConformanceSuiteReport,
-    ConformanceTraceEvent, ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract, ConformanceRunReport,
+    ConformanceScenario, ConformanceSuite, ConformanceSuiteReport, ConformanceTraceEvent,
+    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };
 use jellyflow_runtime::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
     ConnectionTargetHandle, ResolvedConnectionTarget,
 };
-use jellyflow_runtime::runtime::events::{NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeResizeUpdate};
+use jellyflow_runtime::runtime::events::{
+    NodeDragEnd, NodeDragEndOutcome, NodeDragStart, NodeResizeUpdate,
+};
 use jellyflow_runtime::runtime::geometry::{HandleBounds, HandlePosition};
+use jellyflow_runtime::runtime::layout::{LayoutFamilyId, builtin_layout_engine_registry};
 use jellyflow_runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow_runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow_runtime::runtime::resize::{
@@ -36,6 +41,7 @@ use jellyflow_runtime::runtime::viewport::{
 };
 use jellyflow_runtime::runtime::xyflow::callbacks::EdgeConnection;
 use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
+use jellyflow_runtime::schema::{NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template").with_scenarios([
@@ -54,6 +60,9 @@ pub fn adapter_smoke_suite() -> ConformanceSuite {
 }
 
 pub fn check_builtin_suite() -> ConformanceSuiteReport {
+    assert_knowledge_canvas_surfaces();
+    run_create_node_palette_smoke().expect("create-node palette smoke runs");
+    run_custom_node_renderer_registry_smoke().expect("custom node renderer registry smoke runs");
     adapter_smoke_suite().run()
 }
 
@@ -175,6 +184,187 @@ pub fn run_controlled_graph_smoke() -> Result<(), String> {
         serde_json::to_value(controlled.graph()).map_err(|err| err.to_string())?;
     if controlled_graph != store_graph {
         return Err("controlled graph diverged from store graph".to_owned());
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterNodeRenderer {
+    pub component: &'static str,
+    pub expects_source_binding: bool,
+}
+
+impl AdapterNodeRenderer {
+    pub const fn note_card() -> Self {
+        Self {
+            component: "NoteCard",
+            expects_source_binding: true,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AdapterRendererRegistry {
+    node_renderers: BTreeMap<String, AdapterNodeRenderer>,
+}
+
+impl AdapterRendererRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_builtin_nodes() -> Self {
+        let mut registry = Self::new();
+        registry.register_node_renderer("note-card", AdapterNodeRenderer::note_card());
+        registry
+    }
+
+    pub fn register_node_renderer(
+        &mut self,
+        renderer_key: impl Into<String>,
+        renderer: AdapterNodeRenderer,
+    ) -> &mut Self {
+        self.node_renderers.insert(renderer_key.into(), renderer);
+        self
+    }
+
+    pub fn renderer_for_key(&self, renderer_key: &str) -> Option<&AdapterNodeRenderer> {
+        self.node_renderers.get(renderer_key)
+    }
+
+    pub fn renderer_for_descriptor(
+        &self,
+        descriptor: &NodeKindViewDescriptor,
+    ) -> Option<&AdapterNodeRenderer> {
+        self.renderer_for_key(&descriptor.renderer_key)
+    }
+}
+
+pub fn template_node_registry() -> NodeRegistry {
+    let mut registry = NodeRegistry::new();
+    registry.register(template_note_schema());
+    registry
+}
+
+pub fn template_note_schema() -> NodeSchema {
+    NodeSchema {
+        kind: NodeKindKey::new("template.note"),
+        latest_kind_version: 1,
+        kind_aliases: vec![NodeKindKey::new("template.sticky")],
+        title: "Note".to_owned(),
+        category: vec!["Knowledge".to_owned()],
+        keywords: vec!["memo".to_owned()],
+        renderer_key: Some("note-card".to_owned()),
+        default_size: Some(CanvasSize {
+            width: 160.0,
+            height: 96.0,
+        }),
+        ports: vec![
+            PortDecl {
+                key: PortKey::new("source"),
+                dir: PortDirection::In,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Single,
+                ty: None,
+                label: Some("Source".to_owned()),
+            },
+            PortDecl {
+                key: PortKey::new("result"),
+                dir: PortDirection::Out,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Multi,
+                ty: None,
+                label: Some("Result".to_owned()),
+            },
+        ],
+        default_data: serde_json::json!({ "body": "" }),
+    }
+}
+
+pub fn run_custom_node_renderer_registry_smoke() -> Result<(), String> {
+    let registry = template_node_registry();
+    let descriptors = registry.view_descriptors();
+    let descriptor = descriptors
+        .first()
+        .ok_or_else(|| "expected at least one node descriptor".to_owned())?;
+
+    let renderers = AdapterRendererRegistry::with_builtin_nodes();
+    let renderer = renderers
+        .renderer_for_descriptor(descriptor)
+        .ok_or_else(|| format!("missing renderer for key {}", descriptor.renderer_key))?;
+    if *renderer != AdapterNodeRenderer::note_card() {
+        return Err(format!("expected NoteCard renderer, got {renderer:?}"));
+    }
+
+    let mut dynamic_renderers = AdapterRendererRegistry::new();
+    if dynamic_renderers
+        .renderer_for_descriptor(descriptor)
+        .is_some()
+    {
+        return Err("empty adapter renderer registry unexpectedly resolved descriptor".to_owned());
+    }
+    dynamic_renderers.register_node_renderer(
+        descriptor.renderer_key.clone(),
+        AdapterNodeRenderer::note_card(),
+    );
+    if dynamic_renderers.renderer_for_descriptor(descriptor)
+        != Some(&AdapterNodeRenderer::note_card())
+    {
+        return Err("dynamic renderer registration did not resolve descriptor key".to_owned());
+    }
+
+    Ok(())
+}
+
+pub fn run_create_node_palette_smoke() -> Result<(), String> {
+    let registry = template_node_registry();
+
+    let descriptors = registry.view_descriptors();
+    if descriptors.len() != 1 || descriptors[0].renderer_key != "note-card" {
+        return Err(format!(
+            "expected one note-card descriptor, got {descriptors:?}"
+        ));
+    }
+
+    let mut store = NodeGraphStore::new(
+        Graph::new(GraphId::from_u128(16)),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let outcome = store
+        .apply_create_node_from_schema(
+            &registry,
+            jellyflow_runtime::runtime::create_node::CreateNodeRequest::new(
+                NodeKindKey::new("template.sticky"),
+                CanvasPoint { x: 32.0, y: 48.0 },
+            ),
+        )
+        .map_err(|err| err.to_string())?;
+    let node_id = outcome.node_id();
+    let port_ids: Vec<_> = outcome.port_ids().collect();
+    let node = store
+        .graph()
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| "created node missing from store graph".to_owned())?;
+
+    if node.kind != NodeKindKey::new("template.note") {
+        return Err(format!("expected canonical note kind, got {:?}", node.kind));
+    }
+    if node.ports != port_ids || port_ids.len() != 2 {
+        return Err(format!(
+            "expected two ordered ports {:?}, got node ports {:?}",
+            port_ids, node.ports
+        ));
+    }
+    if outcome.dispatch.committed().label()
+        != Some(jellyflow_runtime::runtime::create_node::CREATE_NODE_TRANSACTION_LABEL)
+    {
+        return Err(format!(
+            "expected create-node transaction label, got {:?}",
+            outcome.dispatch.committed().label()
+        ));
     }
 
     Ok(())
@@ -352,6 +542,67 @@ pub fn run_measurement_smoke() -> Result<(), String> {
     Ok(())
 }
 
+fn assert_knowledge_canvas_surfaces() {
+    let node_id = NodeId::from_u128(1);
+    let binding_id = BindingId::from_u128(2);
+    let mut graph = Graph::new(GraphId::from_u128(1));
+    graph.nodes.insert(
+        node_id,
+        Node {
+            kind: NodeKindKey::new("knowledge.note"),
+            kind_version: 1,
+            pos: CanvasPoint { x: 0.0, y: 0.0 },
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(CanvasSize {
+                width: 120.0,
+                height: 72.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({ "title": "Knowledge note" }),
+        },
+    );
+    graph.bindings.insert(
+        binding_id,
+        Binding::node_to_source(
+            node_id,
+            "source://paper.pdf",
+            serde_json::json!({ "page": 1 }),
+        )
+        .with_kind("excerpt"),
+    );
+
+    let store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    assert_eq!(
+        store
+            .binding_query()
+            .binding(binding_id)
+            .expect("binding reachable")
+            .subject
+            .status(),
+        BindingEndpointResolutionStatus::Resolved
+    );
+    assert_eq!(
+        builtin_layout_engine_registry()
+            .engines_for_family(&LayoutFamilyId::mind_map())
+            .count(),
+        2
+    );
+}
+
 fn node_drag_scenario() -> ConformanceScenario {
     let node_id = NodeId::from_u128(2);
     let graph = graph_with_node(node_id);
@@ -401,18 +652,16 @@ fn node_resize_scenario() -> ConformanceScenario {
 
     ConformanceScenario::new("template node resize", graph)
         .with_xyflow_callbacks()
-        .with_actions([
-            ConformanceAction::apply_node_resize(
-                NodeResizeRequest::new(
-                    node_id,
-                    CanvasSize {
-                        width: 220.0,
-                        height: 120.0,
-                    },
-                )
-                .with_direction(NodeResizeDirection::BottomRight),
-            ),
-        ])
+        .with_actions([ConformanceAction::apply_node_resize(
+            NodeResizeRequest::new(
+                node_id,
+                CanvasSize {
+                    width: 220.0,
+                    height: 120.0,
+                },
+            )
+            .with_direction(NodeResizeDirection::BottomRight),
+        )])
         .with_expected_trace([
             ConformanceTraceEvent::graph_commit(
                 Some(NODE_RESIZE_TRANSACTION_LABEL),
@@ -660,14 +909,8 @@ fn rendering_query_contract_scenario() -> ConformanceScenario {
         ))
 }
 
-fn rendering_query_contract_fixture() -> (
-    Graph,
-    NodeGraphViewState,
-    NodeId,
-    NodeId,
-    NodeId,
-    EdgeId,
-) {
+fn rendering_query_contract_fixture() -> (Graph, NodeGraphViewState, NodeId, NodeId, NodeId, EdgeId)
+{
     let selected = NodeId::from_u128(73);
     let partial = NodeId::from_u128(74);
     let outside = NodeId::from_u128(75);
@@ -676,7 +919,10 @@ fn rendering_query_contract_fixture() -> (
     let edge_id = EdgeId::from_u128(80);
     let mut graph = graph_with_connected_nodes(selected, partial, out_port, in_port, edge_id);
 
-    let selected_node = graph.nodes.get_mut(&selected).expect("selected node exists");
+    let selected_node = graph
+        .nodes
+        .get_mut(&selected)
+        .expect("selected node exists");
     selected_node.pos = CanvasPoint { x: 0.0, y: 0.0 };
     selected_node.size = Some(CanvasSize {
         width: 40.0,
@@ -1063,6 +1309,11 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_canvas_surfaces_are_reachable() {
+        assert_knowledge_canvas_surfaces();
+    }
+
+    #[test]
     fn node_drag_smoke_runs_as_single_scenario() {
         let report = run_node_drag_smoke().expect("node drag scenario runs");
 
@@ -1093,8 +1344,8 @@ mod tests {
 
     #[test]
     fn delete_during_active_drag_smoke_runs_as_single_scenario() {
-        let report = run_delete_during_active_drag_smoke()
-            .expect("delete during active drag scenario runs");
+        let report =
+            run_delete_during_active_drag_smoke().expect("delete during active drag scenario runs");
 
         assert!(report.is_match(), "{report}");
     }
@@ -1132,6 +1383,17 @@ mod tests {
     #[test]
     fn controlled_graph_smoke_applies_store_patch() {
         run_controlled_graph_smoke().expect("controlled graph smoke runs");
+    }
+
+    #[test]
+    fn create_node_palette_smoke_uses_schema_registry() {
+        run_create_node_palette_smoke().expect("create-node palette smoke runs");
+    }
+
+    #[test]
+    fn custom_node_renderer_registry_maps_schema_descriptors() {
+        run_custom_node_renderer_registry_smoke()
+            .expect("custom node renderer registry smoke runs");
     }
 
     #[test]

@@ -12,6 +12,7 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
         node,
         ports: vec![(out_port, port.clone())],
         edges: vec![(eid, edge.clone())],
+        bindings: Vec::new(),
     }]);
     let remove_node_changes = NodeGraphChanges::from_transaction(&remove_node_tx);
     assert!(
@@ -25,6 +26,7 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
         id: out_port,
         port,
         edges: vec![(eid, edge)],
+        bindings: Vec::new(),
     }]);
     let remove_port_changes = NodeGraphChanges::from_transaction(&remove_port_tx);
     assert!(
@@ -46,10 +48,12 @@ fn changes_from_transaction_deduplicates_repeated_edge_removes() {
             id: out_port,
             port,
             edges: vec![(eid, edge.clone())],
+            bindings: Vec::new(),
         },
         GraphOp::RemoveEdge {
             id: eid,
             edge: edge.clone(),
+            bindings: Vec::new(),
         },
     ]);
 
@@ -65,12 +69,17 @@ fn changes_from_transaction_deduplicates_repeated_edge_removes() {
         GraphOp::RemoveEdge {
             id: eid,
             edge: edge.clone(),
+            bindings: Vec::new(),
         },
         GraphOp::AddEdge {
             id: eid,
             edge: edge.clone(),
         },
-        GraphOp::RemoveEdge { id: eid, edge },
+        GraphOp::RemoveEdge {
+            id: eid,
+            edge,
+            bindings: Vec::new(),
+        },
     ]);
 
     let remove_add_remove_changes = NodeGraphChanges::from_transaction(&remove_add_remove_tx);

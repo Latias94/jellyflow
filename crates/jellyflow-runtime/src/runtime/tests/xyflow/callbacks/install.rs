@@ -204,6 +204,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
             deletable: None,
             reconnectable: None,
         },
+        bindings: Vec::new(),
     }]);
     let _ = store
         .dispatch_transaction(&tx_remove)

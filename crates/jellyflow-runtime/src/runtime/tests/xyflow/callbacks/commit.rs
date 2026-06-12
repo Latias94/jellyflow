@@ -298,10 +298,12 @@ fn install_callbacks_calls_delete_hooks_for_removed_resources() {
             id: group_id,
             group,
             detached: Vec::new(),
+            bindings: Vec::new(),
         },
         GraphOp::RemoveStickyNote {
             id: sticky_note_id,
             note: sticky_note,
+            bindings: Vec::new(),
         },
     ]);
     let _ = store.dispatch_transaction(&tx).expect("dispatch remove");

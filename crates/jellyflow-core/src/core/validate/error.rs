@@ -1,6 +1,6 @@
 use crate::core::{
-    EdgeId, EdgeKind, GraphId, GroupId, NodeId, PortCapacity, PortId, PortKind, SubgraphNodeError,
-    SymbolId, SymbolRefNodeError,
+    BindingId, EdgeId, EdgeKind, GraphId, GraphLocalBindingTarget, GroupId, NodeId, PortCapacity,
+    PortId, PortKind, SubgraphNodeError, SymbolId, SymbolRefNodeError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +97,14 @@ pub enum GraphValidationError {
         "symbol ref node target symbol is not declared in symbols: node={node:?} symbol_id={symbol_id:?}"
     )]
     SymbolRefTargetNotDeclared { node: NodeId, symbol_id: SymbolId },
+
+    #[error(
+        "binding endpoint references missing graph-local target: binding={binding:?} target={target:?}"
+    )]
+    BindingTargetMissing {
+        binding: BindingId,
+        target: GraphLocalBindingTarget,
+    },
 }
 
 impl From<SubgraphNodeError> for GraphValidationError {

@@ -13,7 +13,7 @@ pub(super) struct DispatchPipeline<'store, 'profile> {
 pub(super) enum DispatchPipelineResult {
     Empty(GraphTransaction),
     Commit {
-        graph: Graph,
+        graph: Box<Graph>,
         committed: GraphTransaction,
     },
 }
@@ -46,7 +46,10 @@ impl<'store, 'profile> DispatchPipeline<'store, 'profile> {
 
         let (graph, committed) = self.apply_to_scratch(&tx)?;
         let committed = DispatchTransactionGate::normalize_and_validate(committed)?;
-        Ok(DispatchPipelineResult::Commit { graph, committed })
+        Ok(DispatchPipelineResult::Commit {
+            graph: Box::new(graph),
+            committed,
+        })
     }
 
     fn apply_to_scratch(

@@ -3,7 +3,7 @@ use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
 use crate::ops::mutation::GraphMutationError;
-use crate::ops::mutation::collect::detached_nodes_for_group;
+use crate::ops::mutation::collect::{bindings_for_group, detached_nodes_for_group};
 
 impl GraphMutationPlanner<'_> {
     pub fn remove_group_op(&self, id: GroupId) -> Result<GraphOp, GraphMutationError> {
@@ -18,6 +18,7 @@ impl GraphMutationPlanner<'_> {
             id,
             group,
             detached: detached_nodes_for_group(self.graph, id),
+            bindings: bindings_for_group(self.graph, id),
         })
     }
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::core::{EdgeId, GroupId, NodeId, PortId, StickyNoteId, SymbolId};
+use crate::core::{BindingId, EdgeId, GroupId, NodeId, PortId, StickyNoteId, SymbolId};
 
 use super::super::{model::GraphFragment, remap::IdRemapper};
 
@@ -11,6 +11,7 @@ pub(super) struct RemappedFragmentIds {
     edges: BTreeMap<EdgeId, EdgeId>,
     sticky_notes: BTreeMap<StickyNoteId, StickyNoteId>,
     symbols: BTreeMap<SymbolId, SymbolId>,
+    bindings: BTreeMap<BindingId, BindingId>,
 }
 
 impl RemappedFragmentIds {
@@ -22,6 +23,7 @@ impl RemappedFragmentIds {
             edges: remapped_edges(fragment, remapper),
             sticky_notes: remapped_sticky_notes(fragment, remapper),
             symbols: remapped_symbols(fragment, remapper),
+            bindings: remapped_bindings(fragment, remapper),
         }
     }
 
@@ -55,6 +57,26 @@ impl RemappedFragmentIds {
 
     pub(super) fn maybe_symbol(&self, old_id: SymbolId) -> Option<SymbolId> {
         self.symbols.get(&old_id).copied()
+    }
+
+    pub(super) fn binding(&self, old_id: BindingId) -> BindingId {
+        self.bindings[&old_id]
+    }
+
+    pub(super) fn maybe_node(&self, old_id: NodeId) -> Option<NodeId> {
+        self.nodes.get(&old_id).copied()
+    }
+
+    pub(super) fn maybe_port(&self, old_id: PortId) -> Option<PortId> {
+        self.ports.get(&old_id).copied()
+    }
+
+    pub(super) fn maybe_edge(&self, old_id: EdgeId) -> Option<EdgeId> {
+        self.edges.get(&old_id).copied()
+    }
+
+    pub(super) fn maybe_sticky_note(&self, old_id: StickyNoteId) -> Option<StickyNoteId> {
+        self.sticky_notes.get(&old_id).copied()
     }
 }
 
@@ -108,6 +130,17 @@ fn remapped_symbols(
     let mut map = BTreeMap::new();
     for symbol_id in fragment.symbols.keys() {
         map.insert(*symbol_id, remapper.remap_symbol(*symbol_id));
+    }
+    map
+}
+
+fn remapped_bindings(
+    fragment: &GraphFragment,
+    remapper: &IdRemapper,
+) -> BTreeMap<BindingId, BindingId> {
+    let mut map = BTreeMap::new();
+    for binding_id in fragment.bindings.keys() {
+        map.insert(*binding_id, remapper.remap_binding(*binding_id));
     }
     map
 }

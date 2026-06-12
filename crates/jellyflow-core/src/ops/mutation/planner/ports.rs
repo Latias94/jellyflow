@@ -2,7 +2,9 @@ use crate::core::{NodeId, Port, PortId};
 use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
-use crate::ops::mutation::collect::{incident_edges_for_port, remove_edge_ops_for_port};
+use crate::ops::mutation::collect::{
+    bindings_for_port_removal, incident_edges_for_port, remove_edge_ops_for_port,
+};
 use crate::ops::mutation::{GraphMutationError, PortInsert};
 
 impl GraphMutationPlanner<'_> {
@@ -60,10 +62,12 @@ impl GraphMutationPlanner<'_> {
             .cloned()
             .ok_or(GraphMutationError::MissingPort(id))?;
 
+        let edges = incident_edges_for_port(self.graph, id);
         Ok(GraphOp::RemovePort {
             id,
             port,
-            edges: incident_edges_for_port(self.graph, id),
+            bindings: bindings_for_port_removal(self.graph, id, &edges),
+            edges,
         })
     }
 

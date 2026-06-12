@@ -5,7 +5,7 @@ mod ports;
 
 use std::collections::BTreeSet;
 
-use crate::core::{EdgeId, Graph, NodeId, PortId};
+use crate::core::{BindingId, EdgeId, Graph, NodeId, PortId};
 use crate::ops::{GraphOp, GraphTransaction, normalize_transaction};
 
 /// Computes a deterministic patch transaction that transforms `from` into `to`.
@@ -22,6 +22,7 @@ struct GraphDiffPlanner<'a> {
     tx: GraphTransaction,
     removed_ports_by_cascade: BTreeSet<PortId>,
     removed_edges_by_cascade: BTreeSet<EdgeId>,
+    removed_bindings_by_cascade: BTreeSet<BindingId>,
     restored_edges_by_cascade: BTreeSet<EdgeId>,
     nodes_requiring_port_order_restore: BTreeSet<NodeId>,
     replaced_ports_requiring_port_order_restore: BTreeSet<PortId>,
@@ -35,6 +36,7 @@ impl<'a> GraphDiffPlanner<'a> {
             tx: GraphTransaction::new(),
             removed_ports_by_cascade: BTreeSet::new(),
             removed_edges_by_cascade: BTreeSet::new(),
+            removed_bindings_by_cascade: BTreeSet::new(),
             restored_edges_by_cascade: BTreeSet::new(),
             nodes_requiring_port_order_restore: BTreeSet::new(),
             replaced_ports_requiring_port_order_restore: BTreeSet::new(),
@@ -52,6 +54,7 @@ impl<'a> GraphDiffPlanner<'a> {
         self.diff_ports();
         self.restore_target_port_orders();
         self.diff_edges();
+        self.diff_bindings();
         self.diff_sticky_notes();
 
         normalize_transaction(self.tx)
@@ -87,5 +90,67 @@ impl<'a> GraphDiffPlanner<'a> {
                 Some(port_from) => port_from.node != node,
                 None => true,
             })
+    }
+
+    fn target_removed_bindings(
+        &self,
+        bindings: &[(BindingId, crate::core::Binding)],
+    ) -> Vec<(BindingId, crate::core::Binding)> {
+        bindings
+            .iter()
+            .filter(|(binding_id, _)| !self.to.bindings.contains_key(binding_id))
+            .cloned()
+            .collect()
+    }
+
+    fn with_target_removed_bindings(&self, op: GraphOp) -> GraphOp {
+        match op {
+            GraphOp::RemoveNode {
+                id,
+                node,
+                ports,
+                edges,
+                bindings,
+            } => GraphOp::RemoveNode {
+                id,
+                node,
+                ports,
+                edges,
+                bindings: self.target_removed_bindings(&bindings),
+            },
+            GraphOp::RemovePort {
+                id,
+                port,
+                edges,
+                bindings,
+            } => GraphOp::RemovePort {
+                id,
+                port,
+                edges,
+                bindings: self.target_removed_bindings(&bindings),
+            },
+            GraphOp::RemoveEdge { id, edge, bindings } => GraphOp::RemoveEdge {
+                id,
+                edge,
+                bindings: self.target_removed_bindings(&bindings),
+            },
+            GraphOp::RemoveGroup {
+                id,
+                group,
+                detached,
+                bindings,
+            } => GraphOp::RemoveGroup {
+                id,
+                group,
+                detached,
+                bindings: self.target_removed_bindings(&bindings),
+            },
+            GraphOp::RemoveStickyNote { id, note, bindings } => GraphOp::RemoveStickyNote {
+                id,
+                note,
+                bindings: self.target_removed_bindings(&bindings),
+            },
+            other => other,
+        }
     }
 }

@@ -1,8 +1,8 @@
-use crate::core::{Edge, EdgeId, Graph, GroupId, Node, NodeId, Port, PortId};
+use crate::core::{Binding, BindingId, Edge, EdgeId, Graph, GroupId, Node, NodeId, Port, PortId};
 use crate::ops::GraphOp;
 
 use super::ApplyError;
-use super::resources::{remove_edge_exact, remove_port_exact};
+use super::resources::{remove_bindings_exact, remove_edge_exact, remove_port_exact};
 
 pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
@@ -12,7 +12,8 @@ pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
             node,
             ports,
             edges,
-        } => apply_remove_node(graph, *id, node, ports, edges)?,
+            bindings,
+        } => apply_remove_node(graph, *id, node, ports, edges, bindings)?,
         GraphOp::SetNodePos { id, to, .. } => {
             node_mut(graph, *id)?.pos = *to;
         }
@@ -83,6 +84,7 @@ fn apply_remove_node(
     node: &Node,
     ports: &[(PortId, Port)],
     edges: &[(EdgeId, Edge)],
+    bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
     let Some(current) = graph.nodes.get(&id) else {
         return Err(ApplyError::MissingNode { id });
@@ -91,6 +93,7 @@ fn apply_remove_node(
         return Err(ApplyError::RemoveNodeMismatch { id });
     }
 
+    remove_bindings_exact(graph, bindings)?;
     for (edge_id, edge) in edges {
         remove_edge_exact(graph, *edge_id, edge)?;
     }

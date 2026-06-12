@@ -155,6 +155,7 @@ fn store_lookups_remove_port_updates_node_ports_and_incident_edges() {
         id: out_port,
         port,
         edges: vec![(eid, edge)],
+        bindings: Vec::new(),
     }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");
@@ -198,6 +199,7 @@ fn store_lookups_remove_group_clears_detached_node_parent() {
         id: group_id,
         group,
         detached: vec![(a, Some(group_id))],
+        bindings: Vec::new(),
     }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");

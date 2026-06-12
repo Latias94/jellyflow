@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::core::{Graph, GroupId, NodeId, subgraph_target_graph_id, symbol_ref_target_symbol_id};
+use crate::core::{
+    BindingEndpoint, Graph, GraphLocalBindingTarget, GroupId, NodeId, subgraph_target_graph_id,
+    symbol_ref_target_symbol_id,
+};
 
 use super::super::model::GraphFragment;
 
@@ -33,6 +36,7 @@ impl<'a> FragmentCollector<'a> {
         self.capture_referenced_imports();
         self.capture_node_ports();
         self.capture_internal_edges();
+        self.capture_bindings();
         self.fragment
     }
 
@@ -113,6 +117,38 @@ impl<'a> FragmentCollector<'a> {
                 && self.nodes.contains(&to_node)
             {
                 self.fragment.edges.insert(*edge_id, edge.clone());
+            }
+        }
+    }
+
+    fn capture_bindings(&mut self) {
+        for (binding_id, binding) in &self.graph.bindings {
+            if self.binding_endpoint_can_survive(&binding.subject)
+                && self.binding_endpoint_can_survive(&binding.target)
+            {
+                self.fragment.bindings.insert(*binding_id, binding.clone());
+            }
+        }
+    }
+
+    fn binding_endpoint_can_survive(&self, endpoint: &BindingEndpoint) -> bool {
+        match endpoint {
+            BindingEndpoint::Source { .. } => true,
+            BindingEndpoint::GraphLocal { target } => {
+                self.graph_local_target_is_in_fragment(*target)
+            }
+        }
+    }
+
+    fn graph_local_target_is_in_fragment(&self, target: GraphLocalBindingTarget) -> bool {
+        match target {
+            GraphLocalBindingTarget::Graph => true,
+            GraphLocalBindingTarget::Node { id } => self.fragment.nodes.contains_key(&id),
+            GraphLocalBindingTarget::Port { id } => self.fragment.ports.contains_key(&id),
+            GraphLocalBindingTarget::Edge { id } => self.fragment.edges.contains_key(&id),
+            GraphLocalBindingTarget::Group { id } => self.fragment.groups.contains_key(&id),
+            GraphLocalBindingTarget::StickyNote { id } => {
+                self.fragment.sticky_notes.contains_key(&id)
             }
         }
     }

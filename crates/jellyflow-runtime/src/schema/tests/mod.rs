@@ -5,7 +5,9 @@ use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
 
 mod canonicalize;
 mod facades;
+mod instantiation;
 mod migration;
+mod view_descriptor;
 
 struct DummyMigrator;
 
@@ -46,6 +48,8 @@ fn demo_add_schema(latest_kind_version: u32, kind_aliases: Vec<&str>) -> NodeSch
         title: "Add".into(),
         category: Vec::new(),
         keywords: Vec::new(),
+        renderer_key: None,
+        default_size: None,
         ports: Vec::new(),
         default_data: serde_json::Value::Null,
     }

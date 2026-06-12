@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::{CanvasSize, EdgeId, Graph, Node, NodeId, PortId};
+use crate::core::{
+    BindingId, CanvasSize, EdgeId, Graph, GraphLocalBindingTarget, Node, NodeId, PortId,
+};
 
 use super::{GraphValidationError, GraphValidationReport};
 
@@ -34,6 +36,7 @@ impl<'a> StorageValidator<'a> {
         self.validate_ports_are_listed_by_owner();
         self.validate_nodes();
         self.validate_edges_reference_ports();
+        self.validate_bindings_reference_graph_local_targets();
         self.report
     }
 
@@ -154,6 +157,39 @@ impl<'a> StorageValidator<'a> {
                 edge: edge_id,
                 port: port_id,
             });
+        }
+    }
+
+    fn validate_bindings_reference_graph_local_targets(&mut self) {
+        for (binding_id, binding) in &self.graph.bindings {
+            for target in [
+                binding.subject.graph_local_target(),
+                binding.target.graph_local_target(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.validate_binding_target(*binding_id, target);
+            }
+        }
+    }
+
+    fn validate_binding_target(&mut self, binding_id: BindingId, target: GraphLocalBindingTarget) {
+        let exists = match target {
+            GraphLocalBindingTarget::Graph => true,
+            GraphLocalBindingTarget::Node { id } => self.graph.nodes.contains_key(&id),
+            GraphLocalBindingTarget::Port { id } => self.graph.ports.contains_key(&id),
+            GraphLocalBindingTarget::Edge { id } => self.graph.edges.contains_key(&id),
+            GraphLocalBindingTarget::Group { id } => self.graph.groups.contains_key(&id),
+            GraphLocalBindingTarget::StickyNote { id } => self.graph.sticky_notes.contains_key(&id),
+        };
+
+        if !exists {
+            self.report
+                .push(GraphValidationError::BindingTargetMissing {
+                    binding: binding_id,
+                    target,
+                });
         }
     }
 }

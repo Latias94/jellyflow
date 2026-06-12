@@ -36,7 +36,11 @@ impl GraphMutationPlanner<'_> {
             .get(&id)
             .cloned()
             .ok_or(GraphMutationError::MissingEdge(id))?;
-        Ok(GraphOp::RemoveEdge { id, edge })
+        Ok(GraphOp::RemoveEdge {
+            id,
+            edge,
+            bindings: bindings_for_edge(self.graph, id),
+        })
     }
 
     pub fn remove_edge_tx(
@@ -49,3 +53,4 @@ impl GraphMutationPlanner<'_> {
             .with_ops([self.remove_edge_op(id)?]))
     }
 }
+use crate::ops::mutation::collect::bindings_for_edge;

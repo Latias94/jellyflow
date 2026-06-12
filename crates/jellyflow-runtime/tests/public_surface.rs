@@ -12,8 +12,12 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
-    layout, measurement, rendering, resize, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, create_node, delete, drag, events, geometry,
+    gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
+};
+use jellyflow_runtime::schema::{
+    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
+    PortDecl,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -67,6 +71,79 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     assert_eq!(editor_file.graph_id, graph.graph_id);
     let _interaction = NodeGraphInteractionConfig::default();
+    let mut node_registry = NodeRegistry::new();
+    node_registry.register(NodeSchema {
+        kind: jellyflow_core::core::NodeKindKey::new("public.note"),
+        latest_kind_version: 1,
+        kind_aliases: Vec::new(),
+        title: "Note".into(),
+        category: Vec::new(),
+        keywords: Vec::new(),
+        renderer_key: None,
+        default_size: Some(CanvasSize {
+            width: 120.0,
+            height: 80.0,
+        }),
+        ports: Vec::<PortDecl>::new(),
+        default_data: serde_json::Value::Null,
+    });
+    let view_descriptors = node_registry.view_descriptors();
+    let _: &NodeKindViewDescriptor = &view_descriptors[0];
+    assert_eq!(view_descriptors[0].renderer_key, "public.note");
+    assert!(
+        node_registry
+            .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
+            .is_some()
+    );
+    let node_instantiation = node_registry
+        .instantiate_node(
+            &jellyflow_core::core::NodeKindKey::new("public.note"),
+            CanvasPoint::default(),
+        )
+        .expect("public node instantiation");
+    let _: &NodeInstantiation = &node_instantiation;
+    assert_eq!(
+        node_instantiation.node.kind,
+        jellyflow_core::core::NodeKindKey::new("public.note")
+    );
+    assert_eq!(
+        NodeInstantiationError::MissingSchema(jellyflow_core::core::NodeKindKey::new(
+            "public.missing"
+        ))
+        .to_string(),
+        "node kind schema not found: NodeKindKey(\"public.missing\")"
+    );
+    let _: fn(jellyflow_core::core::NodeKindKey, CanvasPoint) -> create_node::CreateNodeRequest =
+        create_node::CreateNodeRequest::new;
+    let create_node_request = create_node::CreateNodeRequest::new(
+        jellyflow_core::core::NodeKindKey::new("public.note"),
+        CanvasPoint::default(),
+    );
+    let mut create_node_store = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let create_node_outcome = create_node_store
+        .apply_create_node_from_schema(&node_registry, create_node_request.clone());
+    assert!(create_node_outcome.is_ok());
+    let _: fn(
+        &NodeGraphStore,
+        &NodeRegistry,
+        create_node::CreateNodeRequest,
+    ) -> Result<NodeInstantiation, NodeInstantiationError> =
+        NodeGraphStore::plan_create_node_from_schema;
+    let _: fn(
+        &mut NodeGraphStore,
+        &NodeRegistry,
+        create_node::CreateNodeRequest,
+    ) -> Result<create_node::CreateNodeOutcome, create_node::CreateNodeError> =
+        NodeGraphStore::apply_create_node_from_schema;
+    assert_eq!(
+        create_node_request.kind,
+        jellyflow_core::core::NodeKindKey::new("public.note")
+    );
+    assert_eq!(create_node::CREATE_NODE_TRANSACTION_LABEL, "create node");
 
     let root_patch = NodeGraphPatch::default();
     let module_patch = commit::NodeGraphPatch::default();
@@ -139,9 +216,31 @@ fn explicit_modules_expose_their_owned_surfaces() {
             .get(&layout::LayoutEngineId::mind_map_freeform())
             .is_some()
     );
+    assert!(
+        layout_registry
+            .family(&layout::LayoutFamilyId::mind_map())
+            .is_some()
+    );
+    assert!(
+        layout_registry
+            .metadata(&layout::LayoutEngineId::mind_map_radial())
+            .is_some()
+    );
+    assert_eq!(
+        layout_registry
+            .engines_for_family(&layout::LayoutFamilyId::mind_map())
+            .count(),
+        2
+    );
     let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_RADIAL_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID;
+    let _ = layout::LAYERED_DAG_LAYOUT_FAMILY_ID;
+    let _ = layout::MIND_MAP_LAYOUT_FAMILY_ID;
+    let _ = std::mem::size_of::<layout::LayoutFamilyId>();
+    let _ = std::mem::size_of::<layout::LayoutFamilyMetadata>();
+    let _ = std::mem::size_of::<layout::LayoutEngineMetadata>();
+    let _ = std::mem::size_of::<layout::LayoutEngineCapability>();
     let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapFreeformLayoutEngine>();
@@ -150,6 +249,8 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();
     let _ = std::mem::size_of::<layout::DugongLayoutApplyError>();
     let _: fn(&NodeGraphStore) -> layout::LayoutContext = layout::layout_context_from_store;
+    let _: fn(&NodeGraphStore) -> layout::LayoutContext =
+        NodeGraphStore::layout_context_with_binding_pins;
     let _: fn(
         &Graph,
         &layout::LayoutEngineRequest,
@@ -163,6 +264,21 @@ fn explicit_modules_expose_their_owned_surfaces() {
         &layout::LayoutContext,
     ) -> Result<GraphTransaction, layout::LayoutError> = layout::layout_transaction;
     let _ = layout_engine_request;
+    let _binding_query = selection_store.binding_query();
+    let _binding_query_with_options = selection_store.binding_query_with_options(
+        jellyflow_runtime::runtime::binding::BindingQueryOptions::default()
+            .include_hidden(true)
+            .with_fallback_node_size(Some(CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            })),
+    );
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingQueryResult>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBinding>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBindingEndpoint>();
+    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolution>();
+    let _ =
+        std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus>();
     assert!(connection::connection_drag_threshold_met(
         connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
     ));

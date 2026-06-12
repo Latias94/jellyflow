@@ -41,6 +41,9 @@ contracts. It should not copy XyFlow's DOM, React, or renderer architecture.
   migration is deferred until a versioned migration plan exists.
 - `docs/adr/0003-headless-adapter-testing-and-renderer-boundary.md`: XyFlow feel is tested through
   layered headless contracts first; renderer smoke tests belong in adapter crates, not the runtime.
+- `docs/adr/0007-knowledge-canvas-foundations.md`: first-class bindings persist graph/source
+  relationships in core, runtime resolves anchor facts, layout family metadata is discovery-only,
+  and query optimization must preserve the linear read contract.
 
 ## Runtime Interaction Strategy
 

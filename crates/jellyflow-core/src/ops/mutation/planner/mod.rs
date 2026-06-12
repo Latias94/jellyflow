@@ -1,7 +1,9 @@
+mod bindings;
 mod edges;
 mod groups;
 mod nodes;
 mod ports;
+mod sticky_notes;
 
 use crate::core::Graph;
 

@@ -1,4 +1,7 @@
-use crate::core::{CanvasPoint, Edge, Graph, Node, NodeId, Port, PortId};
+use crate::core::{
+    Binding, BindingEndpoint, CanvasPoint, Edge, Graph, GraphLocalBindingTarget, Node, NodeId,
+    Port, PortId,
+};
 use crate::core::{symbol_ref_node_data, symbol_ref_target_symbol_id};
 use crate::ops::{GraphMutationBatchPlanner, GraphOp, GraphTransaction};
 
@@ -33,6 +36,7 @@ impl<'a> FragmentPastePlanner<'a> {
         self.push_groups();
         self.push_batch_insert_ops();
         self.push_sticky_notes();
+        self.push_bindings();
         self.tx
     }
 
@@ -118,6 +122,17 @@ impl<'a> FragmentPastePlanner<'a> {
         }
     }
 
+    fn push_bindings(&mut self) {
+        for (old_id, binding) in &self.fragment.bindings {
+            if let Some(binding) = self.remapped_binding(binding) {
+                self.push_op(GraphOp::AddBinding {
+                    id: self.ids.binding(*old_id),
+                    binding,
+                });
+            }
+        }
+    }
+
     fn remapped_node(&self, old_id: NodeId, old_node: &Node) -> Node {
         let mut node = old_node.clone();
 
@@ -160,6 +175,55 @@ impl<'a> FragmentPastePlanner<'a> {
             interaction_width: old_edge.interaction_width,
             deletable: old_edge.deletable,
             reconnectable: old_edge.reconnectable,
+        }
+    }
+
+    fn remapped_binding(&self, binding: &Binding) -> Option<Binding> {
+        Some(Binding {
+            subject: self.remapped_binding_endpoint(&binding.subject)?,
+            target: self.remapped_binding_endpoint(&binding.target)?,
+            kind: binding.kind.clone(),
+            meta: binding.meta.clone(),
+        })
+    }
+
+    fn remapped_binding_endpoint(&self, endpoint: &BindingEndpoint) -> Option<BindingEndpoint> {
+        match endpoint {
+            BindingEndpoint::Source { anchor } => Some(BindingEndpoint::Source {
+                anchor: anchor.clone(),
+            }),
+            BindingEndpoint::GraphLocal { target } => Some(BindingEndpoint::GraphLocal {
+                target: self.remapped_graph_local_target(*target)?,
+            }),
+        }
+    }
+
+    fn remapped_graph_local_target(
+        &self,
+        target: GraphLocalBindingTarget,
+    ) -> Option<GraphLocalBindingTarget> {
+        match target {
+            GraphLocalBindingTarget::Graph => Some(GraphLocalBindingTarget::Graph),
+            GraphLocalBindingTarget::Node { id } => self
+                .ids
+                .maybe_node(id)
+                .map(|id| GraphLocalBindingTarget::Node { id }),
+            GraphLocalBindingTarget::Port { id } => self
+                .ids
+                .maybe_port(id)
+                .map(|id| GraphLocalBindingTarget::Port { id }),
+            GraphLocalBindingTarget::Edge { id } => self
+                .ids
+                .maybe_edge(id)
+                .map(|id| GraphLocalBindingTarget::Edge { id }),
+            GraphLocalBindingTarget::Group { id } => self
+                .ids
+                .maybe_group(id)
+                .map(|id| GraphLocalBindingTarget::Group { id }),
+            GraphLocalBindingTarget::StickyNote { id } => self
+                .ids
+                .maybe_sticky_note(id)
+                .map(|id| GraphLocalBindingTarget::StickyNote { id }),
         }
     }
 }

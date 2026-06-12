@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 
-use crate::core::{Edge, EdgeId, Graph, Node, NodeId, Port, PortId};
+use crate::core::{Binding, BindingId, Edge, EdgeId, Graph, Node, NodeId, Port, PortId};
 use crate::ops::{GraphOp, GraphTransaction};
 
 use super::GraphMutationPlanner;
 use crate::ops::mutation::GraphMutationError;
-use crate::ops::mutation::collect::{incident_edges_for_ports, ports_for_node};
+use crate::ops::mutation::collect::{
+    bindings_for_node_removal, incident_edges_for_ports, ports_for_node,
+};
 
 impl GraphMutationPlanner<'_> {
     pub fn add_node_with_ports_tx(
@@ -61,6 +63,7 @@ impl GraphMutationPlanner<'_> {
             node: snapshot.node,
             ports: snapshot.ports,
             edges: snapshot.edges,
+            bindings: snapshot.bindings,
         })
     }
 
@@ -84,6 +87,7 @@ struct NodeRemovalSnapshot {
     node: Node,
     ports: Vec<(PortId, Port)>,
     edges: Vec<(EdgeId, Edge)>,
+    bindings: Vec<(BindingId, Binding)>,
 }
 
 impl NodePortsForInsert {
@@ -136,7 +140,14 @@ impl NodeRemovalSnapshot {
         let port_ids = Self::port_ids(&ports);
         let edges = incident_edges_for_ports(graph, &port_ids);
 
-        Ok(Self { node, ports, edges })
+        let bindings = bindings_for_node_removal(graph, node_id, &ports, &edges);
+
+        Ok(Self {
+            node,
+            ports,
+            edges,
+            bindings,
+        })
     }
 
     fn port_ids(ports: &[(PortId, Port)]) -> BTreeSet<PortId> {

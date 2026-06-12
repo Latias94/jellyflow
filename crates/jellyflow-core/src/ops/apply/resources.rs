@@ -1,4 +1,4 @@
-use crate::core::{Edge, EdgeId, Graph, Port, PortId};
+use crate::core::{Binding, BindingId, Edge, EdgeId, Graph, Port, PortId};
 
 use super::ApplyError;
 
@@ -29,5 +29,15 @@ pub(super) fn remove_port_exact(
         return Err(ApplyError::RemovePortMismatch { id });
     }
     graph.ports.remove(&id);
+    Ok(())
+}
+
+pub(super) fn remove_bindings_exact(
+    graph: &mut Graph,
+    bindings: &[(BindingId, Binding)],
+) -> Result<(), ApplyError> {
+    for (binding_id, binding) in bindings {
+        super::bindings::remove_binding_exact(graph, *binding_id, binding)?;
+    }
     Ok(())
 }

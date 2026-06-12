@@ -10,5 +10,6 @@ This directory uses standalone Jellyflow ADR numbering.
 | [ADR 0004](0004-resize-containment-and-lifecycle-boundary.md) | Accepted | Resize Containment and Lifecycle Boundary |
 | [ADR 0005](0005-layout-engine-extension-boundary.md) | Accepted | Layout Engine Extension Boundary |
 | [ADR 0006](0006-mind-map-layout-strategy.md) | Accepted | Mind Map Layout Strategy |
+| [ADR 0007](0007-knowledge-canvas-foundations.md) | Accepted | Knowledge Canvas Foundations |
 
 Future records should use the next zero-padded number.

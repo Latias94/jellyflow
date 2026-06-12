@@ -1,6 +1,6 @@
 use super::super::GraphDiffPlanner;
 use crate::core::{StickyNote, StickyNoteId};
-use crate::ops::GraphOp;
+use crate::ops::{GraphMutationPlanner, GraphOp};
 
 impl<'a> GraphDiffPlanner<'a> {
     pub(crate) fn diff_sticky_notes(&mut self) {
@@ -20,10 +20,19 @@ impl<'a> GraphDiffPlanner<'a> {
 
         for (id, note_from) in &from.sticky_notes {
             if !to.sticky_notes.contains_key(id) {
-                self.push_op(GraphOp::RemoveStickyNote {
-                    id: *id,
-                    note: note_from.clone(),
-                });
+                let op = GraphMutationPlanner::new(from)
+                    .remove_sticky_note_op(*id)
+                    .unwrap_or_else(|_| GraphOp::RemoveStickyNote {
+                        id: *id,
+                        note: note_from.clone(),
+                        bindings: Vec::new(),
+                    });
+                let op = self.with_target_removed_bindings(op);
+                if let GraphOp::RemoveStickyNote { bindings, .. } = &op {
+                    self.removed_bindings_by_cascade
+                        .extend(bindings.iter().map(|(id, _)| *id));
+                }
+                self.push_op(op);
             }
         }
     }

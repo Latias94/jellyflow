@@ -54,6 +54,11 @@ impl<'a> GraphDiffPlanner<'a> {
         let op = GraphMutationPlanner::new(self.from)
             .remove_group_op(id)
             .unwrap_or_else(|_| self.fallback_remove_group_op(id, group_from));
+        let op = self.with_target_removed_bindings(op);
+        if let GraphOp::RemoveGroup { bindings, .. } = &op {
+            self.removed_bindings_by_cascade
+                .extend(bindings.iter().map(|(id, _)| *id));
+        }
         self.push_op(op);
     }
 
@@ -68,6 +73,7 @@ impl<'a> GraphDiffPlanner<'a> {
             id,
             group: group_from.clone(),
             detached,
+            bindings: Vec::new(),
         }
     }
 }

@@ -211,6 +211,8 @@ impl<'a> GraphDiffPlanner<'a> {
         // Prefer the reversible removal op with captured ports/edges.
         if let Ok(op) = GraphMutationPlanner::new(self.from).remove_node_op(id) {
             self.record_removed_node_cascade(&op);
+            let op = self.with_target_removed_bindings(op);
+            self.record_removed_node_cascade(&op);
             self.push_op(op);
         } else {
             // Fallback: remove node only (should not happen if graph is consistent).
@@ -219,16 +221,25 @@ impl<'a> GraphDiffPlanner<'a> {
                 node: node_from.clone(),
                 ports: Vec::new(),
                 edges: Vec::new(),
+                bindings: Vec::new(),
             });
         }
     }
 
     fn record_removed_node_cascade(&mut self, op: &GraphOp) {
-        if let GraphOp::RemoveNode { ports, edges, .. } = op {
+        if let GraphOp::RemoveNode {
+            ports,
+            edges,
+            bindings,
+            ..
+        } = op
+        {
             self.removed_ports_by_cascade
                 .extend(ports.iter().map(|(id, _)| *id));
             self.removed_edges_by_cascade
                 .extend(edges.iter().map(|(id, _)| *id));
+            self.removed_bindings_by_cascade
+                .extend(bindings.iter().map(|(id, _)| *id));
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::ops::GraphOp;
 
+mod binding;
 mod document;
 mod edge;
 mod node;
@@ -23,6 +24,7 @@ fn try_coalesce_setter(last: &mut GraphOp, next: &GraphOp) -> bool {
         || port::try_coalesce_port_setter(last, next)
         || edge::try_coalesce_edge_setter(last, next)
         || document::try_coalesce_document_setter(last, next)
+        || binding::try_coalesce_binding_setter(last, next)
 }
 
 fn coalesce_value<Id, T>(a: &Id, last_to: &mut T, b: &Id, from: &T, to: &T) -> bool

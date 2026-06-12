@@ -14,6 +14,8 @@ mod snapshot;
 mod subscriptions;
 mod view;
 
+use std::cell::RefCell;
+
 use crate::io::{
     NodeGraphEditorConfig, NodeGraphInteractionConfig, NodeGraphRuntimeTuning, NodeGraphViewState,
 };
@@ -21,6 +23,7 @@ use crate::profile::{ApplyPipelineError, GraphProfile};
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
+use crate::runtime::query::spatial::SpatialQueryCache;
 use jellyflow_core::core::Graph;
 use jellyflow_core::ops::{GraphHistory, GraphTransaction};
 
@@ -65,6 +68,7 @@ pub struct NodeGraphStore {
     profile: Option<Box<dyn GraphProfile>>,
     middleware: Option<Box<dyn NodeGraphStoreMiddleware>>,
     lookups: NodeGraphLookups,
+    spatial_query_cache: RefCell<SpatialQueryCache>,
     subscriptions: subscriptions::StoreSubscriptions,
 }
 
@@ -138,8 +142,13 @@ impl NodeGraphStore {
             profile,
             middleware: None,
             lookups,
+            spatial_query_cache: RefCell::new(SpatialQueryCache::default()),
             subscriptions: subscriptions::StoreSubscriptions::default(),
         }
+    }
+
+    pub(crate) fn spatial_query_cache(&self) -> &RefCell<SpatialQueryCache> {
+        &self.spatial_query_cache
     }
 
     pub fn with_middleware(mut self, middleware: impl NodeGraphStoreMiddleware) -> Self {

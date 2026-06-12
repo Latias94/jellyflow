@@ -88,5 +88,12 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         | GraphOp::SetStickyNoteColor { .. } => {
             super::sticky_notes::apply_sticky_note_op(graph, op)
         }
+
+        GraphOp::AddBinding { .. }
+        | GraphOp::RemoveBinding { .. }
+        | GraphOp::SetBindingSubject { .. }
+        | GraphOp::SetBindingTarget { .. }
+        | GraphOp::SetBindingKind { .. }
+        | GraphOp::SetBindingMeta { .. } => super::bindings::apply_binding_op(graph, op),
     }
 }

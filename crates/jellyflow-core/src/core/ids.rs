@@ -131,6 +131,23 @@ impl StickyNoteId {
     }
 }
 
+/// Stable identifier for a knowledge-canvas binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BindingId(pub Uuid);
+
+impl BindingId {
+    /// Generates a new random binding id.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Creates a binding id from a stable 128-bit value.
+    pub fn from_u128(value: u128) -> Self {
+        Self(Uuid::from_u128(value))
+    }
+}
+
 /// Stable identifier for a node kind.
 ///
 /// This is a namespaced string identifier (e.g. `core.math.add`, `plugin.acme.http_request`).

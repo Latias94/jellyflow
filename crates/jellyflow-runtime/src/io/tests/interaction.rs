@@ -6,18 +6,75 @@ fn interaction_state_split_roundtrips_runtime_tuning() {
     interaction.selection_on_drag = true;
     interaction.select_nodes_on_drag = false;
     interaction.only_render_visible_elements = false;
-    interaction.spatial_index.edge_aabb_pad_screen_px = 123.0;
+    interaction.spatial_index.enabled = true;
     interaction.paint_cache_prune.max_entries = 4_096;
 
     let (config, runtime_tuning) = interaction.split();
     assert!(config.selection_on_drag);
     assert!(!config.select_nodes_on_drag);
     assert!(!runtime_tuning.only_render_visible_elements);
-    assert_eq!(runtime_tuning.spatial_index.edge_aabb_pad_screen_px, 123.0);
+    assert!(runtime_tuning.spatial_index.enabled);
     assert_eq!(runtime_tuning.paint_cache_prune.max_entries, 4_096);
 
     let rebuilt = NodeGraphInteractionState::from_parts(&config, &runtime_tuning);
     assert_eq!(rebuilt, interaction);
+}
+
+#[test]
+fn spatial_index_tuning_defaults_to_disabled_and_backfills_enabled() {
+    assert!(!NodeGraphSpatialIndexTuning::default().enabled);
+    assert!(!NodeGraphRuntimeTuning::default().spatial_index.enabled);
+
+    let tuning: NodeGraphSpatialIndexTuning = serde_json::from_value(serde_json::json!({
+        "cell_size_screen_px": 300.0,
+        "min_cell_size_screen_px": 20.0
+    }))
+    .unwrap();
+
+    assert!(!tuning.enabled);
+    assert_eq!(tuning.cell_size_screen_px, 300.0);
+    assert_eq!(tuning.min_cell_size_screen_px, 20.0);
+}
+
+#[test]
+fn spatial_index_tuning_ignores_legacy_edge_padding() {
+    let tuning: NodeGraphSpatialIndexTuning = serde_json::from_value(serde_json::json!({
+        "enabled": true,
+        "cell_size_screen_px": 300.0,
+        "min_cell_size_screen_px": 20.0,
+        "edge_aabb_pad_screen_px": 70.0
+    }))
+    .unwrap();
+
+    assert!(tuning.enabled);
+    assert_eq!(tuning.cell_size_screen_px, 300.0);
+    assert_eq!(tuning.min_cell_size_screen_px, 20.0);
+}
+
+#[test]
+fn editor_config_helpers_enable_spatial_query_and_visibility_policy() {
+    let config = NodeGraphEditorConfig::default()
+        .with_spatial_index_enabled(true)
+        .with_only_render_visible_elements(false);
+    let interaction = config.resolved_interaction_state();
+
+    assert!(config.runtime_tuning.spatial_index.enabled);
+    assert!(interaction.rendering_interaction().spatial_index.enabled);
+    assert!(!config.runtime_tuning.only_render_visible_elements);
+    assert!(
+        !interaction
+            .rendering_interaction()
+            .only_render_visible_elements
+    );
+
+    let tuning = NodeGraphSpatialIndexTuning::default()
+        .enabled(true)
+        .with_cell_size_screen_px(128.0)
+        .with_min_cell_size_screen_px(8.0);
+
+    assert!(tuning.enabled);
+    assert_eq!(tuning.cell_size_screen_px, 128.0);
+    assert_eq!(tuning.min_cell_size_screen_px, 8.0);
 }
 
 #[test]

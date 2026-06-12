@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::geometry::CanvasBounds;
@@ -215,7 +215,35 @@ pub fn resolve_visible_edge_render_order(
         .collect()
 }
 
-fn all_non_hidden_node_ids(lookups: &NodeGraphLookups) -> Vec<NodeId> {
+pub(crate) fn resolve_visible_node_order_from_ids(
+    visible_node_ids: Vec<NodeId>,
+    node_order: &[NodeId],
+) -> (Vec<NodeId>, Vec<NodeId>) {
+    let visible = visible_node_ids.iter().copied().collect::<BTreeSet<_>>();
+    let visible_node_render_order = node_order
+        .iter()
+        .copied()
+        .filter(|id| visible.contains(id))
+        .collect();
+
+    (visible_node_ids, visible_node_render_order)
+}
+
+pub(crate) fn resolve_visible_edge_order_from_ids(
+    visible_edge_ids: Vec<EdgeId>,
+    edge_order: &[EdgeId],
+) -> (Vec<EdgeId>, Vec<EdgeId>) {
+    let visible = visible_edge_ids.iter().copied().collect::<BTreeSet<_>>();
+    let visible_edge_render_order = edge_order
+        .iter()
+        .copied()
+        .filter(|id| visible.contains(id))
+        .collect();
+
+    (visible_edge_ids, visible_edge_render_order)
+}
+
+pub(crate) fn all_non_hidden_node_ids(lookups: &NodeGraphLookups) -> Vec<NodeId> {
     let mut ids: Vec<NodeId> = lookups
         .node_lookup
         .iter()
@@ -225,7 +253,7 @@ fn all_non_hidden_node_ids(lookups: &NodeGraphLookups) -> Vec<NodeId> {
     ids
 }
 
-fn all_non_hidden_edge_ids(graph: &Graph) -> Vec<EdgeId> {
+pub(crate) fn all_non_hidden_edge_ids(graph: &Graph) -> Vec<EdgeId> {
     graph
         .edges
         .iter()

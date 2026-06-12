@@ -7,6 +7,8 @@
 - effective interaction policy resolution under `runtime::policy`;
 - validation rules and diagnostics, including connect/reconnect/delete planners;
 - schema/profile pipeline hooks;
+- renderer-neutral node-kind view descriptors for adapter palettes, inspectors, and custom node
+  renderer lookup;
 - undo/redo store dispatch;
 - XyFlow-style node/edge change projections and ordered adapter-array apply helpers under
   `runtime::xyflow`;
@@ -20,6 +22,8 @@
 - renderer-neutral auto-pan frame helpers under `runtime::auto_pan`;
 - renderer-neutral store-level rendering reads through `NodeGraphStore::rendering_query` and
   `runtime::rendering::RenderingQueryResult`;
+- renderer-neutral binding reads through `NodeGraphStore::binding_query` and binding-derived layout
+  context through `NodeGraphStore::layout_context_with_binding_pins`;
 - renderer-neutral delete selection planning under `runtime::delete` and key-bound routing under
   `runtime::keyboard`;
 - fit-view math that uses Jellyflow canvas geometry;
@@ -92,6 +96,9 @@ validate behavior before rendering. The runtime crate supports that split with:
   subscriptions can track `layout_facts_revision` for redraw/re-query decisions.
   `NodeGraphStore::rendering_query` is the narrow read path for deterministic group/node/edge order
   and visible node/edge lists;
+- `NodeGraphStore::binding_query` for renderer-neutral knowledge-canvas binding facts. Core
+  persists the binding records, while runtime resolves graph-local endpoints with measurements,
+  node origin, and handle geometry. Source anchors remain opaque host-owned payloads;
 - `runtime::events::NodeGraphGestureEvent` node drag start/update/end payloads for adapters that
   want XyFlow-style drag lifecycle callbacks without coupling the runtime to pointer capture;
 - `runtime::events::NodeGraphGestureEvent` viewport move start/update/end payloads for adapters
@@ -104,6 +111,17 @@ validate behavior before rendering. The runtime crate supports that split with:
   ConformanceBehavior, ConformanceAction, ConformanceTraceEvent, run_conformance_scenario,
   run_conformance_suite}` for reusable behavior contracts, fixture checks, fixture discovery, and
   explicit golden approval updates around a real `NodeGraphStore`.
+
+Adapters that need XyFlow-style custom nodes should register semantic node kinds through
+`schema::NodeRegistry`, then read `NodeRegistry::view_descriptors()` to build their own
+framework-local renderer registry. `NodeKindViewDescriptor.renderer_key` is adapter-owned data
+rather than a component reference, so React, Svelte, native, and future adapters can map the same
+headless schema to different renderer implementations while preserving node `kind`, ports, default
+data, default size, category, and search metadata.
+For create-node palettes, adapters can call
+`NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
+store uses the same dispatch/history/profile path as other graph edits while `NodeRegistry`
+resolves aliases, canonical kind, default data, default size, and schema-declared ports.
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
@@ -166,6 +184,25 @@ The runtime crate also includes a thin renderer-free example harness for agents 
 ```text
 cargo run -p jellyflow-runtime --example conformance_harness -- check <fixture-dir>
 cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture-dir>
+cargo run -p jellyflow-runtime --example knowledge_canvas
+```
+
+`NodeGraphStore::rendering_query` uses the deterministic linear read backend by default. Large graph
+adapters can opt into the snapshot-built spatial backend for local measurement while keeping the
+same public query result contract:
+
+```rust
+let editor_config = NodeGraphEditorConfig::default().with_spatial_index_enabled(true);
+```
+
+Measure local workloads before enabling it broadly. The current spatial backend keeps a store-local
+node index cache and rebuilds it when graph/layout facts, node origin, zoom, or spatial tuning
+changes. Pan-only queries reuse the same index. The runtime crate includes a benchmark for
+1k/10k/50k node rendering-query workloads:
+
+```text
+cargo bench -p jellyflow-runtime --bench rendering_query
+cargo bench -p jellyflow-runtime --bench schema_create_node
 ```
 
 For a copyable external adapter skeleton, start with the non-workspace headless template:

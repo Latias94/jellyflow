@@ -4,12 +4,11 @@ use super::{NodeGraphPaintCachePruneTuning, NodeGraphSpatialIndexTuning};
 
 /// Persisted runtime-heavy tuning for the node graph editor.
 ///
-/// Backend-specific payloads may be reserved before the current linear/headless implementation
-/// consumes them. They are configuration compatibility commitments, not proof that a backend is
-/// active.
+/// Backend-specific payloads are configuration compatibility commitments; runtime reads still
+/// choose a supported implementation from the resolved interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeGraphRuntimeTuning {
-    /// Reserved spatial-query backend tuning. Current visibility reads use deterministic scans.
+    /// Optional cached spatial-query backend tuning. Disabled by default.
     #[serde(default = "default_spatial_index_tuning")]
     pub spatial_index: NodeGraphSpatialIndexTuning,
     /// Cull renderer-facing visibility lists to the current viewport when possible.
@@ -23,6 +22,16 @@ pub struct NodeGraphRuntimeTuning {
 impl NodeGraphRuntimeTuning {
     pub fn is_default(this: &Self) -> bool {
         this == &Self::default()
+    }
+
+    pub fn with_spatial_index_enabled(mut self, enabled: bool) -> Self {
+        self.spatial_index.enabled = enabled;
+        self
+    }
+
+    pub fn with_only_render_visible_elements(mut self, enabled: bool) -> Self {
+        self.only_render_visible_elements = enabled;
+        self
     }
 }
 

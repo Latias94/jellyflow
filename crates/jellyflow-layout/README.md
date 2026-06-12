@@ -13,6 +13,8 @@ transactions so hosts can decide when to apply or animate layout results.
 - `LayoutEngineRegistry` maps stable `LayoutEngineId` values to engines.
 - `LayoutEngineRequest` selects one engine and carries a `LayoutRequest`.
 - `LayoutContext` carries runtime-only facts such as measured node sizes and fallback node origin.
+- `LayoutFamilyMetadata` and `LayoutEngineMetadata` expose discovery-only family/capability data
+  without changing the stable engine-id dispatch contract.
 
 The built-in `dugong` engine is registered under `DUGONG_LAYOUT_ENGINE_ID` (`"dugong"`).
 The built-in radial mind-map engine is registered under `MIND_MAP_RADIAL_LAYOUT_ENGINE_ID`
@@ -22,6 +24,8 @@ The built-in freeform mind-map engine is registered under `MIND_MAP_FREEFORM_LAY
 It currently keeps the input canvas feel and only resolves overlaps while preserving pinned nodes.
 Compatibility helpers such as `layout_graph_with_dugong` remain available, but new host code should
 prefer the registry path when it needs runtime selection or custom engines.
+The built-in `dugong` engine is grouped under the `layered_dag` family, while the radial and
+freeform mind-map engines are grouped under the `mind_map` family.
 
 ```rust
 use jellyflow_core::Graph;

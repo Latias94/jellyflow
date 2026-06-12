@@ -1,3 +1,4 @@
+mod bindings;
 mod dispatch;
 mod edges;
 mod error;

@@ -1,6 +1,6 @@
 use super::GraphDiffPlanner;
 use crate::core::{Edge, EdgeId};
-use crate::ops::{EdgeEndpoints, GraphOp};
+use crate::ops::{EdgeEndpoints, GraphMutationPlanner, GraphOp};
 
 impl<'a> GraphDiffPlanner<'a> {
     pub(super) fn diff_edges(&mut self) {
@@ -111,10 +111,20 @@ impl<'a> GraphDiffPlanner<'a> {
                 continue;
             }
 
-            self.push_op(GraphOp::RemoveEdge {
-                id: *id,
-                edge: edge_from.clone(),
-            });
+            if let Ok(op) = GraphMutationPlanner::new(from).remove_edge_op(*id) {
+                let op = self.with_target_removed_bindings(op);
+                if let GraphOp::RemoveEdge { bindings, .. } = &op {
+                    self.removed_bindings_by_cascade
+                        .extend(bindings.iter().map(|(id, _)| *id));
+                }
+                self.push_op(op);
+            } else {
+                self.push_op(GraphOp::RemoveEdge {
+                    id: *id,
+                    edge: edge_from.clone(),
+                    bindings: Vec::new(),
+                });
+            }
         }
     }
 }
