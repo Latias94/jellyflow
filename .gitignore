@@ -1,6 +1,7 @@
 /target/
 target/
 Cargo.lock
+!/Cargo.lock
 repo-ref/
 __pycache__/
 *.pyc
