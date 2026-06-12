@@ -38,6 +38,7 @@ use jellyflow_runtime::runtime::viewport::{
 };
 use jellyflow_runtime::runtime::xyflow::callbacks::EdgeConnection;
 use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
+use jellyflow_runtime::schema::{NodeRegistry, NodeSchema, PortDecl};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template").with_scenarios([
@@ -178,6 +179,91 @@ pub fn run_controlled_graph_smoke() -> Result<(), String> {
         serde_json::to_value(controlled.graph()).map_err(|err| err.to_string())?;
     if controlled_graph != store_graph {
         return Err("controlled graph diverged from store graph".to_owned());
+    }
+
+    Ok(())
+}
+
+pub fn run_create_node_palette_smoke() -> Result<(), String> {
+    let mut registry = NodeRegistry::new();
+    registry.register(NodeSchema {
+        kind: NodeKindKey::new("template.note"),
+        latest_kind_version: 1,
+        kind_aliases: vec![NodeKindKey::new("template.sticky")],
+        title: "Note".to_owned(),
+        category: vec!["Knowledge".to_owned()],
+        keywords: vec!["memo".to_owned()],
+        renderer_key: Some("note-card".to_owned()),
+        default_size: Some(CanvasSize {
+            width: 160.0,
+            height: 96.0,
+        }),
+        ports: vec![
+            PortDecl {
+                key: PortKey::new("source"),
+                dir: PortDirection::In,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Single,
+                ty: None,
+                label: Some("Source".to_owned()),
+            },
+            PortDecl {
+                key: PortKey::new("result"),
+                dir: PortDirection::Out,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Multi,
+                ty: None,
+                label: Some("Result".to_owned()),
+            },
+        ],
+        default_data: serde_json::json!({ "body": "" }),
+    });
+
+    let descriptors = registry.view_descriptors();
+    if descriptors.len() != 1 || descriptors[0].renderer_key != "note-card" {
+        return Err(format!(
+            "expected one note-card descriptor, got {descriptors:?}"
+        ));
+    }
+
+    let mut store = NodeGraphStore::new(
+        Graph::new(GraphId::from_u128(16)),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let outcome = store
+        .apply_create_node_from_schema(
+            &registry,
+            jellyflow_runtime::runtime::create_node::CreateNodeRequest::new(
+                NodeKindKey::new("template.sticky"),
+                CanvasPoint { x: 32.0, y: 48.0 },
+            ),
+        )
+        .map_err(|err| err.to_string())?;
+    let node_id = outcome.node_id();
+    let port_ids: Vec<_> = outcome.port_ids().collect();
+    let node = store
+        .graph()
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| "created node missing from store graph".to_owned())?;
+
+    if node.kind != NodeKindKey::new("template.note") {
+        return Err(format!("expected canonical note kind, got {:?}", node.kind));
+    }
+    if node.ports != port_ids || port_ids.len() != 2 {
+        return Err(format!(
+            "expected two ordered ports {:?}, got node ports {:?}",
+            port_ids, node.ports
+        ));
+    }
+    if outcome.dispatch.committed().label()
+        != Some(jellyflow_runtime::runtime::create_node::CREATE_NODE_TRANSACTION_LABEL)
+    {
+        return Err(format!(
+            "expected create-node transaction label, got {:?}",
+            outcome.dispatch.committed().label()
+        ));
     }
 
     Ok(())
@@ -1201,6 +1287,11 @@ mod tests {
     #[test]
     fn controlled_graph_smoke_applies_store_patch() {
         run_controlled_graph_smoke().expect("controlled graph smoke runs");
+    }
+
+    #[test]
+    fn create_node_palette_smoke_uses_schema_registry() {
+        run_create_node_palette_smoke().expect("create-node palette smoke runs");
     }
 
     #[test]

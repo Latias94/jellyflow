@@ -118,9 +118,10 @@ framework-local renderer registry. `NodeKindViewDescriptor.renderer_key` is adap
 rather than a component reference, so React, Svelte, native, and future adapters can map the same
 headless schema to different renderer implementations while preserving node `kind`, ports, default
 data, default size, category, and search metadata.
-For create-node palettes, adapters can call `NodeRegistry::instantiate_node(kind, pos)` and dispatch
-the returned `NodeInstantiation::into_transaction()`; the transaction adds the canonical-kind node
-first and then its schema-declared ports in UI order.
+For create-node palettes, adapters can call
+`NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
+store uses the same dispatch/history/profile path as other graph edits while `NodeRegistry`
+resolves aliases, canonical kind, default data, default size, and schema-declared ports.
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return

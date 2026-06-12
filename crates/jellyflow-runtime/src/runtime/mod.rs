@@ -9,6 +9,7 @@ pub mod binding;
 pub mod commit;
 pub mod conformance;
 pub mod connection;
+pub mod create_node;
 pub mod delete;
 pub mod drag;
 pub mod events;

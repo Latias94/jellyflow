@@ -3,6 +3,7 @@ mod auto_pan;
 mod binding;
 mod conformance;
 mod connection;
+mod create_node;
 mod delete;
 mod drag;
 mod fixtures;

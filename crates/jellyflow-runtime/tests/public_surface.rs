@@ -12,8 +12,8 @@ use jellyflow_runtime::io::{
 use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
 use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, delete, drag, events, geometry, gesture, keyboard,
-    layout, measurement, rendering, resize, selection, store, viewport, xyflow,
+    auto_pan, commit, conformance, connection, create_node, delete, drag, events, geometry,
+    gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::schema::{
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
@@ -113,6 +113,37 @@ fn explicit_modules_expose_their_owned_surfaces() {
         .to_string(),
         "node kind schema not found: NodeKindKey(\"public.missing\")"
     );
+    let _: fn(jellyflow_core::core::NodeKindKey, CanvasPoint) -> create_node::CreateNodeRequest =
+        create_node::CreateNodeRequest::new;
+    let create_node_request = create_node::CreateNodeRequest::new(
+        jellyflow_core::core::NodeKindKey::new("public.note"),
+        CanvasPoint::default(),
+    );
+    let mut create_node_store = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let create_node_outcome = create_node_store
+        .apply_create_node_from_schema(&node_registry, create_node_request.clone());
+    assert!(create_node_outcome.is_ok());
+    let _: fn(
+        &NodeGraphStore,
+        &NodeRegistry,
+        create_node::CreateNodeRequest,
+    ) -> Result<NodeInstantiation, NodeInstantiationError> =
+        NodeGraphStore::plan_create_node_from_schema;
+    let _: fn(
+        &mut NodeGraphStore,
+        &NodeRegistry,
+        create_node::CreateNodeRequest,
+    ) -> Result<create_node::CreateNodeOutcome, create_node::CreateNodeError> =
+        NodeGraphStore::apply_create_node_from_schema;
+    assert_eq!(
+        create_node_request.kind,
+        jellyflow_core::core::NodeKindKey::new("public.note")
+    );
+    assert_eq!(create_node::CREATE_NODE_TRANSACTION_LABEL, "create node");
 
     let root_patch = NodeGraphPatch::default();
     let module_patch = commit::NodeGraphPatch::default();
