@@ -132,6 +132,8 @@ order.
 ```text
 cargo check --workspace
 cargo nextest run --workspace
+cargo bench -p jellyflow-runtime --bench rendering_query -- --test
+cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 python3 tools/check_no_fret_dependencies.py

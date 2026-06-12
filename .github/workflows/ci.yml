@@ -42,6 +42,11 @@ jobs:
       - name: Test
         run: cargo nextest run --workspace --cargo-quiet
 
+      - name: Benchmark smoke
+        run: |
+          cargo bench -p jellyflow-runtime --bench rendering_query -- --test
+          cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
