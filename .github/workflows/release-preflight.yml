@@ -1,15 +1,20 @@
-name: CI
+name: Release Preflight
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v, for example 0.1.0"
+        required: true
+        type: string
+      source_ref:
+        description: "Git ref to validate"
+        required: true
+        default: "main"
+        type: string
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,22 +23,13 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
-  rust:
-    name: rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            release_gates: true
-          - os: macos-15
-            release_gates: false
-          - os: windows-2025-vs2026
-            release_gates: false
-
+  versions-and-packages:
+    name: versions-and-packages
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -48,8 +44,10 @@ jobs:
         with:
           cache-targets: false
 
+      - name: Verify release versions
+        run: python3 scripts/release-version.py check --version "${{ inputs.version }}"
+
       - name: Format
-        if: matrix.release_gates
         run: cargo fmt --all --check
 
       - name: Check
@@ -59,25 +57,20 @@ jobs:
         run: cargo nextest run --workspace --cargo-quiet
 
       - name: Clippy
-        if: matrix.release_gates
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Benchmark smoke
-        if: matrix.release_gates
         run: |
           cargo bench -p jellyflow-runtime --bench rendering_query -- --test
           cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 
       - name: Dependency boundary smoke
-        if: matrix.release_gates
         run: python3 tools/check_no_fret_dependencies.py
 
       - name: External consumer smoke
-        if: matrix.release_gates
         run: python3 tools/check_external_consumer_smoke.py
 
       - name: Package file lists
-        if: matrix.release_gates
         shell: bash
         run: |
           set -euo pipefail
@@ -92,13 +85,14 @@ jobs:
             cargo package --locked --no-verify --list -p "$crate" > "target/package-lists/$crate.txt"
           done
 
+      - name: Verify leaf package
+        run: cargo package --locked -p jellyflow-core
+
+      - name: Diff whitespace check
+        run: git diff --check
+
       - name: Upload package lists
-        if: matrix.release_gates
         uses: actions/upload-artifact@v6
         with:
           name: crate-package-lists
           path: target/package-lists/*.txt
-
-      - name: Diff whitespace check
-        if: matrix.release_gates
-        run: git diff --check

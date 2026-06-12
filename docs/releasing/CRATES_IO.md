@@ -17,32 +17,40 @@ that order.
 Run these before any publish attempt:
 
 ```text
-cargo fmt --check
+cargo fmt --all --check
 cargo check --workspace --locked
 cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo bench -p jellyflow-runtime --bench rendering_query -- --test
+cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 python3 tools/check_no_fret_dependencies.py
 python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
 
-The CI workflow runs the same common gates on Ubuntu. It intentionally does not
-publish crates.
+The CI workflow runs common gates on pull requests and pushes. The manual
+release preflight workflow additionally verifies versions and writes package
+file lists as artifacts for release review. The crates publishing workflow
+publishes in dependency order from a `v*` tag or manual dispatch. The GitHub
+Release workflow creates or updates release notes for the same tag.
 
 ## Package Contents
 
 Review the files Cargo would package:
 
 ```text
-cargo package --list -p jellyflow-core
-cargo package --list -p jellyflow-layout
-cargo package --list -p jellyflow-runtime
-cargo package --list -p jellyflow
+cargo package --locked --no-verify --list -p jellyflow-core
+cargo package --locked --no-verify --list -p jellyflow-layout
+cargo package --locked --no-verify --list -p jellyflow-runtime
+cargo package --locked --no-verify --list -p jellyflow
 ```
 
 The package list should not include Trellis task files, `repo-ref`, historical
 workstream archives, or renderer/platform assets. Each crate package should
 include its crate README and the files needed to build that crate from crates.io.
+`--no-verify` is used for package-list review so first-release dependent crates
+do not fail only because earlier Jellyflow crates are not visible on crates.io
+yet.
 
 ## Dry Runs
 
@@ -73,5 +81,7 @@ cargo publish -p jellyflow-runtime
 cargo publish -p jellyflow
 ```
 
-Actual publishing, release tags, version bumps, and a publishing workflow are
-out of scope for the release-readiness audit task.
+Actual crates.io publishing is handled by
+`.github/workflows/release-crates.yml`. It waits for each published crate
+version to become visible before publishing the next dependent crate. GitHub
+Release notes are handled separately by `.github/workflows/release.yml`.

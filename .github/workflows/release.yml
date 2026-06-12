@@ -1,0 +1,109 @@
+name: GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish, for example v0.1.0"
+        required: true
+        type: string
+      source_ref:
+        description: "Git ref to release from"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+
+      - name: Read version from tag
+        id: version
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            release_tag="$RELEASE_TAG_INPUT"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '$release_tag' must look like v0.1.0 or v0.1.0-alpha.1."
+            exit 1
+          fi
+
+          version="${release_tag#v}"
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        id: notes
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$RELEASE_VERSION"
+          notes="$RUNNER_TEMP/release-notes.md"
+
+          awk -v version="$version" '
+            $0 ~ "^## \\[" version "\\]" { in_section = 1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$notes"
+
+          if [ ! -s "$notes" ]; then
+            echo "Jellyflow $version" > "$notes"
+          fi
+
+          echo "path=$notes" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.path }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          version="$RELEASE_VERSION"
+          target="$(git rev-parse HEAD)"
+          title="Jellyflow $version"
+          notes="$RELEASE_NOTES"
+          prerelease_flag=()
+
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            prerelease_flag=(--prerelease)
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" \
+              --title "$title" \
+              --notes-file "$notes" \
+              "${prerelease_flag[@]}"
+          else
+            gh release create "$tag" \
+              --target "$target" \
+              --title "$title" \
+              --notes-file "$notes" \
+              "${prerelease_flag[@]}"
+          fi
