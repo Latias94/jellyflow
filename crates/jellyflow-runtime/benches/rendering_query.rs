@@ -159,6 +159,7 @@ fn benchmark_viewport_sequences(c: &mut Criterion) {
         let graph = graph_fixture(node_count);
         let pan_sequence = pan_sequence();
         let zoom_sequence = zoom_sequence();
+        let full_viewport = full_viewport(node_count);
 
         for backend in [
             BackendScenario::new("linear", false),
@@ -188,6 +189,36 @@ fn benchmark_viewport_sequences(c: &mut Criterion) {
                             for pan in sequence {
                                 store.set_viewport(*pan, 1.0);
                                 black_box(store.rendering_query(black_box(viewport)));
+                            }
+                        },
+                        BatchSize::LargeInput,
+                    )
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!(
+                        "{}_full_view_sequence_{}_steps",
+                        backend.name, VIEWPORT_SEQUENCE_STEPS
+                    ),
+                    node_count,
+                ),
+                &full_viewport,
+                |b, full_viewport| {
+                    b.iter_batched(
+                        || {
+                            let store = NodeGraphStore::new(
+                                graph.clone(),
+                                NodeGraphViewState::default(),
+                                editor_config(backend.spatial_enabled, true),
+                            );
+                            black_box(store.rendering_query(black_box(*full_viewport)));
+                            store
+                        },
+                        |store| {
+                            for _ in 0..VIEWPORT_SEQUENCE_STEPS {
+                                black_box(store.rendering_query(black_box(*full_viewport)));
                             }
                         },
                         BatchSize::LargeInput,

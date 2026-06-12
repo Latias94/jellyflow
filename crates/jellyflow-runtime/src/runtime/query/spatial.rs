@@ -168,10 +168,17 @@ fn resolve_spatial_rendering_query(
     } else {
         let mut cache = snapshot.spatial_cache.borrow_mut();
         let index = cache.node_index(snapshot, transform, rendering.spatial_index);
-        (
-            resolve_spatial_visible_nodes(index, viewport, &node_order),
-            resolve_spatial_visible_edges(snapshot, index, viewport, &edge_order),
-        )
+        if index.viewport_contains_indexed_nodes(viewport) {
+            (
+                resolve_spatial_all_indexed_visible_nodes(index, &node_order),
+                resolve_spatial_all_indexed_visible_edges(snapshot, index, &edge_order),
+            )
+        } else {
+            (
+                resolve_spatial_visible_nodes(index, viewport, &node_order),
+                resolve_spatial_visible_edges(snapshot, index, viewport, &edge_order),
+            )
+        }
     };
 
     RenderingQueryResult {
@@ -209,6 +216,13 @@ fn resolve_spatial_visible_nodes(
     resolve_visible_node_order_from_ids(index.nodes_intersecting(viewport), node_order)
 }
 
+fn resolve_spatial_all_indexed_visible_nodes(
+    index: &SpatialNodeIndex,
+    node_order: &[NodeId],
+) -> (Vec<NodeId>, Vec<NodeId>) {
+    resolve_visible_node_order_from_ids(index.node_ids(), node_order)
+}
+
 fn resolve_spatial_visible_edges(
     snapshot: &NodeGraphQuerySnapshot<'_>,
     index: &SpatialNodeIndex,
@@ -233,6 +247,26 @@ fn resolve_spatial_visible_edges(
         })
         .collect::<Vec<_>>();
     visible_edge_ids.sort();
+    resolve_visible_edge_order_from_ids(visible_edge_ids, edge_order)
+}
+
+fn resolve_spatial_all_indexed_visible_edges(
+    snapshot: &NodeGraphQuerySnapshot<'_>,
+    index: &SpatialNodeIndex,
+    edge_order: &[EdgeId],
+) -> (Vec<EdgeId>, Vec<EdgeId>) {
+    let visible_edge_ids = snapshot
+        .graph
+        .edges
+        .iter()
+        .filter_map(|(id, edge)| {
+            if edge.hidden {
+                return None;
+            }
+            let lookup = snapshot.lookups.edge_lookup.get(id)?;
+            (index.has_node(lookup.from_node) && index.has_node(lookup.to_node)).then_some(*id)
+        })
+        .collect::<Vec<_>>();
     resolve_visible_edge_order_from_ids(visible_edge_ids, edge_order)
 }
 
@@ -283,6 +317,7 @@ struct SpatialNodeIndex {
     cell_size: f32,
     cells: HashMap<GridCell, Vec<NodeId>>,
     nodes: BTreeMap<NodeId, CanvasBounds>,
+    indexed_bounds: Option<CanvasBounds>,
 }
 
 impl SpatialNodeIndex {
@@ -296,6 +331,7 @@ impl SpatialNodeIndex {
             cell_size,
             cells: HashMap::new(),
             nodes: BTreeMap::new(),
+            indexed_bounds: None,
         };
 
         for (node, entry) in &snapshot.lookups.node_lookup {
@@ -312,6 +348,10 @@ impl SpatialNodeIndex {
             if !bounds.is_valid() {
                 continue;
             }
+            index.indexed_bounds = Some(match index.indexed_bounds {
+                Some(current) => current.union(bounds),
+                None => bounds,
+            });
             index.nodes.insert(*node, bounds);
             for cell in covered_cells(bounds, cell_size) {
                 index.cells.entry(cell).or_default().push(*node);
@@ -323,6 +363,21 @@ impl SpatialNodeIndex {
 
     fn node_bounds(&self, node: NodeId) -> Option<CanvasBounds> {
         self.nodes.get(&node).copied()
+    }
+
+    fn has_node(&self, node: NodeId) -> bool {
+        self.nodes.contains_key(&node)
+    }
+
+    fn node_ids(&self) -> Vec<NodeId> {
+        self.nodes.keys().copied().collect()
+    }
+
+    fn viewport_contains_indexed_nodes(&self, viewport: SpatialViewport) -> bool {
+        self.nodes.is_empty()
+            || self
+                .indexed_bounds
+                .is_some_and(|bounds| viewport.bounds.contains(bounds))
     }
 
     fn nodes_intersecting(&self, viewport: SpatialViewport) -> Vec<NodeId> {

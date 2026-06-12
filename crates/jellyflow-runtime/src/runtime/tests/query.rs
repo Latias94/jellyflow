@@ -289,6 +289,39 @@ fn spatial_rendering_query_matches_linear_for_node_origin_override() {
 }
 
 #[test]
+fn spatial_rendering_query_matches_linear_for_full_viewport() {
+    let (graph, measured, _selected, spanning, outside, hidden_edge, hidden_endpoint, inside_edge) =
+        graph_for_spatial_rendering_query();
+    let mut linear = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let mut spatial = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        spatial_editor_config(),
+    );
+    report_measured_size(&mut linear, measured);
+    report_measured_size(&mut spatial, measured);
+
+    let viewport = CanvasSize {
+        width: 200.0,
+        height: 120.0,
+    };
+    let spatial_result = spatial.rendering_query(viewport);
+
+    assert_eq!(spatial_result, linear.rendering_query(viewport));
+    assert_eq!(
+        spatial_result.visible_edge_ids,
+        vec![spanning, outside, inside_edge],
+        "full-view spatial fast path keeps endpoint and hidden-edge visibility semantics"
+    );
+    assert!(!spatial_result.visible_edge_ids.contains(&hidden_edge));
+    assert!(!spatial_result.visible_edge_ids.contains(&hidden_endpoint));
+}
+
+#[test]
 fn spatial_rendering_query_reuses_cached_node_index_for_repeated_and_panned_reads() {
     let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
         graph_for_spatial_rendering_query();
