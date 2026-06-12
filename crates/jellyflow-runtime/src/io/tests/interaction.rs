@@ -41,6 +41,34 @@ fn spatial_index_tuning_defaults_to_disabled_and_backfills_enabled() {
 }
 
 #[test]
+fn editor_config_helpers_enable_spatial_query_and_visibility_policy() {
+    let config = NodeGraphEditorConfig::default()
+        .with_spatial_index_enabled(true)
+        .with_only_render_visible_elements(false);
+    let interaction = config.resolved_interaction_state();
+
+    assert!(config.runtime_tuning.spatial_index.enabled);
+    assert!(interaction.rendering_interaction().spatial_index.enabled);
+    assert!(!config.runtime_tuning.only_render_visible_elements);
+    assert!(
+        !interaction
+            .rendering_interaction()
+            .only_render_visible_elements
+    );
+
+    let tuning = NodeGraphSpatialIndexTuning::default()
+        .enabled(true)
+        .with_cell_size_screen_px(128.0)
+        .with_min_cell_size_screen_px(8.0)
+        .with_edge_aabb_pad_screen_px(32.0);
+
+    assert!(tuning.enabled);
+    assert_eq!(tuning.cell_size_screen_px, 128.0);
+    assert_eq!(tuning.min_cell_size_screen_px, 8.0);
+    assert_eq!(tuning.edge_aabb_pad_screen_px, 32.0);
+}
+
+#[test]
 fn editor_config_parts_roundtrip() {
     let mut interaction = NodeGraphInteractionConfig::default();
     interaction.selection_on_drag = true;

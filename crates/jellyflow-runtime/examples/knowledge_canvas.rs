@@ -1,6 +1,5 @@
 use jellyflow_core::{
-    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasSize, Graph, GraphId,
-    GraphLocalBindingTarget, Node, NodeId, NodeKindKey, SourceAnchor,
+    Binding, BindingId, CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey,
 };
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
@@ -41,15 +40,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .insert(node, make_note_node(CanvasPoint { x: 160.0, y: 96.0 }));
     graph.bindings.insert(
         binding,
-        Binding {
-            subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Node { id: node }),
-            target: BindingEndpoint::source(SourceAnchor::new(
-                "source://paper.pdf",
-                serde_json::json!({ "page": 12, "rect": [72, 144, 260, 190] }),
-            )),
-            kind: Some("excerpt".to_owned()),
-            meta: serde_json::Value::Null,
-        },
+        Binding::node_to_source(
+            node,
+            "source://paper.pdf",
+            serde_json::json!({ "page": 12, "rect": [72, 144, 260, 190] }),
+        )
+        .with_kind("excerpt"),
     );
 
     let mut store = NodeGraphStore::new(

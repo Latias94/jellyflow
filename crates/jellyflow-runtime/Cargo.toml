@@ -22,6 +22,13 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "rendering_query"
+harness = false
+
 [lints.rust]
 dead_code = "allow"
 

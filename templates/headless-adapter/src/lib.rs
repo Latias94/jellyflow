@@ -1,10 +1,9 @@
 use std::path::Path;
 
 use jellyflow_core::{
-    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
-    EdgeKind, EdgeReconnectable, Graph, GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction,
-    Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity, PortDirection,
-    PortId, PortKey, PortKind, SourceAnchor,
+    Binding, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind,
+    EdgeReconnectable, Graph, GraphId, GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent,
+    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
@@ -387,15 +386,12 @@ fn assert_knowledge_canvas_surfaces() {
     );
     graph.bindings.insert(
         binding_id,
-        Binding {
-            subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Node { id: node_id }),
-            target: BindingEndpoint::source(SourceAnchor::new(
-                "source://paper.pdf",
-                serde_json::json!({ "page": 1 }),
-            )),
-            kind: Some("excerpt".to_owned()),
-            meta: serde_json::Value::Null,
-        },
+        Binding::node_to_source(
+            node_id,
+            "source://paper.pdf",
+            serde_json::json!({ "page": 1 }),
+        )
+        .with_kind("excerpt"),
     );
 
     let store = NodeGraphStore::new(

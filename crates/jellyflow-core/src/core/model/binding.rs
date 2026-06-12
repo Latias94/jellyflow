@@ -50,13 +50,77 @@ pub struct SourceAnchor {
     pub payload: Value,
 }
 
+impl Binding {
+    pub fn new(subject: BindingEndpoint, target: BindingEndpoint) -> Self {
+        Self {
+            subject,
+            target,
+            kind: None,
+            meta: Value::Null,
+        }
+    }
+
+    pub fn graph_local_to_source(
+        subject: GraphLocalBindingTarget,
+        source_id: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self::new(
+            BindingEndpoint::graph_local(subject),
+            BindingEndpoint::source_payload(source_id, payload),
+        )
+    }
+
+    pub fn node_to_source(node: NodeId, source_id: impl Into<String>, payload: Value) -> Self {
+        Self::graph_local_to_source(GraphLocalBindingTarget::node(node), source_id, payload)
+    }
+
+    pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
+        self.kind = Some(kind.into());
+        self
+    }
+
+    pub fn with_meta(mut self, meta: Value) -> Self {
+        self.meta = meta;
+        self
+    }
+}
+
 impl BindingEndpoint {
     pub fn graph_local(target: GraphLocalBindingTarget) -> Self {
         Self::GraphLocal { target }
     }
 
+    pub fn graph() -> Self {
+        Self::graph_local(GraphLocalBindingTarget::Graph)
+    }
+
+    pub fn node(id: NodeId) -> Self {
+        Self::graph_local(GraphLocalBindingTarget::node(id))
+    }
+
+    pub fn port(id: PortId) -> Self {
+        Self::graph_local(GraphLocalBindingTarget::port(id))
+    }
+
+    pub fn edge(id: EdgeId) -> Self {
+        Self::graph_local(GraphLocalBindingTarget::edge(id))
+    }
+
+    pub fn group(id: GroupId) -> Self {
+        Self::graph_local(GraphLocalBindingTarget::group(id))
+    }
+
+    pub fn sticky_note(id: StickyNoteId) -> Self {
+        Self::graph_local(GraphLocalBindingTarget::sticky_note(id))
+    }
+
     pub fn source(anchor: SourceAnchor) -> Self {
         Self::Source { anchor }
+    }
+
+    pub fn source_payload(source_id: impl Into<String>, payload: Value) -> Self {
+        Self::source(SourceAnchor::new(source_id, payload))
     }
 
     pub fn graph_local_target(&self) -> Option<GraphLocalBindingTarget> {
@@ -64,6 +128,28 @@ impl BindingEndpoint {
             Self::GraphLocal { target } => Some(*target),
             Self::Source { .. } => None,
         }
+    }
+}
+
+impl GraphLocalBindingTarget {
+    pub fn node(id: NodeId) -> Self {
+        Self::Node { id }
+    }
+
+    pub fn port(id: PortId) -> Self {
+        Self::Port { id }
+    }
+
+    pub fn edge(id: EdgeId) -> Self {
+        Self::Edge { id }
+    }
+
+    pub fn group(id: GroupId) -> Self {
+        Self::Group { id }
+    }
+
+    pub fn sticky_note(id: StickyNoteId) -> Self {
+        Self::StickyNote { id }
     }
 }
 

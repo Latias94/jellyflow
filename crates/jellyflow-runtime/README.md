@@ -174,6 +174,22 @@ cargo run -p jellyflow-runtime --example conformance_harness -- approve <fixture
 cargo run -p jellyflow-runtime --example knowledge_canvas
 ```
 
+`NodeGraphStore::rendering_query` uses the deterministic linear read backend by default. Large graph
+adapters can opt into the snapshot-built spatial backend for local measurement while keeping the
+same public query result contract:
+
+```rust
+let editor_config = NodeGraphEditorConfig::default().with_spatial_index_enabled(true);
+```
+
+Measure local workloads before enabling it broadly. The current spatial backend rebuilds its index
+from the query snapshot, so it is a correctness-preserving optimization seam rather than a guaranteed
+speedup. The runtime crate includes a benchmark for 1k/10k/50k node rendering-query workloads:
+
+```text
+cargo bench -p jellyflow-runtime --bench rendering_query
+```
+
 For a copyable external adapter skeleton, start with the non-workspace headless template:
 
 ```text

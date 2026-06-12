@@ -266,8 +266,7 @@ fn source_binding(node: jellyflow_core::NodeId) -> Binding {
 }
 
 fn spatial_editor_config() -> NodeGraphEditorConfig {
-    let mut config = NodeGraphEditorConfig::default();
-    config.runtime_tuning.spatial_index.enabled = true;
+    let mut config = NodeGraphEditorConfig::default().with_spatial_index_enabled(true);
     config.runtime_tuning.spatial_index.cell_size_screen_px = 8.0;
     config.runtime_tuning.spatial_index.min_cell_size_screen_px = 4.0;
     config

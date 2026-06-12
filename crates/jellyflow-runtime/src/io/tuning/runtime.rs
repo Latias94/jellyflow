@@ -24,6 +24,16 @@ impl NodeGraphRuntimeTuning {
     pub fn is_default(this: &Self) -> bool {
         this == &Self::default()
     }
+
+    pub fn with_spatial_index_enabled(mut self, enabled: bool) -> Self {
+        self.spatial_index.enabled = enabled;
+        self
+    }
+
+    pub fn with_only_render_visible_elements(mut self, enabled: bool) -> Self {
+        self.only_render_visible_elements = enabled;
+        self
+    }
 }
 
 impl Default for NodeGraphRuntimeTuning {

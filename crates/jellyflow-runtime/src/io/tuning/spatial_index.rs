@@ -18,6 +18,26 @@ pub struct NodeGraphSpatialIndexTuning {
 }
 
 impl NodeGraphSpatialIndexTuning {
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_cell_size_screen_px(mut self, cell_size_screen_px: f32) -> Self {
+        self.cell_size_screen_px = cell_size_screen_px;
+        self
+    }
+
+    pub fn with_min_cell_size_screen_px(mut self, min_cell_size_screen_px: f32) -> Self {
+        self.min_cell_size_screen_px = min_cell_size_screen_px;
+        self
+    }
+
+    pub fn with_edge_aabb_pad_screen_px(mut self, edge_aabb_pad_screen_px: f32) -> Self {
+        self.edge_aabb_pad_screen_px = edge_aabb_pad_screen_px;
+        self
+    }
+
     fn default_cell_size_screen_px() -> f32 {
         256.0
     }
