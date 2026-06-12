@@ -1,0 +1,19 @@
+[package]
+name = "jellyflow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/jellyflow"
+readme = "README.md"
+description = "User-friendly facade for the headless Jellyflow graph engine."
+keywords = ["graph", "node-graph", "flow", "headless"]
+categories = ["data-structures", "gui"]
+
+[dependencies]
+jellyflow-core.workspace = true
+jellyflow-layout.workspace = true
+jellyflow-runtime.workspace = true

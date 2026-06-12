@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_PACKAGES = ("jellyflow-core", "jellyflow-runtime")
+DEFAULT_PACKAGES = (
+    "jellyflow-core",
+    "jellyflow-layout",
+    "jellyflow-runtime",
+    "jellyflow",
+)
 
 
 def is_forbidden_package(line: str) -> bool:

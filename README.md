@@ -6,6 +6,8 @@ can be used without Fret UI, renderer, platform, or windowing crates.
 
 The initial package split is intentionally small:
 
+- `jellyflow`: user-friendly facade that re-exports the engine crates under `core`, `layout`, and
+  `runtime`, plus a prelude for common graph-store setup.
 - `jellyflow-core`: graph IDs, document model, type descriptors, interaction value types, and
   first-class graph/source bindings, and undoable graph transactions.
 - `jellyflow-runtime`: headless `NodeGraphStore`, view-state/config payloads, policy resolution,
@@ -28,14 +30,11 @@ the reusable engine boundary for non-Fret consumers.
 
 ```toml
 [dependencies]
-jellyflow-core = { path = "crates/jellyflow-core" }
-jellyflow-runtime = { path = "crates/jellyflow-runtime" }
+jellyflow = { path = "crates/jellyflow" }
 ```
 
 ```rust
-use jellyflow_core::{Graph, GraphId};
-use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
-use jellyflow_runtime::NodeGraphStore;
+use jellyflow::prelude::*;
 
 let graph = Graph::new(GraphId::new());
 let store = NodeGraphStore::new(
@@ -47,9 +46,13 @@ let store = NodeGraphStore::new(
 assert_eq!(store.graph().nodes.len(), 0);
 ```
 
+Depend on `jellyflow-core`, `jellyflow-layout`, or `jellyflow-runtime` directly when you want a
+narrower dependency boundary.
+
 Runnable examples live under the crate example directories:
 
 ```text
+cargo test -p jellyflow
 cargo run -p jellyflow-core --example build_graph
 cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example geometry_edge

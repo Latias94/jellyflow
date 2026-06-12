@@ -25,7 +25,81 @@ def write_file(path: Path, contents: str) -> None:
 
 
 def jellyflow_external_consumer_scenarios(repo_root: Path) -> list[SmokeScenario]:
-    return [jellyflow_runtime_scenario(repo_root)]
+    return [
+        jellyflow_facade_scenario(repo_root),
+        jellyflow_runtime_scenario(repo_root),
+    ]
+
+
+def jellyflow_facade_scenario(repo_root: Path) -> SmokeScenario:
+    return SmokeScenario(
+        slug="jellyflow-facade-external-smoke",
+        cargo_toml=jellyflow_facade_cargo_toml(repo_root),
+        main_rs=jellyflow_facade_main_rs(),
+    )
+
+
+def jellyflow_facade_cargo_toml(repo_root: Path) -> str:
+    return (
+        textwrap.dedent(
+            f"""
+            [package]
+            name = "jellyflow-facade-external-smoke"
+            version = "0.0.0"
+            edition = "2024"
+            rust-version = "1.95"
+            publish = false
+
+            [dependencies]
+            jellyflow = {{ path = "{(repo_root / "crates/jellyflow").as_posix()}" }}
+            """
+        ).strip()
+        + "\n"
+    )
+
+
+def jellyflow_facade_main_rs() -> str:
+    return (
+        textwrap.dedent(
+            """
+            use jellyflow::prelude::*;
+            use jellyflow::{core, layout, runtime};
+
+            fn main() {
+                let store = NodeGraphStore::new(
+                    Graph::new(GraphId::from_u128(1)),
+                    NodeGraphViewState::default(),
+                    NodeGraphEditorConfig::default(),
+                );
+
+                assert_eq!(store.graph().nodes.len(), 0);
+
+                let registry = builtin_layout_engine_registry();
+                assert!(registry.get(&LayoutEngineId::dugong()).is_some());
+                assert!(
+                    registry
+                        .engines_for_family(&LayoutFamilyId::mind_map())
+                        .count()
+                        >= 2
+                );
+
+                let request = LayoutEngineRequest::dugong(LayoutRequest::all());
+                let planned = store
+                    .plan_layout(&request, &registry)
+                    .expect("facade layout planning succeeds");
+                assert!(planned.nodes.is_empty());
+
+                let _graph: core::Graph = store.graph().clone();
+                let _patch = runtime::NodeGraphPatch::default();
+                let _: fn() -> layout::LayoutEngineRegistry =
+                    layout::builtin_layout_engine_registry;
+                let _ = std::mem::size_of::<DispatchOutcome>();
+                let _ = std::mem::size_of::<DispatchError>();
+            }
+            """
+        ).strip()
+        + "\n"
+    )
 
 
 def jellyflow_runtime_scenario(repo_root: Path) -> SmokeScenario:
@@ -44,7 +118,7 @@ def jellyflow_runtime_cargo_toml(repo_root: Path) -> str:
             name = "jellyflow-external-smoke"
             version = "0.0.0"
             edition = "2024"
-            rust-version = "1.92"
+            rust-version = "1.95"
             publish = false
 
             [dependencies]
@@ -467,7 +541,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Create a temporary Cargo project outside this workspace and run a smoke binary that can "
-            "consume jellyflow-core and jellyflow-runtime without fret-node or fret-core."
+            "consume jellyflow and the lower-level Jellyflow crates without fret-node or fret-core."
         )
     )
     parser.add_argument(
