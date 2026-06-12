@@ -202,6 +202,7 @@ changes. Pan-only queries reuse the same index. The runtime crate includes a ben
 
 ```text
 cargo bench -p jellyflow-runtime --bench rendering_query
+cargo bench -p jellyflow-runtime --bench schema_create_node
 ```
 
 For a copyable external adapter skeleton, start with the non-workspace headless template:

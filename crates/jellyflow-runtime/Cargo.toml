@@ -29,6 +29,10 @@ criterion = "0.8.2"
 name = "rendering_query"
 harness = false
 
+[[bench]]
+name = "schema_create_node"
+harness = false
+
 [lints.rust]
 dead_code = "allow"
 
