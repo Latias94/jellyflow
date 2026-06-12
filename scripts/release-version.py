@@ -67,12 +67,20 @@ def check_versions(version: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["check"])
-    parser.add_argument("--version", required=True)
+    parser.add_argument("command", choices=["check", "crate-version"])
+    parser.add_argument("--version")
+    parser.add_argument("--crate")
     args = parser.parse_args()
 
     if args.command == "check":
+        if args.version is None:
+            parser.error("check requires --version")
         return check_versions(args.version)
+    if args.command == "crate-version":
+        if args.crate is None:
+            parser.error("crate-version requires --crate")
+        print(crate_version(args.crate))
+        return 0
     raise AssertionError(args.command)
 
 

@@ -106,7 +106,7 @@ jobs:
           workspace_crate_version() {
             local crate="$1"
 
-            cargo pkgid -p "$crate" | sed 's/.*@//'
+            python3 scripts/release-version.py crate-version --crate "$crate"
           }
 
           publish_crate_version() {
