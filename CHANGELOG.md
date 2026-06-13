@@ -6,7 +6,10 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- Added `LayoutPresetBuilder` for workflow, tree, radial mind-map, and freeform mind-map layout
+  request presets.
 
 ## [0.1.0] - 2026-06-12
 

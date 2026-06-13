@@ -200,6 +200,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _layout_request = layout::LayoutRequest::all();
     let _layout_context = layout::LayoutContext::new();
     let layout_engine_request = layout::LayoutEngineRequest::dugong(layout::LayoutRequest::all());
+    let preset_layout_engine_request = layout::LayoutPresetBuilder::tree().build();
     let layout_registry = layout::builtin_layout_engine_registry();
     assert!(
         layout_registry
@@ -241,6 +242,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<layout::LayoutFamilyMetadata>();
     let _ = std::mem::size_of::<layout::LayoutEngineMetadata>();
     let _ = std::mem::size_of::<layout::LayoutEngineCapability>();
+    let _ = std::mem::size_of::<layout::LayoutPresetBuilder>();
     let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapFreeformLayoutEngine>();
@@ -264,6 +266,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
         &layout::LayoutContext,
     ) -> Result<GraphTransaction, layout::LayoutError> = layout::layout_transaction;
     let _ = layout_engine_request;
+    let _ = preset_layout_engine_request;
     let _binding_query = selection_store.binding_query();
     let _binding_query_with_options = selection_store.binding_query_with_options(
         jellyflow_runtime::runtime::binding::BindingQueryOptions::default()

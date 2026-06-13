@@ -11,7 +11,10 @@ It re-exports the lower-level crates under stable module names:
 
 Use this crate when you want one dependency for application or adapter code. Depend on
 `jellyflow-core`, `jellyflow-layout`, or `jellyflow-runtime` directly when you need a narrower
-dependency boundary.
+dependency boundary. For automatic layout, start with `LayoutPresetBuilder::workflow()`,
+`LayoutPresetBuilder::tree()`, `LayoutPresetBuilder::mind_map()`, or
+`LayoutPresetBuilder::freeform()`, then pass the built `LayoutEngineRequest` to the runtime layout
+facade.
 
 ```rust
 use jellyflow::prelude::*;

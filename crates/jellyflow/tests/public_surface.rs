@@ -31,8 +31,10 @@ fn facade_modules_expose_underlying_crates() {
     let _ = std::mem::size_of::<LayoutEngineRegistry>();
     let _ = std::mem::size_of::<LayoutContext>();
     let _ = std::mem::size_of::<LayoutEngineRequest>();
+    let _ = std::mem::size_of::<LayoutPresetBuilder>();
     let _ = std::mem::size_of::<LayoutRequest>();
     let _ = std::mem::size_of::<LayoutResult>();
+    let _preset_request = LayoutPresetBuilder::workflow().build();
     let _: fn() -> layout::LayoutEngineRegistry = layout::builtin_layout_engine_registry;
 
     let _patch = runtime::NodeGraphPatch::default();

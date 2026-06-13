@@ -27,16 +27,36 @@ prefer the registry path when it needs runtime selection or custom engines.
 The built-in `dugong` engine is grouped under the `layered_dag` family, while the radial and
 freeform mind-map engines are grouped under the `mind_map` family.
 
+## Presets
+
+For common editor flows, start with `LayoutPresetBuilder`. Presets only choose an engine and
+options; they still produce ordinary `LayoutEngineRequest` values, so hosts can pass them through
+the registry/runtime path or customize them before execution.
+
+```rust
+use jellyflow_layout::{LayoutDirection, LayoutPresetBuilder};
+
+let workflow = LayoutPresetBuilder::workflow()
+    .with_direction(LayoutDirection::LeftToRight)
+    .build();
+let tree = LayoutPresetBuilder::tree().build();
+let mind_map = LayoutPresetBuilder::mind_map().build();
+
+assert_eq!(workflow.engine.as_str(), "dugong");
+assert_eq!(tree.engine.as_str(), "dugong");
+assert_eq!(mind_map.engine.as_str(), "mind_map_radial");
+```
+
 ```rust
 use jellyflow_core::Graph;
 use jellyflow_layout::{
-    LayoutContext, LayoutEngineRequest, LayoutRequest, builtin_layout_engine_registry,
+    LayoutContext, LayoutPresetBuilder, builtin_layout_engine_registry,
     layout_graph_to_transaction_with_engine,
 };
 
 fn plan_builtin_layout(graph: &Graph) -> Result<(), jellyflow_layout::LayoutError> {
     let registry = builtin_layout_engine_registry();
-    let request = LayoutEngineRequest::dugong(LayoutRequest::all());
+    let request = LayoutPresetBuilder::workflow().build();
     let context = LayoutContext::new();
 
     let tx = layout_graph_to_transaction_with_engine(graph, &request, &registry, &context)?;

@@ -2,8 +2,9 @@ use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, Node
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow_runtime::runtime::layout::{
-    LayoutContext, LayoutEngine, LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest,
-    LayoutError, LayoutNodePosition, LayoutRequest, LayoutResult, builtin_layout_engine_registry,
+    LayoutContext, LayoutEngine, LayoutEngineId, LayoutEngineRegistry, LayoutError,
+    LayoutNodePosition, LayoutPresetBuilder, LayoutRequest, LayoutResult,
+    builtin_layout_engine_registry,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -100,13 +101,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let builtins = builtin_layout_engine_registry();
-    let dugong_request = LayoutEngineRequest::dugong(LayoutRequest::all());
+    let dugong_request = LayoutPresetBuilder::workflow().build();
     let planned = store.plan_layout(&dugong_request, &builtins)?;
     assert_eq!(planned.nodes.len(), 2);
 
     let mut registry = LayoutEngineRegistry::new();
     registry.insert(RowLayoutEngine)?;
-    let row_request = LayoutEngineRequest::new("row", LayoutRequest::all());
+    let row_request = LayoutPresetBuilder::workflow().with_engine("row").build();
     let outcome = store.apply_layout(&row_request, &registry)?;
 
     println!(

@@ -154,6 +154,9 @@ Built-in engines:
 Custom engines implement `LayoutEngine` and register with `LayoutEngineRegistry`. Runtime callers
 can build a `LayoutContext` from store measurements and binding pins through
 `NodeGraphStore::layout_context()` or `NodeGraphStore::layout_context_with_binding_pins()`.
+For common cases, `LayoutPresetBuilder` builds ordinary `LayoutEngineRequest` values for workflow,
+tree, radial mind-map, and freeform mind-map layouts, so hosts can start from a preset and still
+override engine IDs, direction, spacing, scope, and measured sizes.
 
 ```sh
 cargo run -p jellyflow-runtime --example layout_engines
