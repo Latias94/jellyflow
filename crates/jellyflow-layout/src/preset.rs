@@ -26,7 +26,7 @@ impl LayoutPresetBuilder {
 
     /// Returns a tree-shaped layered preset.
     pub fn tree() -> Self {
-        Self::workflow().with_options(LayoutOptions {
+        Self::new(LayoutEngineId::tidy_tree(), LayoutRequest::all()).with_options(LayoutOptions {
             direction: LayoutDirection::TopToBottom,
             spacing: LayoutSpacing {
                 nodesep: 32.0,

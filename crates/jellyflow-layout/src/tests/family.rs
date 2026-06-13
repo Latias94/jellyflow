@@ -31,7 +31,7 @@ fn builtin_registry_groups_mind_map_engines_by_family() {
 }
 
 #[test]
-fn builtin_registry_keeps_dugong_in_layered_family() {
+fn builtin_registry_groups_layered_engines_by_family() {
     let registry = builtin_layout_engine_registry();
     let layered = LayoutFamilyId::layered_dag();
 
@@ -40,13 +40,23 @@ fn builtin_registry_keeps_dugong_in_layered_family() {
         .map(|metadata| metadata.engine.clone())
         .collect::<Vec<_>>();
 
-    assert_eq!(engines, vec![LayoutEngineId::dugong()]);
+    assert_eq!(
+        engines,
+        vec![LayoutEngineId::dugong(), LayoutEngineId::tidy_tree()]
+    );
     assert!(
         registry
             .metadata(&LayoutEngineId::dugong())
             .unwrap()
             .capabilities
             .contains(&LayoutEngineCapability::EdgeRouting)
+    );
+    assert!(
+        registry
+            .metadata(&LayoutEngineId::tidy_tree())
+            .unwrap()
+            .capabilities
+            .contains(&LayoutEngineCapability::DirectionalLayout)
     );
 }
 
@@ -95,6 +105,11 @@ fn family_and_metadata_ids_are_deterministic() {
             .engine_metadata()
             .map(|metadata| metadata.engine.as_str())
             .collect::<Vec<_>>(),
-        vec!["dugong", "mind_map_freeform", "mind_map_radial"]
+        vec![
+            "dugong",
+            "mind_map_freeform",
+            "mind_map_radial",
+            "tidy_tree"
+        ]
     );
 }

@@ -25,7 +25,7 @@ React, wgpu, or egui crates. Product-specific rendering and input binding stay i
 | Build an editor or adapter with one Rust dependency | [`jellyflow`](https://crates.io/crates/jellyflow) | Facade crate that re-exports `core`, `layout`, and `runtime`, plus a small prelude. |
 | Store and edit portable graph documents | [`jellyflow-core`](https://crates.io/crates/jellyflow-core) | IDs, graph data, ports, bindings, symbols, operations, transactions, fragments, and history. |
 | Drive headless graph interaction behavior | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Store dispatch, policy, schema/profile hooks, selection, delete, drag, resize, viewport, geometry, XyFlow-style projections, and conformance fixtures. |
-| Add automatic layout without renderer dependencies | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Built-in `dugong`, radial mind-map, and freeform mind-map engines, plus custom engine registration. |
+| Add automatic layout without renderer dependencies | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Built-in `dugong`, tidy tree, radial mind-map, and freeform mind-map engines, plus custom engine registration. |
 | Start a renderer integration | [`templates/headless-adapter`](templates/headless-adapter) | Copyable external adapter skeleton with conformance checks before renderer smoke tests. |
 
 ## What Jellyflow Provides
@@ -148,6 +148,7 @@ animate, or discard.
 Built-in engines:
 
 - `dugong`: layered DAG layout.
+- `tidy_tree`: tree layout that centers parents over children for hierarchy and outline views.
 - `mind_map_radial`: radial mind-map layout.
 - `mind_map_freeform`: overlap-resolving freeform mind-map layout that respects pinned nodes.
 

@@ -103,6 +103,14 @@ fn engine_request_serializes_engine_id() {
 }
 
 #[test]
+fn engine_request_constructors_use_builtin_ids() {
+    assert_eq!(
+        LayoutEngineRequest::tidy_tree(LayoutRequest::all()).engine,
+        LayoutEngineId::tidy_tree()
+    );
+}
+
+#[test]
 fn context_pinned_nodes_are_visible_to_engines() {
     let mut registry = LayoutEngineRegistry::new();
     let engine = LayoutEngineId::new("custom.test");

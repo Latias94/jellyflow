@@ -12,6 +12,7 @@ mod family;
 mod freeform;
 mod mind_map;
 mod preset;
+mod tidy_tree;
 
 pub use dugong::{
     DugongLayoutEngine, layout_graph_to_transaction_with_dugong, layout_graph_with_dugong,
@@ -21,7 +22,7 @@ pub use engine::{
     LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutError, LayoutNodePosition,
     LayoutOptions, LayoutRequest, LayoutResult, LayoutScope, LayoutSpacing,
     MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    layout_graph_to_transaction_with_engine, layout_graph_with_engine,
+    TIDY_TREE_LAYOUT_ENGINE_ID, layout_graph_to_transaction_with_engine, layout_graph_with_engine,
 };
 pub use family::{
     LAYERED_DAG_LAYOUT_FAMILY_ID, LayoutEngineCapability, LayoutEngineMetadata, LayoutFamilyId,
@@ -36,6 +37,9 @@ pub use mind_map::{
     layout_graph_with_mind_map_radial,
 };
 pub use preset::LayoutPresetBuilder;
+pub use tidy_tree::{
+    TidyTreeLayoutEngine, layout_graph_to_transaction_with_tidy_tree, layout_graph_with_tidy_tree,
+};
 
 /// Returns a registry containing Jellyflow's built-in layout engines.
 pub fn builtin_layout_engine_registry() -> LayoutEngineRegistry {
@@ -59,6 +63,16 @@ pub fn builtin_layout_engine_registry() -> LayoutEngineRegistry {
     debug_assert!(
         inserted_dugong_metadata.is_ok(),
         "built-in dugong metadata should be unique"
+    );
+    let inserted_tidy_tree = registry.insert(TidyTreeLayoutEngine);
+    debug_assert!(
+        inserted_tidy_tree.is_ok(),
+        "built-in tidy tree engine should be unique"
+    );
+    let inserted_tidy_tree_metadata = registry.insert_metadata(LayoutEngineMetadata::tidy_tree());
+    debug_assert!(
+        inserted_tidy_tree_metadata.is_ok(),
+        "built-in tidy tree metadata should be unique"
     );
     let inserted_mind_map = registry.insert(MindMapRadialLayoutEngine);
     debug_assert!(

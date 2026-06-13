@@ -22,6 +22,7 @@ fn facade_modules_expose_underlying_crates() {
 
     let registry = builtin_layout_engine_registry();
     assert!(registry.get(&LayoutEngineId::dugong()).is_some());
+    assert!(registry.get(&LayoutEngineId::tidy_tree()).is_some());
     assert!(
         registry
             .engines_for_family(&LayoutFamilyId::mind_map())
@@ -36,6 +37,8 @@ fn facade_modules_expose_underlying_crates() {
     let _ = std::mem::size_of::<LayoutResult>();
     let _preset_request = LayoutPresetBuilder::workflow().build();
     let _: fn() -> layout::LayoutEngineRegistry = layout::builtin_layout_engine_registry;
+    let _ = layout::TIDY_TREE_LAYOUT_ENGINE_ID;
+    let _ = std::mem::size_of::<layout::TidyTreeLayoutEngine>();
 
     let _patch = runtime::NodeGraphPatch::default();
 }

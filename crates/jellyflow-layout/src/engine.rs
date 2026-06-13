@@ -11,6 +11,8 @@ use crate::family::{LayoutEngineMetadata, LayoutFamilyId, LayoutFamilyMetadata};
 
 /// Stable engine id for the built-in Dagre-compatible `dugong` engine.
 pub const DUGONG_LAYOUT_ENGINE_ID: &str = "dugong";
+/// Stable engine id for the built-in tidy tree engine.
+pub const TIDY_TREE_LAYOUT_ENGINE_ID: &str = "tidy_tree";
 /// Stable engine id for the built-in radial mind-map engine.
 pub const MIND_MAP_RADIAL_LAYOUT_ENGINE_ID: &str = "mind_map_radial";
 /// Stable engine id for the built-in freeform mind-map engine.
@@ -30,6 +32,11 @@ impl LayoutEngineId {
     /// Returns the built-in `dugong` engine id.
     pub fn dugong() -> Self {
         Self::new(DUGONG_LAYOUT_ENGINE_ID)
+    }
+
+    /// Returns the built-in tidy tree engine id.
+    pub fn tidy_tree() -> Self {
+        Self::new(TIDY_TREE_LAYOUT_ENGINE_ID)
     }
 
     /// Returns the built-in radial mind-map engine id.
@@ -249,6 +256,11 @@ impl LayoutEngineRequest {
     /// Creates a request for the built-in `dugong` engine.
     pub fn dugong(layout: LayoutRequest) -> Self {
         Self::new(LayoutEngineId::dugong(), layout)
+    }
+
+    /// Creates a request for the built-in tidy tree engine.
+    pub fn tidy_tree(layout: LayoutRequest) -> Self {
+        Self::new(LayoutEngineId::tidy_tree(), layout)
     }
 
     /// Creates a request for the built-in radial mind-map engine.

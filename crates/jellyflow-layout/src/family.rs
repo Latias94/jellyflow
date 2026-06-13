@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{
     DUGONG_LAYOUT_ENGINE_ID, LayoutEngineId, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
+    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, TIDY_TREE_LAYOUT_ENGINE_ID,
 };
 
 /// Stable family id for DAG/layered graph layout engines.
@@ -139,6 +139,19 @@ impl LayoutEngineMetadata {
             LayoutEngineId::new(DUGONG_LAYOUT_ENGINE_ID),
             LayoutFamilyId::layered_dag(),
             "Dugong layered DAG",
+        )
+        .with_capabilities([
+            LayoutEngineCapability::DirectionalLayout,
+            LayoutEngineCapability::EdgeRouting,
+        ])
+    }
+
+    /// Returns metadata for the built-in tidy tree engine.
+    pub fn tidy_tree() -> Self {
+        Self::new(
+            LayoutEngineId::new(TIDY_TREE_LAYOUT_ENGINE_ID),
+            LayoutFamilyId::layered_dag(),
+            "Tidy tree",
         )
         .with_capabilities([
             LayoutEngineCapability::DirectionalLayout,

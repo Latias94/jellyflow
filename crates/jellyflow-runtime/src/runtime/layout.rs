@@ -12,12 +12,12 @@ pub use jellyflow_layout::{
     LayoutFamilyMetadata, LayoutNodePosition, LayoutOptions, LayoutPresetBuilder, LayoutRequest,
     LayoutResult, LayoutScope, LayoutSpacing, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
     MIND_MAP_LAYOUT_FAMILY_ID, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, MindMapFreeformLayoutEngine,
-    MindMapRadialLayoutEngine, builtin_layout_engine_registry,
-    layout_graph_to_transaction_with_dugong, layout_graph_to_transaction_with_engine,
-    layout_graph_to_transaction_with_mind_map_freeform,
-    layout_graph_to_transaction_with_mind_map_radial, layout_graph_with_dugong,
-    layout_graph_with_engine, layout_graph_with_mind_map_freeform,
-    layout_graph_with_mind_map_radial,
+    MindMapRadialLayoutEngine, TIDY_TREE_LAYOUT_ENGINE_ID, TidyTreeLayoutEngine,
+    builtin_layout_engine_registry, layout_graph_to_transaction_with_dugong,
+    layout_graph_to_transaction_with_engine, layout_graph_to_transaction_with_mind_map_freeform,
+    layout_graph_to_transaction_with_mind_map_radial, layout_graph_to_transaction_with_tidy_tree,
+    layout_graph_with_dugong, layout_graph_with_engine, layout_graph_with_mind_map_freeform,
+    layout_graph_with_mind_map_radial, layout_graph_with_tidy_tree,
 };
 
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};

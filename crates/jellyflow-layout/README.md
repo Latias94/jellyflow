@@ -17,6 +17,8 @@ transactions so hosts can decide when to apply or animate layout results.
   without changing the stable engine-id dispatch contract.
 
 The built-in `dugong` engine is registered under `DUGONG_LAYOUT_ENGINE_ID` (`"dugong"`).
+The built-in tidy tree engine is registered under `TIDY_TREE_LAYOUT_ENGINE_ID`
+(`"tidy_tree"`).
 The built-in radial mind-map engine is registered under `MIND_MAP_RADIAL_LAYOUT_ENGINE_ID`
 (`"mind_map_radial"`).
 The built-in freeform mind-map engine is registered under `MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID`
@@ -24,8 +26,8 @@ The built-in freeform mind-map engine is registered under `MIND_MAP_FREEFORM_LAY
 It currently keeps the input canvas feel and only resolves overlaps while preserving pinned nodes.
 Compatibility helpers such as `layout_graph_with_dugong` remain available, but new host code should
 prefer the registry path when it needs runtime selection or custom engines.
-The built-in `dugong` engine is grouped under the `layered_dag` family, while the radial and
-freeform mind-map engines are grouped under the `mind_map` family.
+The built-in `dugong` and tidy tree engines are grouped under the `layered_dag` family, while the
+radial and freeform mind-map engines are grouped under the `mind_map` family.
 
 ## Presets
 
@@ -43,7 +45,7 @@ let tree = LayoutPresetBuilder::tree().build();
 let mind_map = LayoutPresetBuilder::mind_map().build();
 
 assert_eq!(workflow.engine.as_str(), "dugong");
-assert_eq!(tree.engine.as_str(), "dugong");
+assert_eq!(tree.engine.as_str(), "tidy_tree");
 assert_eq!(mind_map.engine.as_str(), "mind_map_radial");
 ```
 

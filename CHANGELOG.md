@@ -8,6 +8,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ### Added
 
+- Added the built-in `tidy_tree` layout engine and made `LayoutPresetBuilder::tree()` target it by
+  default.
 - Added `LayoutPresetBuilder` for workflow, tree, radial mind-map, and freeform mind-map layout
   request presets.
 

@@ -209,6 +209,11 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     assert!(
         layout_registry
+            .get(&layout::LayoutEngineId::tidy_tree())
+            .is_some()
+    );
+    assert!(
+        layout_registry
             .get(&layout::LayoutEngineId::mind_map_radial())
             .is_some()
     );
@@ -229,11 +234,18 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     assert_eq!(
         layout_registry
+            .engines_for_family(&layout::LayoutFamilyId::layered_dag())
+            .count(),
+        2
+    );
+    assert_eq!(
+        layout_registry
             .engines_for_family(&layout::LayoutFamilyId::mind_map())
             .count(),
         2
     );
     let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
+    let _ = layout::TIDY_TREE_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_RADIAL_LAYOUT_ENGINE_ID;
     let _ = layout::MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID;
     let _ = layout::LAYERED_DAG_LAYOUT_FAMILY_ID;
@@ -244,6 +256,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let _ = std::mem::size_of::<layout::LayoutEngineCapability>();
     let _ = std::mem::size_of::<layout::LayoutPresetBuilder>();
     let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
+    let _ = std::mem::size_of::<layout::TidyTreeLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
     let _ = std::mem::size_of::<layout::MindMapFreeformLayoutEngine>();
     let _ = std::mem::size_of::<layout::LayoutApplyOutcome>();

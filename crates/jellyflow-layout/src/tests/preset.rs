@@ -3,7 +3,7 @@ use jellyflow_core::{CanvasSize, NodeId};
 use crate::{
     DUGONG_LAYOUT_ENGINE_ID, LayoutDirection, LayoutEngineId, LayoutEngineRequest,
     LayoutPresetBuilder, LayoutScope, LayoutSpacing, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
+    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, TIDY_TREE_LAYOUT_ENGINE_ID,
 };
 
 #[test]
@@ -18,7 +18,8 @@ fn workflow_preset_uses_dugong_by_default() {
 fn tree_preset_sets_layered_defaults() {
     let request = LayoutPresetBuilder::tree().build();
 
-    assert_eq!(request.engine, LayoutEngineId::dugong());
+    assert_eq!(request.engine, LayoutEngineId::tidy_tree());
+    assert_eq!(request.engine.as_str(), TIDY_TREE_LAYOUT_ENGINE_ID);
     assert_eq!(
         request.layout.options.direction,
         LayoutDirection::TopToBottom
