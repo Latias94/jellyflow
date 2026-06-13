@@ -6,6 +6,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-13
+
 ### Added
 
 - Added the built-in `tidy_tree` layout engine and made `LayoutPresetBuilder::tree()` target it by

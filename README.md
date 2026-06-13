@@ -50,12 +50,12 @@ React, wgpu, or egui crates. Product-specific rendering and input binding stay i
 
 ```sh
 # Main facade crate
-cargo add jellyflow@0.1.0
+cargo add jellyflow@0.2.0
 
 # Narrow dependencies for lower-level consumers
-cargo add jellyflow-core@0.1.0
-cargo add jellyflow-layout@0.1.0
-cargo add jellyflow-runtime@0.1.0
+cargo add jellyflow-core@0.2.0
+cargo add jellyflow-layout@0.2.0
+cargo add jellyflow-runtime@0.2.0
 ```
 
 From a local checkout:
