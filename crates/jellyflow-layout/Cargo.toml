@@ -20,7 +20,12 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion = "0.8.2"
 serde_json.workspace = true
+
+[[bench]]
+name = "layout_engines"
+harness = false
 
 [lints.rust]
 dead_code = "allow"

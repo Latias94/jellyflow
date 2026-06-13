@@ -10,8 +10,13 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 - Added the built-in `tidy_tree` layout engine and made `LayoutPresetBuilder::tree()` target it by
   default.
+- Added Criterion benchmarks for built-in layout engines.
 - Added `LayoutPresetBuilder` for workflow, tree, radial mind-map, and freeform mind-map layout
   request presets.
+
+### Changed
+
+- Consolidated repeated native layout projection and result-building helpers.
 
 ## [0.1.0] - 2026-06-12
 

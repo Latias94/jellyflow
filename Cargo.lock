@@ -395,6 +395,7 @@ dependencies = [
 name = "jellyflow-layout"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dugong",
  "jellyflow-core",
  "serde",

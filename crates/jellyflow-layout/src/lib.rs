@@ -12,6 +12,7 @@ mod family;
 mod freeform;
 mod mind_map;
 mod preset;
+mod projection;
 mod tidy_tree;
 
 pub use dugong::{
