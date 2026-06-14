@@ -3,11 +3,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::builtin::{engine_metadata_by_id, layered_dag_family, mind_map_family};
-use crate::engine::{
-    DUGONG_LAYOUT_ENGINE_ID, LayoutEngineId, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, TIDY_TREE_LAYOUT_ENGINE_ID,
-};
+use crate::builtin::{BuiltinLayoutEngine, engine_metadata, layered_dag_family, mind_map_family};
+use crate::engine::LayoutEngineId;
 
 /// Stable family id for DAG/layered graph layout engines.
 pub const LAYERED_DAG_LAYOUT_FAMILY_ID: &str = "layered_dag";
@@ -136,25 +133,21 @@ impl LayoutEngineMetadata {
 
     /// Returns metadata for the built-in `dugong` engine.
     pub fn dugong() -> Self {
-        engine_metadata_by_id(&LayoutEngineId::new(DUGONG_LAYOUT_ENGINE_ID))
-            .expect("built-in dugong engine metadata should exist")
+        engine_metadata(BuiltinLayoutEngine::Dugong)
     }
 
     /// Returns metadata for the built-in tidy tree engine.
     pub fn tidy_tree() -> Self {
-        engine_metadata_by_id(&LayoutEngineId::new(TIDY_TREE_LAYOUT_ENGINE_ID))
-            .expect("built-in tidy tree engine metadata should exist")
+        engine_metadata(BuiltinLayoutEngine::TidyTree)
     }
 
     /// Returns metadata for the built-in radial mind-map engine.
     pub fn mind_map_radial() -> Self {
-        engine_metadata_by_id(&LayoutEngineId::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID))
-            .expect("built-in radial mind-map engine metadata should exist")
+        engine_metadata(BuiltinLayoutEngine::MindMapRadial)
     }
 
     /// Returns metadata for the built-in freeform mind-map engine.
     pub fn mind_map_freeform() -> Self {
-        engine_metadata_by_id(&LayoutEngineId::new(MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID))
-            .expect("built-in freeform mind-map engine metadata should exist")
+        engine_metadata(BuiltinLayoutEngine::MindMapFreeform)
     }
 }
