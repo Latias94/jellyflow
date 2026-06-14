@@ -5,6 +5,7 @@ use crate::io::NodeGraphViewState;
 use crate::runtime::selection::{
     SelectionBoxInput, SelectionBoxOptions, SelectionBoxResult, SelectionModifier,
 };
+use crate::runtime::tests::fixtures::GraphFixtureUpdateExt;
 use jellyflow_core::core::CanvasPoint;
 
 #[test]

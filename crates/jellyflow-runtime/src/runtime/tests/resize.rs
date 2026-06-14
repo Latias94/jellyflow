@@ -9,7 +9,7 @@ use crate::runtime::resize::{
     NodeResizeDirection, NodeResizeItem, NodeResizeRequest, NodeResizeSession,
     NodeResizeSessionUpdateRequest, plan_node_pointer_resize, plan_node_resize,
 };
-use crate::runtime::tests::fixtures::fixture_insert_group;
+use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, fixture_insert_group};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Group, GroupId, Node,
     NodeExtent, NodeId, NodeKindKey, NodeOrigin,

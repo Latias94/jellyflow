@@ -1,4 +1,4 @@
-use super::super::fixtures::make_graph;
+use super::super::fixtures::{GraphFixtureUpdateExt, make_graph};
 use super::super::harness::{HarnessEvent, InteractionHarness};
 
 use crate::io::{NodeGraphInteractionState, NodeGraphViewState};

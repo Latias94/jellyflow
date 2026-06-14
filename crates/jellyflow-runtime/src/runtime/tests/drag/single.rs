@@ -1,4 +1,4 @@
-use super::super::fixtures::default_editor_config;
+use super::super::fixtures::{GraphFixtureUpdateExt, default_editor_config};
 use super::super::harness::{HarnessEvent, InteractionHarness};
 use super::support::drag_fixture;
 

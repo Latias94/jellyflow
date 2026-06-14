@@ -106,7 +106,7 @@ impl Graph {
     }
 
     /// Updates one graph import through a controlled mutable callback.
-    pub fn update_import<R>(
+    pub(crate) fn update_import<R>(
         &mut self,
         id: &GraphId,
         f: impl FnOnce(&mut GraphImport) -> R,
@@ -150,7 +150,7 @@ impl Graph {
     }
 
     /// Updates one symbol through a controlled mutable callback.
-    pub fn update_symbol<R>(
+    pub(crate) fn update_symbol<R>(
         &mut self,
         id: &SymbolId,
         f: impl FnOnce(&mut Symbol) -> R,
@@ -194,7 +194,11 @@ impl Graph {
     }
 
     /// Updates one node through a controlled mutable callback.
-    pub fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R> {
+    pub(crate) fn update_node<R>(
+        &mut self,
+        id: &NodeId,
+        f: impl FnOnce(&mut Node) -> R,
+    ) -> Option<R> {
         self.nodes.get_mut(id).map(f)
     }
 
@@ -234,7 +238,11 @@ impl Graph {
     }
 
     /// Updates one port through a controlled mutable callback.
-    pub fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R> {
+    pub(crate) fn update_port<R>(
+        &mut self,
+        id: &PortId,
+        f: impl FnOnce(&mut Port) -> R,
+    ) -> Option<R> {
         self.ports.get_mut(id).map(f)
     }
 
@@ -274,7 +282,11 @@ impl Graph {
     }
 
     /// Updates one edge through a controlled mutable callback.
-    pub fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R> {
+    pub(crate) fn update_edge<R>(
+        &mut self,
+        id: &EdgeId,
+        f: impl FnOnce(&mut Edge) -> R,
+    ) -> Option<R> {
         self.edges.get_mut(id).map(f)
     }
 
@@ -314,7 +326,11 @@ impl Graph {
     }
 
     /// Updates one group through a controlled mutable callback.
-    pub fn update_group<R>(&mut self, id: &GroupId, f: impl FnOnce(&mut Group) -> R) -> Option<R> {
+    pub(crate) fn update_group<R>(
+        &mut self,
+        id: &GroupId,
+        f: impl FnOnce(&mut Group) -> R,
+    ) -> Option<R> {
         self.groups.get_mut(id).map(f)
     }
 
@@ -354,7 +370,7 @@ impl Graph {
     }
 
     /// Updates one sticky note through a controlled mutable callback.
-    pub fn update_sticky_note<R>(
+    pub(crate) fn update_sticky_note<R>(
         &mut self,
         id: &StickyNoteId,
         f: impl FnOnce(&mut StickyNote) -> R,
@@ -405,7 +421,7 @@ impl Graph {
     }
 
     /// Updates one binding through a controlled mutable callback.
-    pub fn update_binding<R>(
+    pub(crate) fn update_binding<R>(
         &mut self,
         id: &BindingId,
         f: impl FnOnce(&mut Binding) -> R,

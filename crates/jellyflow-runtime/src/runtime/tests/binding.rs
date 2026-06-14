@@ -2,7 +2,7 @@ use crate::runtime::binding::{
     BindingEndpointResolution, BindingEndpointResolutionStatus, BindingQueryOptions,
 };
 use crate::runtime::measurement::NodeMeasurement;
-use crate::runtime::tests::fixtures::make_store;
+use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, make_store};
 use jellyflow_core::core::{
     Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasSize, Graph, GraphBuilder, GraphId,
     GraphLocalBindingTarget, Node, NodeId, NodeKindKey, SourceAnchor,
@@ -104,7 +104,7 @@ fn binding_query_updates_after_binding_dispatch() {
             })
         })
         .expect("node exists");
-    let mut store = make_store(graph.into());
+    let mut store = make_store(graph);
 
     assert!(store.binding_query().binding(binding).is_none());
 

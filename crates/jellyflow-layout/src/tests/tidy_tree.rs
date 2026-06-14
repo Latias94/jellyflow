@@ -105,7 +105,8 @@ fn disconnected_roots_are_separated() {
 
 #[test]
 fn hidden_nodes_edges_and_scope_are_excluded() {
-    let (mut graph, root, left, right, _grandchild) = tidy_tree_graph();
+    let (graph, root, left, right, _grandchild) = tidy_tree_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&right, |node| node.hidden = true)
         .expect("node exists");

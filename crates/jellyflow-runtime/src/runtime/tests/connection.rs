@@ -8,7 +8,7 @@ use crate::runtime::connection::{
     resolve_connection_target_from_handles,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
-use crate::runtime::tests::fixtures::fixture_insert_port;
+use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, fixture_insert_port};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,

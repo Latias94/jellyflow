@@ -1,6 +1,6 @@
 use keyboard_types::Code as KeyCode;
 
-use super::fixtures::make_graph;
+use super::fixtures::{GraphFixtureUpdateExt, make_graph};
 use crate::io::NodeGraphViewState;
 use crate::runtime::drag::{NODE_NUDGE_TRANSACTION_LABEL, NodeNudgeDirection, NodeNudgeRequest};
 use crate::runtime::keyboard::{KeyboardActionOutcome, KeyboardDeleteAction, KeyboardIntent};

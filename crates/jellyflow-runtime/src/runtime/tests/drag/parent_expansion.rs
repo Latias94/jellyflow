@@ -3,7 +3,7 @@ use super::support::drag_fixture;
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::drag::{NODE_DRAG_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest};
-use crate::runtime::tests::fixtures::fixture_insert_group;
+use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, fixture_insert_group};
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Group, GroupId, NodeExtent};
 use jellyflow_core::ops::GraphOp;
 

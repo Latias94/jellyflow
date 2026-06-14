@@ -1,4 +1,4 @@
-use super::fixtures::make_graph;
+use super::fixtures::{GraphFixtureUpdateExt, make_graph};
 
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 use jellyflow_core::core::{

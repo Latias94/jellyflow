@@ -1,4 +1,6 @@
-use super::super::fixtures::{fixture_clear_edges, fixture_insert_group, make_graph, make_store};
+use super::super::fixtures::{
+    GraphFixtureUpdateExt, fixture_clear_edges, fixture_insert_group, make_graph, make_store,
+};
 
 use crate::runtime::lookups::ConnectionSide;
 use jellyflow_core::core::{

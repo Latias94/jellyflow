@@ -1,7 +1,9 @@
 use crate::runtime::binding::BindingQueryOptions;
 use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use crate::runtime::query;
-use crate::runtime::tests::fixtures::{fixture_insert_binding, make_graph, make_store};
+use crate::runtime::tests::fixtures::{
+    GraphFixtureUpdateExt, fixture_insert_binding, make_graph, make_store,
+};
 use crate::runtime::{
     connection::ConnectionHandleRef,
     geometry::{HandleBounds, HandlePosition},

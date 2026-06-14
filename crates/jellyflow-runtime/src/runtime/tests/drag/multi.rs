@@ -6,6 +6,7 @@ use crate::runtime::drag::{
     NODE_DRAG_TRANSACTION_LABEL, NODE_NUDGE_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest,
     NodeNudgeDirection, NodeNudgeRequest,
 };
+use crate::runtime::tests::fixtures::GraphFixtureUpdateExt;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 use jellyflow_core::ops::GraphOp;
 

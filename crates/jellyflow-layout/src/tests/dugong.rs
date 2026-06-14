@@ -11,7 +11,8 @@ use crate::{
 
 #[test]
 fn dugong_layout_emits_node_position_transaction() {
-    let (mut graph, a, b, _edge) = connected_graph();
+    let (graph, a, b, _edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&a, |node| {
             node.pos = CanvasPoint {
@@ -86,7 +87,8 @@ fn layout_direction_changes_axis_ordering() {
 
 #[test]
 fn node_origin_controls_written_position_from_dugong_center() {
-    let (mut graph, a, _b, _edge) = connected_graph();
+    let (graph, a, _b, _edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&a, |node| {
             node.origin = Some(jellyflow_core::NodeOrigin { x: 0.5, y: 0.5 })
@@ -138,7 +140,8 @@ fn layout_scope_uses_only_requested_nodes_and_internal_edges() {
 
 #[test]
 fn node_size_resolution_prefers_graph_then_request_then_context_then_default() {
-    let (mut graph, a, b, _edge) = connected_graph();
+    let (graph, a, b, _edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     let graph_size = size(300.0, 70.0);
     let request_size = size(80.0, 50.0);
     let context_size = size(60.0, 30.0);
@@ -180,7 +183,8 @@ fn context_measured_size_is_used_when_request_has_none() {
 
 #[test]
 fn hidden_nodes_and_edges_are_excluded_from_projection() {
-    let (mut graph, a, b, edge) = connected_graph();
+    let (graph, a, b, edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&b, |node| node.hidden = true)
         .expect("node exists");
@@ -291,7 +295,8 @@ fn invalid_size_is_reported_before_layout() {
 
 #[test]
 fn unused_context_measured_sizes_do_not_fail_scoped_layout() {
-    let (mut graph, a, b, _edge) = connected_graph();
+    let (graph, a, b, _edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&b, |node| node.hidden = true)
         .expect("node exists");
@@ -449,7 +454,8 @@ fn result_to_transaction_rejects_duplicates_and_missing_nodes() {
 
 #[test]
 fn bounds_track_visual_rect_independent_of_node_origin_anchor() {
-    let (mut graph, a, _b, _edge) = connected_graph();
+    let (graph, a, _b, _edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     graph
         .update_node(&a, |node| {
             node.origin = Some(jellyflow_core::NodeOrigin { x: 1.0, y: 1.0 })

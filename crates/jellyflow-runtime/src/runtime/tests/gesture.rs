@@ -1,4 +1,4 @@
-use super::fixtures::{default_editor_config, make_graph};
+use super::fixtures::{GraphFixtureUpdateExt, default_editor_config, make_graph};
 use super::harness::{HarnessCallbackEvent, HarnessEvent, InteractionHarness};
 
 use crate::runtime::conformance::{ConformanceCallbackEvent, ConformanceTraceEvent};

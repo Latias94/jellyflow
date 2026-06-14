@@ -10,9 +10,9 @@ pub(super) fn default_editor_config() -> crate::io::NodeGraphEditorConfig {
     crate::io::NodeGraphEditorConfig::default()
 }
 
-pub(super) fn make_store(graph: Graph) -> NodeGraphStore {
+pub(super) fn make_store(graph: impl Into<Graph>) -> NodeGraphStore {
     NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState::default(),
         default_editor_config(),
     )
@@ -46,6 +46,35 @@ pub(super) fn fixture_insert_binding(graph: &mut Graph, id: BindingId, binding: 
     let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
     builder.insert_binding(id, binding);
     *graph = builder.build_unchecked();
+}
+
+pub(super) trait GraphFixtureUpdateExt {
+    fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R>;
+    fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R>;
+    fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R>;
+}
+
+impl GraphFixtureUpdateExt for Graph {
+    fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R> {
+        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let updated = builder.update_node(id, f);
+        *self = builder.build_unchecked();
+        updated
+    }
+
+    fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R> {
+        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let updated = builder.update_port(id, f);
+        *self = builder.build_unchecked();
+        updated
+    }
+
+    fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R> {
+        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let updated = builder.update_edge(id, f);
+        *self = builder.build_unchecked();
+        updated
+    }
 }
 
 pub(super) fn fixture_remove_edge(graph: &mut Graph, id: &EdgeId) -> Option<Edge> {

@@ -1,6 +1,6 @@
 use keyboard_types::Code as KeyCode;
 
-use super::fixtures::make_graph;
+use super::fixtures::{GraphFixtureUpdateExt, make_graph};
 use super::harness::{HarnessEvent, InteractionHarness};
 use crate::io::NodeGraphViewState;
 use crate::runtime::delete::{
