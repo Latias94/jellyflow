@@ -10,13 +10,13 @@ const NODE_SIZE: CanvasSize = CanvasSize {
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let timing_enabled = matches!(
-        std::env::var("DUGONG_DAGREISH_TIMING").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
-    );
+    let dagreish_timing_enabled = env_flag_enabled("DUGONG_DAGREISH_TIMING");
+    let order_timing_enabled = env_flag_enabled("DUGONG_ORDER_TIMING");
 
-    if !timing_enabled {
-        eprintln!("Set DUGONG_DAGREISH_TIMING=1 to include upstream dugong stage timings.");
+    if !dagreish_timing_enabled && !order_timing_enabled {
+        eprintln!(
+            "Set DUGONG_DAGREISH_TIMING=1 for pipeline timings; add DUGONG_ORDER_TIMING=1 for order-stage timings."
+        );
     }
 
     for layer_count in [10_usize, 25, 50] {
@@ -35,6 +35,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 fn workflow_request() -> LayoutRequest {

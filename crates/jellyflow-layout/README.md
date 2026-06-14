@@ -73,10 +73,10 @@ nodes, and still return the same `LayoutResult` / `GraphTransaction` shape as th
 
 ## Diagnostics
 
-`dugong` exposes optional internal stage timings through `DUGONG_DAGREISH_TIMING`. Use the local
-diagnostic example when layered DAG performance changes and you need to separate Jellyflow
-projection cost from upstream rank/order/position work:
+`dugong` exposes optional internal stage timings through `DUGONG_DAGREISH_TIMING` and order-stage
+timings through `DUGONG_ORDER_TIMING`. Use the local diagnostic example when layered DAG performance
+changes and you need to separate Jellyflow projection cost from upstream rank/order/position work:
 
 ```sh
-DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
+DUGONG_DAGREISH_TIMING=1 DUGONG_ORDER_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
 ```

@@ -211,7 +211,7 @@ cargo bench -p jellyflow-runtime --bench layout_pipeline
 For a dugong stage breakdown on the same layered DAG fixture sizes, run:
 
 ```sh
-DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
+DUGONG_DAGREISH_TIMING=1 DUGONG_ORDER_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
 ```
 
 CI runs the same benchmarks in Criterion `--test` mode to catch broken benchmark fixtures without

@@ -38,12 +38,13 @@ cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_en
 Run the dugong upstream stage diagnostic with:
 
 ```text
-DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
+DUGONG_DAGREISH_TIMING=1 DUGONG_ORDER_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
 ```
 
 The diagnostic uses the same 100/250/500-node layered DAG fixture shape as `layout_engines`. It
 prints fixture sizes on stdout and lets `dugong` print its own rank/order/position/edge routing
-stage timings on stderr.
+stage timings on stderr. `DUGONG_ORDER_TIMING=1` adds a second line for the order stage, including
+layer-graph cache construction, sweeps, sort-subgraph, and cross-count costs.
 
 ## Layout Baseline
 
@@ -96,9 +97,11 @@ Local baseline from this workspace snapshot:
 - The `benchmark-internals` layout feature shows Jellyflow's `dugong` projection and solved-result
   extraction are microsecond-scale relative to total planning time. The meaningful next cut is
   inside `dugong::layout_dagreish`, not in Jellyflow's wrapper code.
-- Use `DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing` before
-  changing Jellyflow wrapper code for layered DAG performance. If the dominant stage is rank, order,
-  or horizontal positioning, the fix belongs in `dugong` rather than in runtime caching.
+- Use
+  `DUGONG_DAGREISH_TIMING=1 DUGONG_ORDER_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing`
+  before changing Jellyflow wrapper code for layered DAG performance. If the dominant stage is
+  normalize, rank, order, or horizontal positioning, the fix belongs in `dugong` rather than in
+  runtime caching.
 - Native tidy tree planning is much faster on tree-shaped fixtures than `dugong` on layered DAG
   fixtures, which supports routing tree/workflow presets to specialized engines where possible.
 
