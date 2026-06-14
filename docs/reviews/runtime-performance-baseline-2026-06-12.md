@@ -2,13 +2,15 @@
 
 ## Summary
 
-Jellyflow now has Criterion coverage for two runtime performance areas:
+Jellyflow now has Criterion coverage for three runtime performance areas:
 
 - `rendering_query`: large-graph visible ordering and culling reads.
 - `schema_create_node`: schema descriptor enumeration, node instantiation, and store-level
   schema-driven node creation.
+- `layout_pipeline`: runtime layout context construction, engine planning, transaction conversion,
+  and store apply costs.
 
-CI runs both benchmarks in Criterion `--test` mode. This catches compile errors and broken fixtures
+CI runs these benchmarks in Criterion `--test` mode. This catches compile errors and broken fixtures
 without treating noisy runner timing as a regression signal.
 
 ## Commands
@@ -18,6 +20,7 @@ Run full local measurements with:
 ```text
 cargo bench -p jellyflow-runtime --bench rendering_query
 cargo bench -p jellyflow-runtime --bench schema_create_node
+cargo bench -p jellyflow-runtime --bench layout_pipeline
 ```
 
 Run the same smoke gate used by CI with:
@@ -25,6 +28,7 @@ Run the same smoke gate used by CI with:
 ```text
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
+cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
 ```
 
 ## Schema Create-Node Baseline

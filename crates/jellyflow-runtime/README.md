@@ -197,12 +197,13 @@ let editor_config = NodeGraphEditorConfig::default().with_spatial_index_enabled(
 
 Measure local workloads before enabling it broadly. The current spatial backend keeps a store-local
 node index cache and rebuilds it when graph/layout facts, node origin, zoom, or spatial tuning
-changes. Pan-only queries reuse the same index. The runtime crate includes a benchmark for
-1k/10k/50k node rendering-query workloads:
+changes. Pan-only queries reuse the same index. The runtime crate includes benchmarks for
+rendering-query, schema creation, and layout pipeline workloads:
 
 ```text
 cargo bench -p jellyflow-runtime --bench rendering_query
 cargo bench -p jellyflow-runtime --bench schema_create_node
+cargo bench -p jellyflow-runtime --bench layout_pipeline
 ```
 
 For a copyable external adapter skeleton, start with the non-workspace headless template:

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use jellyflow_core::CanvasSize;
 
@@ -170,8 +170,13 @@ const BUILTIN_SPECS: [BuiltinLayoutSpec; 4] = [
     MIND_MAP_FREEFORM_SPEC,
 ];
 
-pub(crate) fn builtin_layout_registry() -> LayoutEngineRegistry {
-    try_builtin_layout_registry().expect("built-in layout registry definition should be consistent")
+pub(crate) fn builtin_layout_registry() -> &'static LayoutEngineRegistry {
+    static REGISTRY: OnceLock<LayoutEngineRegistry> = OnceLock::new();
+
+    REGISTRY.get_or_init(|| {
+        try_builtin_layout_registry()
+            .expect("built-in layout registry definition should be consistent")
+    })
 }
 
 pub(crate) fn builtin_family_specs() -> &'static [BuiltinLayoutFamilySpec] {

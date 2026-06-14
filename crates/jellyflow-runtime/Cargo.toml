@@ -33,6 +33,10 @@ harness = false
 name = "schema_create_node"
 harness = false
 
+[[bench]]
+name = "layout_pipeline"
+harness = false
+
 [lints.rust]
 dead_code = "allow"
 

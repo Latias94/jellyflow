@@ -36,7 +36,7 @@ fn facade_modules_expose_underlying_crates() {
     let _ = std::mem::size_of::<LayoutRequest>();
     let _ = std::mem::size_of::<LayoutResult>();
     let _preset_request = LayoutPresetBuilder::workflow().build();
-    let _: fn() -> layout::LayoutEngineRegistry = layout::builtin_layout_engine_registry;
+    let _: fn() -> &'static layout::LayoutEngineRegistry = layout::builtin_layout_engine_registry;
     let _ = layout::TIDY_TREE_LAYOUT_ENGINE_ID;
     let _ = std::mem::size_of::<layout::TidyTreeLayoutEngine>();
 

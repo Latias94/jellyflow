@@ -23,6 +23,7 @@ cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
+cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
 python3 tools/check_no_fret_dependencies.py
 python3 tools/check_external_consumer_smoke.py
 git diff --check

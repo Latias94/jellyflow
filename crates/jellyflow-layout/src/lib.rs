@@ -44,7 +44,7 @@ pub use tidy_tree::{
 };
 
 /// Returns a registry containing Jellyflow's built-in layout engines.
-pub fn builtin_layout_engine_registry() -> LayoutEngineRegistry {
+pub fn builtin_layout_engine_registry() -> &'static LayoutEngineRegistry {
     builtin::builtin_layout_registry()
 }
 

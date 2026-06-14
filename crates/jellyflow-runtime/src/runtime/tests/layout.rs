@@ -111,7 +111,7 @@ fn apply_freeform_layout_returns_layout_and_dispatch_outcome() {
     let request = LayoutEngineRequest::mind_map_freeform(LayoutRequest::all());
 
     let outcome = store
-        .apply_layout(&request, &builtin_layout_engine_registry())
+        .apply_layout(&request, builtin_layout_engine_registry())
         .expect("apply freeform layout");
 
     assert!(outcome.layout.node_position(a).is_some());

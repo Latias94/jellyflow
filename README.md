@@ -195,6 +195,8 @@ The workspace includes Criterion benchmarks for:
 - `schema_create_node`: schema descriptor enumeration, node instantiation, and store-level
   schema-driven node creation.
 - `layout_engines`: `tidy_tree` and `dugong` layout throughput for tree and layered DAG fixtures.
+- `layout_pipeline`: runtime layout context, planning, transaction conversion, and apply pipeline
+  costs.
 
 Run local measurements with:
 
@@ -202,6 +204,7 @@ Run local measurements with:
 cargo bench -p jellyflow-layout --bench layout_engines
 cargo bench -p jellyflow-runtime --bench rendering_query
 cargo bench -p jellyflow-runtime --bench schema_create_node
+cargo bench -p jellyflow-runtime --bench layout_pipeline
 ```
 
 CI runs the same benchmarks in Criterion `--test` mode to catch broken benchmark fixtures without
@@ -228,6 +231,7 @@ python3 tools/check_external_consumer_smoke.py
 cargo bench -p jellyflow-layout --bench layout_engines -- --test
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
+cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
 git diff --check
 ```
 

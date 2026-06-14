@@ -91,7 +91,7 @@ def jellyflow_facade_main_rs() -> str:
 
                 let _graph: core::Graph = store.graph().clone();
                 let _patch = runtime::NodeGraphPatch::default();
-                let _: fn() -> layout::LayoutEngineRegistry =
+                let _: fn() -> &'static layout::LayoutEngineRegistry =
                     layout::builtin_layout_engine_registry;
                 let _ = std::mem::size_of::<DispatchOutcome>();
                 let _ = std::mem::size_of::<DispatchError>();

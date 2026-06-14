@@ -159,7 +159,7 @@ pub fn apply_dugong_layout(
 ) -> Result<DugongLayoutApplyOutcome, DugongLayoutApplyError> {
     let registry = builtin_layout_engine_registry();
     let request = LayoutEngineRequest::dugong(request.clone());
-    apply_layout(store, &request, &registry)
+    apply_layout(store, &request, registry)
         .map(Into::into)
         .map_err(Into::into)
 }
@@ -203,7 +203,7 @@ impl NodeGraphStore {
     pub fn plan_dugong_layout(&self, request: &LayoutRequest) -> Result<LayoutResult, LayoutError> {
         let registry = builtin_layout_engine_registry();
         let request = LayoutEngineRequest::dugong(request.clone());
-        self.plan_layout(&request, &registry)
+        self.plan_layout(&request, registry)
     }
 
     /// Runs dugong layout and returns the transaction that would move changed nodes.
@@ -213,7 +213,7 @@ impl NodeGraphStore {
     ) -> Result<GraphTransaction, LayoutError> {
         let registry = builtin_layout_engine_registry();
         let request = LayoutEngineRequest::dugong(request.clone());
-        self.layout_transaction(&request, &registry)
+        self.layout_transaction(&request, registry)
     }
 
     /// Runs dugong layout and commits the resulting transaction through normal store dispatch.

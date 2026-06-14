@@ -63,6 +63,7 @@ jobs:
         run: |
           cargo bench -p jellyflow-runtime --bench rendering_query -- --test
           cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
+          cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
 
       - name: Dependency boundary smoke
         run: python3 tools/check_no_fret_dependencies.py
