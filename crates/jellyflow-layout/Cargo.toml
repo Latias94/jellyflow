@@ -19,6 +19,10 @@ jellyflow-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+[features]
+default = []
+benchmark-internals = []
+
 [dev-dependencies]
 criterion = "0.8.2"
 serde_json.workspace = true

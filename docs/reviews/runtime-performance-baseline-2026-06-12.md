@@ -23,6 +23,7 @@ cargo bench -p jellyflow-runtime --bench rendering_query
 cargo bench -p jellyflow-runtime --bench schema_create_node
 cargo bench -p jellyflow-runtime --bench layout_pipeline
 cargo bench -p jellyflow-layout --bench layout_engines
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines
 ```
 
 Run the same smoke gate used by CI with:
@@ -31,7 +32,7 @@ Run the same smoke gate used by CI with:
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
-cargo bench -p jellyflow-layout --bench layout_engines -- --test
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines -- --test
 ```
 
 ## Layout Baseline
@@ -64,6 +65,15 @@ Local baseline from this workspace snapshot:
 | `layout_engines/dugong_layered/to_transaction` | 100 nodes | about `4.63 us` |
 | `layout_engines/dugong_layered/to_transaction` | 250 nodes | about `11.0 us` |
 | `layout_engines/dugong_layered/to_transaction` | 500 nodes | about `22.1 us` |
+| `layout_engines/dugong_layered_stages/project` | 100 nodes | about `67.4 us` |
+| `layout_engines/dugong_layered_stages/project` | 250 nodes | about `171 us` |
+| `layout_engines/dugong_layered_stages/project` | 500 nodes | about `358 us` |
+| `layout_engines/dugong_layered_stages/project_then_solve` | 100 nodes | about `1.76 ms` |
+| `layout_engines/dugong_layered_stages/project_then_solve` | 250 nodes | about `6.56 ms` |
+| `layout_engines/dugong_layered_stages/project_then_solve` | 500 nodes | about `21.56 ms` |
+| `layout_engines/dugong_layered_stages/result_from_solved` | 100 nodes | about `22.9 us` |
+| `layout_engines/dugong_layered_stages/result_from_solved` | 250 nodes | about `58.9 us` |
+| `layout_engines/dugong_layered_stages/result_from_solved` | 500 nodes | about `125 us` |
 
 ## Layout Interpretation
 
@@ -73,6 +83,9 @@ Local baseline from this workspace snapshot:
   wrapper caching is unlikely to materially improve layout latency by itself.
 - `dugong` planning dominates layered DAG layout time. Future performance work should instrument and
   optimize the `dugong` projection/build/solve path before adding runtime-level dirty-scope caches.
+- The `benchmark-internals` layout feature shows Jellyflow's `dugong` projection and solved-result
+  extraction are microsecond-scale relative to total planning time. The meaningful next cut is
+  inside `dugong::layout_dagreish`, not in Jellyflow's wrapper code.
 - Native tidy tree planning is much faster on tree-shaped fixtures than `dugong` on layered DAG
   fixtures, which supports routing tree/workflow presets to specialized engines where possible.
 

@@ -16,6 +16,8 @@ mod preset;
 mod projection;
 mod tidy_tree;
 
+#[cfg(feature = "benchmark-internals")]
+pub use dugong::benchmark_internals;
 pub use dugong::{
     DugongLayoutEngine, layout_graph_to_transaction_with_dugong, layout_graph_with_dugong,
 };

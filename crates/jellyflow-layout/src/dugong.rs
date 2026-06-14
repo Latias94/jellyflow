@@ -64,12 +64,12 @@ fn layout_graph_with_dugong_context(
 ) -> Result<LayoutResult, LayoutError> {
     validate_request(graph, request)?;
 
-    let mut ctx = ProjectionContext::new(graph, request, context)?;
-    dugong::layout_dagreish(&mut ctx.graph);
-    ctx.into_result()
+    let mut workspace = DugongLayoutWorkspace::new(graph, request, context)?;
+    workspace.solve();
+    workspace.into_result()
 }
 
-struct ProjectionContext {
+struct DugongLayoutWorkspace {
     graph: DugongGraph<NodeLabel, EdgeLabel, GraphLabel>,
     nodes: Vec<ProjectedNode>,
     edges: Vec<ProjectedEdge>,
@@ -90,7 +90,7 @@ struct ProjectedEdge {
     name: String,
 }
 
-impl ProjectionContext {
+impl DugongLayoutWorkspace {
     fn new(
         graph: &Graph,
         request: &LayoutRequest,
@@ -184,6 +184,10 @@ impl ProjectionContext {
         })
     }
 
+    fn solve(&mut self) {
+        dugong::layout_dagreish(&mut self.graph);
+    }
+
     fn into_result(self) -> Result<LayoutResult, LayoutError> {
         let mut positions = Vec::with_capacity(self.nodes.len());
         let mut bounds = self.bounds;
@@ -245,6 +249,44 @@ impl ProjectionContext {
             edge_routes,
             bounds,
         })
+    }
+}
+
+#[cfg(feature = "benchmark-internals")]
+#[doc(hidden)]
+pub mod benchmark_internals {
+    use jellyflow_core::Graph;
+
+    use crate::engine::{LayoutContext, LayoutError, LayoutRequest, LayoutResult};
+
+    use super::DugongLayoutWorkspace;
+
+    /// Projected `dugong` state used by internal benchmarks.
+    pub struct DugongBenchmarkWorkspace {
+        workspace: DugongLayoutWorkspace,
+    }
+
+    impl DugongBenchmarkWorkspace {
+        /// Builds the `dugong` input graph without running layout.
+        pub fn project(
+            graph: &Graph,
+            request: &LayoutRequest,
+            context: &LayoutContext,
+        ) -> Result<Self, LayoutError> {
+            Ok(Self {
+                workspace: DugongLayoutWorkspace::new(graph, request, context)?,
+            })
+        }
+
+        /// Runs `dugong` layout on the projected graph.
+        pub fn solve(&mut self) {
+            self.workspace.solve();
+        }
+
+        /// Converts solved `dugong` output into Jellyflow layout output.
+        pub fn into_result(self) -> Result<LayoutResult, LayoutError> {
+            self.workspace.into_result()
+        }
     }
 }
 

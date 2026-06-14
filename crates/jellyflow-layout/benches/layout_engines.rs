@@ -1,11 +1,17 @@
 use std::hint::black_box;
 
+#[cfg(feature = "benchmark-internals")]
+use criterion::BatchSize;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use jellyflow_core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder as CoreGraphBuilder,
     GraphId, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
     PortKind,
 };
+#[cfg(feature = "benchmark-internals")]
+use jellyflow_layout::LayoutContext;
+#[cfg(feature = "benchmark-internals")]
+use jellyflow_layout::benchmark_internals::DugongBenchmarkWorkspace;
 use jellyflow_layout::{
     LayoutOptions, LayoutRequest, LayoutSpacing, layout_graph_with_dugong,
     layout_graph_with_tidy_tree,
@@ -20,6 +26,8 @@ fn layout_engine_benchmarks(c: &mut Criterion) {
     benchmark_tidy_tree_balanced(c);
     benchmark_tidy_tree_wide(c);
     benchmark_dugong_layered(c);
+    #[cfg(feature = "benchmark-internals")]
+    benchmark_dugong_layered_stages(c);
 }
 
 fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
@@ -123,6 +131,79 @@ fn benchmark_dugong_layered(c: &mut Criterion) {
                 })
             },
         );
+    }
+
+    group.finish();
+}
+
+#[cfg(feature = "benchmark-internals")]
+fn benchmark_dugong_layered_stages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("layout_dugong_layered_stages");
+    let context = LayoutContext::new();
+
+    for layer_count in [10_usize, 25, 50] {
+        let graph = layered_dag_fixture(layer_count, 10);
+        let node_count = graph.nodes().len();
+        let request = workflow_request();
+        let mut solved = DugongBenchmarkWorkspace::project(&graph, &request, &context)
+            .expect("project dugong fixture");
+        solved.solve();
+
+        group.throughput(Throughput::Elements(node_count as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("project", node_count),
+            &graph,
+            |b, graph| {
+                b.iter(|| {
+                    black_box(
+                        DugongBenchmarkWorkspace::project(
+                            black_box(graph),
+                            black_box(&request),
+                            black_box(&context),
+                        )
+                        .expect("project dugong fixture"),
+                    )
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("project_then_solve", node_count),
+            &graph,
+            |b, graph| {
+                b.iter(|| {
+                    let mut workspace = DugongBenchmarkWorkspace::project(
+                        black_box(graph),
+                        black_box(&request),
+                        black_box(&context),
+                    )
+                    .expect("project dugong fixture");
+                    workspace.solve();
+                    black_box(workspace);
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("result_from_solved", node_count),
+            &graph,
+            |b, graph| {
+                b.iter_batched(
+                    || {
+                        let mut workspace =
+                            DugongBenchmarkWorkspace::project(graph, &request, &context)
+                                .expect("project dugong fixture");
+                        workspace.solve();
+                        workspace
+                    },
+                    |workspace| black_box(workspace.into_result().expect("dugong result")),
+                    BatchSize::LargeInput,
+                )
+            },
+        );
+
+        black_box(solved.into_result().expect("dugong result"));
     }
 
     group.finish();

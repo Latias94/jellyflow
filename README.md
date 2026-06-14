@@ -228,7 +228,7 @@ Use these before publishing or changing public adapter behavior:
 cargo clippy --workspace --all-targets -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 tools/check_external_consumer_smoke.py
-cargo bench -p jellyflow-layout --bench layout_engines -- --test
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines -- --test
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test

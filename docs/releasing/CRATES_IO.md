@@ -21,6 +21,7 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines -- --test
 cargo bench -p jellyflow-runtime --bench rendering_query -- --test
 cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
 cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
