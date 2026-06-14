@@ -12,6 +12,13 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
   `BTreeMap` references, keeping public graph reads stable while leaving internal storage free to
   evolve.
 
+### Added
+
+- Added `GraphMutationFootprint` and transaction footprint helpers so hosts can derive invalidation,
+  collaboration, and indexing boundaries from normal `GraphOp` / `GraphTransaction` values.
+- Added layout dirty-scope helpers that derive `LayoutScope::Nodes` from a transaction or mutation
+  footprint using the current graph snapshot.
+
 ## [0.2.0] - 2026-06-13
 
 ### Added

@@ -2,6 +2,7 @@ mod apply;
 mod bindings;
 mod diff;
 mod fixtures;
+mod footprint;
 mod fragment;
 mod history;
 mod mutation;

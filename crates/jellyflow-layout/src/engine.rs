@@ -3,7 +3,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphOp, GraphTransaction, NodeId,
+    BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphMutationFootprint,
+    GraphOp, GraphTransaction, NodeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -167,6 +168,60 @@ pub enum LayoutScope {
 }
 
 impl LayoutScope {
+    /// Derives a conservative node scope from a graph mutation footprint and the current graph.
+    ///
+    /// Direct node changes are included. Port and edge changes expand to their owning endpoint
+    /// nodes when that information is available in the current graph snapshot. Node ids that no
+    /// longer exist in the supplied graph are omitted.
+    pub fn from_footprint(graph: &Graph, footprint: &GraphMutationFootprint) -> Self {
+        let mut nodes = footprint
+            .nodes
+            .iter()
+            .copied()
+            .filter(|node| graph.nodes().contains_key(node))
+            .collect::<BTreeSet<_>>();
+
+        for port in &footprint.ports {
+            if let Some(port) = graph.ports().get(port) {
+                nodes.insert(port.node);
+            }
+        }
+
+        for edge in &footprint.edges {
+            if let Some(edge) = graph.edges().get(edge) {
+                push_port_owner(graph, edge.from, &mut nodes);
+                push_port_owner(graph, edge.to, &mut nodes);
+            }
+        }
+
+        for binding in &footprint.bindings {
+            if let Some(binding) = graph.bindings().get(binding) {
+                push_binding_endpoint_nodes(graph, &binding.subject, &mut nodes);
+                push_binding_endpoint_nodes(graph, &binding.target, &mut nodes);
+            }
+        }
+
+        Self::Nodes { nodes }
+    }
+
+    /// Derives a conservative node scope from a transaction and the current graph.
+    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
+        Self::from_footprint(graph, &tx.footprint())
+    }
+
+    /// Returns `true` when this scope selects no nodes.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Nodes { nodes } if nodes.is_empty())
+    }
+
+    /// Returns selected nodes when this is a node-limited scope.
+    pub fn nodes(&self) -> Option<&BTreeSet<NodeId>> {
+        match self {
+            Self::All => None,
+            Self::Nodes { nodes } => Some(nodes),
+        }
+    }
+
     pub(crate) fn contains(&self, node: NodeId) -> bool {
         match self {
             Self::All => true,
@@ -212,6 +267,14 @@ impl LayoutRequest {
         }
     }
 
+    /// Creates a request scoped to nodes affected by a transaction.
+    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
+        Self {
+            scope: LayoutScope::from_transaction(graph, tx),
+            ..Self::default()
+        }
+    }
+
     /// Adds adapter-reported node sizes.
     pub fn with_measured_node_sizes(
         mut self,
@@ -224,6 +287,26 @@ impl LayoutRequest {
     /// Sets layout options.
     pub fn with_options(mut self, options: LayoutOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Replaces this request's scope with nodes affected by a transaction.
+    pub fn with_dirty_scope_from_transaction(
+        mut self,
+        graph: &Graph,
+        tx: &GraphTransaction,
+    ) -> Self {
+        self.scope = LayoutScope::from_transaction(graph, tx);
+        self
+    }
+
+    /// Replaces this request's scope with nodes affected by a mutation footprint.
+    pub fn with_dirty_scope_from_footprint(
+        mut self,
+        graph: &Graph,
+        footprint: &GraphMutationFootprint,
+    ) -> Self {
+        self.scope = LayoutScope::from_footprint(graph, footprint);
         self
     }
 }
@@ -608,6 +691,46 @@ pub(crate) fn validate_request(graph: &Graph, request: &LayoutRequest) -> Result
     }
 
     Ok(())
+}
+
+fn push_port_owner(graph: &Graph, port: jellyflow_core::PortId, nodes: &mut BTreeSet<NodeId>) {
+    if let Some(port) = graph.ports().get(&port)
+        && graph.nodes().contains_key(&port.node)
+    {
+        nodes.insert(port.node);
+    }
+}
+
+fn push_edge_endpoint_nodes(graph: &Graph, edge: EdgeId, nodes: &mut BTreeSet<NodeId>) {
+    if let Some(edge) = graph.edges().get(&edge) {
+        push_port_owner(graph, edge.from, nodes);
+        push_port_owner(graph, edge.to, nodes);
+    }
+}
+
+fn push_binding_endpoint_nodes(
+    graph: &Graph,
+    endpoint: &BindingEndpoint,
+    nodes: &mut BTreeSet<NodeId>,
+) {
+    let Some(target) = endpoint.graph_local_target() else {
+        return;
+    };
+
+    match target {
+        jellyflow_core::GraphLocalBindingTarget::Graph => {}
+        jellyflow_core::GraphLocalBindingTarget::Node { id } => {
+            if graph.nodes().contains_key(&id) {
+                nodes.insert(id);
+            }
+        }
+        jellyflow_core::GraphLocalBindingTarget::Port { id } => push_port_owner(graph, id, nodes),
+        jellyflow_core::GraphLocalBindingTarget::Edge { id } => {
+            push_edge_endpoint_nodes(graph, id, nodes);
+        }
+        jellyflow_core::GraphLocalBindingTarget::Group { .. }
+        | jellyflow_core::GraphLocalBindingTarget::StickyNote { .. } => {}
+    }
 }
 
 pub(crate) fn resolve_node_size(

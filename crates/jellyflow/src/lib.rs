@@ -18,12 +18,13 @@ pub use runtime::{DispatchError, DispatchOutcome, NodeGraphPatch, NodeGraphStore
 /// Common Jellyflow entry points for applications and adapter crates.
 pub mod prelude {
     pub use crate::core::{
-        CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, GraphOp, GraphTransaction,
-        GroupId, NodeId, NodeKindKey, PortDirection, PortId,
+        CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, GraphMutationFootprint,
+        GraphOp, GraphTransaction, GroupId, NodeId, NodeKindKey, PortDirection, PortId,
     };
     pub use crate::layout::{
         LayoutContext, LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest, LayoutFamilyId,
-        LayoutPresetBuilder, LayoutRequest, LayoutResult, builtin_layout_engine_registry,
+        LayoutPresetBuilder, LayoutRequest, LayoutResult, LayoutScope,
+        builtin_layout_engine_registry,
     };
     pub use crate::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
     pub use crate::runtime::{

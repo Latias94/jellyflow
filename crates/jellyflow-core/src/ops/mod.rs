@@ -18,7 +18,7 @@ pub use mutation::{
     GraphMutationBatchPlanner, GraphMutationError, GraphMutationPlanner, PortInsert,
 };
 pub use normalize::normalize_transaction;
-pub use transaction::{EdgeEndpoints, GraphOp, GraphTransaction};
+pub use transaction::{EdgeEndpoints, GraphMutationFootprint, GraphOp, GraphTransaction};
 pub use tx_sanity::{find_invalid_size_in_tx, find_non_finite_in_tx};
 
 #[cfg(test)]
