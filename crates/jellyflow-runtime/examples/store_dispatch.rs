@@ -59,7 +59,7 @@ fn main() {
         .expect("store dispatch succeeds");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
 
-    assert_eq!(outcome.committed().ops.len(), 1);
+    assert_eq!(outcome.committed().ops().len(), 1);
     assert_eq!(changes.nodes.len(), 1);
     assert!(changes.edges.is_empty());
     assert_eq!(
@@ -69,7 +69,7 @@ fn main() {
 
     println!(
         "committed {} op(s), projected {} node change(s) and {} edge change(s)",
-        outcome.committed().ops.len(),
+        outcome.committed().ops().len(),
         changes.nodes.len(),
         changes.edges.len()
     );

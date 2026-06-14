@@ -45,7 +45,7 @@ let store = NodeGraphStore::new(
     NodeGraphEditorConfig::default(),
 );
 
-assert_eq!(store.graph().nodes.len(), 0);
+assert_eq!(store.graph().nodes().len(), 0);
 ```
 
 ## Headless Interaction Contracts
@@ -122,6 +122,33 @@ For create-node palettes, adapters can call
 `NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
 store uses the same dispatch/history/profile path as other graph edits while `NodeRegistry`
 resolves aliases, canonical kind, default data, default size, and schema-declared ports.
+
+Store dispatch outcomes expose both the committed transaction and its mutation footprint. Prefer
+the accessors over public fields so adapters stay compatible with future indexing, collaboration,
+and incremental-layout internals:
+
+```rust
+let outcome = store.dispatch_transaction(&tx)?;
+let tx = outcome.committed();
+let footprint = outcome.footprint();
+```
+
+For a standalone patch, use `patch.transaction()` and `patch.footprint()`. If the caller needs to
+take ownership, use `patch.into_parts()` instead of reading fields directly.
+
+Layout callers can turn that footprint into a conservative dirty scope:
+
+```rust
+let request = LayoutRequest::all()
+    .with_dirty_scope_from_footprint(store.graph(), outcome.footprint());
+```
+
+The scope includes directly changed nodes and expands port, edge, and binding changes to their
+owning endpoint nodes when the current graph snapshot can resolve them. See the runnable example:
+
+```text
+cargo run -p jellyflow-runtime --example dirty_scope_layout
+```
 
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return

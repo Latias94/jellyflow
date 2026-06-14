@@ -25,5 +25,5 @@ let store = NodeGraphStore::new(
     NodeGraphEditorConfig::default(),
 );
 
-assert_eq!(store.graph().nodes.len(), 0);
+assert_eq!(store.graph().nodes().len(), 0);
 ```

@@ -100,7 +100,7 @@ let store = NodeGraphStore::new(
     NodeGraphEditorConfig::default(),
 );
 
-assert_eq!(store.graph().nodes.len(), 0);
+assert_eq!(store.graph().nodes().len(), 0);
 ```
 
 Use the lower-level module re-exports when you need a specific surface:
@@ -122,6 +122,7 @@ cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example geometry_edge
 cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
+cargo run -p jellyflow-runtime --example dirty_scope_layout
 ```
 
 ## Custom Nodes And Adapters
@@ -159,8 +160,18 @@ For common cases, `LayoutPresetBuilder` builds ordinary `LayoutEngineRequest` va
 tree, radial mind-map, and freeform mind-map layouts, so hosts can start from a preset and still
 override engine IDs, direction, spacing, scope, and measured sizes.
 
+After a store dispatch, use `DispatchOutcome::footprint()` to derive a conservative layout dirty
+scope. This keeps high-frequency re-layouts focused on nodes touched directly by the committed
+transaction, or by the ports, edges, and bindings referenced by that transaction.
+
+```rust
+let request = LayoutRequest::all()
+    .with_dirty_scope_from_footprint(store.graph(), outcome.footprint());
+```
+
 ```sh
 cargo run -p jellyflow-runtime --example layout_engines
+cargo run -p jellyflow-runtime --example dirty_scope_layout
 ```
 
 ## Adapter Conformance
