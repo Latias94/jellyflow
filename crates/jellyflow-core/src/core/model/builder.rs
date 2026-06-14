@@ -19,7 +19,7 @@ use super::resources::{Group, StickyNote, Symbol};
 /// fixtures, importers, and graph generators straightforward. Use [`GraphBuilder::build`] when the
 /// result should satisfy graph invariants, or [`GraphBuilder::build_unchecked`] only for tests and
 /// migrations that intentionally inspect invalid graphs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GraphBuilder {
     graph: Graph,
 }
@@ -327,14 +327,6 @@ impl GraphBuilder {
     /// migration tooling that intentionally produce invalid graphs and then assert diagnostics.
     pub fn build_unchecked(self) -> Graph {
         self.graph
-    }
-}
-
-impl Default for GraphBuilder {
-    fn default() -> Self {
-        Self {
-            graph: Graph::default(),
-        }
     }
 }
 

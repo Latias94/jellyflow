@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let builtins = builtin_layout_engine_registry();
     let dugong_request = LayoutPresetBuilder::workflow().build();
-    let planned = store.plan_layout(&dugong_request, &builtins)?;
+    let planned = store.plan_layout(&dugong_request, builtins)?;
     assert_eq!(planned.nodes.len(), 2);
 
     let mut registry = LayoutEngineRegistry::new();

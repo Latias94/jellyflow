@@ -400,7 +400,7 @@ fn edge_render_order_filters_hidden_edges_unless_requested() {
 fn visible_node_ids_follow_viewport_and_rendering_tuning() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let store = NodeGraphStore::new(
-        graph.into(),
+        graph,
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );

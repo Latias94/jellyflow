@@ -308,7 +308,7 @@ fn spatial_rendering_query_matches_linear_for_full_viewport() {
         NodeGraphEditorConfig::default(),
     );
     let mut spatial = NodeGraphStore::new(
-        graph.into(),
+        graph,
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );
@@ -336,7 +336,7 @@ fn spatial_rendering_query_reuses_cached_node_index_for_repeated_and_panned_read
     let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
         graph_for_spatial_rendering_query();
     let mut store = NodeGraphStore::new(
-        graph.into(),
+        graph,
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );
@@ -374,7 +374,7 @@ fn spatial_rendering_query_rebuilds_cached_node_index_when_geometry_inputs_chang
     let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
         graph_for_spatial_rendering_query();
     let mut store = NodeGraphStore::new(
-        graph.into(),
+        graph,
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );

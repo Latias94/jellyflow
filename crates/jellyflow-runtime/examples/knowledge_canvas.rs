@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let layout = store.plan_layout(
         &LayoutEngineRequest::mind_map_freeform(LayoutRequest::all()),
-        &registry,
+        registry,
     )?;
     assert!(layout.node_position(node).is_some());
 
