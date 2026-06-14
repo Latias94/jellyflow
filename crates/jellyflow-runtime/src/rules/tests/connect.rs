@@ -81,6 +81,7 @@ fn plan_connect_single_input_disconnects_existing() {
 
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
+    let mut graph = graph.build_unchecked();
     tx1.apply_to(&mut graph).unwrap();
     assert_eq!(graph.edges().len(), 1);
 

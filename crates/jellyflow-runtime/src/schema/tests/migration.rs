@@ -23,6 +23,7 @@ fn migrate_nodes_emits_set_node_data_and_version_and_reports_upgraded() {
     assert!(plan.report().missing_migrator().is_empty());
     assert!(plan.report().errors().is_empty());
 
+    let mut graph = graph.build_unchecked();
     plan.transaction().apply_to(&mut graph).unwrap();
     let node = graph.nodes().get(&id).unwrap();
     assert_eq!(node.kind_version, 2);

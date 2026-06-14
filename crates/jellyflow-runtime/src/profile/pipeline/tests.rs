@@ -19,6 +19,7 @@ fn apply_transaction_with_profile_preserves_label_and_appends_derived_ops() {
     }])
     .with_label("Move");
 
+    let mut graph = graph.build_unchecked();
     let committed = apply_transaction_with_profile(&mut graph, &mut OneDerivedOp::new(node), &tx)
         .expect("profile apply");
 
@@ -52,6 +53,7 @@ fn apply_transaction_with_profile_rejection_leaves_graph_unchanged() {
         to: CanvasPoint { x: 10.0, y: 20.0 },
     }]);
 
+    let mut graph = graph.build_unchecked();
     let err = apply_transaction_with_profile(&mut graph, &mut RejectingProfile, &tx)
         .expect_err("profile should reject");
 

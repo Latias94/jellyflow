@@ -29,6 +29,7 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
 
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
+    let mut graph = graph.build_unchecked();
     tx1.apply_to(&mut graph).unwrap();
     assert_eq!(graph.edges().len(), 1);
 
@@ -107,6 +108,7 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
     assert!(plan.is_accept());
 
     let tx = GraphTransaction::from_ops(plan.into_ops());
+    let mut graph = graph.build_unchecked();
     tx.apply_to(&mut graph).unwrap();
 
     assert_eq!(graph.edges().len(), 2);

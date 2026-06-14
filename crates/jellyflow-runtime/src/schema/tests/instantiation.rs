@@ -97,7 +97,7 @@ fn node_schema_instantiates_node_ports_and_transaction_in_schema_order() {
         matches!(&tx.ops()[3], GraphOp::SetNodePorts { id, from, to } if *id == node_id && from.is_empty() && *to == vec![source_id, result_id])
     );
 
-    let mut graph = GraphBuilder::default();
+    let mut graph = GraphBuilder::default().build_unchecked();
     tx.apply_to(&mut graph).expect("apply instantiation");
     assert_eq!(graph.nodes()[&node_id].ports, vec![source_id, result_id]);
     assert_eq!(graph.ports()[&source_id].node, node_id);

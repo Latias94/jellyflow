@@ -3,8 +3,9 @@ use std::path::Path;
 
 use jellyflow_core::{
     Binding, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind,
-    EdgeReconnectable, Graph, GraphId, GraphOp, GraphTransaction, Group, GroupId, Node, NodeExtent,
-    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    EdgeReconnectable, Graph, GraphBuilder, GraphId, GraphOp, GraphTransaction, Group, GroupId,
+    Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    PortKind,
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
@@ -345,7 +346,7 @@ pub fn run_create_node_palette_smoke() -> Result<(), String> {
     let port_ids: Vec<_> = outcome.port_ids().collect();
     let node = store
         .graph()
-        .nodes
+        .nodes()
         .get(&node_id)
         .ok_or_else(|| "created node missing from store graph".to_owned())?;
 
@@ -436,9 +437,14 @@ pub fn run_measurement_smoke() -> Result<(), String> {
     let out_port = PortId::from_u128(92);
     let in_port = PortId::from_u128(93);
     let edge_id = EdgeId::from_u128(94);
-    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
-    graph.nodes.get_mut(&source_id).expect("source exists").size = None;
-    graph.nodes.get_mut(&target_id).expect("target exists").size = None;
+    let mut graph = connected_nodes_builder(source_id, target_id, out_port, in_port, edge_id);
+    graph
+        .update_node(&source_id, |node| node.size = None)
+        .expect("source exists");
+    graph
+        .update_node(&target_id, |node| node.size = None)
+        .expect("target exists");
+    let graph = graph.build_unchecked();
 
     let mut store = NodeGraphStore::new(
         graph,
@@ -545,8 +551,8 @@ pub fn run_measurement_smoke() -> Result<(), String> {
 fn assert_knowledge_canvas_surfaces() {
     let node_id = NodeId::from_u128(1);
     let binding_id = BindingId::from_u128(2);
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(
         node_id,
         Node {
             kind: NodeKindKey::new("knowledge.note"),
@@ -571,7 +577,7 @@ fn assert_knowledge_canvas_surfaces() {
             data: serde_json::json!({ "title": "Knowledge note" }),
         },
     );
-    graph.bindings.insert(
+    graph.insert_binding(
         binding_id,
         Binding::node_to_source(
             node_id,
@@ -582,7 +588,7 @@ fn assert_knowledge_canvas_surfaces() {
     );
 
     let store = NodeGraphStore::new(
-        graph,
+        graph.build_unchecked(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
@@ -688,9 +694,14 @@ fn layout_facts_scenario() -> ConformanceScenario {
     let out_port = PortId::from_u128(92);
     let in_port = PortId::from_u128(93);
     let edge_id = EdgeId::from_u128(94);
-    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
-    graph.nodes.get_mut(&source_id).expect("source exists").size = None;
-    graph.nodes.get_mut(&target_id).expect("target exists").size = None;
+    let mut graph = connected_nodes_builder(source_id, target_id, out_port, in_port, edge_id);
+    graph
+        .update_node(&source_id, |node| node.size = None)
+        .expect("source exists");
+    graph
+        .update_node(&target_id, |node| node.size = None)
+        .expect("target exists");
+    let graph = graph.build_unchecked();
 
     let source_handle = ConnectionHandleRef::new(source_id, out_port, PortDirection::Out);
     let target_handle = ConnectionHandleRef::new(target_id, in_port, PortDirection::In);
@@ -917,24 +928,27 @@ fn rendering_query_contract_fixture() -> (Graph, NodeGraphViewState, NodeId, Nod
     let out_port = PortId::from_u128(78);
     let in_port = PortId::from_u128(79);
     let edge_id = EdgeId::from_u128(80);
-    let mut graph = graph_with_connected_nodes(selected, partial, out_port, in_port, edge_id);
+    let mut graph = connected_nodes_builder(selected, partial, out_port, in_port, edge_id);
 
-    let selected_node = graph
-        .nodes
-        .get_mut(&selected)
+    graph
+        .update_node(&selected, |node| {
+            node.pos = CanvasPoint { x: 0.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
         .expect("selected node exists");
-    selected_node.pos = CanvasPoint { x: 0.0, y: 0.0 };
-    selected_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let partial_node = graph.nodes.get_mut(&partial).expect("partial node exists");
-    partial_node.pos = CanvasPoint { x: 95.0, y: 0.0 };
-    partial_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    graph.nodes.insert(
+    graph
+        .update_node(&partial, |node| {
+            node.pos = CanvasPoint { x: 95.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
+        .expect("partial node exists");
+    graph.insert_node(
         outside,
         template_node(
             CanvasPoint { x: 180.0, y: 0.0 },
@@ -953,15 +967,22 @@ fn rendering_query_contract_fixture() -> (Graph, NodeGraphViewState, NodeId, Nod
     };
     view_state.set_selection(vec![selected], vec![edge_id], Vec::new());
 
-    (graph, view_state, selected, partial, outside, edge_id)
+    (
+        graph.build_unchecked(),
+        view_state,
+        selected,
+        partial,
+        outside,
+        edge_id,
+    )
 }
 
 fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, NodeId, NodeId) {
     let selected = NodeId::from_u128(73);
     let partial = NodeId::from_u128(74);
     let outside = NodeId::from_u128(75);
-    let mut graph = Graph::new(GraphId::from_u128(14));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(14));
+    graph.insert_node(
         selected,
         template_node(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -972,7 +993,7 @@ fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, No
             }),
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         partial,
         template_node(
             CanvasPoint { x: 95.0, y: 0.0 },
@@ -983,7 +1004,7 @@ fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, No
             }),
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         outside,
         template_node(
             CanvasPoint { x: 180.0, y: 0.0 },
@@ -1000,7 +1021,7 @@ fn visible_node_render_order_fixture() -> (Graph, NodeGraphViewState, NodeId, No
     };
     view_state.set_selection(vec![selected], Vec::new(), Vec::new());
 
-    (graph, view_state, selected, partial, outside)
+    (graph.build_unchecked(), view_state, selected, partial, outside)
 }
 
 fn visible_edge_render_order_fixture() -> (Graph, NodeGraphViewState, EdgeId) {
@@ -1009,26 +1030,32 @@ fn visible_edge_render_order_fixture() -> (Graph, NodeGraphViewState, EdgeId) {
     let out_port = PortId::from_u128(78);
     let in_port = PortId::from_u128(79);
     let edge_id = EdgeId::from_u128(80);
-    let mut graph = graph_with_connected_nodes(source_id, target_id, out_port, in_port, edge_id);
-    let source = graph.nodes.get_mut(&source_id).expect("source node exists");
-    source.pos = CanvasPoint { x: -80.0, y: 0.0 };
-    source.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let target = graph.nodes.get_mut(&target_id).expect("target node exists");
-    target.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    target.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
+    let mut graph = connected_nodes_builder(source_id, target_id, out_port, in_port, edge_id);
+    graph
+        .update_node(&source_id, |node| {
+            node.pos = CanvasPoint { x: -80.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
+        .expect("source node exists");
+    graph
+        .update_node(&target_id, |node| {
+            node.pos = CanvasPoint { x: 140.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
+        .expect("target node exists");
     let mut view_state = NodeGraphViewState {
         edge_draw_order: vec![edge_id],
         ..NodeGraphViewState::default()
     };
     view_state.set_selection(Vec::new(), vec![edge_id], Vec::new());
 
-    (graph, view_state, edge_id)
+    (graph.build_unchecked(), view_state, edge_id)
 }
 
 fn viewport_animation_scenario() -> ConformanceScenario {
@@ -1154,8 +1181,12 @@ fn viewport_pan_inertia_scenario() -> ConformanceScenario {
 }
 
 fn graph_with_node(node_id: NodeId) -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph.nodes.insert(
+    node_builder(node_id).build_unchecked()
+}
+
+fn node_builder(node_id: NodeId) -> GraphBuilder {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(
         node_id,
         template_node(
             CanvasPoint { x: 10.0, y: 20.0 },
@@ -1176,8 +1207,18 @@ fn graph_with_connected_nodes(
     in_port: PortId,
     edge_id: EdgeId,
 ) -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(2));
-    graph.nodes.insert(
+    connected_nodes_builder(source_id, target_id, out_port, in_port, edge_id).build_unchecked()
+}
+
+fn connected_nodes_builder(
+    source_id: NodeId,
+    target_id: NodeId,
+    out_port: PortId,
+    in_port: PortId,
+    edge_id: EdgeId,
+) -> GraphBuilder {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
+    graph.insert_node(
         source_id,
         template_node(
             CanvasPoint { x: 10.0, y: 20.0 },
@@ -1188,7 +1229,7 @@ fn graph_with_connected_nodes(
             }),
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         target_id,
         template_node(
             CanvasPoint { x: 260.0, y: 20.0 },
@@ -1199,7 +1240,7 @@ fn graph_with_connected_nodes(
             }),
         ),
     );
-    graph.ports.insert(
+    graph.insert_port(
         out_port,
         Port {
             node: source_id,
@@ -1214,7 +1255,7 @@ fn graph_with_connected_nodes(
             data: serde_json::Value::Null,
         },
     );
-    graph.ports.insert(
+    graph.insert_port(
         in_port,
         Port {
             node: target_id,
@@ -1229,7 +1270,7 @@ fn graph_with_connected_nodes(
             data: serde_json::Value::Null,
         },
     );
-    graph.edges.insert(
+    graph.insert_edge(
         edge_id,
         Edge {
             kind: EdgeKind::Data,
@@ -1269,8 +1310,8 @@ fn template_node(pos: CanvasPoint, ports: Vec<PortId>, size: Option<CanvasSize>)
 }
 
 fn graph_with_parent_expanding_node(node_id: NodeId, parent_id: GroupId) -> Graph {
-    let mut graph = graph_with_node(node_id);
-    graph.groups.insert(
+    let mut graph = node_builder(node_id);
+    graph.insert_group(
         parent_id,
         Group {
             title: "Parent".to_owned(),
@@ -1284,15 +1325,18 @@ fn graph_with_parent_expanding_node(node_id: NodeId, parent_id: GroupId) -> Grap
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
     graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
+    graph.build_unchecked()
 }
 
 #[cfg(test)]

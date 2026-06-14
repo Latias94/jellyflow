@@ -45,6 +45,7 @@ fn plan_delete_node_respects_policy_and_cascades_incident_edges() {
             if *id == a && edges.iter().any(|(id, _)| *id == edge_id)
     ));
 
+    let mut graph = graph.build_unchecked();
     GraphTransaction::from_ops(accepted.into_ops())
         .apply_to(&mut graph)
         .unwrap();
@@ -91,6 +92,7 @@ fn plan_delete_edge_respects_policy_overrides() {
     assert!(accepted.is_accept());
     assert_eq!(accepted.ops().len(), 1);
 
+    let mut graph = graph.build_unchecked();
     GraphTransaction::from_ops(accepted.into_ops())
         .apply_to(&mut graph)
         .unwrap();
@@ -143,6 +145,7 @@ fn plan_delete_elements_dedupes_node_cascaded_edges() {
             .any(|op| matches!(op, GraphOp::RemoveNode { id, .. } if *id == b))
     );
 
+    let mut graph = graph.build_unchecked();
     GraphTransaction::from_ops(plan.into_ops())
         .apply_to(&mut graph)
         .unwrap();

@@ -45,6 +45,7 @@ fn plan_reconnect_preserves_edge_id() {
     assert_eq!(plan.ops().len(), 1);
 
     let tx = GraphTransaction::from_ops(plan.into_ops());
+    let mut graph = graph.build_unchecked();
     tx.apply_to(&mut graph).unwrap();
 
     let edge = graph.edges().get(&edge_id).unwrap();
@@ -138,6 +139,7 @@ fn plan_reconnect_single_target_disconnects_other_edges() {
     assert_eq!(plan.ops().len(), 2, "expected remove + set_endpoints");
 
     let tx = GraphTransaction::from_ops(plan.into_ops());
+    let mut graph = graph.build_unchecked();
     tx.apply_to(&mut graph).unwrap();
 
     assert!(

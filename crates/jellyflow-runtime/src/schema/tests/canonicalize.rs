@@ -15,6 +15,7 @@ fn canonicalize_kinds_rewrites_aliases_to_canonical() {
     assert_eq!(plan.rewrites().len(), 1);
     assert_eq!(plan.rewrites()[0].node(), id);
 
+    let mut graph = graph.build_unchecked();
     plan.transaction().apply_to(&mut graph).unwrap();
     assert_eq!(
         graph.nodes().get(&id).unwrap().kind,

@@ -72,7 +72,7 @@ def jellyflow_facade_main_rs() -> str:
                     NodeGraphEditorConfig::default(),
                 );
 
-                assert_eq!(store.graph().nodes.len(), 0);
+                assert_eq!(store.graph().nodes().len(), 0);
 
                 let registry = builtin_layout_engine_registry();
                 assert!(registry.get(&LayoutEngineId::dugong()).is_some());
@@ -194,11 +194,12 @@ def jellyflow_runtime_main_rs() -> str:
                 let mut add = GraphTransaction::new().with_label("add demo node");
                 add.push(GraphOp::AddNode { id: node_id, node });
                 add.apply_to(&mut graph).expect("transaction applies");
-                assert!(graph.nodes.contains_key(&node_id));
+                assert!(graph.nodes().contains_key(&node_id));
                 let binding_id = BindingId::from_u128(40);
-                graph.bindings.insert(
-                    binding_id,
-                    Binding {
+                let mut binding_tx = GraphTransaction::new().with_label("add binding");
+                binding_tx.push(GraphOp::AddBinding {
+                    id: binding_id,
+                    binding: Binding {
                         subject: BindingEndpoint::graph_local(
                             GraphLocalBindingTarget::Node { id: node_id },
                         ),
@@ -209,7 +210,8 @@ def jellyflow_runtime_main_rs() -> str:
                         kind: Some("excerpt".to_owned()),
                         meta: serde_json::Value::Null,
                     },
-                );
+                });
+                binding_tx.apply_to(&mut graph).expect("binding applies");
 
                 let mut store = NodeGraphStore::new(
                     graph,
@@ -226,7 +228,10 @@ def jellyflow_runtime_main_rs() -> str:
                     .dispatch_transaction(&move_node)
                     .expect("store dispatch succeeds");
                 assert_eq!(outcome.committed().ops.len(), 1);
-                assert_eq!(store.graph().nodes[&node_id].pos, CanvasPoint { x: 32.0, y: 48.0 });
+                assert_eq!(
+                    store.graph().nodes()[&node_id].pos,
+                    CanvasPoint { x: 32.0, y: 48.0 }
+                );
 
                 let layout_registry = builtin_layout_engine_registry();
                 assert_eq!(

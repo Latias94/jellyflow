@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use crate::core::ids::{
     BindingId, EdgeId, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
@@ -343,12 +343,6 @@ impl Deref for GraphBuilder {
 
     fn deref(&self) -> &Self::Target {
         &self.graph
-    }
-}
-
-impl DerefMut for GraphBuilder {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.graph
     }
 }
 
