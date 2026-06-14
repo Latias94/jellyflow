@@ -14,14 +14,14 @@ fn subgraph_nodes_must_reference_declared_imports() {
     let mut node = make_node(SUBGRAPH_NODE_KIND);
     let imported = GraphId::from_u128(2);
     node.data = serde_json::json!({ "graph_id": imported });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     assert!(
         validate_subgraph_targets_are_imported(&graph).is_err(),
         "expected missing import to be rejected"
     );
 
-    graph.imports.insert(imported, GraphImport::default());
+    graph.insert_import(imported, GraphImport::default());
     assert!(
         validate_subgraph_targets_are_imported(&graph).is_ok(),
         "expected declared import to satisfy binding"
@@ -35,15 +35,15 @@ fn subgraph_targets_must_resolve_through_import_closure() {
     let c = GraphId::from_u128(3);
 
     let mut g_a = Graph::new(a);
-    g_a.imports.insert(b, GraphImport::default());
+    g_a.insert_import(b, GraphImport::default());
 
     let node_id = NodeId::new();
     let mut node = make_node(SUBGRAPH_NODE_KIND);
     node.data = serde_json::json!({ "graph_id": b });
-    g_a.nodes.insert(node_id, node);
+    g_a.insert_node(node_id, node);
 
     let mut g_b = Graph::new(b);
-    g_b.imports.insert(c, GraphImport::default());
+    g_b.insert_import(c, GraphImport::default());
 
     let g_c = Graph::new(c);
 
@@ -76,7 +76,7 @@ fn validate_graph_reports_subgraph_import_binding_errors() {
     let mut node = make_node(SUBGRAPH_NODE_KIND);
     let imported = GraphId::from_u128(2);
     node.data = serde_json::json!({ "graph_id": imported });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let report = validate_graph_structural(&graph);
     assert!(report.errors.iter().any(|e| matches!(
@@ -85,14 +85,14 @@ fn validate_graph_reports_subgraph_import_binding_errors() {
             if *node == node_id && *graph_id == imported
     )));
 
-    graph.imports.insert(imported, GraphImport::default());
+    graph.insert_import(imported, GraphImport::default());
     let report = validate_graph(&graph);
     assert!(report.is_ok());
 
     let mut bad = make_node(SUBGRAPH_NODE_KIND);
     bad.data = serde_json::json!({});
     let bad_id = NodeId::new();
-    graph.nodes.insert(bad_id, bad);
+    graph.insert_node(bad_id, bad);
     let report = validate_graph_structural(&graph);
     assert!(report.errors.iter().any(|e| matches!(
         e,

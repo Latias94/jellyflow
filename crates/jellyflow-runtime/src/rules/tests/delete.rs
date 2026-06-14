@@ -4,12 +4,12 @@ use crate::io::NodeGraphInteractionState;
 use crate::rules::{
     plan_delete_edge, plan_delete_elements_with_policy, plan_delete_node_with_policy,
 };
-use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortId};
+use jellyflow_core::core::{EdgeId, GraphBuilder, NodeId, PortCapacity, PortId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn plan_delete_node_respects_policy_and_cascades_incident_edges() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -33,7 +33,9 @@ fn plan_delete_node_respects_policy_and_cascades_incident_edges() {
     assert!(rejected.is_reject());
     assert!(rejected.ops().is_empty());
 
-    graph.nodes.get_mut(&a).unwrap().deletable = Some(true);
+    graph
+        .update_node(&a, |node| node.deletable = Some(true))
+        .expect("node exists");
     let accepted = plan_delete_node_with_policy(&graph, a, &disabled);
     assert!(accepted.is_accept());
     assert_eq!(accepted.ops().len(), 1);
@@ -47,16 +49,16 @@ fn plan_delete_node_respects_policy_and_cascades_incident_edges() {
         .apply_to(&mut graph)
         .unwrap();
 
-    assert!(!graph.nodes.contains_key(&a));
-    assert!(graph.nodes.contains_key(&b));
-    assert!(!graph.ports.contains_key(&out));
-    assert!(graph.ports.contains_key(&inn));
-    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.nodes().contains_key(&a));
+    assert!(graph.nodes().contains_key(&b));
+    assert!(!graph.ports().contains_key(&out));
+    assert!(graph.ports().contains_key(&inn));
+    assert!(!graph.edges().contains_key(&edge_id));
 }
 
 #[test]
 fn plan_delete_edge_respects_policy_overrides() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -82,7 +84,9 @@ fn plan_delete_edge_respects_policy_overrides() {
     assert!(rejected.is_reject());
     assert!(rejected.ops().is_empty());
 
-    graph.edges.get_mut(&edge_id).unwrap().deletable = Some(true);
+    graph
+        .update_edge(&edge_id, |edge| edge.deletable = Some(true))
+        .expect("edge exists");
     let accepted = plan_delete_elements_with_policy(&graph, [], [edge_id], &disabled);
     assert!(accepted.is_accept());
     assert_eq!(accepted.ops().len(), 1);
@@ -91,12 +95,12 @@ fn plan_delete_edge_respects_policy_overrides() {
         .apply_to(&mut graph)
         .unwrap();
 
-    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.edges().contains_key(&edge_id));
 }
 
 #[test]
 fn plan_delete_elements_dedupes_node_cascaded_edges() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -110,9 +114,15 @@ fn plan_delete_elements_dedupes_node_cascaded_edges() {
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out, inn);
-    graph.nodes.get_mut(&a).unwrap().deletable = Some(true);
-    graph.nodes.get_mut(&b).unwrap().deletable = Some(true);
-    graph.edges.get_mut(&edge_id).unwrap().deletable = Some(false);
+    graph
+        .update_node(&a, |node| node.deletable = Some(true))
+        .expect("node exists");
+    graph
+        .update_node(&b, |node| node.deletable = Some(true))
+        .expect("node exists");
+    graph
+        .update_edge(&edge_id, |edge| edge.deletable = Some(false))
+        .expect("edge exists");
 
     let disabled = NodeGraphInteractionState {
         nodes_deletable: false,
@@ -137,7 +147,7 @@ fn plan_delete_elements_dedupes_node_cascaded_edges() {
         .apply_to(&mut graph)
         .unwrap();
 
-    assert!(!graph.nodes.contains_key(&a));
-    assert!(!graph.nodes.contains_key(&b));
-    assert!(!graph.edges.contains_key(&edge_id));
+    assert!(!graph.nodes().contains_key(&a));
+    assert!(!graph.nodes().contains_key(&b));
+    assert!(!graph.edges().contains_key(&edge_id));
 }

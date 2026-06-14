@@ -6,19 +6,19 @@ use super::ApplyError;
 pub(super) fn apply_import_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
     match op {
         GraphOp::AddImport { id, import } => {
-            if graph.imports.contains_key(id) {
+            if graph.imports().contains_key(id) {
                 return Err(ApplyError::ImportAlreadyExists { id: *id });
             }
-            graph.imports.insert(*id, import.clone());
+            graph.insert_import(*id, import.clone());
         }
         GraphOp::RemoveImport { id, .. } => {
-            if !graph.imports.contains_key(id) {
+            if !graph.imports().contains_key(id) {
                 return Err(ApplyError::MissingImport { id: *id });
             }
-            graph.imports.remove(id);
+            graph.remove_import(id);
         }
         GraphOp::SetImportAlias { id, to, .. } => {
-            let Some(import) = graph.imports.get_mut(id) else {
+            let Some(import) = graph.import_mut(id) else {
                 return Err(ApplyError::MissingImport { id: *id });
             };
             import.alias = to.clone();

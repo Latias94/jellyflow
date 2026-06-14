@@ -73,7 +73,7 @@ where
 {
     fn new(root_graph: &'a Graph, resolver: R) -> Self {
         Self {
-            root: root_graph.graph_id,
+            root: root_graph.graph_id(),
             root_graph,
             resolver,
             marks: BTreeMap::new(),
@@ -121,12 +121,12 @@ where
         from: GraphId,
     ) -> Result<Vec<GraphId>, GraphImportError> {
         let imports = if node == self.root {
-            &self.root_graph.imports
+            self.root_graph.imports()
         } else {
             let Some(graph) = (self.resolver)(node) else {
                 return Err(GraphImportError::MissingGraph { from, to: node });
             };
-            &graph.imports
+            graph.imports()
         };
 
         Ok(imports.keys().copied().collect())

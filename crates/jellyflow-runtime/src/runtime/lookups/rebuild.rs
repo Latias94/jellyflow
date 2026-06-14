@@ -8,12 +8,12 @@ impl NodeGraphLookups {
         self.edge_lookup.clear();
         self.connection_lookup.clear();
 
-        for (id, node) in &graph.nodes {
+        for (id, node) in graph.nodes() {
             self.node_lookup
                 .insert(*id, NodeLookupEntry::from_node(node));
         }
 
-        for (id, edge) in &graph.edges {
+        for (id, edge) in graph.edges() {
             let endpoints = EdgeEndpoints::from_edge(edge);
             let Some((entry, conn)) = Self::edge_lookup_entry_from_graph(
                 graph,
@@ -37,8 +37,8 @@ impl NodeGraphLookups {
         endpoints: EdgeEndpoints,
         reconnectable: Option<EdgeReconnectable>,
     ) -> Option<(EdgeLookupEntry, HandleConnection)> {
-        let from_port = graph.ports.get(&endpoints.from)?;
-        let to_port = graph.ports.get(&endpoints.to)?;
+        let from_port = graph.ports().get(&endpoints.from)?;
+        let to_port = graph.ports().get(&endpoints.to)?;
         let entry = EdgeLookupEntry::with_parts(
             kind,
             endpoints,
@@ -51,7 +51,7 @@ impl NodeGraphLookups {
     }
 
     pub(super) fn insert_node_lookup_from_graph(&mut self, graph: &Graph, id: NodeId) -> bool {
-        let Some(node) = graph.nodes.get(&id) else {
+        let Some(node) = graph.nodes().get(&id) else {
             return false;
         };
         self.node_lookup

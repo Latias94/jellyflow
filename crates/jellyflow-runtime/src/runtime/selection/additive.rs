@@ -18,21 +18,21 @@ pub(super) fn apply_additive_selection(
             .selected_nodes
             .iter()
             .copied()
-            .filter(|node| graph.nodes.contains_key(node)),
+            .filter(|node| graph.nodes().contains_key(node)),
     );
     result.edges.extend(
         view_state
             .selected_edges
             .iter()
             .copied()
-            .filter(|edge| graph.edges.contains_key(edge)),
+            .filter(|edge| graph.edges().contains_key(edge)),
     );
     result.groups.extend(
         view_state
             .selected_groups
             .iter()
             .copied()
-            .filter(|group| graph.groups.contains_key(group)),
+            .filter(|group| graph.groups().contains_key(group)),
     );
 
     result.nodes.sort();

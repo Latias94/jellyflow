@@ -74,7 +74,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
     }
 
     pub fn add_edge(&mut self, id: EdgeId, edge: Edge) -> Result<(), GraphMutationError> {
-        if self.graph.edges.contains_key(&id) || self.staged.contains_edge(id) {
+        if self.graph.edges().contains_key(&id) || self.staged.contains_edge(id) {
             return Err(GraphMutationError::EdgeAlreadyExists(id));
         }
         self.require_known_port(edge.from)?;
@@ -118,7 +118,7 @@ impl<'a> GraphMutationBatchPlanner<'a> {
     }
 
     fn require_known_port(&self, id: PortId) -> Result<(), GraphMutationError> {
-        if self.graph.ports.contains_key(&id) || self.staged.contains_port(id) {
+        if self.graph.ports().contains_key(&id) || self.staged.contains_port(id) {
             Ok(())
         } else {
             Err(GraphMutationError::MissingPort(id))

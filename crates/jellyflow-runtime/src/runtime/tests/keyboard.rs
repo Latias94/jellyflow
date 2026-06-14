@@ -36,7 +36,9 @@ fn keyboard_intent_routes_delete_selection_variants() {
 #[test]
 fn keyboard_intent_routes_nudge_selection() {
     let (mut graph, a, _b, _out, _in, _edge) = make_graph();
-    graph.nodes.get_mut(&a).expect("node").deletable = Some(true);
+    graph
+        .update_node(&a, |node| node.deletable = Some(true))
+        .expect("node exists");
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![a], Vec::new(), Vec::new());
     let mut store = crate::runtime::store::NodeGraphStore::new(

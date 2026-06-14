@@ -51,7 +51,7 @@ fn crate_root_exposes_canonical_runtime_api() {
         NodeGraphEditorConfig::default(),
     );
 
-    assert_eq!(store.graph().graph_id, graph.graph_id);
+    assert_eq!(store.graph().graph_id(), graph.graph_id());
     assert!(NodeGraphPatch::default().is_empty());
     let _ = std::mem::size_of::<DispatchOutcome>();
     let _ = std::mem::size_of::<DispatchError>();
@@ -62,14 +62,14 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let graph = Graph::new(GraphId::new());
 
     let graph_file = GraphFileV1::from_graph(graph.clone());
-    assert_eq!(graph_file.graph_id, graph.graph_id);
+    assert_eq!(graph_file.graph_id, graph.graph_id());
 
     let editor_file = NodeGraphEditorStateFile::new(
-        graph.graph_id,
+        graph.graph_id(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
-    assert_eq!(editor_file.graph_id, graph.graph_id);
+    assert_eq!(editor_file.graph_id, graph.graph_id());
     let _interaction = NodeGraphInteractionConfig::default();
     let mut node_registry = NodeRegistry::new();
     node_registry.register(NodeSchema {

@@ -16,10 +16,10 @@ fn graph_diff_roundtrips_when_edge_endpoints_change() {
     insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(2020);
-    from.edges.insert(edge_id, make_edge(out1, inn));
+    from.insert_edge(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
-    to.edges.get_mut(&edge_id).unwrap().from = out2;
+    to.edge_mut(&edge_id).unwrap().from = out2;
 
     let tx = graph_diff(&from, &to);
     assert!(

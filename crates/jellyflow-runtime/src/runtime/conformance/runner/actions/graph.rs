@@ -68,7 +68,7 @@ pub(super) fn assert_node_position(
     node: NodeId,
     expected: CanvasPoint,
 ) -> Result<(), String> {
-    let Some(actual) = store.graph().nodes.get(&node).map(|node| node.pos) else {
+    let Some(actual) = store.graph().nodes().get(&node).map(|node| node.pos) else {
         return Err(format!("node not found for position assertion: {node:?}"));
     };
 

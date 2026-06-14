@@ -75,11 +75,11 @@ pub struct NodeGraphStore {
 impl std::fmt::Debug for NodeGraphStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeGraphStore")
-            .field("graph_id", &self.graph.graph_id)
+            .field("graph_id", &self.graph.graph_id())
             .field("graph_revision", &self.graph_revision)
             .field("layout_facts_revision", &self.layout_facts_revision)
-            .field("node_count", &self.graph.nodes.len())
-            .field("edge_count", &self.graph.edges.len())
+            .field("node_count", &self.graph.nodes().len())
+            .field("edge_count", &self.graph.edges().len())
             .field("lookup_node_count", &self.lookups.node_count())
             .field("lookup_edge_count", &self.lookups.edge_count())
             .field("undo_len", &self.history.undo_len())

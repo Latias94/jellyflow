@@ -86,9 +86,7 @@ impl<'a> FragmentPastePlanner<'a> {
     fn planning_graph(&self) -> Graph {
         let mut planning_graph = Graph::default();
         for (old_id, group) in &self.fragment.groups {
-            planning_graph
-                .groups
-                .insert(self.ids.group(*old_id), group.clone());
+            planning_graph.insert_group(self.ids.group(*old_id), group.clone());
         }
         planning_graph
     }

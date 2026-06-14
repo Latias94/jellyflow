@@ -12,7 +12,7 @@ impl NodeRegistry {
     pub fn plan_canonicalize_kinds(&self, graph: &Graph) -> CanonicalizeKindsPlan {
         let mut planner = canonicalize::CanonicalizeKindsPlanner::new();
 
-        for (id, node) in &graph.nodes {
+        for (id, node) in graph.nodes() {
             let canonical = self.resolve_kind(&node.kind);
             planner.rewrite_node_kind(*id, node, canonical);
         }

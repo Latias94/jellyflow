@@ -62,13 +62,13 @@ struct SplittableEdge<'a> {
 
 impl<'a> SplittableEdge<'a> {
     fn resolve(graph: &'a Graph, edge_id: EdgeId) -> Result<Self, ConnectPlan> {
-        let Some(edge) = graph.edges.get(&edge_id) else {
+        let Some(edge) = graph.edges().get(&edge_id) else {
             return Err(reject_missing_edge(edge_id));
         };
-        let Some(from_port) = graph.ports.get(&edge.from) else {
+        let Some(from_port) = graph.ports().get(&edge.from) else {
             return Err(ConnectPlan::reject("missing edge.from port"));
         };
-        let Some(to_port) = graph.ports.get(&edge.to) else {
+        let Some(to_port) = graph.ports().get(&edge.to) else {
             return Err(ConnectPlan::reject("missing edge.to port"));
         };
 

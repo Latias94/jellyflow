@@ -23,7 +23,7 @@ impl LayoutEngine for ContextSizeEngine {
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
         let nodes = graph
-            .nodes
+            .nodes()
             .keys()
             .map(|node| {
                 let size = context
@@ -83,8 +83,8 @@ fn dugong_layout_transaction_dispatches_through_store() {
     assert_eq!(outcome.committed().label(), Some("Layout graph"));
     assert!(!outcome.committed().is_empty());
     assert!(
-        store.graph().nodes[&a].pos != (CanvasPoint { x: 0.0, y: 0.0 })
-            || store.graph().nodes[&b].pos != (CanvasPoint { x: 100.0, y: 0.0 })
+        store.graph().nodes()[&a].pos != (CanvasPoint { x: 0.0, y: 0.0 })
+            || store.graph().nodes()[&b].pos != (CanvasPoint { x: 100.0, y: 0.0 })
     );
 }
 
@@ -138,7 +138,7 @@ fn custom_layout_engine_applies_through_store() {
 
     assert!(outcome.layout.node_position(a).is_some());
     assert_eq!(
-        store.graph().nodes[&a].pos,
+        store.graph().nodes()[&a].pos,
         CanvasPoint { x: 172.0, y: 36.0 }
     );
     assert_eq!(outcome.committed().unwrap().label(), Some("Layout graph"));
@@ -166,13 +166,13 @@ fn store_layout_context_uses_runtime_measurements_without_persisting_size() {
     let node_position = outcome.layout.node_position(a).expect("node position");
     assert_eq!(node_position.size, measured);
     assert_eq!(
-        store.graph().nodes[&a].pos,
+        store.graph().nodes()[&a].pos,
         CanvasPoint {
             x: measured.width,
             y: measured.height
         }
     );
-    assert_eq!(store.graph().nodes[&a].size, None);
+    assert_eq!(store.graph().nodes()[&a].size, None);
     assert_eq!(
         store.layout_context().measured_node_sizes.get(&a),
         Some(&measured)

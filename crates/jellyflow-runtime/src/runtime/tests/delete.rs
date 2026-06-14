@@ -37,8 +37,8 @@ fn delete_selection_commits_selected_node_and_clears_stale_view_state() {
         outcome.committed().label(),
         Some(DELETE_SELECTION_TRANSACTION_LABEL)
     );
-    assert!(!harness.store().graph().nodes.contains_key(&a));
-    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(!harness.store().graph().nodes().contains_key(&a));
+    assert!(!harness.store().graph().edges().contains_key(&edge));
     assert!(harness.store().view_state().selected_nodes.is_empty());
     assert!(harness.store().view_state().selected_edges.is_empty());
     assert!(harness.store().view_state().draw_order.is_empty());
@@ -63,9 +63,9 @@ fn delete_selection_can_remove_selected_edge_only() {
         .expect("delete edge dispatch succeeds")
         .expect("delete edge commits");
 
-    assert!(harness.store().graph().nodes.contains_key(&a));
-    assert!(harness.store().graph().nodes.contains_key(&b));
-    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().nodes().contains_key(&a));
+    assert!(harness.store().graph().nodes().contains_key(&b));
+    assert!(!harness.store().graph().edges().contains_key(&edge));
     harness.assert_events(&[
         HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_edge"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
@@ -110,8 +110,8 @@ fn delete_preflight_veto_is_noop() {
         .expect("veto should not fail");
 
     assert!(outcome.is_none());
-    assert!(harness.store().graph().nodes.contains_key(&a));
-    assert!(harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().nodes().contains_key(&a));
+    assert!(harness.store().graph().edges().contains_key(&edge));
     assert!(harness.store().view_state().selected_nodes.contains(&a));
     harness.assert_events(&[]);
 }
@@ -135,8 +135,8 @@ fn delete_preflight_accept_commits_planned_cascade() {
         .expect("accepted preflight should dispatch")
         .expect("accepted preflight should commit");
 
-    assert!(!harness.store().graph().nodes.contains_key(&a));
-    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(!harness.store().graph().nodes().contains_key(&a));
+    assert!(!harness.store().graph().edges().contains_key(&edge));
     harness.assert_events(&[
         HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_node"]),
         HarnessEvent::selection(Vec::new(), Vec::new(), Vec::new()),
@@ -167,9 +167,9 @@ fn delete_preflight_replace_commits_substitute_delete_set() {
         .expect("replacement should dispatch")
         .expect("replacement should commit");
 
-    assert!(harness.store().graph().nodes.contains_key(&a));
-    assert!(harness.store().graph().nodes.contains_key(&b));
-    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().nodes().contains_key(&a));
+    assert!(harness.store().graph().nodes().contains_key(&b));
+    assert!(!harness.store().graph().edges().contains_key(&edge));
     assert!(harness.store().view_state().selected_nodes.contains(&a));
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(DELETE_SELECTION_TRANSACTION_LABEL),
@@ -240,8 +240,8 @@ fn delete_selection_for_key_commits_matching_key_and_ignores_nonmatching_key() {
         .expect("nonmatching delete key should not fail");
 
     assert!(ignored.is_none());
-    assert!(harness.store().graph().nodes.contains_key(&a));
-    assert!(harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().nodes().contains_key(&a));
+    assert!(harness.store().graph().edges().contains_key(&edge));
     assert_eq!(harness.store().view_state().selected_nodes, vec![a]);
     harness.assert_events(&[]);
 
@@ -255,8 +255,8 @@ fn delete_selection_for_key_commits_matching_key_and_ignores_nonmatching_key() {
         committed.committed().label(),
         Some(DELETE_SELECTION_TRANSACTION_LABEL)
     );
-    assert!(!harness.store().graph().nodes.contains_key(&a));
-    assert!(!harness.store().graph().edges.contains_key(&edge));
+    assert!(!harness.store().graph().nodes().contains_key(&a));
+    assert!(!harness.store().graph().edges().contains_key(&edge));
     assert!(harness.store().view_state().selected_nodes.is_empty());
     harness.assert_events(&[
         HarnessEvent::graph_commit(Some(DELETE_SELECTION_TRANSACTION_LABEL), ["remove_node"]),
@@ -267,7 +267,9 @@ fn delete_selection_for_key_commits_matching_key_and_ignores_nonmatching_key() {
 #[test]
 fn delete_selection_rejects_policy_denied_selection_without_committing() {
     let (mut graph, a, _b, _out, _in, edge) = make_graph();
-    graph.nodes.get_mut(&a).expect("node").deletable = Some(false);
+    graph
+        .update_node(&a, |node| node.deletable = Some(false))
+        .expect("node exists");
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![a], Vec::new(), Vec::new());
     let mut harness =
@@ -282,8 +284,8 @@ fn delete_selection_rejects_policy_denied_selection_without_committing() {
     };
 
     assert_eq!(diagnostics[0].key, "delete.node_not_deletable");
-    assert!(harness.store().graph().nodes.contains_key(&a));
-    assert!(harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().nodes().contains_key(&a));
+    assert!(harness.store().graph().edges().contains_key(&edge));
     assert!(harness.store().view_state().selected_nodes.contains(&a));
     harness.assert_events(&[]);
 }
@@ -299,7 +301,7 @@ fn delete_selection_empty_selection_is_noop() {
         .expect("empty delete selection should not fail");
 
     assert!(outcome.is_none());
-    assert!(harness.store().graph().edges.contains_key(&edge));
+    assert!(harness.store().graph().edges().contains_key(&edge));
     harness.assert_events(&[]);
 }
 

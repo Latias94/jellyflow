@@ -57,7 +57,7 @@ fn graph_diff_inverse_roundtrips_when_adding_ports_and_edge() {
     let mut to = from.clone();
     insert_port(&mut to, out, a, "out", PortDirection::Out);
     insert_port(&mut to, inn, b, "in", PortDirection::In);
-    to.edges.insert(edge_id, make_edge(out, inn));
+    to.insert_edge(edge_id, make_edge(out, inn));
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();
@@ -89,7 +89,7 @@ fn graph_diff_inverse_roundtrips_when_deleted_node_port_moves_to_existing_node()
     insert_port(&mut from, moved, a, "moved", PortDirection::Out);
 
     let mut to = from.clone();
-    to.nodes.remove(&a);
+    to.remove_node(&a);
     insert_port(&mut to, moved, b, "moved", PortDirection::Out);
 
     let tx = graph_diff(&from, &to);
@@ -122,10 +122,9 @@ fn graph_diff_inverse_roundtrips_when_port_moves_between_existing_nodes() {
     insert_port(&mut from, moved, a, "moved", PortDirection::Out);
 
     let mut to = from.clone();
-    to.ports
-        .insert(moved, make_port(b, "moved", PortDirection::Out));
-    to.nodes.get_mut(&a).unwrap().ports.clear();
-    to.nodes.get_mut(&b).unwrap().ports.push(moved);
+    to.insert_port(moved, make_port(b, "moved", PortDirection::Out));
+    to.node_mut(&a).unwrap().clear_ports();
+    to.node_mut(&b).unwrap().ports.push(moved);
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();
@@ -158,10 +157,9 @@ fn graph_diff_inverse_roundtrips_when_node_port_membership_is_replaced() {
     insert_port(&mut from, kept, a, "kept", PortDirection::Out);
 
     let mut to = from.clone();
-    to.ports.remove(&old);
-    to.ports
-        .insert(new, make_port(a, "new", PortDirection::Out));
-    to.nodes.get_mut(&a).unwrap().ports = vec![kept, new];
+    to.remove_port(&old);
+    to.insert_port(new, make_port(a, "new", PortDirection::Out));
+    to.node_mut(&a).unwrap().ports = vec![kept, new];
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();
@@ -192,10 +190,9 @@ fn graph_diff_inverse_roundtrips_when_structural_port_replacement_adds_sibling_p
     insert_port(&mut from, replaced, a, "old", PortDirection::Out);
 
     let mut to = from.clone();
-    to.ports.get_mut(&replaced).unwrap().key = PortKey::new("renamed");
-    to.ports
-        .insert(added, make_port(a, "added", PortDirection::Out));
-    to.nodes.get_mut(&a).unwrap().ports = vec![replaced, added];
+    to.port_mut(&replaced).unwrap().key = PortKey::new("renamed");
+    to.insert_port(added, make_port(a, "added", PortDirection::Out));
+    to.node_mut(&a).unwrap().ports = vec![replaced, added];
 
     let tx = graph_diff(&from, &to);
     let mut patched = from.clone();

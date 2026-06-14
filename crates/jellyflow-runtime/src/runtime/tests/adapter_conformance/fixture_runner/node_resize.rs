@@ -3,10 +3,14 @@ use super::*;
 #[test]
 fn adapter_conformance_fixture_runner_records_node_resize_direction_transaction() {
     let (mut graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
 
     let scenario = ConformanceScenario::new("node resize direction transaction", graph)
         .with_xyflow_callbacks()
@@ -42,7 +46,8 @@ fn adapter_conformance_fixture_runner_records_node_resize_direction_transaction(
 fn adapter_conformance_fixture_runner_records_node_resize_parent_expansion_transaction() {
     let (mut graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
     let parent_id = GroupId::from_u128(200);
-    graph.groups.insert(
+    fixture_insert_group(
+        &mut graph,
         parent_id,
         Group {
             title: "Parent".to_owned(),
@@ -56,14 +61,17 @@ fn adapter_conformance_fixture_runner_records_node_resize_parent_expansion_trans
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
 
     let scenario = ConformanceScenario::new("node resize parent expansion", graph)
         .with_xyflow_callbacks()

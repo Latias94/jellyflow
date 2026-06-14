@@ -63,7 +63,7 @@ fn main() {
     assert_eq!(changes.nodes.len(), 1);
     assert!(changes.edges.is_empty());
     assert_eq!(
-        store.graph().nodes[&node_id].pos,
+        store.graph().nodes()[&node_id].pos,
         CanvasPoint { x: 32.0, y: 48.0 }
     );
 

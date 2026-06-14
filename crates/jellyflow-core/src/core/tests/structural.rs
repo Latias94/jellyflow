@@ -5,8 +5,8 @@ fn validate_allows_edges_regardless_of_port_direction() {
     let mut graph = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    graph.insert_node(a, make_node("core.a"));
+    graph.insert_node(b, make_node("core.b"));
 
     let out_a = PortId::new();
     let out_b = PortId::new();
@@ -34,7 +34,7 @@ fn validate_allows_edges_regardless_of_port_direction() {
     );
 
     let edge_id = EdgeId::new();
-    graph.edges.insert(
+    graph.insert_edge(
         edge_id,
         Edge {
             kind: EdgeKind::Data,
@@ -57,10 +57,10 @@ fn validate_allows_edges_regardless_of_port_direction() {
 fn validate_rejects_port_missing_from_owner_ports() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.a"));
+    graph.insert_node(node_id, make_node("core.a"));
 
     let port_id = PortId::new();
-    graph.ports.insert(
+    graph.insert_port(
         port_id,
         make_port(
             node_id,
@@ -85,7 +85,7 @@ fn validate_rejects_node_with_missing_parent_group() {
     let n = NodeId::new();
     let mut node = make_node("core.a");
     node.parent = Some(GroupId::new());
-    graph.nodes.insert(n, node);
+    graph.insert_node(n, node);
 
     let report = validate_graph(&graph);
     assert!(report.errors.iter().any(|e| matches!(
@@ -103,7 +103,7 @@ fn validate_rejects_node_with_invalid_size() {
         width: -1.0,
         height: 10.0,
     });
-    graph.nodes.insert(n, node);
+    graph.insert_node(n, node);
 
     let report = validate_graph(&graph);
     assert!(report.errors.iter().any(|e| matches!(
@@ -117,8 +117,8 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
     let mut graph = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    graph.insert_node(a, make_node("core.a"));
+    graph.insert_node(b, make_node("core.b"));
 
     let out_a = PortId::new();
     let in_b = PortId::new();
@@ -146,7 +146,7 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
     );
 
     let edge_id = EdgeId::new();
-    graph.edges.insert(
+    graph.insert_edge(
         edge_id,
         Edge {
             kind: EdgeKind::Exec,
@@ -171,7 +171,7 @@ fn validate_reports_both_missing_edge_endpoints() {
     let edge_id = EdgeId::new();
     let from = PortId::new();
     let to = PortId::new();
-    graph.edges.insert(
+    graph.insert_edge(
         edge_id,
         Edge {
             kind: EdgeKind::Data,
@@ -204,8 +204,8 @@ fn validate_reports_duplicate_edges() {
     let mut graph = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
+    graph.insert_node(a, make_node("core.a"));
+    graph.insert_node(b, make_node("core.b"));
 
     let out_a = PortId::new();
     let in_b = PortId::new();
@@ -235,7 +235,7 @@ fn validate_reports_duplicate_edges() {
     let first = EdgeId::new();
     let duplicate = EdgeId::new();
     for edge_id in [first, duplicate] {
-        graph.edges.insert(
+        graph.insert_edge(
             edge_id,
             Edge {
                 kind: EdgeKind::Data,
@@ -271,9 +271,9 @@ fn validate_reports_single_port_capacity_exceeded() {
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
-    graph.nodes.insert(a, make_node("core.a"));
-    graph.nodes.insert(b, make_node("core.b"));
-    graph.nodes.insert(c, make_node("core.c"));
+    graph.insert_node(a, make_node("core.a"));
+    graph.insert_node(b, make_node("core.b"));
+    graph.insert_node(c, make_node("core.c"));
 
     let out_a = PortId::new();
     let out_c = PortId::new();
@@ -313,7 +313,7 @@ fn validate_reports_single_port_capacity_exceeded() {
     );
 
     for from in [out_a, out_c] {
-        graph.edges.insert(
+        graph.insert_edge(
             EdgeId::new(),
             Edge {
                 kind: EdgeKind::Data,

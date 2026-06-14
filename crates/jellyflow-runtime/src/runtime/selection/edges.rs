@@ -19,7 +19,7 @@ pub(super) fn selection_box_edges(
     let selected: HashSet<NodeId> = nodes.iter().copied().collect();
     let mut edges: Vec<EdgeId> = Vec::new();
     for (edge_id, entry) in &lookups.edge_lookup {
-        let Some(edge) = graph.edges.get(edge_id) else {
+        let Some(edge) = graph.edges().get(edge_id) else {
             continue;
         };
         if edge.hidden {

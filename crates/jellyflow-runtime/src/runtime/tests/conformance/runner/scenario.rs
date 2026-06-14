@@ -272,10 +272,14 @@ fn conformance_runner_expands_behavior_contracts_and_matches_trace() {
 #[test]
 fn conformance_runner_expands_node_resize_session_behavior_contract() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
     let direction = NodeResizeDirection::BottomRight;
     let start_pointer = CanvasPoint { x: 110.0, y: 60.0 };
     let current_pointer = CanvasPoint { x: 150.0, y: 90.0 };
@@ -427,7 +431,8 @@ fn connection_handle_bounds(origin: CanvasPoint) -> HandleBounds {
 fn conformance_runner_executes_node_drag_parent_expansion_fixture_and_matches_trace() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let parent_id = GroupId::from_u128(200);
-    graph.groups.insert(
+    fixture_insert_group(
+        &mut graph,
         parent_id,
         Group {
             title: "Parent".to_owned(),
@@ -441,14 +446,17 @@ fn conformance_runner_executes_node_drag_parent_expansion_fixture_and_matches_tr
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
 
     let target = CanvasPoint { x: 95.0, y: 95.0 };
     let scenario = ConformanceScenario::new("node drag parent expansion runner", graph)
@@ -478,10 +486,14 @@ fn conformance_runner_executes_node_drag_parent_expansion_fixture_and_matches_tr
 #[test]
 fn conformance_runner_executes_node_resize_fixture_and_matches_trace() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
 
     let scenario = ConformanceScenario::new("node resize runner", graph)
         .with_xyflow_callbacks()
@@ -519,10 +531,14 @@ fn conformance_runner_executes_node_resize_fixture_and_matches_trace() {
 #[test]
 fn conformance_runner_executes_node_pointer_resize_fixture_and_matches_trace() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
 
     let scenario = ConformanceScenario::new("node pointer resize runner", graph)
         .with_xyflow_callbacks()
@@ -559,7 +575,8 @@ fn conformance_runner_executes_node_pointer_resize_fixture_and_matches_trace() {
 fn conformance_runner_executes_node_resize_parent_expansion_fixture_and_matches_trace() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
     let parent_id = GroupId::from_u128(200);
-    graph.groups.insert(
+    fixture_insert_group(
+        &mut graph,
         parent_id,
         Group {
             title: "Parent".to_owned(),
@@ -573,14 +590,17 @@ fn conformance_runner_executes_node_resize_parent_expansion_fixture_and_matches_
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
 
     let scenario = ConformanceScenario::new("node resize parent expansion runner", graph)
         .with_xyflow_callbacks()
@@ -616,10 +636,14 @@ fn conformance_runner_executes_node_resize_parent_expansion_fixture_and_matches_
 #[test]
 fn conformance_runner_executes_node_resize_lifecycle_fixture_and_matches_trace() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
 
     let direction = NodeResizeDirection::BottomRight;
     let start_pointer = CanvasPoint { x: 110.0, y: 60.0 };
@@ -684,10 +708,14 @@ fn conformance_runner_executes_node_resize_lifecycle_fixture_and_matches_trace()
 #[test]
 fn conformance_runner_reports_noop_node_pointer_resize_as_action_error() {
     let (mut graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 100.0,
-        height: 60.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 60.0,
+            })
+        })
+        .expect("node exists");
 
     let scenario =
         ConformanceScenario::new("noop node pointer resize runner", graph).with_actions([
@@ -707,21 +735,28 @@ fn conformance_runner_reports_noop_node_pointer_resize_as_action_error() {
 #[test]
 fn conformance_runner_asserts_rendering_query_without_trace() {
     let (mut graph, node_id, outside, _out_port, _in_port, edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
-    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    outside_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            })
+        })
+        .expect("node exists");
+    graph
+        .update_node(&outside, |node| {
+            node.pos = CanvasPoint { x: 140.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
+        .expect("node exists");
     let partial = NodeId::new();
-    let mut partial_node = graph.nodes.get(&node_id).expect("node exists").clone();
+    let mut partial_node = graph.nodes().get(&node_id).expect("node exists").clone();
     partial_node.pos = CanvasPoint { x: 95.0, y: 0.0 };
-    partial_node.ports.clear();
-    graph.nodes.insert(partial, partial_node);
+    partial_node.clear_ports();
+    fixture_insert_node(&mut graph, partial, partial_node);
     let mut view_state = crate::io::NodeGraphViewState {
         draw_order: vec![outside, node_id, partial],
         edge_draw_order: vec![edge_id],
@@ -761,7 +796,7 @@ fn conformance_runner_asserts_rendering_query_without_trace() {
 #[test]
 fn conformance_runner_keeps_dispatch_transaction_as_low_level_graph_fixture_action() {
     let (graph, node_id, _b, _out_port, _in_port, _edge_id) = make_graph();
-    let from = graph.nodes.get(&node_id).expect("node exists").pos;
+    let from = graph.nodes().get(&node_id).expect("node exists").pos;
     let to = CanvasPoint { x: 24.0, y: 12.0 };
     let label = "low-level fixture move";
     let transaction = GraphTransaction::from_ops([GraphOp::SetNodePos {

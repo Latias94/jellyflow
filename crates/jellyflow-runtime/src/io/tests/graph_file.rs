@@ -20,7 +20,7 @@ fn graph_file_roundtrips_wrapped_graph() {
     let loaded = GraphFileV1::load_json(&path).unwrap();
     assert_eq!(loaded.graph_id, graph_id);
     assert_eq!(loaded.graph_version, GRAPH_FILE_VERSION);
-    assert_eq!(loaded.graph.graph_id, graph_id);
+    assert_eq!(loaded.graph.graph_id(), graph_id);
 
     let _ = std::fs::remove_file(&path);
 }

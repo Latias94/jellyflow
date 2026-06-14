@@ -12,7 +12,7 @@ pub(in crate::runtime::drag) fn resolved_extent_rect(
         NodeExtent::Rect { rect } => normalized_rect(rect),
         NodeExtent::Parent if !expand_parent => node
             .parent
-            .and_then(|parent| graph.groups.get(&parent))
+            .and_then(|parent| graph.groups().get(&parent))
             .and_then(|group| normalized_rect(group.rect)),
         NodeExtent::Parent => None,
     }

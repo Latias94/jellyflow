@@ -202,7 +202,7 @@ impl NodeGraphStore {
         &self,
         measurement: NodeMeasurement,
     ) -> Result<NodeMeasurement, NodeMeasurementError> {
-        if !self.graph().nodes.contains_key(&measurement.node) {
+        if !self.graph().nodes().contains_key(&measurement.node) {
             return Err(NodeMeasurementError::MissingNode(measurement.node));
         }
         if let Some(size) = measurement.size
@@ -227,7 +227,7 @@ impl NodeGraphStore {
                     handle: measured.handle,
                 });
             }
-            let Some(port) = self.graph().ports.get(&measured.handle.port) else {
+            let Some(port) = self.graph().ports().get(&measured.handle.port) else {
                 return Err(NodeMeasurementError::InvalidHandle {
                     node: measurement.node,
                     handle: measured.handle,

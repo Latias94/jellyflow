@@ -1,12 +1,12 @@
 use super::fixtures::{insert_node, insert_typed_data_input, insert_typed_data_output};
 
 use crate::rules::plan_connect_typed;
-use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortId};
+use jellyflow_core::core::{GraphBuilder, NodeId, PortCapacity, PortId};
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 
 #[test]
 fn plan_connect_typed_rejects_incompatible_data_types() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -37,7 +37,7 @@ fn plan_connect_typed_rejects_incompatible_data_types() {
         &graph,
         out,
         inn,
-        |g, p| g.ports.get(&p).and_then(|p| p.ty.clone()),
+        |g, p| g.ports().get(&p).and_then(|p| p.ty.clone()),
         &mut compat,
     );
     assert!(plan.is_reject());
@@ -46,7 +46,7 @@ fn plan_connect_typed_rejects_incompatible_data_types() {
 
 #[test]
 fn plan_connect_typed_accepts_int_to_float() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -77,7 +77,7 @@ fn plan_connect_typed_accepts_int_to_float() {
         &graph,
         out,
         inn,
-        |g, p| g.ports.get(&p).and_then(|p| p.ty.clone()),
+        |g, p| g.ports().get(&p).and_then(|p| p.ty.clone()),
         &mut compat,
     );
     assert!(plan.is_accept());

@@ -43,17 +43,17 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     tx.apply_to(&mut g1).expect("apply");
 
     assert_eq!(
-        g1.nodes.get(&a).unwrap().pos,
+        g1.nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 42.0, y: 7.0 }
     );
     assert_eq!(
-        g1.nodes.get(&a).unwrap().origin,
+        g1.nodes().get(&a).unwrap().origin,
         Some(NodeOrigin { x: 0.5, y: 0.25 })
     );
-    assert_eq!(g1.edges.get(&eid).unwrap().from, out_port);
-    assert_eq!(g1.edges.get(&eid).unwrap().to, in_port);
-    assert!(g1.edges.get(&eid).unwrap().hidden);
-    assert_eq!(g1.edges.get(&eid).unwrap().interaction_width, Some(30.0));
+    assert_eq!(g1.edges().get(&eid).unwrap().from, out_port);
+    assert_eq!(g1.edges().get(&eid).unwrap().to, in_port);
+    assert!(g1.edges().get(&eid).unwrap().hidden);
+    assert_eq!(g1.edges().get(&eid).unwrap().interaction_width, Some(30.0));
 }
 
 #[test]
@@ -83,11 +83,11 @@ fn changes_to_transaction_remove_node_captures_ports_and_edges() {
 
     let mut g1 = g0.clone();
     tx.apply_to(&mut g1).expect("apply");
-    assert!(!g1.nodes.contains_key(&a));
-    assert!(g1.nodes.contains_key(&b));
-    assert!(!g1.ports.contains_key(&out_port));
-    assert!(g1.ports.contains_key(&in_port));
-    assert!(!g1.edges.contains_key(&eid));
+    assert!(!g1.nodes().contains_key(&a));
+    assert!(g1.nodes().contains_key(&b));
+    assert!(!g1.ports().contains_key(&out_port));
+    assert!(g1.ports().contains_key(&in_port));
+    assert!(!g1.edges().contains_key(&eid));
 }
 
 #[test]

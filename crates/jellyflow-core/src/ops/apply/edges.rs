@@ -45,16 +45,16 @@ pub(super) fn apply_edge_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
 }
 
 fn apply_add_edge(graph: &mut Graph, id: EdgeId, edge: &Edge) -> Result<(), ApplyError> {
-    if graph.edges.contains_key(&id) {
+    if graph.edges().contains_key(&id) {
         return Err(ApplyError::EdgeAlreadyExists { id });
     }
     ensure_edge_ports_exist(graph, id, edge.from, edge.to)?;
-    graph.edges.insert(id, edge.clone());
+    graph.insert_edge(id, edge.clone());
     Ok(())
 }
 
 fn ensure_edge_exists(graph: &Graph, id: EdgeId) -> Result<(), ApplyError> {
-    if graph.edges.contains_key(&id) {
+    if graph.edges().contains_key(&id) {
         Ok(())
     } else {
         Err(ApplyError::MissingEdge { id })
@@ -67,13 +67,13 @@ fn ensure_edge_ports_exist(
     from: PortId,
     to: PortId,
 ) -> Result<(), ApplyError> {
-    if !graph.ports.contains_key(&from) {
+    if !graph.ports().contains_key(&from) {
         return Err(ApplyError::EdgeMissingPort {
             edge: edge_id,
             port: from,
         });
     }
-    if !graph.ports.contains_key(&to) {
+    if !graph.ports().contains_key(&to) {
         return Err(ApplyError::EdgeMissingPort {
             edge: edge_id,
             port: to,
@@ -83,8 +83,5 @@ fn ensure_edge_ports_exist(
 }
 
 fn edge_mut(graph: &mut Graph, id: EdgeId) -> Result<&mut Edge, ApplyError> {
-    graph
-        .edges
-        .get_mut(&id)
-        .ok_or(ApplyError::MissingEdge { id })
+    graph.edge_mut(&id).ok_or(ApplyError::MissingEdge { id })
 }

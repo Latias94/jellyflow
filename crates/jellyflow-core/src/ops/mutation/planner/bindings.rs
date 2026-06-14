@@ -10,7 +10,7 @@ impl GraphMutationPlanner<'_> {
         id: BindingId,
         binding: Binding,
     ) -> Result<GraphOp, GraphMutationError> {
-        if self.graph.bindings.contains_key(&id) {
+        if self.graph.bindings().contains_key(&id) {
             return Err(GraphMutationError::BindingAlreadyExists(id));
         }
         Ok(GraphOp::AddBinding { id, binding })

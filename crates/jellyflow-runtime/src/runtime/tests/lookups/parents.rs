@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn lookups_parent_queries_are_sorted_and_update_from_transactions() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let group = GroupId::from_u128(100);
-    g.groups.insert(
+    g.insert_group(
         group,
         Group {
             title: "group".to_string(),
@@ -22,15 +22,15 @@ fn lookups_parent_queries_are_sorted_and_update_from_transactions() {
     let a = NodeId::from_u128(3);
     let b = NodeId::from_u128(1);
     let root = NodeId::from_u128(2);
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_with_parent(CanvasPoint { x: 30.0, y: 0.0 }, Some(group)),
     );
-    g.nodes.insert(
+    g.insert_node(
         root,
         node_with_parent(CanvasPoint { x: 20.0, y: 0.0 }, None),
     );
-    g.nodes.insert(
+    g.insert_node(
         b,
         node_with_parent(CanvasPoint { x: 10.0, y: 0.0 }, Some(group)),
     );
@@ -52,7 +52,8 @@ fn lookups_parent_queries_are_sorted_and_update_from_transactions() {
             .is_empty()
     );
 
-    g.nodes.get_mut(&root).expect("root").parent = Some(group);
+    g.update_node(&root, |node| node.parent = Some(group))
+        .expect("node exists");
     let tx = GraphTransaction::from_ops([GraphOp::SetNodeParent {
         id: root,
         from: None,

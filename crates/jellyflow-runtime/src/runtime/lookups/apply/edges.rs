@@ -5,7 +5,7 @@ use jellyflow_core::ops::EdgeEndpoints;
 
 impl NodeGraphLookups {
     pub(super) fn apply_add_edge(&mut self, graph: &Graph, id: EdgeId) -> bool {
-        let Some(edge) = graph.edges.get(&id) else {
+        let Some(edge) = graph.edges().get(&id) else {
             return false;
         };
         self.insert_edge_lookup_from_parts(
@@ -46,7 +46,7 @@ impl NodeGraphLookups {
         if let Some(e) = self.edge_lookup.get_mut(&id) {
             e.kind = kind;
         } else {
-            let Some(edge) = graph.edges.get(&id) else {
+            let Some(edge) = graph.edges().get(&id) else {
                 return false;
             };
             return self.recover_edge_lookup_from_graph(graph, id, kind, edge.reconnectable);
@@ -70,7 +70,7 @@ impl NodeGraphLookups {
             }
             return true;
         }
-        let Some(edge) = graph.edges.get(&id) else {
+        let Some(edge) = graph.edges().get(&id) else {
             return false;
         };
         self.recover_edge_lookup_from_graph(graph, id, edge.kind, reconnectable)
@@ -83,7 +83,7 @@ impl NodeGraphLookups {
         kind: EdgeKind,
         reconnectable: Option<EdgeReconnectable>,
     ) -> bool {
-        let Some(edge) = graph.edges.get(&id) else {
+        let Some(edge) = graph.edges().get(&id) else {
             return false;
         };
         self.insert_edge_lookup_from_parts(
@@ -141,7 +141,7 @@ impl NodeGraphLookups {
 
     fn edge_kind_for_endpoint_update(&self, graph: &Graph, id: EdgeId) -> Option<EdgeKind> {
         graph
-            .edges
+            .edges()
             .get(&id)
             .map(|edge| edge.kind)
             .or_else(|| self.edge_lookup.get(&id).map(|entry| entry.kind))
@@ -153,7 +153,7 @@ impl NodeGraphLookups {
         id: EdgeId,
     ) -> Option<EdgeReconnectable> {
         graph
-            .edges
+            .edges()
             .get(&id)
             .and_then(|edge| edge.reconnectable)
             .or_else(|| {

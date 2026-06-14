@@ -22,7 +22,7 @@ pub fn plan_node_drag(
         return None;
     }
 
-    let primary = graph.nodes.get(&request.node)?;
+    let primary = graph.nodes().get(&request.node)?;
     let delta = CanvasPoint {
         x: request.to.x - primary.pos.x,
         y: request.to.y - primary.pos.y,

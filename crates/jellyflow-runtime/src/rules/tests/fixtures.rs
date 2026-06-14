@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, Edge, EdgeId, EdgeKind, GraphBuilder, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::types::TypeDesc;
 
@@ -26,8 +26,8 @@ pub(super) fn make_node(kind: &str) -> Node {
     }
 }
 
-pub(super) fn insert_node(graph: &mut Graph, id: NodeId, kind: &str) {
-    graph.nodes.insert(id, make_node(kind));
+pub(super) fn insert_node(graph: &mut GraphBuilder, id: NodeId, kind: &str) {
+    graph.insert_node(id, make_node(kind));
 }
 
 pub(super) fn make_port(
@@ -68,19 +68,16 @@ pub(super) fn make_data_input(node: NodeId, key: &str, capacity: PortCapacity) -
     make_data_port(node, key, PortDirection::In, capacity)
 }
 
-pub(super) fn insert_port(graph: &mut Graph, id: PortId, port: Port) {
+pub(super) fn insert_port(graph: &mut GraphBuilder, id: PortId, port: Port) {
     let node = port.node;
-    graph.ports.insert(id, port);
+    graph.insert_port(id, port);
     graph
-        .nodes
-        .get_mut(&node)
-        .expect("test port owner must exist")
-        .ports
-        .push(id);
+        .update_node(&node, |node| node.ports.push(id))
+        .expect("test port owner must exist");
 }
 
 pub(super) fn insert_data_port(
-    graph: &mut Graph,
+    graph: &mut GraphBuilder,
     id: PortId,
     node: NodeId,
     key: &str,
@@ -91,7 +88,7 @@ pub(super) fn insert_data_port(
 }
 
 pub(super) fn insert_data_output(
-    graph: &mut Graph,
+    graph: &mut GraphBuilder,
     id: PortId,
     node: NodeId,
     key: &str,
@@ -101,7 +98,7 @@ pub(super) fn insert_data_output(
 }
 
 pub(super) fn insert_data_input(
-    graph: &mut Graph,
+    graph: &mut GraphBuilder,
     id: PortId,
     node: NodeId,
     key: &str,
@@ -111,7 +108,7 @@ pub(super) fn insert_data_input(
 }
 
 pub(super) fn insert_typed_data_output(
-    graph: &mut Graph,
+    graph: &mut GraphBuilder,
     id: PortId,
     node: NodeId,
     key: &str,
@@ -124,7 +121,7 @@ pub(super) fn insert_typed_data_output(
 }
 
 pub(super) fn insert_typed_data_input(
-    graph: &mut Graph,
+    graph: &mut GraphBuilder,
     id: PortId,
     node: NodeId,
     key: &str,
@@ -136,8 +133,8 @@ pub(super) fn insert_typed_data_input(
     insert_port(graph, id, port);
 }
 
-pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortId) {
-    graph.edges.insert(
+pub(super) fn insert_edge(graph: &mut GraphBuilder, id: EdgeId, from: PortId, to: PortId) {
+    graph.insert_edge(
         id,
         Edge {
             kind: EdgeKind::Data,

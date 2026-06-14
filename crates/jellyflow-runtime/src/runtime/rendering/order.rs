@@ -96,15 +96,15 @@ pub fn resolve_group_render_order(
     options: GroupRenderOrderOptions,
 ) -> Vec<GroupId> {
     let mut seen: HashSet<GroupId> = HashSet::new();
-    let mut base: Vec<GroupId> = Vec::with_capacity(graph.groups.len());
+    let mut base: Vec<GroupId> = Vec::with_capacity(graph.groups().len());
 
     for id in &view_state.group_draw_order {
-        if seen.insert(*id) && graph.groups.contains_key(id) {
+        if seen.insert(*id) && graph.groups().contains_key(id) {
             base.push(*id);
         }
     }
 
-    for id in graph.groups.keys() {
+    for id in graph.groups().keys() {
         if seen.insert(*id) {
             base.push(*id);
         }
@@ -145,7 +145,7 @@ pub fn resolve_node_render_order(
     options: NodeRenderOrderOptions,
 ) -> Vec<NodeId> {
     let mut seen: HashSet<NodeId> = HashSet::new();
-    let mut base: Vec<NodeId> = Vec::with_capacity(graph.nodes.len());
+    let mut base: Vec<NodeId> = Vec::with_capacity(graph.nodes().len());
 
     for id in &view_state.draw_order {
         if seen.insert(*id) && node_is_renderable(graph, *id, options.include_hidden) {
@@ -153,7 +153,7 @@ pub fn resolve_node_render_order(
         }
     }
 
-    for (id, node) in &graph.nodes {
+    for (id, node) in graph.nodes() {
         if seen.insert(*id) && (options.include_hidden || !node.hidden) {
             base.push(*id);
         }
@@ -194,10 +194,10 @@ pub fn resolve_edge_render_order(
     options: EdgeRenderOrderOptions,
 ) -> Vec<EdgeId> {
     let mut seen: HashSet<EdgeId> = HashSet::new();
-    let mut base: Vec<EdgeId> = Vec::with_capacity(graph.edges.len());
+    let mut base: Vec<EdgeId> = Vec::with_capacity(graph.edges().len());
 
     for id in &view_state.edge_draw_order {
-        let Some(edge) = graph.edges.get(id) else {
+        let Some(edge) = graph.edges().get(id) else {
             continue;
         };
         if seen.insert(*id) && edge_is_renderable(edge, options.include_hidden) {
@@ -205,7 +205,7 @@ pub fn resolve_edge_render_order(
         }
     }
 
-    for (id, edge) in &graph.edges {
+    for (id, edge) in graph.edges() {
         if seen.insert(*id) && edge_is_renderable(edge, options.include_hidden) {
             base.push(*id);
         }
@@ -223,7 +223,7 @@ pub fn resolve_edge_render_order(
     let mut elevated: Vec<EdgeId> = Vec::new();
 
     for id in base.drain(..) {
-        let Some(edge) = graph.edges.get(&id) else {
+        let Some(edge) = graph.edges().get(&id) else {
             continue;
         };
         if edge_is_elevated(graph, id, edge, &selected_edges, &selected_nodes) {
@@ -239,7 +239,7 @@ pub fn resolve_edge_render_order(
 
 fn node_is_renderable(graph: &Graph, id: NodeId, include_hidden: bool) -> bool {
     graph
-        .nodes
+        .nodes()
         .get(&id)
         .is_some_and(|node| include_hidden || !node.hidden)
 }
@@ -263,11 +263,11 @@ fn edge_is_elevated(
     }
 
     graph
-        .ports
+        .ports()
         .get(&edge.from)
         .is_some_and(|port| selected_nodes.contains(&port.node))
         || graph
-            .ports
+            .ports()
             .get(&edge.to)
             .is_some_and(|port| selected_nodes.contains(&port.node))
 }

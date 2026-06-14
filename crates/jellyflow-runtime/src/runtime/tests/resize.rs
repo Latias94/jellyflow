@@ -9,9 +9,10 @@ use crate::runtime::resize::{
     NodeResizeDirection, NodeResizeItem, NodeResizeRequest, NodeResizeSession,
     NodeResizeSessionUpdateRequest, plan_node_pointer_resize, plan_node_resize,
 };
+use crate::runtime::tests::fixtures::fixture_insert_group;
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeExtent, NodeId,
-    NodeKindKey, NodeOrigin,
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Group, GroupId, Node,
+    NodeExtent, NodeId, NodeKindKey, NodeOrigin,
 };
 use jellyflow_core::ops::GraphOp;
 
@@ -66,7 +67,7 @@ fn single_node_resize_commits_set_node_size_transaction_and_trace() {
         Some(NODE_RESIZE_TRANSACTION_LABEL)
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].size,
+        harness.store().graph().nodes()[&fixture.enabled].size,
         Some(target)
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -205,10 +206,10 @@ fn top_left_resize_uses_node_origin_override() {
     let mut fixture = resize_fixture();
     fixture
         .graph
-        .nodes
-        .get_mut(&fixture.enabled)
-        .unwrap()
-        .origin = Some(NodeOrigin { x: 1.0, y: 1.0 });
+        .update_node(&fixture.enabled, |node| {
+            node.origin = Some(NodeOrigin { x: 1.0, y: 1.0 })
+        })
+        .expect("node exists");
     let mut harness =
         InteractionHarness::new("top left node resize origin override", fixture.graph);
     harness.store_mut().update_editor_config(|editor_config| {
@@ -404,11 +405,11 @@ fn pointer_resize_commit_preserves_position_before_size_order_and_trace() {
         outcome.patch.ops(),
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].pos,
+        harness.store().graph().nodes()[&fixture.enabled].pos,
         CanvasPoint { x: 0.0, y: 0.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].size,
+        harness.store().graph().nodes()[&fixture.enabled].size,
         Some(CanvasSize {
             width: 110.0,
             height: 80.0,
@@ -639,18 +640,18 @@ fn pointer_resize_clamps_to_node_rect_extent() {
     let mut fixture = resize_fixture();
     fixture
         .graph
-        .nodes
-        .get_mut(&fixture.enabled)
-        .unwrap()
-        .extent = Some(NodeExtent::Rect {
-        rect: CanvasRect {
-            origin: CanvasPoint { x: 0.0, y: 0.0 },
-            size: CanvasSize {
-                width: 130.0,
-                height: 100.0,
-            },
-        },
-    });
+        .update_node(&fixture.enabled, |node| {
+            node.extent = Some(NodeExtent::Rect {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 0.0 },
+                    size: CanvasSize {
+                        width: 130.0,
+                        height: 100.0,
+                    },
+                },
+            })
+        })
+        .expect("node exists");
     let harness = InteractionHarness::new("pointer resize rect extent", fixture.graph);
 
     let plan = harness
@@ -676,7 +677,8 @@ fn pointer_resize_clamps_to_node_rect_extent() {
 fn pointer_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
     let mut fixture = resize_fixture();
     let parent = GroupId::from_u128(40);
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         parent,
         Group {
             title: "Parent".to_owned(),
@@ -690,10 +692,14 @@ fn pointer_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
             color: None,
         },
     );
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.parent = Some(parent);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(false);
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.parent = Some(parent);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(false);
+        })
+        .expect("node exists");
     let harness = InteractionHarness::new("pointer resize parent extent", fixture.graph);
 
     let plan = harness
@@ -719,7 +725,8 @@ fn pointer_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
 fn node_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
     let mut fixture = resize_fixture();
     let parent = GroupId::from_u128(40);
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         parent,
         Group {
             title: "Parent".to_owned(),
@@ -733,10 +740,14 @@ fn node_resize_clamps_to_parent_group_extent_when_expand_parent_is_false() {
             color: None,
         },
     );
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.parent = Some(parent);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(false);
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.parent = Some(parent);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(false);
+        })
+        .expect("node exists");
     let harness = InteractionHarness::new("target resize parent extent", fixture.graph);
 
     let plan = harness
@@ -780,7 +791,8 @@ fn node_resize_expands_parent_group_when_expand_parent_is_true() {
             height: 100.0,
         },
     };
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         parent,
         Group {
             title: "Parent".to_owned(),
@@ -788,10 +800,14 @@ fn node_resize_expands_parent_group_when_expand_parent_is_true() {
             color: None,
         },
     );
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.parent = Some(parent);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.parent = Some(parent);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("node exists");
     let harness = InteractionHarness::new("target resize parent expansion", fixture.graph);
     let target = CanvasSize {
         width: 150.0,
@@ -843,7 +859,8 @@ fn pointer_resize_expands_parent_group_when_expand_parent_is_true() {
             height: 100.0,
         },
     };
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         parent,
         Group {
             title: "Parent".to_owned(),
@@ -851,10 +868,14 @@ fn pointer_resize_expands_parent_group_when_expand_parent_is_true() {
             color: None,
         },
     );
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.parent = Some(parent);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.parent = Some(parent);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("node exists");
 
     let mut harness = InteractionHarness::new("pointer resize parent expansion", fixture.graph);
     let target = CanvasSize {
@@ -910,11 +931,11 @@ fn pointer_resize_expands_parent_group_when_expand_parent_is_true() {
         .expect("parent expansion pointer resize dispatch commits");
 
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].size,
+        harness.store().graph().nodes()[&fixture.enabled].size,
         Some(target)
     );
     assert_eq!(
-        harness.store().graph().groups[&parent].rect,
+        harness.store().graph().groups()[&parent].rect,
         expected_parent_rect,
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -934,7 +955,8 @@ fn pointer_resize_expands_parent_group_from_top_left_without_sibling_compensatio
             height: 100.0,
         },
     };
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         parent,
         Group {
             title: "Parent".to_owned(),
@@ -942,15 +964,22 @@ fn pointer_resize_expands_parent_group_from_top_left_without_sibling_compensatio
             color: None,
         },
     );
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.parent = Some(parent);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-
     let sibling_pos = CanvasPoint { x: 90.0, y: 40.0 };
-    let sibling = fixture.graph.nodes.get_mut(&fixture.no_size).unwrap();
-    sibling.parent = Some(parent);
-    sibling.pos = sibling_pos;
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.parent = Some(parent);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("node exists");
+    fixture
+        .graph
+        .update_node(&fixture.no_size, |node| {
+            node.parent = Some(parent);
+            node.pos = sibling_pos;
+        })
+        .expect("sibling node exists");
 
     let mut harness =
         InteractionHarness::new("pointer resize top left parent expansion", fixture.graph);
@@ -1014,19 +1043,19 @@ fn pointer_resize_expands_parent_group_from_top_left_without_sibling_compensatio
         .expect("top left parent expansion pointer resize dispatch commits");
 
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].pos,
+        harness.store().graph().nodes()[&fixture.enabled].pos,
         expected_node_pos
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].size,
+        harness.store().graph().nodes()[&fixture.enabled].size,
         Some(target)
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.no_size].pos,
+        harness.store().graph().nodes()[&fixture.no_size].pos,
         sibling_pos
     );
     assert_eq!(
-        harness.store().graph().groups[&parent].rect,
+        harness.store().graph().groups()[&parent].rect,
         expected_parent_rect,
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -1107,14 +1136,14 @@ struct ResizeFixture {
 }
 
 fn resize_fixture() -> ResizeFixture {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let enabled = NodeId::from_u128(10);
     let hidden = NodeId::from_u128(20);
     let missing = NodeId::from_u128(30);
     let no_size = NodeId::from_u128(40);
-    graph.nodes.insert(enabled, resize_node(false));
-    graph.nodes.insert(hidden, resize_node(true));
-    graph.nodes.insert(
+    graph.insert_node(enabled, resize_node(false));
+    graph.insert_node(hidden, resize_node(true));
+    graph.insert_node(
         no_size,
         Node {
             size: None,
@@ -1123,7 +1152,7 @@ fn resize_fixture() -> ResizeFixture {
     );
 
     ResizeFixture {
-        graph,
+        graph: graph.into(),
         enabled,
         hidden,
         missing,

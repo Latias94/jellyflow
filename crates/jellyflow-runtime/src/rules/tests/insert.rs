@@ -6,12 +6,12 @@ use super::fixtures::{
 use crate::rules::{
     InsertNodeSpec, plan_connect, plan_connect_by_inserting_node, plan_split_edge_by_inserting_node,
 };
-use jellyflow_core::core::{EdgeId, Graph, NodeId, PortCapacity, PortId};
+use jellyflow_core::core::{EdgeId, GraphBuilder, NodeId, PortCapacity, PortId};
 use jellyflow_core::ops::GraphTransaction;
 
 #[test]
 fn plan_connect_by_inserting_node_disconnects_single_target() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -30,7 +30,7 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
     tx1.apply_to(&mut graph).unwrap();
-    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges().len(), 1);
 
     let inserted_node_id = NodeId::new();
     let inserted_in = PortId::new();
@@ -61,13 +61,13 @@ fn plan_connect_by_inserting_node_disconnects_single_target() {
     let tx2 = GraphTransaction::from_ops(plan2.into_ops());
     tx2.apply_to(&mut graph).unwrap();
 
-    assert_eq!(graph.nodes.len(), 4);
-    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(graph.nodes().len(), 4);
+    assert_eq!(graph.edges().len(), 2);
 }
 
 #[test]
 fn plan_split_edge_by_inserting_node_preserves_edge_id() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -109,16 +109,16 @@ fn plan_split_edge_by_inserting_node_preserves_edge_id() {
     let tx = GraphTransaction::from_ops(plan.into_ops());
     tx.apply_to(&mut graph).unwrap();
 
-    assert_eq!(graph.edges.len(), 2);
-    assert!(graph.edges.contains_key(&edge_id));
-    assert!(graph.edges.contains_key(&new_edge_id));
-    assert_eq!(graph.edges.get(&edge_id).unwrap().to, inserted_in);
-    assert_eq!(graph.edges.get(&new_edge_id).unwrap().from, inserted_out);
+    assert_eq!(graph.edges().len(), 2);
+    assert!(graph.edges().contains_key(&edge_id));
+    assert!(graph.edges().contains_key(&new_edge_id));
+    assert_eq!(graph.edges().get(&edge_id).unwrap().to, inserted_in);
+    assert_eq!(graph.edges().get(&new_edge_id).unwrap().from, inserted_out);
 }
 
 #[test]
 fn insert_node_planners_reject_invalid_inserted_spec_consistently() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();

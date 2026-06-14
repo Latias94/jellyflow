@@ -2,8 +2,8 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
@@ -348,23 +348,19 @@ fn panned_view_state(x: f32, y: f32) -> NodeGraphViewState {
 }
 
 fn graph_fixture(node_count: usize) -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
 
     for index in 0..node_count {
         let node = node_id(index);
         let out = out_port_id(index);
         let input = in_port_id(index);
-        graph.nodes.insert(node, node_fixture(index, out, input));
-        graph
-            .ports
-            .insert(out, port_fixture(node, "out", PortDirection::Out));
-        graph
-            .ports
-            .insert(input, port_fixture(node, "in", PortDirection::In));
+        graph.insert_node(node, node_fixture(index, out, input));
+        graph.insert_port(out, port_fixture(node, "out", PortDirection::Out));
+        graph.insert_port(input, port_fixture(node, "in", PortDirection::In));
     }
 
     for index in 0..node_count.saturating_sub(1) {
-        graph.edges.insert(
+        graph.insert_edge(
             edge_id(index),
             Edge {
                 kind: EdgeKind::Data,
@@ -380,7 +376,7 @@ fn graph_fixture(node_count: usize) -> Graph {
         );
     }
 
-    graph
+    graph.build_unchecked()
 }
 
 fn node_fixture(index: usize, out: PortId, input: PortId) -> Node {

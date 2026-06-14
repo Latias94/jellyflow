@@ -1,4 +1,6 @@
-use super::super::super::fixtures::{make_graph, make_store};
+use super::super::super::fixtures::{
+    fixture_insert_group, fixture_insert_sticky_note, make_graph, make_store,
+};
 
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::ControlledGraph;
@@ -265,8 +267,8 @@ fn install_callbacks_calls_delete_hooks_for_removed_resources() {
         rect,
         color: None,
     };
-    g0.groups.insert(group_id, group.clone());
-    g0.sticky_notes.insert(sticky_note_id, sticky_note.clone());
+    fixture_insert_group(&mut g0, group_id, group.clone());
+    fixture_insert_sticky_note(&mut g0, sticky_note_id, sticky_note.clone());
     let mut store = make_store(g0);
 
     let nodes_deleted: Rc<RefCell<Vec<NodeId>>> = Rc::new(RefCell::new(Vec::new()));

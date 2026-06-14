@@ -24,7 +24,7 @@ impl<'a> MigrateNodesPlanner<'a> {
     }
 
     pub(super) fn finish(mut self) -> MigrateNodesPlan {
-        for (id, node) in &self.graph.nodes {
+        for (id, node) in self.graph.nodes() {
             self.plan_node(*id, node);
         }
 

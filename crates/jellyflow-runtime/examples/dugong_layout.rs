@@ -1,6 +1,6 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
@@ -44,26 +44,18 @@ fn make_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
 }
 
 fn make_graph() -> (Graph, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let source = NodeId::from_u128(2);
     let target = NodeId::from_u128(3);
     let source_port = PortId::from_u128(4);
     let target_port = PortId::from_u128(5);
     let edge = EdgeId::from_u128(6);
 
-    graph
-        .nodes
-        .insert(source, make_node("demo.source", vec![source_port]));
-    graph
-        .nodes
-        .insert(target, make_node("demo.target", vec![target_port]));
-    graph
-        .ports
-        .insert(source_port, make_port(source, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(target_port, make_port(target, "in", PortDirection::In));
-    graph.edges.insert(
+    graph.insert_node(source, make_node("demo.source", vec![source_port]));
+    graph.insert_node(target, make_node("demo.target", vec![target_port]));
+    graph.insert_port(source_port, make_port(source, "out", PortDirection::Out));
+    graph.insert_port(target_port, make_port(target, "in", PortDirection::In));
+    graph.insert_edge(
         edge,
         Edge {
             kind: EdgeKind::Data,
@@ -78,7 +70,7 @@ fn make_graph() -> (Graph, NodeId, NodeId) {
         },
     );
 
-    (graph, source, target)
+    (graph.build_unchecked(), source, target)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,8 +110,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(outcome.committed().label(), Some("Layout graph"));
     assert_ne!(
-        store.graph().nodes[&source].pos,
-        store.graph().nodes[&target].pos
+        store.graph().nodes()[&source].pos,
+        store.graph().nodes()[&target].pos
     );
 
     println!(

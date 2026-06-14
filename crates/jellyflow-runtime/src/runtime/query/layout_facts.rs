@@ -41,7 +41,7 @@ pub(crate) fn connection_target_candidates_from_layout_facts(
 ) -> Vec<ConnectionTargetCandidate> {
     let mut candidates = Vec::new();
 
-    for (node_id, node) in &snapshot.graph.nodes {
+    for (node_id, node) in snapshot.graph.nodes() {
         if node.hidden {
             continue;
         }
@@ -55,7 +55,7 @@ pub(crate) fn connection_target_candidates_from_layout_facts(
         };
 
         for measured in &entry.measured_handles {
-            let Some(port) = snapshot.graph.ports.get(&measured.handle.port) else {
+            let Some(port) = snapshot.graph.ports().get(&measured.handle.port) else {
                 continue;
             };
             if port.node != *node_id || measured.handle.node != *node_id {
@@ -97,11 +97,11 @@ pub(crate) fn edge_position_from_layout_facts(
     snapshot: &NodeGraphQuerySnapshot<'_>,
     edge: EdgeId,
 ) -> Option<EdgePosition> {
-    let edge = snapshot.graph.edges.get(&edge)?;
-    let from_port = snapshot.graph.ports.get(&edge.from)?;
-    let to_port = snapshot.graph.ports.get(&edge.to)?;
-    let source_node = snapshot.graph.nodes.get(&from_port.node)?;
-    let target_node = snapshot.graph.nodes.get(&to_port.node)?;
+    let edge = snapshot.graph.edges().get(&edge)?;
+    let from_port = snapshot.graph.ports().get(&edge.from)?;
+    let to_port = snapshot.graph.ports().get(&edge.to)?;
+    let source_node = snapshot.graph.nodes().get(&from_port.node)?;
+    let target_node = snapshot.graph.nodes().get(&to_port.node)?;
     if source_node.hidden || target_node.hidden {
         return None;
     }

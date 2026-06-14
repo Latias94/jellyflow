@@ -16,50 +16,6 @@ pub(in crate::runtime::xyflow) fn edge_update_id(change: &EdgeChange) -> Option<
     }
 }
 
-pub(in crate::runtime::xyflow) fn apply_edge_update_change(
-    change: &EdgeChange,
-    edge: &mut Edge,
-) -> bool {
-    match change {
-        EdgeChange::Add { .. } | EdgeChange::Remove { .. } => false,
-        EdgeChange::Kind { kind, .. } => {
-            edge.kind = *kind;
-            true
-        }
-        EdgeChange::Selectable { selectable, .. } => {
-            edge.selectable = *selectable;
-            true
-        }
-        EdgeChange::Focusable { focusable, .. } => {
-            edge.focusable = *focusable;
-            true
-        }
-        EdgeChange::Hidden { hidden, .. } => {
-            edge.hidden = *hidden;
-            true
-        }
-        EdgeChange::InteractionWidth {
-            interaction_width, ..
-        } => {
-            edge.interaction_width = *interaction_width;
-            true
-        }
-        EdgeChange::Deletable { deletable, .. } => {
-            edge.deletable = *deletable;
-            true
-        }
-        EdgeChange::Reconnectable { reconnectable, .. } => {
-            edge.reconnectable = *reconnectable;
-            true
-        }
-        EdgeChange::Endpoints { from, to, .. } => {
-            edge.from = *from;
-            edge.to = *to;
-            true
-        }
-    }
-}
-
 pub(in crate::runtime::xyflow) fn edge_update_op(
     change: &EdgeChange,
     edge: &Edge,

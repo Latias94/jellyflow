@@ -7,8 +7,8 @@ use crate::runtime::measurement::{
 };
 use crate::runtime::store::NodeGraphStore;
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 #[test]
@@ -37,7 +37,7 @@ fn measured_size_feeds_rendering_query_without_persisting_graph_size() {
     assert_eq!(outcome, NodeMeasurementOutcome::Changed);
     assert_eq!(store.rendering_query(viewport).visible_node_ids, vec![node]);
     assert_eq!(
-        store.graph().nodes.get(&node).expect("node exists").size,
+        store.graph().nodes().get(&node).expect("node exists").size,
         None,
         "runtime measurements must not persist into Graph"
     );
@@ -277,15 +277,15 @@ fn invalid_measurement_input_is_rejected_without_replacing_existing_facts() {
 }
 
 fn graph_with_unsized_node(node: NodeId) -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(
         node,
         Node {
             pos: CanvasPoint::default(),
             ..node_fixture(Vec::new())
         },
     );
-    graph
+    graph.into()
 }
 
 fn graph_with_unsized_connected_nodes(
@@ -295,8 +295,8 @@ fn graph_with_unsized_connected_nodes(
     input: PortId,
     edge: EdgeId,
 ) -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(2));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
+    graph.insert_node(
         source,
         Node {
             pos: CanvasPoint::default(),
@@ -304,7 +304,7 @@ fn graph_with_unsized_connected_nodes(
             ..node_fixture(Vec::new())
         },
     );
-    graph.nodes.insert(
+    graph.insert_node(
         target,
         Node {
             pos: CanvasPoint { x: 200.0, y: 0.0 },
@@ -312,13 +312,9 @@ fn graph_with_unsized_connected_nodes(
             ..node_fixture(Vec::new())
         },
     );
-    graph
-        .ports
-        .insert(out, port_fixture(source, PortDirection::Out));
-    graph
-        .ports
-        .insert(input, port_fixture(target, PortDirection::In));
-    graph.edges.insert(
+    graph.insert_port(out, port_fixture(source, PortDirection::Out));
+    graph.insert_port(input, port_fixture(target, PortDirection::In));
+    graph.insert_edge(
         edge,
         Edge {
             kind: EdgeKind::Data,
@@ -332,7 +328,7 @@ fn graph_with_unsized_connected_nodes(
             reconnectable: None,
         },
     );
-    graph
+    graph.into()
 }
 
 fn node_fixture(ports: Vec<PortId>) -> Node {

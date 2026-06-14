@@ -8,6 +8,7 @@ use crate::runtime::connection::{
     resolve_connection_target_from_handles,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
+use crate::runtime::tests::fixtures::fixture_insert_port;
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
@@ -409,12 +410,10 @@ fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
     let (mut graph, _a, b, out_port, _in_port, _edge_id) = super::fixtures::make_graph();
     let next_in = PortId::new();
     graph
-        .nodes
-        .get_mut(&b)
-        .expect("target node")
-        .ports
-        .push(next_in);
-    graph.ports.insert(
+        .update_node(&b, |node| node.ports.push(next_in))
+        .expect("target node");
+    fixture_insert_port(
+        &mut graph,
         next_in,
         Port {
             node: b,
@@ -456,7 +455,7 @@ fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
         }
         other => panic!("expected single add-edge op, got {other:#?}"),
     };
-    assert!(store.graph().edges.contains_key(&edge_id));
+    assert!(store.graph().edges().contains_key(&edge_id));
 }
 
 fn handle_ref(direction: PortDirection) -> ConnectionHandleRef {

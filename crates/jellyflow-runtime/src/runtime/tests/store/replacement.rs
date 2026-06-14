@@ -2,7 +2,7 @@ use super::super::fixtures::{default_editor_config, make_graph, make_store};
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::events::NodeGraphStoreEvent;
-use jellyflow_core::core::{CanvasPoint, EdgeId, Graph, GraphId, NodeId};
+use jellyflow_core::core::{CanvasPoint, EdgeId, GraphBuilder, GraphId, NodeId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
@@ -64,10 +64,10 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
     use std::rc::Rc;
 
     let (g0, a, b, _out_port, _in_port, _eid) = make_graph();
-    let replacement_node = g0.nodes.get(&b).expect("replacement node").clone();
+    let replacement_node = g0.nodes().get(&b).expect("replacement node").clone();
     let mut store = make_store(g0);
 
-    let from = store.graph().nodes.get(&a).expect("node a").pos;
+    let from = store.graph().nodes().get(&a).expect("node a").pos;
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: a,
         from,
@@ -90,8 +90,8 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
         NodeGraphStoreEvent::DocumentReplaced { before, after } => {
             events2.borrow_mut().push("document");
             *details2.borrow_mut() = Some((
-                before.graph.graph_id,
-                after.graph.graph_id,
+                before.graph.graph_id(),
+                after.graph.graph_id(),
                 before.graph_revision,
                 after.graph_revision,
                 after.view_state.selected_nodes.clone(),
@@ -105,8 +105,8 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
         NodeGraphStoreEvent::GraphCommitted { .. } => events2.borrow_mut().push("graph"),
     });
 
-    let mut next_graph = Graph::new(GraphId::from_u128(2));
-    next_graph.nodes.insert(b, replacement_node);
+    let mut next_graph = GraphBuilder::new(GraphId::from_u128(2));
+    next_graph.insert_node(b, replacement_node);
     let mut next_view_state = NodeGraphViewState {
         selected_nodes: vec![a, b],
         ..NodeGraphViewState::default()
@@ -119,7 +119,7 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
         .only_render_visible_elements = false;
 
     store.replace_document(
-        next_graph.clone(),
+        next_graph.clone().into(),
         next_view_state,
         next_editor_config.clone(),
     );
@@ -137,7 +137,7 @@ fn store_replace_document_emits_single_document_event_and_clears_history() {
             .runtime_tuning
             .only_render_visible_elements
     );
-    assert_eq!(store.graph().graph_id, next_graph.graph_id);
+    assert_eq!(store.graph().graph_id(), next_graph.graph_id());
     assert_eq!(store.view_state().selected_nodes, vec![b]);
     assert_eq!(store.editor_config(), next_editor_config);
     assert!(!store.can_undo());
@@ -150,11 +150,11 @@ fn store_replace_graph_emits_document_event_and_preserves_history_policy() {
     use std::rc::Rc;
 
     let (g0, a, b, _out_port, _in_port, _eid) = make_graph();
-    let replacement_node = g0.nodes.get(&a).expect("replacement node").clone();
+    let replacement_node = g0.nodes().get(&a).expect("replacement node").clone();
     let mut store = make_store(g0);
     store.set_selection(vec![b], Vec::new(), Vec::new());
 
-    let from = store.graph().nodes.get(&a).expect("node a").pos;
+    let from = store.graph().nodes().get(&a).expect("node a").pos;
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: a,
         from,
@@ -183,9 +183,9 @@ fn store_replace_graph_emits_document_event_and_preserves_history_policy() {
         NodeGraphStoreEvent::GraphCommitted { .. } => events2.borrow_mut().push("graph"),
     });
 
-    let mut next_graph = Graph::new(GraphId::from_u128(3));
-    next_graph.nodes.insert(a, replacement_node);
-    store.replace_graph(next_graph);
+    let mut next_graph = GraphBuilder::new(GraphId::from_u128(3));
+    next_graph.insert_node(a, replacement_node);
+    store.replace_graph(next_graph.into());
 
     assert_eq!(events.borrow().as_slice(), &["document"]);
     assert_eq!(selected_after.borrow().clone(), Some(Vec::new()));

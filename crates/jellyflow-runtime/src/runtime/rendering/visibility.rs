@@ -151,7 +151,7 @@ pub fn resolve_visible_edge_ids(
     };
 
     graph
-        .edges
+        .edges()
         .iter()
         .filter_map(|(id, edge)| {
             if edge.hidden {
@@ -255,7 +255,7 @@ pub(crate) fn all_non_hidden_node_ids(lookups: &NodeGraphLookups) -> Vec<NodeId>
 
 pub(crate) fn all_non_hidden_edge_ids(graph: &Graph) -> Vec<EdgeId> {
     graph
-        .edges
+        .edges()
         .iter()
         .filter_map(|(id, edge)| (!edge.hidden).then_some(*id))
         .collect()

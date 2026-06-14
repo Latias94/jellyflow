@@ -6,6 +6,7 @@
 
 #![deny(unsafe_code)]
 
+mod builtin;
 mod dugong;
 mod engine;
 mod family;
@@ -44,60 +45,7 @@ pub use tidy_tree::{
 
 /// Returns a registry containing Jellyflow's built-in layout engines.
 pub fn builtin_layout_engine_registry() -> LayoutEngineRegistry {
-    let mut registry = LayoutEngineRegistry::new();
-    let inserted_layered_family = registry.insert_family(LayoutFamilyMetadata::layered_dag());
-    debug_assert!(
-        inserted_layered_family.is_ok(),
-        "built-in layered DAG layout family should be unique"
-    );
-    let inserted_mind_map_family = registry.insert_family(LayoutFamilyMetadata::mind_map());
-    debug_assert!(
-        inserted_mind_map_family.is_ok(),
-        "built-in mind-map layout family should be unique"
-    );
-    let inserted_dugong = registry.insert(DugongLayoutEngine);
-    debug_assert!(
-        inserted_dugong.is_ok(),
-        "built-in dugong engine should be unique"
-    );
-    let inserted_dugong_metadata = registry.insert_metadata(LayoutEngineMetadata::dugong());
-    debug_assert!(
-        inserted_dugong_metadata.is_ok(),
-        "built-in dugong metadata should be unique"
-    );
-    let inserted_tidy_tree = registry.insert(TidyTreeLayoutEngine);
-    debug_assert!(
-        inserted_tidy_tree.is_ok(),
-        "built-in tidy tree engine should be unique"
-    );
-    let inserted_tidy_tree_metadata = registry.insert_metadata(LayoutEngineMetadata::tidy_tree());
-    debug_assert!(
-        inserted_tidy_tree_metadata.is_ok(),
-        "built-in tidy tree metadata should be unique"
-    );
-    let inserted_mind_map = registry.insert(MindMapRadialLayoutEngine);
-    debug_assert!(
-        inserted_mind_map.is_ok(),
-        "built-in mind-map engine should be unique"
-    );
-    let inserted_mind_map_metadata =
-        registry.insert_metadata(LayoutEngineMetadata::mind_map_radial());
-    debug_assert!(
-        inserted_mind_map_metadata.is_ok(),
-        "built-in radial mind-map metadata should be unique"
-    );
-    let inserted_freeform = registry.insert(MindMapFreeformLayoutEngine);
-    debug_assert!(
-        inserted_freeform.is_ok(),
-        "built-in freeform engine should be unique"
-    );
-    let inserted_freeform_metadata =
-        registry.insert_metadata(LayoutEngineMetadata::mind_map_freeform());
-    debug_assert!(
-        inserted_freeform_metadata.is_ok(),
-        "built-in freeform mind-map metadata should be unique"
-    );
-    registry
+    builtin::builtin_layout_registry()
 }
 
 #[cfg(test)]

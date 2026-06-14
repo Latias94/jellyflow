@@ -1,4 +1,4 @@
-use super::super::fixtures::{make_graph, make_store};
+use super::super::fixtures::{fixture_clear_edges, fixture_insert_group, make_graph, make_store};
 
 use crate::runtime::lookups::ConnectionSide;
 use jellyflow_core::core::{
@@ -10,7 +10,7 @@ use jellyflow_core::ops::{GraphOp, GraphTransaction};
 #[test]
 fn store_lookups_update_after_dispatch_transaction() {
     let (mut g, _a, _b, out_port, in_port, eid) = make_graph();
-    g.edges.clear();
+    fixture_clear_edges(&mut g);
 
     let mut store = make_store(g);
     assert!(store.lookups().edge_lookup.is_empty());
@@ -95,8 +95,10 @@ fn store_lookups_update_edge_reconnectable_after_dispatch_transaction() {
 #[test]
 fn store_lookups_update_edge_kind_in_connection_lookup_after_dispatch_transaction() {
     let (mut g, a, b, out_port, in_port, eid) = make_graph();
-    g.ports.get_mut(&out_port).unwrap().kind = PortKind::Exec;
-    g.ports.get_mut(&in_port).unwrap().kind = PortKind::Exec;
+    g.update_port(&out_port, |port| port.kind = PortKind::Exec)
+        .expect("port exists");
+    g.update_port(&in_port, |port| port.kind = PortKind::Exec)
+        .expect("port exists");
     let mut store = make_store(g);
 
     let tx = GraphTransaction::from_ops([GraphOp::SetEdgeKind {
@@ -136,8 +138,8 @@ fn store_lookups_update_edge_kind_in_connection_lookup_after_dispatch_transactio
 #[test]
 fn store_lookups_remove_port_updates_node_ports_and_incident_edges() {
     let (g, a, _b, out_port, _in_port, eid) = make_graph();
-    let port = g.ports.get(&out_port).expect("port").clone();
-    let edge = g.edges.get(&eid).expect("edge").clone();
+    let port = g.ports().get(&out_port).expect("port").clone();
+    let edge = g.edges().get(&eid).expect("edge").clone();
     let mut store = make_store(g);
 
     assert!(
@@ -186,8 +188,9 @@ fn store_lookups_remove_group_clears_detached_node_parent() {
         },
         color: None,
     };
-    g.groups.insert(group_id, group.clone());
-    g.nodes.get_mut(&a).expect("node").parent = Some(group_id);
+    fixture_insert_group(&mut g, group_id, group.clone());
+    g.update_node(&a, |node| node.parent = Some(group_id))
+        .expect("node exists");
 
     let mut store = make_store(g);
     assert_eq!(

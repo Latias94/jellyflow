@@ -150,7 +150,7 @@ pub fn resolve_node_drag_start_selection(
     interaction: &NodeGraphInteractionState,
     input: NodeDragStartSelectionInput,
 ) -> NodeDragStartSelectionAction {
-    let Some(node) = graph.nodes.get(&input.node) else {
+    let Some(node) = graph.nodes().get(&input.node) else {
         return NodeDragStartSelectionAction::Unchanged;
     };
     if node.hidden {

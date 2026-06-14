@@ -19,21 +19,28 @@ fn adapter_conformance_fixture_runner_records_viewport_and_selection_ordering() 
 #[test]
 fn adapter_conformance_fixture_runner_asserts_rendering_query() {
     let (mut graph, node_id, outside, _out_port, _in_port, edge_id) = make_graph();
-    graph.nodes.get_mut(&node_id).expect("node exists").size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
-    let outside_node = graph.nodes.get_mut(&outside).expect("node exists");
-    outside_node.pos = CanvasPoint { x: 140.0, y: 0.0 };
-    outside_node.size = Some(CanvasSize {
-        width: 40.0,
-        height: 40.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            })
+        })
+        .expect("node exists");
+    graph
+        .update_node(&outside, |node| {
+            node.pos = CanvasPoint { x: 140.0, y: 0.0 };
+            node.size = Some(CanvasSize {
+                width: 40.0,
+                height: 40.0,
+            });
+        })
+        .expect("node exists");
     let partial = NodeId::new();
-    let mut partial_node = graph.nodes.get(&node_id).expect("node exists").clone();
+    let mut partial_node = graph.nodes().get(&node_id).expect("node exists").clone();
     partial_node.pos = CanvasPoint { x: 95.0, y: 0.0 };
-    partial_node.ports.clear();
-    graph.nodes.insert(partial, partial_node);
+    partial_node.clear_ports();
+    fixture_insert_node(&mut graph, partial, partial_node);
     let mut view_state = crate::io::NodeGraphViewState {
         draw_order: vec![outside, node_id, partial],
         edge_draw_order: vec![edge_id],

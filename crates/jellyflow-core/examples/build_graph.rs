@@ -40,6 +40,9 @@ fn main() {
     });
     tx.apply_to(&mut graph).expect("transaction applies");
 
-    assert_eq!(graph.nodes.len(), 1);
-    assert_eq!(graph.nodes[&node_id].kind, NodeKindKey::new("demo.source"));
+    assert_eq!(graph.nodes().len(), 1);
+    assert_eq!(
+        graph.nodes()[&node_id].kind,
+        NodeKindKey::new("demo.source")
+    );
 }

@@ -5,35 +5,32 @@ use crate::runtime::utils::{
     get_connected_edges, get_connected_edges_for_nodes, get_incomers, get_outgoers,
 };
 use jellyflow_core::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphId, NodeId, Port, PortCapacity, PortDirection,
-    PortId, PortKey, PortKind,
+    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, NodeId, Port, PortCapacity,
+    PortDirection, PortId, PortKey, PortKind,
 };
 
 #[test]
 fn outgoers_incomers_connected_edges_are_derived_from_connections() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
 
     let a = NodeId::new();
     let b = NodeId::new();
     let c = NodeId::new();
 
-    g.nodes
-        .insert(a, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
-    g.nodes
-        .insert(b, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
-    g.nodes
-        .insert(c, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
+    g.insert_node(a, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
+    g.insert_node(b, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
+    g.insert_node(c, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
 
     let (a_out_id, a_out) = out_port(a);
     let (b_in_id, b_in) = in_port(b, "in0");
     let (c_in_id, c_in) = in_port(c, "in0");
-    g.ports.insert(a_out_id, a_out);
-    g.ports.insert(b_in_id, b_in);
-    g.ports.insert(c_in_id, c_in);
+    g.insert_port(a_out_id, a_out);
+    g.insert_port(b_in_id, b_in);
+    g.insert_port(c_in_id, c_in);
 
     let e1 = EdgeId::new();
     let e2 = EdgeId::new();
-    g.edges.insert(
+    g.insert_edge(
         e1,
         Edge {
             kind: EdgeKind::Data,
@@ -47,7 +44,7 @@ fn outgoers_incomers_connected_edges_are_derived_from_connections() {
             reconnectable: None,
         },
     );
-    g.edges.insert(
+    g.insert_edge(
         e2,
         Edge {
             kind: EdgeKind::Data,
@@ -85,7 +82,7 @@ fn outgoers_incomers_connected_edges_are_derived_from_connections() {
 #[test]
 fn helpers_are_deterministic_under_insertion_order_variance() {
     fn build_graph(insert_a_first: bool) -> (Graph, NodeId, NodeId, NodeId, EdgeId, EdgeId) {
-        let mut g = Graph::new(GraphId::from_u128(1));
+        let mut g = GraphBuilder::new(GraphId::from_u128(1));
 
         let a = NodeId(uuid::Uuid::from_u128(1));
         let b = NodeId(uuid::Uuid::from_u128(2));
@@ -98,11 +95,11 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
         ];
         if insert_a_first {
             for (id, node) in nodes {
-                g.nodes.insert(id, node);
+                g.insert_node(id, node);
             }
         } else {
             for (id, node) in nodes.into_iter().rev() {
-                g.nodes.insert(id, node);
+                g.insert_node(id, node);
             }
         }
 
@@ -147,19 +144,19 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
         };
 
         if insert_a_first {
-            g.ports.insert(a_out_id, a_out);
-            g.ports.insert(b_in_id, b_in);
-            g.ports.insert(c_in_id, c_in);
+            g.insert_port(a_out_id, a_out);
+            g.insert_port(b_in_id, b_in);
+            g.insert_port(c_in_id, c_in);
         } else {
-            g.ports.insert(c_in_id, c_in);
-            g.ports.insert(b_in_id, b_in);
-            g.ports.insert(a_out_id, a_out);
+            g.insert_port(c_in_id, c_in);
+            g.insert_port(b_in_id, b_in);
+            g.insert_port(a_out_id, a_out);
         }
 
         let e1 = EdgeId(uuid::Uuid::from_u128(20));
         let e2 = EdgeId(uuid::Uuid::from_u128(21));
         if insert_a_first {
-            g.edges.insert(
+            g.insert_edge(
                 e1,
                 Edge {
                     kind: EdgeKind::Data,
@@ -173,7 +170,7 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
                     reconnectable: None,
                 },
             );
-            g.edges.insert(
+            g.insert_edge(
                 e2,
                 Edge {
                     kind: EdgeKind::Data,
@@ -188,7 +185,7 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
                 },
             );
         } else {
-            g.edges.insert(
+            g.insert_edge(
                 e2,
                 Edge {
                     kind: EdgeKind::Data,
@@ -202,7 +199,7 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
                     reconnectable: None,
                 },
             );
-            g.edges.insert(
+            g.insert_edge(
                 e1,
                 Edge {
                     kind: EdgeKind::Data,
@@ -218,7 +215,7 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
             );
         }
 
-        (g, a, b, c, e1, e2)
+        (g.into(), a, b, c, e1, e2)
     }
 
     let (g1, a1, b1, c1, e11, e21) = build_graph(true);
@@ -246,21 +243,20 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
 
 #[test]
 fn outgoers_and_incomers_include_self_for_self_loops_and_dedup() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
 
     let a = NodeId::new();
     let (a_out_id, a_out) = out_port(a);
     let (a_in_id, a_in) = in_port(a, "in0");
 
-    g.nodes
-        .insert(a, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
-    g.ports.insert(a_out_id, a_out);
-    g.ports.insert(a_in_id, a_in);
+    g.insert_node(a, node_at(CanvasPoint { x: 0.0, y: 0.0 }, None));
+    g.insert_port(a_out_id, a_out);
+    g.insert_port(a_in_id, a_in);
 
     // Two self-loop edges should still dedup to a single node in outgoers/incomers.
     let e1 = EdgeId::new();
     let e2 = EdgeId::new();
-    g.edges.insert(
+    g.insert_edge(
         e1,
         Edge {
             kind: EdgeKind::Data,
@@ -274,7 +270,7 @@ fn outgoers_and_incomers_include_self_for_self_loops_and_dedup() {
             reconnectable: None,
         },
     );
-    g.edges.insert(
+    g.insert_edge(
         e2,
         Edge {
             kind: EdgeKind::Data,

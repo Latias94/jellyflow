@@ -83,23 +83,23 @@ fn multi_selection_drag_moves_primary_and_selected_nodes_with_sorted_ops() {
         .expect("multi drag dispatch commits");
 
     assert_eq!(
-        harness.store().graph().nodes[&fixture.selected_low].pos,
+        harness.store().graph().nodes()[&fixture.selected_low].pos,
         CanvasPoint { x: 20.0, y: 20.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].pos,
+        harness.store().graph().nodes()[&fixture.enabled].pos,
         CanvasPoint { x: 30.0, y: 40.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.selected_high].pos,
+        harness.store().graph().nodes()[&fixture.selected_high].pos,
         CanvasPoint { x: 120.0, y: 20.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.disabled].pos,
+        harness.store().graph().nodes()[&fixture.disabled].pos,
         CanvasPoint { x: 200.0, y: 0.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.child_in_selected_group].pos,
+        harness.store().graph().nodes()[&fixture.child_in_selected_group].pos,
         CanvasPoint { x: 300.0, y: 0.0 },
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -219,19 +219,19 @@ fn keyboard_nudge_moves_selected_draggable_nodes_with_screen_step() {
         .expect("keyboard nudge dispatch commits");
 
     assert_eq!(
-        harness.store().graph().nodes[&fixture.selected_low].pos,
+        harness.store().graph().nodes()[&fixture.selected_low].pos,
         CanvasPoint { x: 2.5, y: 0.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.selected_high].pos,
+        harness.store().graph().nodes()[&fixture.selected_high].pos,
         CanvasPoint { x: 102.5, y: 0.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.disabled].pos,
+        harness.store().graph().nodes()[&fixture.disabled].pos,
         CanvasPoint { x: 200.0, y: 0.0 },
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.child_in_selected_group].pos,
+        harness.store().graph().nodes()[&fixture.child_in_selected_group].pos,
         CanvasPoint { x: 300.0, y: 0.0 },
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -299,10 +299,15 @@ fn keyboard_nudge_returns_none_without_keyboard_accessibility_or_selection() {
 fn multi_selection_drag_clamps_global_extent_as_group() {
     let mut fixture = drag_fixture();
     for node in [fixture.selected_low, fixture.enabled, fixture.selected_high] {
-        fixture.graph.nodes.get_mut(&node).unwrap().size = Some(CanvasSize {
-            width: 10.0,
-            height: 10.0,
-        });
+        fixture
+            .graph
+            .update_node(&node, |node| {
+                node.size = Some(CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                })
+            })
+            .expect("node exists");
     }
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(

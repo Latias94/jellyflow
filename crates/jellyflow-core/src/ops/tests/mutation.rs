@@ -30,9 +30,9 @@ fn mutation_planner_add_node_with_ports_preserves_port_order_and_undo() {
     ));
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert_eq!(graph.nodes.get(&node_id).unwrap().ports, vec![out, inn]);
-    assert!(graph.ports.contains_key(&out));
-    assert!(graph.ports.contains_key(&inn));
+    assert_eq!(graph.nodes().get(&node_id).unwrap().ports, vec![out, inn]);
+    assert!(graph.ports().contains_key(&out));
+    assert!(graph.ports().contains_key(&inn));
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo");
@@ -64,10 +64,10 @@ fn mutation_planner_add_port_updates_node_ports_at_requested_index() {
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(
-        graph.nodes.get(&node_id).unwrap().ports,
+        graph.nodes().get(&node_id).unwrap().ports,
         vec![inserted, existing]
     );
-    assert!(graph.ports.contains_key(&inserted));
+    assert!(graph.ports().contains_key(&inserted));
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo");
@@ -88,9 +88,9 @@ fn mutation_planner_remove_port_tx_roundtrips_through_inverse() {
         .expect("tx");
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(!graph.ports.contains_key(&ids.out));
-    assert!(!graph.edges.contains_key(&ids.edge));
-    assert!(!graph.nodes.get(&ids.a).unwrap().ports.contains(&ids.out));
+    assert!(!graph.ports().contains_key(&ids.out));
+    assert!(!graph.edges().contains_key(&ids.edge));
+    assert!(!graph.nodes().get(&ids.a).unwrap().ports.contains(&ids.out));
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo");
@@ -141,7 +141,7 @@ fn mutation_planner_connect_and_disconnect_edges() {
         .expect("connect tx");
 
     apply_transaction(&mut graph, &connect).expect("connect apply");
-    assert!(graph.edges.contains_key(&edge_id));
+    assert!(graph.edges().contains_key(&edge_id));
 
     let disconnect_ops = GraphMutationPlanner::new(&graph)
         .disconnect_port_ops(inn)
@@ -150,7 +150,7 @@ fn mutation_planner_connect_and_disconnect_edges() {
 
     let disconnect = GraphTransaction::from_ops(disconnect_ops).with_label("Disconnect");
     apply_transaction(&mut graph, &disconnect).expect("disconnect apply");
-    assert!(graph.edges.is_empty());
+    assert!(graph.edges().is_empty());
 }
 
 #[test]
@@ -171,9 +171,9 @@ fn mutation_planner_remove_node_tx_captures_ports_and_edges() {
     ));
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(!graph.nodes.contains_key(&ids.a));
-    assert!(!graph.ports.contains_key(&ids.out));
-    assert!(!graph.edges.contains_key(&ids.edge));
+    assert!(!graph.nodes().contains_key(&ids.a));
+    assert!(!graph.ports().contains_key(&ids.out));
+    assert!(!graph.edges().contains_key(&ids.edge));
 }
 
 #[test]
@@ -217,11 +217,11 @@ fn mutation_batch_planner_allows_edges_to_staged_ports() {
     apply_transaction(&mut graph, &tx).expect("apply");
 
     assert_eq!(
-        graph.nodes.get(&inserted).unwrap().ports,
+        graph.nodes().get(&inserted).unwrap().ports,
         vec![inserted_in, inserted_out]
     );
-    assert_eq!(graph.edges.get(&edge_a).unwrap().to, inserted_in);
-    assert_eq!(graph.edges.get(&edge_b).unwrap().from, inserted_out);
+    assert_eq!(graph.edges().get(&edge_a).unwrap().to, inserted_in);
+    assert_eq!(graph.edges().get(&edge_b).unwrap().from, inserted_out);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn mutation_batch_planner_set_edge_endpoints_can_target_staged_port() {
     let tx = GraphTransaction::from_ops(batch.into_ops());
     apply_transaction(&mut graph, &tx).expect("apply");
 
-    assert_eq!(graph.edges.get(&ids.edge).unwrap().to, inserted_in);
+    assert_eq!(graph.edges().get(&ids.edge).unwrap().to, inserted_in);
 }
 
 #[test]
@@ -289,9 +289,9 @@ fn build_remove_node_tx_captures_ports_and_edges() {
 
     apply_transaction(&mut graph, &tx).expect("apply");
 
-    assert!(!graph.nodes.contains_key(&ids.a));
-    assert!(!graph.ports.contains_key(&ids.out));
-    assert!(!graph.edges.contains_key(&ids.edge));
+    assert!(!graph.nodes().contains_key(&ids.a));
+    assert!(!graph.ports().contains_key(&ids.out));
+    assert!(!graph.edges().contains_key(&ids.edge));
 }
 
 #[test]
@@ -306,5 +306,5 @@ fn build_disconnect_port_ops_removes_incident_edges() {
 
     let tx = GraphTransaction::from_ops(ops);
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(graph.edges.is_empty());
+    assert!(graph.edges().is_empty());
 }

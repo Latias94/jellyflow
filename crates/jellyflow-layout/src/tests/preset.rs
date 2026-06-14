@@ -121,10 +121,8 @@ fn preset_builder_can_switch_scope_and_options() {
 #[test]
 fn preset_builder_round_trips_through_engine_request() {
     let request = LayoutPresetBuilder::workflow().build();
-    let layout_request = LayoutPresetBuilder::workflow().layout_request();
     let engine_request: LayoutEngineRequest = LayoutPresetBuilder::workflow().into();
 
     assert_eq!(request, engine_request);
-    assert_eq!(layout_request, request.layout);
     assert_eq!(request.engine.as_str(), DUGONG_LAYOUT_ENGINE_ID);
 }

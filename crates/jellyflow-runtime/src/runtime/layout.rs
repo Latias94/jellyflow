@@ -86,7 +86,7 @@ impl From<LayoutApplyError> for DugongLayoutApplyError {
 
 /// Builds a layout context from non-persisted runtime facts already known by the store.
 pub fn layout_context_from_store(store: &NodeGraphStore) -> LayoutContext {
-    let measured_node_sizes = store.graph().nodes.keys().filter_map(|node| {
+    let measured_node_sizes = store.graph().nodes().keys().filter_map(|node| {
         store
             .node_measurement(*node)
             .and_then(|measurement| measurement.size.map(|size| (*node, size)))

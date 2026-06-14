@@ -23,7 +23,7 @@ impl GraphFileV1 {
     /// Wraps a graph into a v1 file object.
     pub fn from_graph(graph: Graph) -> Self {
         Self {
-            graph_id: graph.graph_id,
+            graph_id: graph.graph_id(),
             graph_version: GRAPH_FILE_VERSION,
             graph,
         }
@@ -31,7 +31,7 @@ impl GraphFileV1 {
 
     /// Validates wrapper invariants.
     pub fn validate(&self) -> Result<(), GraphFileError> {
-        if self.graph_id != self.graph.graph_id {
+        if self.graph_id != self.graph.graph_id() {
             return Err(GraphFileError::InconsistentGraphId);
         }
         Ok(())
@@ -111,6 +111,6 @@ pub enum GraphFileError {
         source: serde_json::Error,
     },
     /// Wrapper id mismatch.
-    #[error("graph file wrapper graph_id does not match graph.graph_id")]
+    #[error("graph file wrapper graph_id does not match graph.graph_id()")]
     InconsistentGraphId,
 }

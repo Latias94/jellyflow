@@ -2,8 +2,9 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder as CoreGraphBuilder,
+    GraphId, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    PortKind,
 };
 use jellyflow_layout::{
     LayoutOptions, LayoutRequest, LayoutSpacing, layout_graph_with_dugong,
@@ -26,12 +27,12 @@ fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
 
     for depth in [4_usize, 6, 8] {
         let graph = balanced_tree_fixture(depth, 3);
-        let node_count = graph.nodes.len();
+        let node_count = graph.nodes().len();
         let request = tree_request();
 
         group.throughput(Throughput::Elements(node_count as u64));
         group.bench_with_input(
-            BenchmarkId::new("branching_3", node_count),
+            BenchmarkId::new("plan_branching_3", node_count),
             &graph,
             |b, graph| {
                 b.iter(|| {
@@ -52,12 +53,12 @@ fn benchmark_tidy_tree_wide(c: &mut Criterion) {
 
     for child_count in [100_usize, 1_000, 5_000] {
         let graph = wide_tree_fixture(child_count);
-        let node_count = graph.nodes.len();
+        let node_count = graph.nodes().len();
         let request = tree_request();
 
         group.throughput(Throughput::Elements(node_count as u64));
         group.bench_with_input(
-            BenchmarkId::new("root_children", node_count),
+            BenchmarkId::new("plan_root_children", node_count),
             &graph,
             |b, graph| {
                 b.iter(|| {
@@ -78,19 +79,47 @@ fn benchmark_dugong_layered(c: &mut Criterion) {
 
     for layer_count in [10_usize, 25, 50] {
         let graph = layered_dag_fixture(layer_count, 10);
-        let node_count = graph.nodes.len();
+        let node_count = graph.nodes().len();
         let request = workflow_request();
 
         group.throughput(Throughput::Elements(node_count as u64));
+
+        group.bench_with_input(BenchmarkId::new("plan", node_count), &graph, |b, graph| {
+            b.iter(|| {
+                black_box(
+                    layout_graph_with_dugong(black_box(graph), black_box(&request))
+                        .expect("dugong layout"),
+                )
+            })
+        });
+
         group.bench_with_input(
-            BenchmarkId::new("layers_10_wide", node_count),
+            BenchmarkId::new("to_transaction", node_count),
             &graph,
             |b, graph| {
                 b.iter(|| {
+                    let layout = layout_graph_with_dugong(black_box(graph), black_box(&request))
+                        .expect("dugong layout");
                     black_box(
-                        layout_graph_with_dugong(black_box(graph), black_box(&request))
-                            .expect("dugong layout"),
-                    )
+                        layout
+                            .to_transaction(black_box(graph))
+                            .expect("transaction"),
+                    );
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("plan_then_to_transaction", node_count),
+            &graph,
+            |b, graph| {
+                b.iter(|| {
+                    let layout = layout_graph_with_dugong(black_box(graph), black_box(&request))
+                        .expect("dugong layout");
+                    let tx = layout
+                        .to_transaction(black_box(graph))
+                        .expect("transaction");
+                    black_box((layout, tx));
                 })
             },
         );
@@ -124,7 +153,7 @@ fn workflow_request() -> LayoutRequest {
 }
 
 fn balanced_tree_fixture(depth: usize, branching: usize) -> Graph {
-    let mut builder = GraphBuilder::new(1);
+    let mut builder = FixtureGraphBuilder::new(1);
     let root = builder.add_node();
     let mut frontier = vec![root];
 
@@ -144,7 +173,7 @@ fn balanced_tree_fixture(depth: usize, branching: usize) -> Graph {
 }
 
 fn wide_tree_fixture(child_count: usize) -> Graph {
-    let mut builder = GraphBuilder::new(2);
+    let mut builder = FixtureGraphBuilder::new(2);
     let root = builder.add_node();
 
     for _ in 0..child_count {
@@ -156,7 +185,7 @@ fn wide_tree_fixture(child_count: usize) -> Graph {
 }
 
 fn layered_dag_fixture(layer_count: usize, layer_width: usize) -> Graph {
-    let mut builder = GraphBuilder::new(3);
+    let mut builder = FixtureGraphBuilder::new(3);
     let mut previous_layer = Vec::new();
 
     for _ in 0..layer_count {
@@ -181,17 +210,17 @@ fn layered_dag_fixture(layer_count: usize, layer_width: usize) -> Graph {
     builder.into_graph()
 }
 
-struct GraphBuilder {
-    graph: Graph,
+struct FixtureGraphBuilder {
+    graph: CoreGraphBuilder,
     next_node: u128,
     next_port: u128,
     next_edge: u128,
 }
 
-impl GraphBuilder {
+impl FixtureGraphBuilder {
     fn new(graph_id: u128) -> Self {
         Self {
-            graph: Graph::new(GraphId::from_u128(graph_id)),
+            graph: CoreGraphBuilder::new(GraphId::from_u128(graph_id)),
             next_node: 1,
             next_port: 10_000,
             next_edge: 20_000,
@@ -201,9 +230,7 @@ impl GraphBuilder {
     fn add_node(&mut self) -> NodeId {
         let node = NodeId::from_u128(self.next_node);
         self.next_node += 1;
-        self.graph
-            .nodes
-            .insert(node, node_fixture(node, Vec::new()));
+        self.graph.insert_node(node, node_fixture(node, Vec::new()));
         node
     }
 
@@ -213,7 +240,7 @@ impl GraphBuilder {
         let edge = EdgeId::from_u128(self.next_edge);
         self.next_edge += 1;
 
-        self.graph.edges.insert(
+        self.graph.insert_edge(
             edge,
             Edge {
                 kind: EdgeKind::Data,
@@ -239,7 +266,7 @@ impl GraphBuilder {
             PortDirection::In => format!("in.{}", port.0),
             PortDirection::Out => format!("out.{}", port.0),
         };
-        self.graph.ports.insert(
+        self.graph.insert_port(
             port,
             Port {
                 node,
@@ -255,17 +282,14 @@ impl GraphBuilder {
             },
         );
         self.graph
-            .nodes
-            .get_mut(&node)
-            .expect("node exists")
-            .ports
-            .push(port);
+            .update_node(&node, |node| node.ports.push(port))
+            .expect("node exists");
 
         port
     }
 
     fn into_graph(self) -> Graph {
-        self.graph
+        self.graph.build_unchecked()
     }
 }
 

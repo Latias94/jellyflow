@@ -1,5 +1,5 @@
 use jellyflow_core::{
-    Binding, BindingId, CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey,
+    Binding, BindingId, CanvasPoint, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
@@ -34,11 +34,9 @@ fn make_note_node(pos: CanvasPoint) -> Node {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = NodeId::from_u128(1);
     let binding = BindingId::from_u128(10);
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph
-        .nodes
-        .insert(node, make_note_node(CanvasPoint { x: 160.0, y: 96.0 }));
-    graph.bindings.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(node, make_note_node(CanvasPoint { x: 160.0, y: 96.0 }));
+    graph.insert_binding(
         binding,
         Binding::node_to_source(
             node,
@@ -49,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut store = NodeGraphStore::new(
-        graph,
+        graph.build_unchecked(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );

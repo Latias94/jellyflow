@@ -47,7 +47,7 @@ fn from_selection_detaches_nodes_when_group_is_not_selected() {
     let mut graph = Graph::default();
 
     let group_id = GroupId::new();
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "G".to_string(),
@@ -64,12 +64,8 @@ fn from_selection_detaches_nodes_when_group_is_not_selected() {
 
     let node_id = NodeId::new();
     let in_port = PortId::new();
-    graph
-        .nodes
-        .insert(node_id, node("A", (1.0, 2.0), Some(group_id), &[in_port]));
-    graph
-        .ports
-        .insert(in_port, port(node_id, "in", PortDirection::In));
+    graph.insert_node(node_id, node("A", (1.0, 2.0), Some(group_id), &[in_port]));
+    graph.insert_port(in_port, port(node_id, "in", PortDirection::In));
 
     let fragment = GraphFragment::from_selection(&graph, [node_id], std::iter::empty());
     assert!(fragment.groups.is_empty());
@@ -82,7 +78,7 @@ fn from_selection_keeps_parent_when_group_is_selected_and_includes_children() {
     let mut graph = Graph::default();
 
     let group_id = GroupId::new();
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "G".to_string(),
@@ -99,22 +95,16 @@ fn from_selection_keeps_parent_when_group_is_selected_and_includes_children() {
 
     let a = NodeId::new();
     let a_out = PortId::new();
-    graph
-        .nodes
-        .insert(a, node("A", (1.0, 2.0), Some(group_id), &[a_out]));
-    graph
-        .ports
-        .insert(a_out, port(a, "out", PortDirection::Out));
+    graph.insert_node(a, node("A", (1.0, 2.0), Some(group_id), &[a_out]));
+    graph.insert_port(a_out, port(a, "out", PortDirection::Out));
 
     let b = NodeId::new();
     let b_in = PortId::new();
-    graph
-        .nodes
-        .insert(b, node("B", (3.0, 4.0), Some(group_id), &[b_in]));
-    graph.ports.insert(b_in, port(b, "in", PortDirection::In));
+    graph.insert_node(b, node("B", (3.0, 4.0), Some(group_id), &[b_in]));
+    graph.insert_port(b_in, port(b, "in", PortDirection::In));
 
     let e = EdgeId::new();
-    graph.edges.insert(
+    graph.insert_edge(
         e,
         Edge {
             kind: EdgeKind::Data,

@@ -85,7 +85,7 @@ impl<'a> FreeformProjection<'a> {
         let mut node_infos = BTreeMap::new();
         let mut visible_nodes = BTreeSet::new();
 
-        for (id, node) in &graph.nodes {
+        for (id, node) in graph.nodes() {
             if node.hidden || !request.scope.contains(*id) {
                 continue;
             }

@@ -81,7 +81,7 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
     let edge = harness
         .store()
         .graph()
-        .edges
+        .edges()
         .get(&edge_id)
         .expect("edge remains");
     assert_eq!(edge.from, out_port);
@@ -133,8 +133,8 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
         .expect("delete should commit");
     let changes = NodeGraphChanges::from_patch(&outcome.patch);
 
-    assert!(!harness.store().graph().nodes.contains_key(&node_id));
-    assert!(!harness.store().graph().edges.contains_key(&edge_id));
+    assert!(!harness.store().graph().nodes().contains_key(&node_id));
+    assert!(!harness.store().graph().edges().contains_key(&edge_id));
     assert!(
         matches!(changes.nodes(), [NodeChange::Remove { id }] if *id == node_id),
         "delete should project to one node remove",

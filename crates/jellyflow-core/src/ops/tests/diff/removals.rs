@@ -14,9 +14,9 @@ fn graph_diff_roundtrips_when_deleting_a_node_with_ports_and_edges() {
     );
 
     let mut to = from.clone();
-    to.nodes.remove(&ids.b);
-    to.ports.remove(&ids.inn);
-    to.edges.remove(&ids.edge);
+    to.remove_node(&ids.b);
+    to.remove_port(&ids.inn);
+    to.remove_edge(&ids.edge);
 
     let tx = graph_diff(&from, &to);
     assert!(
@@ -51,7 +51,7 @@ fn graph_diff_roundtrips_when_deleting_a_node_with_ports_and_edges() {
 fn graph_diff_roundtrips_when_deleting_a_group_with_child_nodes() {
     let mut from = Graph::default();
     let group_id = GroupId::from_u128(10);
-    from.groups.insert(
+    from.insert_group(
         group_id,
         Group {
             title: "Group".to_string(),
@@ -70,18 +70,17 @@ fn graph_diff_roundtrips_when_deleting_a_group_with_child_nodes() {
     let child_b = NodeId::from_u128(100);
     let mut node_a = make_node("core.a");
     node_a.parent = Some(group_id);
-    from.nodes.insert(child_a, node_a);
+    from.insert_node(child_a, node_a);
     let mut node_b = make_node("core.b");
     node_b.parent = Some(group_id);
-    from.nodes.insert(child_b, node_b);
+    from.insert_node(child_b, node_b);
 
-    from.nodes
-        .insert(NodeId::from_u128(300), make_node("core.c"));
+    from.insert_node(NodeId::from_u128(300), make_node("core.c"));
 
     let mut to = from.clone();
-    to.groups.remove(&group_id);
-    to.nodes.get_mut(&child_a).unwrap().parent = None;
-    to.nodes.get_mut(&child_b).unwrap().parent = None;
+    to.remove_group(&group_id);
+    to.node_mut(&child_a).unwrap().parent = None;
+    to.node_mut(&child_b).unwrap().parent = None;
 
     let tx = graph_diff(&from, &to);
     let expected_detached = vec![(child_b, Some(group_id)), (child_a, Some(group_id))];

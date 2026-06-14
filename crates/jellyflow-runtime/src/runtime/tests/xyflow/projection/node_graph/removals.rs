@@ -3,9 +3,9 @@ use super::*;
 #[test]
 fn changes_from_transaction_reports_cascaded_edge_removals() {
     let (g, a, _b, out_port, _in_port, eid) = make_graph();
-    let node = g.nodes.get(&a).expect("node").clone();
-    let port = g.ports.get(&out_port).expect("port").clone();
-    let edge = g.edges.get(&eid).expect("edge").clone();
+    let node = g.nodes().get(&a).expect("node").clone();
+    let port = g.ports().get(&out_port).expect("port").clone();
+    let edge = g.edges().get(&eid).expect("edge").clone();
 
     let remove_node_tx = GraphTransaction::from_ops([GraphOp::RemoveNode {
         id: a,
@@ -40,8 +40,8 @@ fn changes_from_transaction_reports_cascaded_edge_removals() {
 #[test]
 fn changes_from_transaction_deduplicates_repeated_edge_removes() {
     let (g, _a, _b, out_port, _in_port, eid) = make_graph();
-    let port = g.ports.get(&out_port).expect("port").clone();
-    let edge = g.edges.get(&eid).expect("edge").clone();
+    let port = g.ports().get(&out_port).expect("port").clone();
+    let edge = g.edges().get(&eid).expect("edge").clone();
 
     let repeated_remove_tx = GraphTransaction::from_ops([
         GraphOp::RemovePort {

@@ -79,7 +79,7 @@ pub(super) fn make_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
 }
 
 pub(super) fn insert_node(graph: &mut Graph, id: NodeId, kind: &str) {
-    graph.nodes.insert(id, make_node(kind));
+    graph.insert_node(id, make_node(kind));
 }
 
 pub(super) fn insert_port(
@@ -89,12 +89,12 @@ pub(super) fn insert_port(
     key: &str,
     dir: PortDirection,
 ) {
-    graph.ports.insert(id, make_port(node, key, dir));
-    graph.nodes.get_mut(&node).unwrap().ports.push(id);
+    graph.insert_port(id, make_port(node, key, dir));
+    graph.node_mut(&node).unwrap().ports.push(id);
 }
 
 pub(super) fn insert_edge(graph: &mut Graph, id: EdgeId, from: PortId, to: PortId) {
-    graph.edges.insert(id, make_edge(from, to));
+    graph.insert_edge(id, make_edge(from, to));
 }
 
 pub(super) fn insert_connected_pair(graph: &mut Graph) -> ConnectedPairIds {

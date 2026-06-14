@@ -22,7 +22,7 @@ pub fn plan_reconnect_edge_with_mode_and_policy(
     mode: NodeGraphConnectionMode,
     state: &NodeGraphInteractionState,
 ) -> ConnectPlan {
-    let Some(edge) = graph.edges.get(&edge_id) else {
+    let Some(edge) = graph.edges().get(&edge_id) else {
         return reject_missing_edge(edge_id);
     };
 

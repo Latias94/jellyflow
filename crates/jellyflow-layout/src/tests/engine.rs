@@ -1,4 +1,4 @@
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, GraphOp, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphBuilder, GraphId, GraphOp, NodeId};
 
 use crate::{
     LayoutContext, LayoutEngine, LayoutEngineId, LayoutEngineRegistry, LayoutEngineRequest,
@@ -28,7 +28,7 @@ impl LayoutEngine for TestEngine {
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
         let nodes = graph
-            .nodes
+            .nodes()
             .keys()
             .copied()
             .filter(|node| !context.pinned_nodes.contains(node))
@@ -83,7 +83,7 @@ fn registry_rejects_duplicate_engine_ids() {
 fn registry_reports_missing_engine() {
     let registry = LayoutEngineRegistry::new();
     let missing = LayoutEngineId::new("missing");
-    let graph = Graph::new(GraphId::from_u128(1));
+    let graph = GraphBuilder::new(GraphId::from_u128(1));
     let request = LayoutEngineRequest::new(missing.clone(), LayoutRequest::all());
 
     let err = layout_graph_with_engine(&graph, &request, &registry, &LayoutContext::default())
@@ -146,8 +146,8 @@ fn generic_result_converts_to_transaction() {
 fn graph_with_one_node(node: NodeId) -> Graph {
     use jellyflow_core::{Node, NodeKindKey};
 
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(
         node,
         Node {
             kind: NodeKindKey::new("demo.node"),
@@ -169,5 +169,5 @@ fn graph_with_one_node(node: NodeId) -> Graph {
             data: serde_json::Value::Null,
         },
     );
-    graph
+    graph.build_unchecked()
 }

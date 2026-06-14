@@ -47,13 +47,13 @@ impl DeleteSelection {
 
     fn cascaded_edges_for_nodes(graph: &Graph, nodes: &BTreeSet<NodeId>) -> BTreeSet<EdgeId> {
         let port_ids = graph
-            .ports
+            .ports()
             .iter()
             .filter_map(|(port_id, port)| nodes.contains(&port.node).then_some(*port_id))
             .collect::<BTreeSet<_>>();
 
         graph
-            .edges
+            .edges()
             .iter()
             .filter_map(|(edge_id, edge)| {
                 (port_ids.contains(&edge.from) || port_ids.contains(&edge.to)).then_some(*edge_id)

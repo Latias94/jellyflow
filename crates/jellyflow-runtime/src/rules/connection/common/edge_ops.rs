@@ -15,7 +15,7 @@ pub(in crate::rules::connection) fn ensure_edge_id_available(
     graph: &Graph,
     edge_id: EdgeId,
 ) -> Result<(), ConnectPlan> {
-    if graph.edges.contains_key(&edge_id) {
+    if graph.edges().contains_key(&edge_id) {
         return Err(ConnectPlan::reject(format!(
             "edge already exists: {edge_id:?}"
         )));
@@ -68,7 +68,7 @@ pub(in crate::rules::connection) fn connection_exists(
     to: PortId,
     skip_edge: Option<EdgeId>,
 ) -> bool {
-    graph.edges.iter().any(|(edge_id, edge)| {
+    graph.edges().iter().any(|(edge_id, edge)| {
         Some(*edge_id) != skip_edge && edge.kind == edge_kind && edge.from == from && edge.to == to
     })
 }

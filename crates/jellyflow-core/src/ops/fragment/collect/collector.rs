@@ -42,8 +42,8 @@ impl<'a> FragmentCollector<'a> {
 
     fn capture_selected_groups(&mut self) {
         for group_id in &self.groups {
-            if let Some(group) = self.graph.groups.get(group_id) {
-                self.fragment.groups.insert(*group_id, group.clone());
+            if let Some(group) = self.graph.groups().get(group_id) {
+                self.fragment.insert_group(*group_id, group.clone());
             }
         }
     }
@@ -53,7 +53,7 @@ impl<'a> FragmentCollector<'a> {
             return;
         }
 
-        for (node_id, node) in &self.graph.nodes {
+        for (node_id, node) in self.graph.nodes() {
             if node
                 .parent
                 .is_some_and(|parent| self.groups.contains(&parent))
@@ -65,7 +65,7 @@ impl<'a> FragmentCollector<'a> {
 
     fn capture_selected_nodes(&mut self) {
         for node_id in &self.nodes {
-            if let Some(node) = self.graph.nodes.get(node_id) {
+            if let Some(node) = self.graph.nodes().get(node_id) {
                 let mut node = node.clone();
                 if node
                     .parent
@@ -73,60 +73,68 @@ impl<'a> FragmentCollector<'a> {
                 {
                     node.parent = None;
                 }
-                self.fragment.nodes.insert(*node_id, node);
+                self.fragment.insert_node(*node_id, node);
             }
         }
     }
 
     fn capture_referenced_symbols(&mut self) {
+        let mut referenced = Vec::new();
         for (node_id, node) in &self.fragment.nodes {
             let Ok(Some(symbol_id)) = symbol_ref_target_symbol_id(*node_id, node) else {
                 continue;
             };
-            if let Some(symbol) = self.graph.symbols.get(&symbol_id) {
-                self.fragment.symbols.insert(symbol_id, symbol.clone());
+            referenced.push(symbol_id);
+        }
+        for symbol_id in referenced {
+            if let Some(symbol) = self.graph.symbols().get(&symbol_id) {
+                self.fragment.insert_symbol(symbol_id, symbol.clone());
             }
         }
     }
 
     fn capture_referenced_imports(&mut self) {
+        let mut referenced = Vec::new();
         for (node_id, node) in &self.fragment.nodes {
             let Ok(Some(graph_id)) = subgraph_target_graph_id(*node_id, node) else {
                 continue;
             };
-            if let Some(import) = self.graph.imports.get(&graph_id) {
-                self.fragment.imports.insert(graph_id, import.clone());
+            referenced.push(graph_id);
+        }
+        for graph_id in referenced {
+            if let Some(import) = self.graph.imports().get(&graph_id) {
+                self.fragment.insert_import(graph_id, import.clone());
             }
         }
     }
 
     fn capture_node_ports(&mut self) {
-        for (port_id, port) in &self.graph.ports {
+        for (port_id, port) in self.graph.ports() {
             if self.nodes.contains(&port.node) {
-                self.fragment.ports.insert(*port_id, port.clone());
+                self.fragment.insert_port(*port_id, port.clone());
             }
         }
     }
 
     fn capture_internal_edges(&mut self) {
-        for (edge_id, edge) in &self.graph.edges {
-            let from_node = self.graph.ports.get(&edge.from).map(|port| port.node);
-            let to_node = self.graph.ports.get(&edge.to).map(|port| port.node);
+        for (edge_id, edge) in self.graph.edges() {
+            let from_node = self.graph.ports().get(&edge.from).map(|port| port.node);
+            let to_node = self.graph.ports().get(&edge.to).map(|port| port.node);
             if let (Some(from_node), Some(to_node)) = (from_node, to_node)
                 && self.nodes.contains(&from_node)
                 && self.nodes.contains(&to_node)
             {
-                self.fragment.edges.insert(*edge_id, edge.clone());
+                self.fragment.insert_edge(*edge_id, edge.clone());
             }
         }
     }
 
     fn capture_bindings(&mut self) {
-        for (binding_id, binding) in &self.graph.bindings {
+        for (binding_id, binding) in self.graph.bindings() {
             if self.binding_endpoint_can_survive(&binding.subject)
                 && self.binding_endpoint_can_survive(&binding.target)
             {
-                self.fragment.bindings.insert(*binding_id, binding.clone());
+                self.fragment.insert_binding(*binding_id, binding.clone());
             }
         }
     }

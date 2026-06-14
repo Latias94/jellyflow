@@ -31,7 +31,7 @@ pub(super) fn drag_candidates(
     nodes
         .into_iter()
         .filter_map(|node| {
-            let graph_node = graph.nodes.get(&node)?;
+            let graph_node = graph.nodes().get(&node)?;
             if !node_is_draggable(graph_node, view_state, interaction) {
                 return None;
             }

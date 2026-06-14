@@ -20,7 +20,7 @@ pub fn plan_node_resize_with_context(
     context: NodeResizeContext,
     request: NodeResizeRequest,
 ) -> Option<NodeResizePlan> {
-    let node = graph.nodes.get(&request.node)?;
+    let node = graph.nodes().get(&request.node)?;
     if node.hidden || !node.pos.is_finite() {
         return None;
     }
@@ -63,7 +63,7 @@ pub(super) fn plan_node_pointer_resize_with_policy_extent(
     node_extent: Option<CanvasRect>,
     request: NodePointerResizeRequest,
 ) -> Option<NodeResizePlan> {
-    let node = graph.nodes.get(&request.node)?;
+    let node = graph.nodes().get(&request.node)?;
     if node.hidden
         || !node.pos.is_finite()
         || !request.start.is_finite()
@@ -314,7 +314,7 @@ fn resolved_resize_extent(
         NodeExtent::Rect { rect } => normalized_rect(rect),
         NodeExtent::Parent if !node.expand_parent.unwrap_or(false) => node
             .parent
-            .and_then(|parent| graph.groups.get(&parent))
+            .and_then(|parent| graph.groups().get(&parent))
             .and_then(|group| normalized_rect(group.rect)),
         NodeExtent::Parent => None,
     }

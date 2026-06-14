@@ -36,10 +36,10 @@ pub(in crate::rules::connection) fn resolve_connection_endpoints(
         return Err(reject_self_connection());
     }
 
-    let Some(port_a) = graph.ports.get(&a) else {
+    let Some(port_a) = graph.ports().get(&a) else {
         return Err(reject_missing_port(a));
     };
-    let Some(port_b) = graph.ports.get(&b) else {
+    let Some(port_b) = graph.ports().get(&b) else {
         return Err(reject_missing_port(b));
     };
 
@@ -91,10 +91,10 @@ pub(in crate::rules::connection) fn connection_ports(
     from_id: PortId,
     to_id: PortId,
 ) -> Result<(&Port, &Port), ConnectPlan> {
-    let Some(from) = graph.ports.get(&from_id) else {
+    let Some(from) = graph.ports().get(&from_id) else {
         return Err(reject_missing_port(from_id));
     };
-    let Some(to) = graph.ports.get(&to_id) else {
+    let Some(to) = graph.ports().get(&to_id) else {
         return Err(reject_missing_port(to_id));
     };
     Ok((from, to))

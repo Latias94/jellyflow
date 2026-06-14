@@ -67,20 +67,20 @@ impl NodeGraphViewState {
     pub fn sanitize_for_graph(&mut self, graph: &Graph) {
         self.sanitize_viewport();
 
-        let visible_node = |id: &NodeId| graph.nodes.get(id).is_some_and(|node| !node.hidden);
+        let visible_node = |id: &NodeId| graph.nodes().get(id).is_some_and(|node| !node.hidden);
 
         self.selected_nodes.retain(visible_node);
         let visible_edge = |id: &EdgeId| {
-            let Some(edge) = graph.edges.get(id) else {
+            let Some(edge) = graph.edges().get(id) else {
                 return false;
             };
             if edge.hidden {
                 return false;
             }
-            let Some(from) = graph.ports.get(&edge.from) else {
+            let Some(from) = graph.ports().get(&edge.from) else {
                 return false;
             };
-            let Some(to) = graph.ports.get(&edge.to) else {
+            let Some(to) = graph.ports().get(&edge.to) else {
                 return false;
             };
             visible_node(&from.node) && visible_node(&to.node)
@@ -88,11 +88,11 @@ impl NodeGraphViewState {
 
         self.selected_edges.retain(|id| visible_edge(id));
         self.selected_groups
-            .retain(|id| graph.groups.contains_key(id));
+            .retain(|id| graph.groups().contains_key(id));
         self.draw_order.retain(visible_node);
         self.edge_draw_order.retain(|id| visible_edge(id));
         self.group_draw_order
-            .retain(|id| graph.groups.contains_key(id));
+            .retain(|id| graph.groups().contains_key(id));
     }
 
     pub fn sanitize_viewport(&mut self) {

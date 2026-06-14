@@ -62,8 +62,8 @@ fn store_does_not_commit_rejected_profile_edits() {
     assert!(!diagnostics.is_empty());
 
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
-        g0.nodes.get(&a).unwrap().pos
+        store.graph().nodes().get(&a).unwrap().pos,
+        g0.nodes().get(&a).unwrap().pos
     );
     assert!(!store.can_undo());
 }
@@ -112,8 +112,8 @@ fn store_rejects_non_finite_transactions() {
         panic!("unexpected error: {err:?}");
     };
     assert_eq!(diagnostics[0].key, "tx.non_finite");
-    assert!(store.graph().nodes.is_empty());
-    assert_eq!(store.graph().graph_id, g.graph_id);
+    assert!(store.graph().nodes().is_empty());
+    assert_eq!(store.graph().graph_id(), g.graph_id());
     assert!(!store.can_undo());
 }
 
@@ -158,7 +158,7 @@ fn store_rejects_invalid_size_transactions() {
         panic!("unexpected error: {err:?}");
     };
     assert_eq!(diagnostics[0].key, "tx.invalid_size");
-    assert!(store.graph().nodes.is_empty());
-    assert_eq!(store.graph().graph_id, g.graph_id);
+    assert!(store.graph().nodes().is_empty());
+    assert_eq!(store.graph().graph_id(), g.graph_id());
     assert!(!store.can_undo());
 }

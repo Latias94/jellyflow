@@ -301,7 +301,7 @@ impl NodeGraphStore {
         &self,
         node: NodeId,
     ) -> Result<(), PointerSessionClaimRejection> {
-        let Some(node) = self.graph().nodes.get(&node) else {
+        let Some(node) = self.graph().nodes().get(&node) else {
             return Err(PointerSessionClaimRejection::TargetUnavailable);
         };
         if node.hidden || !node.pos.is_finite() {
@@ -329,14 +329,14 @@ impl NodeGraphStore {
         &self,
         handle: ConnectionHandleRef,
     ) -> Result<(), PointerSessionClaimRejection> {
-        let Some(node) = self.graph().nodes.get(&handle.node) else {
+        let Some(node) = self.graph().nodes().get(&handle.node) else {
             return Err(PointerSessionClaimRejection::TargetUnavailable);
         };
         if node.hidden || !node.ports.contains(&handle.port) {
             return Err(PointerSessionClaimRejection::TargetUnavailable);
         }
 
-        let Some(port) = self.graph().ports.get(&handle.port) else {
+        let Some(port) = self.graph().ports().get(&handle.port) else {
             return Err(PointerSessionClaimRejection::TargetUnavailable);
         };
         if port.node != handle.node || port.dir != handle.direction {
@@ -509,7 +509,7 @@ impl NodeGraphStore {
     }
 
     fn rejected_or_noop_node_drag_outcome(&self, session: NodeDragSession) -> NodeDragEndOutcome {
-        let Some(node) = self.graph().nodes.get(&session.node) else {
+        let Some(node) = self.graph().nodes().get(&session.node) else {
             return NodeDragEndOutcome::Rejected;
         };
         if node.hidden || !session.to.is_finite() {

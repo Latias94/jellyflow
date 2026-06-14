@@ -17,13 +17,13 @@ impl GraphMutationPlanner<'_> {
     }
 
     pub fn add_edge_op(&self, id: EdgeId, edge: Edge) -> Result<GraphOp, GraphMutationError> {
-        if self.graph.edges.contains_key(&id) {
+        if self.graph.edges().contains_key(&id) {
             return Err(GraphMutationError::EdgeAlreadyExists(id));
         }
-        if !self.graph.ports.contains_key(&edge.from) {
+        if !self.graph.ports().contains_key(&edge.from) {
             return Err(GraphMutationError::MissingPort(edge.from));
         }
-        if !self.graph.ports.contains_key(&edge.to) {
+        if !self.graph.ports().contains_key(&edge.to) {
             return Err(GraphMutationError::MissingPort(edge.to));
         }
         Ok(GraphOp::AddEdge { id, edge })

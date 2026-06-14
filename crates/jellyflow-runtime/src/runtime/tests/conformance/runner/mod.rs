@@ -1,4 +1,4 @@
-use super::super::fixtures::make_graph;
+use super::super::fixtures::{fixture_insert_group, fixture_insert_node, make_graph};
 
 use crate::runtime::auto_pan::{AutoPanActivation, AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::conformance::{

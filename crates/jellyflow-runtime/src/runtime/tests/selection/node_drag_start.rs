@@ -95,7 +95,9 @@ fn node_drag_start_selection_respects_disabled_select_nodes_on_drag() {
 #[test]
 fn node_drag_start_selection_does_not_select_non_selectable_or_hidden_nodes() {
     let (mut graph, node, other, _, _, edge) = make_graph();
-    graph.nodes.get_mut(&node).unwrap().selectable = Some(false);
+    graph
+        .update_node(&node, |node| node.selectable = Some(false))
+        .expect("node exists");
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![other], vec![edge], Vec::new());
 
@@ -109,7 +111,9 @@ fn node_drag_start_selection_does_not_select_non_selectable_or_hidden_nodes() {
         NodeDragStartSelectionAction::Unchanged,
     );
 
-    graph.nodes.get_mut(&node).unwrap().hidden = true;
+    graph
+        .update_node(&node, |node| node.hidden = true)
+        .expect("node exists");
     assert_eq!(
         resolve_node_drag_start_selection(
             &graph,
@@ -194,7 +198,9 @@ fn store_apply_node_pointer_down_updates_selection_and_returns_decision() {
 #[test]
 fn store_apply_node_pointer_down_keeps_hidden_and_non_selectable_nodes_unchanged() {
     let (mut graph, node, other, _, _, edge) = make_graph();
-    graph.nodes.get_mut(&node).unwrap().selectable = Some(false);
+    graph
+        .update_node(&node, |node| node.selectable = Some(false))
+        .expect("node exists");
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![other], vec![edge], Vec::new());
 
@@ -222,7 +228,9 @@ fn store_apply_node_pointer_down_keeps_hidden_and_non_selectable_nodes_unchanged
     assert_eq!(harness.store().view_state().selected_edges, vec![edge]);
     harness.assert_events(&[]);
 
-    graph.nodes.get_mut(&node).unwrap().hidden = true;
+    graph
+        .update_node(&node, |node| node.hidden = true)
+        .expect("node exists");
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![other], Vec::new(), Vec::new());
     let mut harness = InteractionHarness::with_view_state(

@@ -72,7 +72,7 @@ pub fn symbol_ref_target_symbol_id(
 /// Invalid symbol ref nodes return an error.
 pub fn collect_symbol_ref_targets(graph: &Graph) -> Result<BTreeSet<SymbolId>, SymbolRefNodeError> {
     let mut out = BTreeSet::new();
-    for (node_id, node) in &graph.nodes {
+    for (node_id, node) in graph.nodes() {
         if let Some(target) = symbol_ref_target_symbol_id(*node_id, node)? {
             out.insert(target);
         }
@@ -80,16 +80,16 @@ pub fn collect_symbol_ref_targets(graph: &Graph) -> Result<BTreeSet<SymbolId>, S
     Ok(out)
 }
 
-/// Validates that every referenced symbol id is declared in `graph.symbols`.
+/// Validates that every referenced symbol id is declared in `graph.symbols()`.
 pub fn validate_symbol_ref_targets_are_declared(
     graph: &Graph,
 ) -> Result<(), Vec<SymbolRefBindingError>> {
     let mut errors = Vec::new();
-    for (node_id, node) in &graph.nodes {
+    for (node_id, node) in graph.nodes() {
         let Ok(Some(target)) = symbol_ref_target_symbol_id(*node_id, node) else {
             continue;
         };
-        if !graph.symbols.contains_key(&target) {
+        if !graph.symbols().contains_key(&target) {
             errors.push(SymbolRefBindingError::TargetNotDeclared {
                 node: *node_id,
                 symbol_id: target,

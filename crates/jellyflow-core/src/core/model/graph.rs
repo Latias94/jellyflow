@@ -20,37 +20,41 @@ pub const GRAPH_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Graph {
     /// Stable identity for editor-state lookup and cross-graph references.
-    pub graph_id: GraphId,
+    graph_id: GraphId,
     /// Schema version for migrations.
-    pub graph_version: u32,
+    graph_version: u32,
 
     /// Transitive graph dependencies (semantic subgraphs / libraries).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub imports: BTreeMap<GraphId, GraphImport>,
+    pub(crate) imports: BTreeMap<GraphId, GraphImport>,
 
     /// Graph-scoped symbols (blackboard/variables).
-    pub symbols: BTreeMap<SymbolId, Symbol>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) symbols: BTreeMap<SymbolId, Symbol>,
 
     /// Node instances.
-    pub nodes: BTreeMap<NodeId, Node>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) nodes: BTreeMap<NodeId, Node>,
 
     /// Port instances (owned by nodes, but stored in a flat map for stable lookup).
-    pub ports: BTreeMap<PortId, Port>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) ports: BTreeMap<PortId, Port>,
 
     /// Edges between ports.
-    pub edges: BTreeMap<EdgeId, Edge>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) edges: BTreeMap<EdgeId, Edge>,
 
     /// Optional groups.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub groups: BTreeMap<GroupId, Group>,
+    pub(crate) groups: BTreeMap<GroupId, Group>,
 
     /// Optional sticky notes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sticky_notes: BTreeMap<StickyNoteId, StickyNote>,
+    pub(crate) sticky_notes: BTreeMap<StickyNoteId, StickyNote>,
 
     /// Optional knowledge-canvas bindings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub bindings: BTreeMap<BindingId, Binding>,
+    pub(crate) bindings: BTreeMap<BindingId, Binding>,
 }
 
 impl Default for Graph {
@@ -74,5 +78,358 @@ impl Graph {
             sticky_notes: BTreeMap::new(),
             bindings: BTreeMap::new(),
         }
+    }
+
+    /// Returns the stable graph identity.
+    pub fn graph_id(&self) -> GraphId {
+        self.graph_id
+    }
+
+    /// Returns the schema version.
+    pub fn graph_version(&self) -> u32 {
+        self.graph_version
+    }
+
+    /// Returns graph imports.
+    pub fn imports(&self) -> &BTreeMap<GraphId, GraphImport> {
+        &self.imports
+    }
+
+    /// Returns one graph import.
+    pub fn import(&self, id: &GraphId) -> Option<&GraphImport> {
+        self.imports.get(id)
+    }
+
+    /// Returns one mutable graph import.
+    pub(crate) fn import_mut(&mut self, id: &GraphId) -> Option<&mut GraphImport> {
+        self.imports.get_mut(id)
+    }
+
+    /// Updates one graph import through a controlled mutable callback.
+    pub fn update_import<R>(
+        &mut self,
+        id: &GraphId,
+        f: impl FnOnce(&mut GraphImport) -> R,
+    ) -> Option<R> {
+        self.imports.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a graph import.
+    pub(crate) fn insert_import(&mut self, id: GraphId, value: GraphImport) -> Option<GraphImport> {
+        self.imports.insert(id, value)
+    }
+
+    /// Removes a graph import.
+    pub(crate) fn remove_import(&mut self, id: &GraphId) -> Option<GraphImport> {
+        self.imports.remove(id)
+    }
+
+    /// Clears all graph imports.
+    pub(crate) fn clear_imports(&mut self) {
+        self.imports.clear();
+    }
+
+    /// Retains graph imports matching `f`.
+    pub(crate) fn retain_imports(&mut self, f: impl FnMut(&GraphId, &mut GraphImport) -> bool) {
+        self.imports.retain(f);
+    }
+
+    /// Returns graph symbols.
+    pub fn symbols(&self) -> &BTreeMap<SymbolId, Symbol> {
+        &self.symbols
+    }
+
+    /// Returns one symbol.
+    pub fn symbol(&self, id: &SymbolId) -> Option<&Symbol> {
+        self.symbols.get(id)
+    }
+
+    /// Returns one mutable symbol.
+    pub(crate) fn symbol_mut(&mut self, id: &SymbolId) -> Option<&mut Symbol> {
+        self.symbols.get_mut(id)
+    }
+
+    /// Updates one symbol through a controlled mutable callback.
+    pub fn update_symbol<R>(
+        &mut self,
+        id: &SymbolId,
+        f: impl FnOnce(&mut Symbol) -> R,
+    ) -> Option<R> {
+        self.symbols.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a symbol.
+    pub(crate) fn insert_symbol(&mut self, id: SymbolId, value: Symbol) -> Option<Symbol> {
+        self.symbols.insert(id, value)
+    }
+
+    /// Removes a symbol.
+    pub(crate) fn remove_symbol(&mut self, id: &SymbolId) -> Option<Symbol> {
+        self.symbols.remove(id)
+    }
+
+    /// Clears all graph symbols.
+    pub(crate) fn clear_symbols(&mut self) {
+        self.symbols.clear();
+    }
+
+    /// Retains graph symbols matching `f`.
+    pub(crate) fn retain_symbols(&mut self, f: impl FnMut(&SymbolId, &mut Symbol) -> bool) {
+        self.symbols.retain(f);
+    }
+
+    /// Returns graph nodes.
+    pub fn nodes(&self) -> &BTreeMap<NodeId, Node> {
+        &self.nodes
+    }
+
+    /// Returns one node.
+    pub fn node(&self, id: &NodeId) -> Option<&Node> {
+        self.nodes.get(id)
+    }
+
+    /// Returns one mutable node.
+    pub(crate) fn node_mut(&mut self, id: &NodeId) -> Option<&mut Node> {
+        self.nodes.get_mut(id)
+    }
+
+    /// Updates one node through a controlled mutable callback.
+    pub fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R> {
+        self.nodes.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a node.
+    pub(crate) fn insert_node(&mut self, id: NodeId, value: Node) -> Option<Node> {
+        self.nodes.insert(id, value)
+    }
+
+    /// Removes a node.
+    pub(crate) fn remove_node(&mut self, id: &NodeId) -> Option<Node> {
+        self.nodes.remove(id)
+    }
+
+    /// Clears all graph nodes.
+    pub(crate) fn clear_nodes(&mut self) {
+        self.nodes.clear();
+    }
+
+    /// Retains graph nodes matching `f`.
+    pub(crate) fn retain_nodes(&mut self, f: impl FnMut(&NodeId, &mut Node) -> bool) {
+        self.nodes.retain(f);
+    }
+
+    /// Returns graph ports.
+    pub fn ports(&self) -> &BTreeMap<PortId, Port> {
+        &self.ports
+    }
+
+    /// Returns one port.
+    pub fn port(&self, id: &PortId) -> Option<&Port> {
+        self.ports.get(id)
+    }
+
+    /// Returns one mutable port.
+    pub(crate) fn port_mut(&mut self, id: &PortId) -> Option<&mut Port> {
+        self.ports.get_mut(id)
+    }
+
+    /// Updates one port through a controlled mutable callback.
+    pub fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R> {
+        self.ports.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a port.
+    pub(crate) fn insert_port(&mut self, id: PortId, value: Port) -> Option<Port> {
+        self.ports.insert(id, value)
+    }
+
+    /// Removes a port.
+    pub(crate) fn remove_port(&mut self, id: &PortId) -> Option<Port> {
+        self.ports.remove(id)
+    }
+
+    /// Clears all graph ports.
+    pub(crate) fn clear_ports(&mut self) {
+        self.ports.clear();
+    }
+
+    /// Retains graph ports matching `f`.
+    pub(crate) fn retain_ports(&mut self, f: impl FnMut(&PortId, &mut Port) -> bool) {
+        self.ports.retain(f);
+    }
+
+    /// Returns graph edges.
+    pub fn edges(&self) -> &BTreeMap<EdgeId, Edge> {
+        &self.edges
+    }
+
+    /// Returns one edge.
+    pub fn edge(&self, id: &EdgeId) -> Option<&Edge> {
+        self.edges.get(id)
+    }
+
+    /// Returns one mutable edge.
+    pub(crate) fn edge_mut(&mut self, id: &EdgeId) -> Option<&mut Edge> {
+        self.edges.get_mut(id)
+    }
+
+    /// Updates one edge through a controlled mutable callback.
+    pub fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R> {
+        self.edges.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces an edge.
+    pub(crate) fn insert_edge(&mut self, id: EdgeId, value: Edge) -> Option<Edge> {
+        self.edges.insert(id, value)
+    }
+
+    /// Removes an edge.
+    pub(crate) fn remove_edge(&mut self, id: &EdgeId) -> Option<Edge> {
+        self.edges.remove(id)
+    }
+
+    /// Clears all graph edges.
+    pub(crate) fn clear_edges(&mut self) {
+        self.edges.clear();
+    }
+
+    /// Retains graph edges matching `f`.
+    pub(crate) fn retain_edges(&mut self, f: impl FnMut(&EdgeId, &mut Edge) -> bool) {
+        self.edges.retain(f);
+    }
+
+    /// Returns graph groups.
+    pub fn groups(&self) -> &BTreeMap<GroupId, Group> {
+        &self.groups
+    }
+
+    /// Returns one group.
+    pub fn group(&self, id: &GroupId) -> Option<&Group> {
+        self.groups.get(id)
+    }
+
+    /// Returns one mutable group.
+    pub(crate) fn group_mut(&mut self, id: &GroupId) -> Option<&mut Group> {
+        self.groups.get_mut(id)
+    }
+
+    /// Updates one group through a controlled mutable callback.
+    pub fn update_group<R>(&mut self, id: &GroupId, f: impl FnOnce(&mut Group) -> R) -> Option<R> {
+        self.groups.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a group.
+    pub(crate) fn insert_group(&mut self, id: GroupId, value: Group) -> Option<Group> {
+        self.groups.insert(id, value)
+    }
+
+    /// Removes a group.
+    pub(crate) fn remove_group(&mut self, id: &GroupId) -> Option<Group> {
+        self.groups.remove(id)
+    }
+
+    /// Clears all graph groups.
+    pub(crate) fn clear_groups(&mut self) {
+        self.groups.clear();
+    }
+
+    /// Retains graph groups matching `f`.
+    pub(crate) fn retain_groups(&mut self, f: impl FnMut(&GroupId, &mut Group) -> bool) {
+        self.groups.retain(f);
+    }
+
+    /// Returns sticky notes.
+    pub fn sticky_notes(&self) -> &BTreeMap<StickyNoteId, StickyNote> {
+        &self.sticky_notes
+    }
+
+    /// Returns one sticky note.
+    pub fn sticky_note(&self, id: &StickyNoteId) -> Option<&StickyNote> {
+        self.sticky_notes.get(id)
+    }
+
+    /// Returns one mutable sticky note.
+    pub(crate) fn sticky_note_mut(&mut self, id: &StickyNoteId) -> Option<&mut StickyNote> {
+        self.sticky_notes.get_mut(id)
+    }
+
+    /// Updates one sticky note through a controlled mutable callback.
+    pub fn update_sticky_note<R>(
+        &mut self,
+        id: &StickyNoteId,
+        f: impl FnOnce(&mut StickyNote) -> R,
+    ) -> Option<R> {
+        self.sticky_notes.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a sticky note.
+    pub(crate) fn insert_sticky_note(
+        &mut self,
+        id: StickyNoteId,
+        value: StickyNote,
+    ) -> Option<StickyNote> {
+        self.sticky_notes.insert(id, value)
+    }
+
+    /// Removes a sticky note.
+    pub(crate) fn remove_sticky_note(&mut self, id: &StickyNoteId) -> Option<StickyNote> {
+        self.sticky_notes.remove(id)
+    }
+
+    /// Clears all sticky notes.
+    pub(crate) fn clear_sticky_notes(&mut self) {
+        self.sticky_notes.clear();
+    }
+
+    /// Retains sticky notes matching `f`.
+    pub(crate) fn retain_sticky_notes(
+        &mut self,
+        f: impl FnMut(&StickyNoteId, &mut StickyNote) -> bool,
+    ) {
+        self.sticky_notes.retain(f);
+    }
+
+    /// Returns bindings.
+    pub fn bindings(&self) -> &BTreeMap<BindingId, Binding> {
+        &self.bindings
+    }
+
+    /// Returns one binding.
+    pub fn binding(&self, id: &BindingId) -> Option<&Binding> {
+        self.bindings.get(id)
+    }
+
+    /// Returns one mutable binding.
+    pub(crate) fn binding_mut(&mut self, id: &BindingId) -> Option<&mut Binding> {
+        self.bindings.get_mut(id)
+    }
+
+    /// Updates one binding through a controlled mutable callback.
+    pub fn update_binding<R>(
+        &mut self,
+        id: &BindingId,
+        f: impl FnOnce(&mut Binding) -> R,
+    ) -> Option<R> {
+        self.bindings.get_mut(id).map(f)
+    }
+
+    /// Inserts or replaces a binding.
+    pub(crate) fn insert_binding(&mut self, id: BindingId, value: Binding) -> Option<Binding> {
+        self.bindings.insert(id, value)
+    }
+
+    /// Removes a binding.
+    pub(crate) fn remove_binding(&mut self, id: &BindingId) -> Option<Binding> {
+        self.bindings.remove(id)
+    }
+
+    /// Clears all bindings.
+    pub(crate) fn clear_bindings(&mut self) {
+        self.bindings.clear();
+    }
+
+    /// Retains bindings matching `f`.
+    pub(crate) fn retain_bindings(&mut self, f: impl FnMut(&BindingId, &mut Binding) -> bool) {
+        self.bindings.retain(f);
     }
 }

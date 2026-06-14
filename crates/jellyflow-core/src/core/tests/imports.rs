@@ -8,11 +8,11 @@ fn import_closure_is_deterministic_and_postordered() {
     let d = GraphId::from_u128(4);
 
     let mut g_a = Graph::new(a);
-    g_a.imports.insert(b, GraphImport::default());
-    g_a.imports.insert(c, GraphImport::default());
+    g_a.insert_import(b, GraphImport::default());
+    g_a.insert_import(c, GraphImport::default());
 
     let mut g_b = Graph::new(b);
-    g_b.imports.insert(d, GraphImport::default());
+    g_b.insert_import(d, GraphImport::default());
 
     let g_c = Graph::new(c);
     let g_d = Graph::new(d);
@@ -39,7 +39,7 @@ fn import_closure_rejects_missing_graph() {
     let missing = GraphId::from_u128(9);
 
     let mut g_a = Graph::new(a);
-    g_a.imports.insert(missing, GraphImport::default());
+    g_a.insert_import(missing, GraphImport::default());
 
     let mut db = std::collections::BTreeMap::new();
     db.insert(a, g_a);
@@ -63,11 +63,11 @@ fn import_closure_rejects_cycles_with_stable_path() {
     let c = GraphId::from_u128(3);
 
     let mut g_a = Graph::new(a);
-    g_a.imports.insert(b, GraphImport::default());
+    g_a.insert_import(b, GraphImport::default());
     let mut g_b = Graph::new(b);
-    g_b.imports.insert(c, GraphImport::default());
+    g_b.insert_import(c, GraphImport::default());
     let mut g_c = Graph::new(c);
-    g_c.imports.insert(a, GraphImport::default());
+    g_c.insert_import(a, GraphImport::default());
 
     let mut db = std::collections::BTreeMap::new();
     db.insert(a, g_a);

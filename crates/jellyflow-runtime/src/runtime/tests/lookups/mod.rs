@@ -2,7 +2,7 @@ use super::fixtures::make_graph;
 
 use crate::runtime::lookups::{ConnectionSide, NodeGraphLookups};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, EdgeReconnectable, Graph, GraphId, Group,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeKind, EdgeReconnectable, GraphBuilder, GraphId, Group,
     GroupId, Node, NodeId, NodeKindKey, PortKind,
 };
 use jellyflow_core::ops::{EdgeEndpoints, GraphOp, GraphTransaction};

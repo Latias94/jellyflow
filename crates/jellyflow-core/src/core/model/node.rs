@@ -106,6 +106,18 @@ pub struct Node {
     pub data: Value,
 }
 
+impl Node {
+    /// Clears the ordered port list.
+    pub fn clear_ports(&mut self) {
+        self.ports.clear();
+    }
+
+    /// Retains ports that satisfy `f`.
+    pub fn retain_ports(&mut self, f: impl FnMut(&PortId) -> bool) {
+        self.ports.retain(f);
+    }
+}
+
 /// Per-node origin override, expressed as a normalized fraction of the node rect.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NodeOrigin {

@@ -1,4 +1,4 @@
-use super::super::fixtures::make_graph;
+use super::super::fixtures::{fixture_insert_group, fixture_insert_node, make_graph};
 use super::support::{assert_conformance_trace, insert_input_port};
 
 use crate::io::{NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons, NodeGraphPanOnScrollMode};

@@ -1,5 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, Group, GroupId, Node, NodeId, NodeKindKey,
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Group, GroupId, Node,
+    NodeId, NodeKindKey,
 };
 
 pub(super) struct DragFixture {
@@ -15,7 +16,7 @@ pub(super) struct DragFixture {
 }
 
 pub(super) fn drag_fixture() -> DragFixture {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let selected_low = NodeId::from_u128(5);
     let enabled = NodeId::from_u128(10);
     let disabled = NodeId::from_u128(20);
@@ -25,25 +26,21 @@ pub(super) fn drag_fixture() -> DragFixture {
     let child_in_selected_group = NodeId::from_u128(70);
     let selected_group = GroupId::from_u128(100);
 
-    graph.nodes.insert(
+    graph.insert_node(
         selected_low,
         node(CanvasPoint { x: 0.0, y: 0.0 }, None, false),
     );
-    graph
-        .nodes
-        .insert(enabled, node(CanvasPoint { x: 10.0, y: 20.0 }, None, false));
-    graph.nodes.insert(
+    graph.insert_node(enabled, node(CanvasPoint { x: 10.0, y: 20.0 }, None, false));
+    graph.insert_node(
         disabled,
         node(CanvasPoint { x: 200.0, y: 0.0 }, Some(false), false),
     );
-    graph
-        .nodes
-        .insert(hidden, node(CanvasPoint { x: 10.0, y: 20.0 }, None, true));
-    graph.nodes.insert(
+    graph.insert_node(hidden, node(CanvasPoint { x: 10.0, y: 20.0 }, None, true));
+    graph.insert_node(
         selected_high,
         node(CanvasPoint { x: 100.0, y: 0.0 }, None, false),
     );
-    graph.groups.insert(
+    graph.insert_group(
         selected_group,
         Group {
             title: "Selected Group".to_owned(),
@@ -57,7 +54,7 @@ pub(super) fn drag_fixture() -> DragFixture {
             color: None,
         },
     );
-    graph.nodes.insert(
+    graph.insert_node(
         child_in_selected_group,
         node_with_parent(
             CanvasPoint { x: 300.0, y: 0.0 },
@@ -68,7 +65,7 @@ pub(super) fn drag_fixture() -> DragFixture {
     );
 
     DragFixture {
-        graph,
+        graph: graph.into(),
         enabled,
         disabled,
         hidden,

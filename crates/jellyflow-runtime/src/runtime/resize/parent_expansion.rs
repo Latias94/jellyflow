@@ -14,7 +14,7 @@ pub(super) fn parent_expansion_op(
     }
 
     let parent = node.parent?;
-    let parent_rect = graph.groups.get(&parent)?.rect;
+    let parent_rect = graph.groups().get(&parent)?.rect;
     let parent_bounds = CanvasBounds::from_rect(parent_rect)?;
     let child_bounds = CanvasBounds::from_node(to_pos, to_size, node_origin)?;
     let to = parent_bounds.union(child_bounds).to_rect();

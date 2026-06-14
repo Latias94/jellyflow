@@ -41,7 +41,7 @@ impl<'a> StructuralValidator<'a> {
     }
 
     fn validate_node_bindings(&mut self) {
-        for (node_id, node) in &self.graph.nodes {
+        for (node_id, node) in self.graph.nodes() {
             self.validate_subgraph_binding(*node_id, node);
             self.validate_symbol_ref_binding(*node_id, node);
         }
@@ -50,7 +50,7 @@ impl<'a> StructuralValidator<'a> {
     fn validate_subgraph_binding(&mut self, node_id: NodeId, node: &Node) {
         match subgraph_target_graph_id(node_id, node) {
             Ok(Some(target)) => {
-                if !self.graph.imports.contains_key(&target) {
+                if !self.graph.imports().contains_key(&target) {
                     self.report
                         .push(GraphValidationError::SubgraphTargetNotImported {
                             node: node_id,
@@ -66,7 +66,7 @@ impl<'a> StructuralValidator<'a> {
     fn validate_symbol_ref_binding(&mut self, node_id: NodeId, node: &Node) {
         match symbol_ref_target_symbol_id(node_id, node) {
             Ok(Some(target)) => {
-                if !self.graph.symbols.contains_key(&target) {
+                if !self.graph.symbols().contains_key(&target) {
                     self.report
                         .push(GraphValidationError::SymbolRefTargetNotDeclared {
                             node: node_id,
@@ -80,7 +80,7 @@ impl<'a> StructuralValidator<'a> {
     }
 
     fn validate_binding_relationships(&mut self) {
-        for (binding_id, binding) in &self.graph.bindings {
+        for (binding_id, binding) in self.graph.bindings() {
             for target in [
                 binding.subject.graph_local_target(),
                 binding.target.graph_local_target(),
@@ -103,14 +103,20 @@ impl<'a> StructuralValidator<'a> {
     fn binding_target_exists(&self, target: crate::core::GraphLocalBindingTarget) -> bool {
         match target {
             crate::core::GraphLocalBindingTarget::Graph => true,
-            crate::core::GraphLocalBindingTarget::Node { id } => self.graph.nodes.contains_key(&id),
-            crate::core::GraphLocalBindingTarget::Port { id } => self.graph.ports.contains_key(&id),
-            crate::core::GraphLocalBindingTarget::Edge { id } => self.graph.edges.contains_key(&id),
+            crate::core::GraphLocalBindingTarget::Node { id } => {
+                self.graph.nodes().contains_key(&id)
+            }
+            crate::core::GraphLocalBindingTarget::Port { id } => {
+                self.graph.ports().contains_key(&id)
+            }
+            crate::core::GraphLocalBindingTarget::Edge { id } => {
+                self.graph.edges().contains_key(&id)
+            }
             crate::core::GraphLocalBindingTarget::Group { id } => {
-                self.graph.groups.contains_key(&id)
+                self.graph.groups().contains_key(&id)
             }
             crate::core::GraphLocalBindingTarget::StickyNote { id } => {
-                self.graph.sticky_notes.contains_key(&id)
+                self.graph.sticky_notes().contains_key(&id)
             }
         }
     }
@@ -118,11 +124,11 @@ impl<'a> StructuralValidator<'a> {
     fn validate_edges(&mut self) -> BTreeMap<PortId, usize> {
         let mut edges = EdgeValidationAccumulator::default();
 
-        for (edge_id, edge) in &self.graph.edges {
-            let Some(from) = self.graph.ports.get(&edge.from) else {
+        for (edge_id, edge) in self.graph.edges() {
+            let Some(from) = self.graph.ports().get(&edge.from) else {
                 continue;
             };
-            let Some(to) = self.graph.ports.get(&edge.to) else {
+            let Some(to) = self.graph.ports().get(&edge.to) else {
                 continue;
             };
 
@@ -166,7 +172,7 @@ impl<'a> StructuralValidator<'a> {
 
     fn validate_port_capacities(&mut self, incident_counts: BTreeMap<PortId, usize>) {
         for (port_id, count) in incident_counts {
-            let Some(port) = self.graph.ports.get(&port_id) else {
+            let Some(port) = self.graph.ports().get(&port_id) else {
                 continue;
             };
             if port.capacity == PortCapacity::Single && count > 1 {

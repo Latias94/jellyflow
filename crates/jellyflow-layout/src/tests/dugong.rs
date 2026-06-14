@@ -1,6 +1,6 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, GraphOp, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, GraphOp, Node,
+    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 use crate::{
@@ -12,14 +12,22 @@ use crate::{
 #[test]
 fn dugong_layout_emits_node_position_transaction() {
     let (mut graph, a, b, _edge) = connected_graph();
-    graph.nodes.get_mut(&a).unwrap().pos = CanvasPoint {
-        x: 1000.0,
-        y: 1000.0,
-    };
-    graph.nodes.get_mut(&b).unwrap().pos = CanvasPoint {
-        x: 2000.0,
-        y: 2000.0,
-    };
+    graph
+        .update_node(&a, |node| {
+            node.pos = CanvasPoint {
+                x: 1000.0,
+                y: 1000.0,
+            }
+        })
+        .expect("node exists");
+    graph
+        .update_node(&b, |node| {
+            node.pos = CanvasPoint {
+                x: 2000.0,
+                y: 2000.0,
+            }
+        })
+        .expect("node exists");
     let request = LayoutRequest::all().with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
         ..LayoutOptions::default()
@@ -79,7 +87,11 @@ fn layout_direction_changes_axis_ordering() {
 #[test]
 fn node_origin_controls_written_position_from_dugong_center() {
     let (mut graph, a, _b, _edge) = connected_graph();
-    graph.nodes.get_mut(&a).unwrap().origin = Some(jellyflow_core::NodeOrigin { x: 0.5, y: 0.5 });
+    graph
+        .update_node(&a, |node| {
+            node.origin = Some(jellyflow_core::NodeOrigin { x: 0.5, y: 0.5 })
+        })
+        .expect("node exists");
     let request = LayoutRequest::all().with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
         ..LayoutOptions::default()
@@ -130,7 +142,9 @@ fn node_size_resolution_prefers_graph_then_request_then_context_then_default() {
     let graph_size = size(300.0, 70.0);
     let request_size = size(80.0, 50.0);
     let context_size = size(60.0, 30.0);
-    graph.nodes.get_mut(&a).unwrap().size = Some(graph_size);
+    graph
+        .update_node(&a, |node| node.size = Some(graph_size))
+        .expect("node exists");
     let request = LayoutRequest::all()
         .with_measured_node_sizes([(a, size(10.0, 10.0)), (b, request_size)])
         .with_options(LayoutOptions {
@@ -167,7 +181,9 @@ fn context_measured_size_is_used_when_request_has_none() {
 #[test]
 fn hidden_nodes_and_edges_are_excluded_from_projection() {
     let (mut graph, a, b, edge) = connected_graph();
-    graph.nodes.get_mut(&b).unwrap().hidden = true;
+    graph
+        .update_node(&b, |node| node.hidden = true)
+        .expect("node exists");
 
     let hidden_node_result =
         layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("hidden node layout");
@@ -176,8 +192,12 @@ fn hidden_nodes_and_edges_are_excluded_from_projection() {
     assert!(hidden_node_result.node_position(b).is_none());
     assert!(hidden_node_result.edge_routes.is_empty());
 
-    graph.nodes.get_mut(&b).unwrap().hidden = false;
-    graph.edges.get_mut(&edge).unwrap().hidden = true;
+    graph
+        .update_node(&b, |node| node.hidden = false)
+        .expect("node exists");
+    graph
+        .update_edge(&edge, |edge| edge.hidden = true)
+        .expect("edge exists");
 
     let hidden_edge_result =
         layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("hidden edge layout");
@@ -204,15 +224,15 @@ fn layout_reports_projected_edge_routes() {
 
 #[test]
 fn parallel_edges_between_same_nodes_keep_distinct_routes() {
-    let (mut graph, _a, _b, first_edge) = connected_graph();
+    let (graph, _a, _b, first_edge) = connected_graph();
+    let mut graph = GraphBuilder::from_graph(graph);
     let second_edge = EdgeId::from_u128(6);
     let endpoints = {
-        let edge = graph.edges.get(&first_edge).expect("first edge");
+        let edge = graph.edges().get(&first_edge).expect("first edge");
         (edge.from, edge.to)
     };
-    graph
-        .edges
-        .insert(second_edge, data_edge(endpoints.0, endpoints.1));
+    graph.insert_edge(second_edge, data_edge(endpoints.0, endpoints.1));
+    let graph = graph.build_unchecked();
 
     let result = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("layout");
 
@@ -233,7 +253,7 @@ fn parallel_edges_between_same_nodes_keep_distinct_routes() {
 
 #[test]
 fn empty_graph_layout_is_empty() {
-    let graph = Graph::new(GraphId::from_u128(42));
+    let graph = GraphBuilder::new(GraphId::from_u128(42));
 
     let result = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("layout");
     let tx = layout_graph_to_transaction_with_dugong(&graph, &LayoutRequest::all()).expect("tx");
@@ -272,7 +292,9 @@ fn invalid_size_is_reported_before_layout() {
 #[test]
 fn unused_context_measured_sizes_do_not_fail_scoped_layout() {
     let (mut graph, a, b, _edge) = connected_graph();
-    graph.nodes.get_mut(&b).unwrap().hidden = true;
+    graph
+        .update_node(&b, |node| node.hidden = true)
+        .expect("node exists");
     let context = LayoutContext::new().with_measured_node_sizes([
         (
             b,
@@ -341,18 +363,22 @@ fn invalid_scope_node_is_reported_before_layout() {
 
 #[test]
 fn missing_source_and_target_ports_are_reported() {
-    let (mut missing_source, _a, _b, edge) = connected_graph();
-    let source_port = missing_source.edges.get(&edge).unwrap().from;
-    missing_source.ports.remove(&source_port);
+    let (missing_source, _a, _b, edge) = connected_graph();
+    let mut missing_source = GraphBuilder::from_graph(missing_source);
+    let source_port = missing_source.edges().get(&edge).unwrap().from;
+    missing_source.remove_port(&source_port);
+    let missing_source = missing_source.build_unchecked();
 
     let err = layout_graph_with_dugong(&missing_source, &LayoutRequest::all())
         .expect_err("missing source port");
 
     assert_eq!(err, LayoutError::MissingSourcePort(edge));
 
-    let (mut missing_target, _a, _b, edge) = connected_graph();
-    let target_port = missing_target.edges.get(&edge).unwrap().to;
-    missing_target.ports.remove(&target_port);
+    let (missing_target, _a, _b, edge) = connected_graph();
+    let mut missing_target = GraphBuilder::from_graph(missing_target);
+    let target_port = missing_target.edges().get(&edge).unwrap().to;
+    missing_target.remove_port(&target_port);
+    let missing_target = missing_target.build_unchecked();
 
     let err = layout_graph_with_dugong(&missing_target, &LayoutRequest::all())
         .expect_err("missing target port");
@@ -362,16 +388,20 @@ fn missing_source_and_target_ports_are_reported() {
 
 #[test]
 fn missing_source_and_target_nodes_are_reported() {
-    let (mut missing_source, a, _b, edge) = connected_graph();
-    missing_source.nodes.remove(&a);
+    let (missing_source, a, _b, edge) = connected_graph();
+    let mut missing_source = GraphBuilder::from_graph(missing_source);
+    missing_source.remove_node(&a);
+    let missing_source = missing_source.build_unchecked();
 
     let err = layout_graph_with_dugong(&missing_source, &LayoutRequest::all())
         .expect_err("missing source node");
 
     assert_eq!(err, LayoutError::MissingSourceNode { edge });
 
-    let (mut missing_target, _a, b, edge) = connected_graph();
-    missing_target.nodes.remove(&b);
+    let (missing_target, _a, b, edge) = connected_graph();
+    let mut missing_target = GraphBuilder::from_graph(missing_target);
+    missing_target.remove_node(&b);
+    let missing_target = missing_target.build_unchecked();
 
     let err = layout_graph_with_dugong(&missing_target, &LayoutRequest::all())
         .expect_err("missing target node");
@@ -420,7 +450,11 @@ fn result_to_transaction_rejects_duplicates_and_missing_nodes() {
 #[test]
 fn bounds_track_visual_rect_independent_of_node_origin_anchor() {
     let (mut graph, a, _b, _edge) = connected_graph();
-    graph.nodes.get_mut(&a).unwrap().origin = Some(jellyflow_core::NodeOrigin { x: 1.0, y: 1.0 });
+    graph
+        .update_node(&a, |node| {
+            node.origin = Some(jellyflow_core::NodeOrigin { x: 1.0, y: 1.0 })
+        })
+        .expect("node exists");
     let request = LayoutRequest::nodes([a]).with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
         ..LayoutOptions::default()
@@ -438,20 +472,20 @@ fn bounds_track_visual_rect_independent_of_node_origin_anchor() {
 }
 
 fn connected_graph() -> (Graph, NodeId, NodeId, EdgeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::from_u128(1);
     let b = NodeId::from_u128(2);
     let out = PortId::from_u128(3);
     let inn = PortId::from_u128(4);
     let edge = EdgeId::from_u128(5);
 
-    graph.nodes.insert(a, node("demo.a", vec![out]));
-    graph.nodes.insert(b, node("demo.b", vec![inn]));
-    graph.ports.insert(out, port(a, "out", PortDirection::Out));
-    graph.ports.insert(inn, port(b, "in", PortDirection::In));
-    graph.edges.insert(edge, data_edge(out, inn));
+    graph.insert_node(a, node("demo.a", vec![out]));
+    graph.insert_node(b, node("demo.b", vec![inn]));
+    graph.insert_port(out, port(a, "out", PortDirection::Out));
+    graph.insert_port(inn, port(b, "in", PortDirection::In));
+    graph.insert_edge(edge, data_edge(out, inn));
 
-    (graph, a, b, edge)
+    (graph.build_unchecked(), a, b, edge)
 }
 
 fn size(width: f32, height: f32) -> CanvasSize {

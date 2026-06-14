@@ -1,7 +1,7 @@
 use crate::runtime::binding::BindingQueryOptions;
 use crate::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use crate::runtime::query;
-use crate::runtime::tests::fixtures::{make_graph, make_store};
+use crate::runtime::tests::fixtures::{fixture_insert_binding, make_graph, make_store};
 use crate::runtime::{
     connection::ConnectionHandleRef,
     geometry::{HandleBounds, HandlePosition},
@@ -12,24 +12,28 @@ use crate::{
 };
 use jellyflow_core::core::{
     Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
-    EdgeKind, Graph, GraphId, GraphLocalBindingTarget, Node, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor,
+    EdgeKind, Graph, GraphBuilder, GraphId, GraphLocalBindingTarget, Node, NodeId, NodeKindKey,
+    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn linear_query_backend_matches_store_facades() {
     let (mut graph, source, _target, out, input, _edge) = make_graph();
-    graph.nodes.get_mut(&source).unwrap().size = Some(CanvasSize {
-        width: 100.0,
-        height: 80.0,
-    });
+    graph
+        .update_node(&source, |node| {
+            node.size = Some(CanvasSize {
+                width: 100.0,
+                height: 80.0,
+            })
+        })
+        .expect("node exists");
     let binding = BindingId::from_u128(10);
-    graph.bindings.insert(binding, source_binding(source));
+    fixture_insert_binding(&mut graph, binding, source_binding(source));
     let mut store = make_store(graph);
     let source_handle = ConnectionHandleRef::new(source, out, jellyflow_core::PortDirection::Out);
     let target_handle = ConnectionHandleRef::new(
-        store.graph().ports[&input].node,
+        store.graph().ports()[&input].node,
         input,
         jellyflow_core::PortDirection::In,
     );
@@ -87,8 +91,11 @@ fn linear_query_backend_matches_store_facades() {
             .any(|candidate| candidate.target.handle == target_handle)
     );
     assert!(
-        query::edge_position_from_layout_facts(&store, *store.graph().edges.keys().next().unwrap())
-            .is_some()
+        query::edge_position_from_layout_facts(
+            &store,
+            *store.graph().edges().keys().next().unwrap()
+        )
+        .is_some()
     );
     assert!(
         query::resolve_connection_target_from_layout_facts(
@@ -246,8 +253,8 @@ fn spatial_rendering_query_matches_linear_for_invalid_viewport_with_culling_disa
 #[test]
 fn spatial_rendering_query_matches_linear_for_node_origin_override() {
     let node = NodeId::from_u128(900);
-    let mut graph = Graph::new(GraphId::from_u128(900));
-    graph.nodes.insert(
+    let mut graph = GraphBuilder::new(GraphId::from_u128(900));
+    graph.insert_node(
         node,
         Node {
             pos: CanvasPoint { x: 15.0, y: 0.0 },
@@ -271,6 +278,7 @@ fn spatial_rendering_query_matches_linear_for_node_origin_override() {
         zoom: 1.0,
         ..NodeGraphViewState::default()
     };
+    let graph: Graph = graph.into();
     let linear = NodeGraphStore::new(graph.clone(), view_state.clone(), linear_config);
     let spatial = NodeGraphStore::new(graph, view_state, spatial_config);
     let viewport = CanvasSize {
@@ -298,7 +306,7 @@ fn spatial_rendering_query_matches_linear_for_full_viewport() {
         NodeGraphEditorConfig::default(),
     );
     let mut spatial = NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );
@@ -326,7 +334,7 @@ fn spatial_rendering_query_reuses_cached_node_index_for_repeated_and_panned_read
     let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
         graph_for_spatial_rendering_query();
     let mut store = NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );
@@ -364,7 +372,7 @@ fn spatial_rendering_query_rebuilds_cached_node_index_when_geometry_inputs_chang
     let (graph, measured, _selected, _spanning, _outside, _hidden_edge, _hidden_endpoint, _inside) =
         graph_for_spatial_rendering_query();
     let mut store = NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState::default(),
         spatial_editor_config(),
     );
@@ -490,7 +498,7 @@ type SpatialRenderingFixture = (
 );
 
 fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
-    let mut graph = Graph::new(GraphId::from_u128(700));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(700));
     let size = CanvasSize {
         width: 10.0,
         height: 10.0,
@@ -516,18 +524,16 @@ fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
         (hidden, CanvasPoint { x: 0.0, y: 0.0 }, true),
         (selected, CanvasPoint { x: 40.0, y: 40.0 }, false),
     ] {
-        graph
-            .nodes
-            .insert(id, sized_node_model("test.spatial", pos, size, hidden));
+        graph.insert_node(id, sized_node_model("test.spatial", pos, size, hidden));
     }
-    graph.nodes.insert(
+    graph.insert_node(
         measured,
         Node {
             pos: CanvasPoint { x: 30.0, y: 0.0 },
             ..node_model("test.measured", false)
         },
     );
-    graph.nodes.insert(
+    graph.insert_node(
         unmeasured,
         Node {
             pos: CanvasPoint { x: 30.0, y: 20.0 },
@@ -553,7 +559,7 @@ fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
         (selected_in, port_model(selected, PortDirection::In)),
         (partial_in, port_model(partial, PortDirection::In)),
     ] {
-        graph.ports.insert(id, port);
+        graph.insert_port(id, port);
     }
     for (node, ports) in [
         (outside_left, vec![left_out]),
@@ -565,7 +571,9 @@ fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
         (selected, vec![selected_in]),
         (partial, vec![partial_in]),
     ] {
-        graph.nodes.get_mut(&node).expect("fixture node").ports = ports;
+        graph
+            .update_node(&node, |node| node.ports = ports)
+            .expect("node exists");
     }
 
     let spanning = EdgeId::from_u128(201);
@@ -573,24 +581,14 @@ fn graph_for_spatial_rendering_query() -> SpatialRenderingFixture {
     let hidden_edge = EdgeId::from_u128(203);
     let hidden_endpoint = EdgeId::from_u128(204);
     let inside_edge = EdgeId::from_u128(205);
-    graph
-        .edges
-        .insert(spanning, edge_model(left_out, right_in, false));
-    graph
-        .edges
-        .insert(outside, edge_model(far_out, far_in, false));
-    graph
-        .edges
-        .insert(hidden_edge, edge_model(inside_out, selected_in, true));
-    graph
-        .edges
-        .insert(hidden_endpoint, edge_model(hidden_out, partial_in, false));
-    graph
-        .edges
-        .insert(inside_edge, edge_model(inside_out, selected_in, false));
+    graph.insert_edge(spanning, edge_model(left_out, right_in, false));
+    graph.insert_edge(outside, edge_model(far_out, far_in, false));
+    graph.insert_edge(hidden_edge, edge_model(inside_out, selected_in, true));
+    graph.insert_edge(hidden_endpoint, edge_model(hidden_out, partial_in, false));
+    graph.insert_edge(inside_edge, edge_model(inside_out, selected_in, false));
 
     (
-        graph,
+        graph.into(),
         measured,
         selected,
         spanning,

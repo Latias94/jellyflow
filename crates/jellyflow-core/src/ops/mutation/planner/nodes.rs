@@ -28,11 +28,11 @@ impl GraphMutationPlanner<'_> {
         mut node: Node,
         ports: impl IntoIterator<Item = (PortId, Port)>,
     ) -> Result<Vec<GraphOp>, GraphMutationError> {
-        if self.graph.nodes.contains_key(&id) {
+        if self.graph.nodes().contains_key(&id) {
             return Err(GraphMutationError::NodeAlreadyExists(id));
         }
         if let Some(parent) = node.parent
-            && !self.graph.groups.contains_key(&parent)
+            && !self.graph.groups().contains_key(&parent)
         {
             return Err(GraphMutationError::MissingGroup(parent));
         }
@@ -101,7 +101,7 @@ impl NodePortsForInsert {
         let mut order = Vec::new();
 
         for (port_id, port) in ports {
-            if graph.ports.contains_key(&port_id) {
+            if graph.ports().contains_key(&port_id) {
                 return Err(GraphMutationError::PortAlreadyExists(port_id));
             }
             if !seen.insert(port_id) {

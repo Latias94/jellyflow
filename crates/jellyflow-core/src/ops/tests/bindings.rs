@@ -16,7 +16,7 @@ fn source_binding(node_id: NodeId) -> Binding {
 fn binding_ops_apply_and_inverse_roundtrip() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.note"));
+    graph.insert_node(node_id, make_node("core.note"));
     let binding_id = BindingId::new();
     let binding = source_binding(node_id);
 
@@ -25,20 +25,20 @@ fn binding_ops_apply_and_inverse_roundtrip() {
         binding: binding.clone(),
     }]);
     apply_transaction(&mut graph, &tx).expect("add binding");
-    assert_eq!(graph.bindings.get(&binding_id), Some(&binding));
+    assert_eq!(graph.bindings().get(&binding_id), Some(&binding));
 
     let inverse = invert_transaction(&tx);
     apply_transaction(&mut graph, &inverse).expect("remove binding through inverse");
-    assert!(!graph.bindings.contains_key(&binding_id));
+    assert!(!graph.bindings().contains_key(&binding_id));
 }
 
 #[test]
 fn binding_setters_coalesce_and_roundtrip() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.note"));
+    graph.insert_node(node_id, make_node("core.note"));
     let binding_id = BindingId::new();
-    graph.bindings.insert(binding_id, source_binding(node_id));
+    graph.insert_binding(binding_id, source_binding(node_id));
 
     let tx = GraphTransaction::from_ops([
         GraphOp::SetBindingKind {
@@ -65,23 +65,26 @@ fn binding_setters_coalesce_and_roundtrip() {
 
     apply_transaction(&mut graph, &normalized).expect("apply binding setter");
     assert_eq!(
-        graph.bindings[&binding_id].kind.as_deref(),
+        graph.bindings()[&binding_id].kind.as_deref(),
         Some("highlight")
     );
     apply_transaction(&mut graph, &invert_transaction(&normalized)).expect("undo binding setter");
-    assert_eq!(graph.bindings[&binding_id].kind.as_deref(), Some("excerpt"));
+    assert_eq!(
+        graph.bindings()[&binding_id].kind.as_deref(),
+        Some("excerpt")
+    );
 }
 
 #[test]
 fn graph_diff_roundtrips_binding_changes() {
     let mut from = Graph::default();
     let node_id = NodeId::new();
-    from.nodes.insert(node_id, make_node("core.note"));
+    from.insert_node(node_id, make_node("core.note"));
     let binding_id = BindingId::new();
-    from.bindings.insert(binding_id, source_binding(node_id));
+    from.insert_binding(binding_id, source_binding(node_id));
 
     let mut to = from.clone();
-    let updated = to.bindings.get_mut(&binding_id).expect("binding");
+    let updated = to.binding_mut(&binding_id).expect("binding");
     updated.kind = Some("quote".to_string());
     updated.meta = serde_json::json!({ "color": "blue" });
     updated.target = BindingEndpoint::source(SourceAnchor::new(
@@ -118,9 +121,9 @@ fn graph_diff_roundtrips_binding_changes() {
 fn removing_node_cascades_attached_bindings_and_undo_restores_them() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.note"));
+    graph.insert_node(node_id, make_node("core.note"));
     let binding_id = BindingId::new();
-    graph.bindings.insert(binding_id, source_binding(node_id));
+    graph.insert_binding(binding_id, source_binding(node_id));
 
     let baseline = serde_json::to_value(&graph).unwrap();
     let tx = graph
@@ -132,8 +135,8 @@ fn removing_node_cascades_attached_bindings_and_undo_restores_them() {
     ));
 
     apply_transaction(&mut graph, &tx).expect("remove node and binding");
-    assert!(graph.nodes.is_empty());
-    assert!(graph.bindings.is_empty());
+    assert!(graph.nodes().is_empty());
+    assert!(graph.bindings().is_empty());
 
     apply_transaction(&mut graph, &invert_transaction(&tx)).expect("undo node removal");
     assert_eq!(serde_json::to_value(&graph).unwrap(), baseline);
@@ -143,9 +146,9 @@ fn removing_node_cascades_attached_bindings_and_undo_restores_them() {
 fn fragment_paste_remaps_graph_local_binding_and_preserves_source_anchor() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.note"));
+    graph.insert_node(node_id, make_node("core.note"));
     let binding_id = BindingId::from_u128(42);
-    graph.bindings.insert(binding_id, source_binding(node_id));
+    graph.insert_binding(binding_id, source_binding(node_id));
 
     let fragment = GraphFragment::from_nodes(&graph, [node_id]);
     assert!(fragment.bindings.contains_key(&binding_id));
@@ -175,10 +178,10 @@ fn fragment_excludes_bindings_with_graph_local_targets_outside_fragment() {
     let mut graph = Graph::default();
     let included = NodeId::new();
     let omitted = NodeId::new();
-    graph.nodes.insert(included, make_node("core.included"));
-    graph.nodes.insert(omitted, make_node("core.omitted"));
+    graph.insert_node(included, make_node("core.included"));
+    graph.insert_node(omitted, make_node("core.omitted"));
     let binding_id = BindingId::new();
-    graph.bindings.insert(
+    graph.insert_binding(
         binding_id,
         Binding {
             subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Node { id: included }),

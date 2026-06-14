@@ -1,6 +1,7 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Group, GroupId,
-    Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    Group, GroupId, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
+    PortKind,
 };
 
 use crate::io::{NodeGraphEditorConfig, NodeGraphNodeOrigin, NodeGraphViewState};
@@ -47,18 +48,18 @@ fn sized_node(kind: &str, pos: CanvasPoint, size: CanvasSize, hidden: bool) -> N
 }
 
 fn graph_with_three_nodes(hidden_c: bool) -> (Graph, NodeId, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::from_u128(1);
     let b = NodeId::from_u128(2);
     let c = NodeId::from_u128(3);
-    graph.nodes.insert(a, node("test.a", false));
-    graph.nodes.insert(b, node("test.b", false));
-    graph.nodes.insert(c, node("test.c", hidden_c));
-    (graph, a, b, c)
+    graph.insert_node(a, node("test.a", false));
+    graph.insert_node(b, node("test.b", false));
+    graph.insert_node(c, node("test.c", hidden_c));
+    (graph.into(), a, b, c)
 }
 
 fn graph_with_visible_node_fixture() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let inside = NodeId::from_u128(1);
     let partial = NodeId::from_u128(2);
     let outside = NodeId::from_u128(3);
@@ -68,11 +69,11 @@ fn graph_with_visible_node_fixture() -> (Graph, NodeId, NodeId, NodeId, NodeId) 
         height: 10.0,
     };
 
-    graph.nodes.insert(
+    graph.insert_node(
         inside,
         sized_node("test.inside", CanvasPoint { x: 0.0, y: 0.0 }, size, false),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         partial,
         sized_node(
             "test.partial",
@@ -81,7 +82,7 @@ fn graph_with_visible_node_fixture() -> (Graph, NodeId, NodeId, NodeId, NodeId) 
             false,
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         outside,
         sized_node(
             "test.outside",
@@ -90,12 +91,12 @@ fn graph_with_visible_node_fixture() -> (Graph, NodeId, NodeId, NodeId, NodeId) 
             false,
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         hidden,
         sized_node("test.hidden", CanvasPoint { x: 0.0, y: 0.0 }, size, true),
     );
 
-    (graph, inside, partial, outside, hidden)
+    (graph.into(), inside, partial, outside, hidden)
 }
 
 fn group(title: &str) -> Group {
@@ -113,14 +114,14 @@ fn group(title: &str) -> Group {
 }
 
 fn graph_with_three_groups() -> (Graph, GroupId, GroupId, GroupId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let a = GroupId::from_u128(1);
     let b = GroupId::from_u128(2);
     let c = GroupId::from_u128(3);
-    graph.groups.insert(a, group("group-a"));
-    graph.groups.insert(b, group("group-b"));
-    graph.groups.insert(c, group("group-c"));
-    (graph, a, b, c)
+    graph.insert_group(a, group("group-a"));
+    graph.insert_group(b, group("group-b"));
+    graph.insert_group(c, group("group-c"));
+    (graph.into(), a, b, c)
 }
 
 fn port(node: NodeId, dir: PortDirection) -> Port {
@@ -153,13 +154,13 @@ fn edge(from: PortId, to: PortId, hidden: bool) -> Edge {
 }
 
 fn graph_with_three_edges(hidden_c: bool) -> (Graph, NodeId, EdgeId, EdgeId, EdgeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::from_u128(1);
     let b = NodeId::from_u128(2);
     let c = NodeId::from_u128(3);
     let d = NodeId::from_u128(4);
     for (id, kind) in [(a, "test.a"), (b, "test.b"), (c, "test.c"), (d, "test.d")] {
-        graph.nodes.insert(id, node(kind, false));
+        graph.insert_node(id, node(kind, false));
     }
 
     let a_out = PortId::from_u128(10);
@@ -176,20 +177,20 @@ fn graph_with_three_edges(hidden_c: bool) -> (Graph, NodeId, EdgeId, EdgeId, Edg
         (b_out, port(b, PortDirection::Out)),
         (c_in, port(c, PortDirection::In)),
     ] {
-        graph.ports.insert(id, port);
+        graph.insert_port(id, port);
     }
 
     let e1 = EdgeId::from_u128(1);
     let e2 = EdgeId::from_u128(2);
     let e3 = EdgeId::from_u128(3);
-    graph.edges.insert(e1, edge(a_out, b_in, false));
-    graph.edges.insert(e2, edge(c_out, d_in, false));
-    graph.edges.insert(e3, edge(b_out, c_in, hidden_c));
-    (graph, a, e1, e2, e3)
+    graph.insert_edge(e1, edge(a_out, b_in, false));
+    graph.insert_edge(e2, edge(c_out, d_in, false));
+    graph.insert_edge(e3, edge(b_out, c_in, hidden_c));
+    (graph.into(), a, e1, e2, e3)
 }
 
 fn graph_with_visible_edge_fixture() -> (Graph, EdgeId, EdgeId, EdgeId, EdgeId, EdgeId) {
-    let mut graph = Graph::new(GraphId::from_u128(2));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
     let size = CanvasSize {
         width: 10.0,
         height: 10.0,
@@ -209,9 +210,7 @@ fn graph_with_visible_edge_fixture() -> (Graph, EdgeId, EdgeId, EdgeId, EdgeId, 
         (inside, CanvasPoint { x: 20.0, y: 20.0 }, false),
         (hidden, CanvasPoint { x: 0.0, y: 0.0 }, true),
     ] {
-        graph
-            .nodes
-            .insert(id, sized_node("test.edge-endpoint", pos, size, hidden));
+        graph.insert_node(id, sized_node("test.edge-endpoint", pos, size, hidden));
     }
 
     let left_out = PortId::from_u128(20);
@@ -230,7 +229,7 @@ fn graph_with_visible_edge_fixture() -> (Graph, EdgeId, EdgeId, EdgeId, EdgeId, 
         (inside_in, port(inside, PortDirection::In)),
         (hidden_out, port(hidden, PortDirection::Out)),
     ] {
-        graph.ports.insert(id, port);
+        graph.insert_port(id, port);
     }
 
     let spanning = EdgeId::from_u128(10);
@@ -238,24 +237,14 @@ fn graph_with_visible_edge_fixture() -> (Graph, EdgeId, EdgeId, EdgeId, EdgeId, 
     let hidden_edge = EdgeId::from_u128(12);
     let hidden_endpoint = EdgeId::from_u128(13);
     let inside_edge = EdgeId::from_u128(14);
-    graph
-        .edges
-        .insert(spanning, edge(left_out, right_in, false));
-    graph
-        .edges
-        .insert(outside, edge(outside_a_out, outside_b_in, false));
-    graph
-        .edges
-        .insert(hidden_edge, edge(inside_out, right_in, true));
-    graph
-        .edges
-        .insert(hidden_endpoint, edge(hidden_out, inside_in, false));
-    graph
-        .edges
-        .insert(inside_edge, edge(inside_out, left_out, false));
+    graph.insert_edge(spanning, edge(left_out, right_in, false));
+    graph.insert_edge(outside, edge(outside_a_out, outside_b_in, false));
+    graph.insert_edge(hidden_edge, edge(inside_out, right_in, true));
+    graph.insert_edge(hidden_endpoint, edge(hidden_out, inside_in, false));
+    graph.insert_edge(inside_edge, edge(inside_out, left_out, false));
 
     (
-        graph,
+        graph.into(),
         spanning,
         outside,
         hidden_edge,
@@ -411,7 +400,7 @@ fn edge_render_order_filters_hidden_edges_unless_requested() {
 fn visible_node_ids_follow_viewport_and_rendering_tuning() {
     let (graph, inside, partial, outside, hidden) = graph_with_visible_node_fixture();
     let store = NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
@@ -467,10 +456,10 @@ fn visible_node_ids_follow_viewport_and_rendering_tuning() {
 
 #[test]
 fn visible_node_ids_use_transform_node_origin_and_fallback_size() {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let centered = NodeId::from_u128(10);
     let unsized_id = NodeId::from_u128(20);
-    graph.nodes.insert(
+    graph.insert_node(
         centered,
         sized_node(
             "test.centered",
@@ -482,7 +471,7 @@ fn visible_node_ids_use_transform_node_origin_and_fallback_size() {
             false,
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         unsized_id,
         Node {
             pos: CanvasPoint { x: 0.0, y: 0.0 },
@@ -493,7 +482,7 @@ fn visible_node_ids_use_transform_node_origin_and_fallback_size() {
     let mut editor_config = NodeGraphEditorConfig::default();
     editor_config.interaction.node_origin = NodeGraphNodeOrigin { x: 0.5, y: 0.0 };
     let store = NodeGraphStore::new(
-        graph,
+        graph.into(),
         NodeGraphViewState {
             pan: CanvasPoint { x: -9.5, y: 0.0 },
             zoom: 1.0,
@@ -719,19 +708,19 @@ fn store_rendering_query_returns_visible_edge_order_and_visibility_together() {
 
 #[test]
 fn store_rendering_query_combines_measurements_visibility_and_selected_elevation() {
-    let mut graph = Graph::new(GraphId::from_u128(3));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(3));
     let measured_selected = NodeId::from_u128(10);
     let sized_middle = NodeId::from_u128(11);
     let sized_right = NodeId::from_u128(12);
     let unmeasured = NodeId::from_u128(13);
-    graph.nodes.insert(
+    graph.insert_node(
         measured_selected,
         Node {
             pos: CanvasPoint::default(),
             ..node("test.measured-selected", false)
         },
     );
-    graph.nodes.insert(
+    graph.insert_node(
         sized_middle,
         sized_node(
             "test.sized-middle",
@@ -743,7 +732,7 @@ fn store_rendering_query_combines_measurements_visibility_and_selected_elevation
             false,
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         sized_right,
         sized_node(
             "test.sized-right",
@@ -755,7 +744,7 @@ fn store_rendering_query_combines_measurements_visibility_and_selected_elevation
             false,
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         unmeasured,
         Node {
             pos: CanvasPoint { x: 5.0, y: 0.0 },
@@ -773,17 +762,13 @@ fn store_rendering_query_combines_measurements_visibility_and_selected_elevation
         (middle_out, port(sized_middle, PortDirection::Out)),
         (right_in, port(sized_right, PortDirection::In)),
     ] {
-        graph.ports.insert(id, port);
+        graph.insert_port(id, port);
     }
 
     let elevated_edge = EdgeId::from_u128(30);
     let normal_edge = EdgeId::from_u128(31);
-    graph
-        .edges
-        .insert(elevated_edge, edge(selected_out, middle_in, false));
-    graph
-        .edges
-        .insert(normal_edge, edge(middle_out, right_in, false));
+    graph.insert_edge(elevated_edge, edge(selected_out, middle_in, false));
+    graph.insert_edge(normal_edge, edge(middle_out, right_in, false));
 
     let view_state = NodeGraphViewState {
         selected_nodes: vec![measured_selected],
@@ -791,7 +776,7 @@ fn store_rendering_query_combines_measurements_visibility_and_selected_elevation
         draw_order: vec![measured_selected, sized_middle, sized_right, unmeasured],
         ..NodeGraphViewState::default()
     };
-    let mut store = NodeGraphStore::new(graph, view_state, NodeGraphEditorConfig::default());
+    let mut store = NodeGraphStore::new(graph.into(), view_state, NodeGraphEditorConfig::default());
     store
         .report_node_measurement(NodeMeasurement::new(measured_selected).with_size(Some(
             CanvasSize {

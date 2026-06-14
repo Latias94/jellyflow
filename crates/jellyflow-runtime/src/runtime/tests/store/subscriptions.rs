@@ -62,7 +62,7 @@ fn store_selector_subscription_dedupes_and_tracks_graph_and_view_projections() {
     let node_counts: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let node_counts2 = node_counts.clone();
     store.subscribe_selector(
-        |s| s.graph.nodes.len(),
+        |s| s.graph.nodes().len(),
         move |v| node_counts2.borrow_mut().push(*v),
     );
 

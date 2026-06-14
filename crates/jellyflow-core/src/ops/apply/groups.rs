@@ -28,10 +28,10 @@ pub(super) fn apply_group_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Appl
 }
 
 fn apply_add_group(graph: &mut Graph, id: GroupId, group: &Group) -> Result<(), ApplyError> {
-    if graph.groups.contains_key(&id) {
+    if graph.groups().contains_key(&id) {
         return Err(ApplyError::GroupAlreadyExists { id });
     }
-    graph.groups.insert(id, group.clone());
+    graph.insert_group(id, group.clone());
     Ok(())
 }
 
@@ -42,7 +42,7 @@ fn apply_remove_group(
     detached: &[(NodeId, Option<GroupId>)],
     bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
-    let Some(current) = graph.groups.get(&id) else {
+    let Some(current) = graph.groups().get(&id) else {
         return Err(ApplyError::MissingGroup { id });
     };
     if current.title != group.title || current.rect != group.rect || current.color != group.color {
@@ -51,7 +51,7 @@ fn apply_remove_group(
 
     remove_bindings_exact(graph, bindings)?;
     for (node_id, expected_parent) in detached {
-        let Some(node) = graph.nodes.get_mut(node_id) else {
+        let Some(node) = graph.node_mut(node_id) else {
             return Err(ApplyError::MissingNode { id: *node_id });
         };
         if node.parent != *expected_parent {
@@ -64,13 +64,10 @@ fn apply_remove_group(
         node.parent = None;
     }
 
-    graph.groups.remove(&id);
+    graph.remove_group(&id);
     Ok(())
 }
 
 fn group_mut(graph: &mut Graph, id: GroupId) -> Result<&mut Group, ApplyError> {
-    graph
-        .groups
-        .get_mut(&id)
-        .ok_or(ApplyError::MissingGroup { id })
+    graph.group_mut(&id).ok_or(ApplyError::MissingGroup { id })
 }

@@ -101,15 +101,15 @@ impl ProjectionContext {
                 multigraph: true,
                 ..GraphOptions::default()
             },
-            graph.nodes.len(),
-            graph.edges.len(),
+            graph.nodes().len(),
+            graph.edges().len(),
         );
         projected.set_graph(graph_label(request.options));
 
         let mut node_keys = std::collections::BTreeMap::new();
         let mut nodes = Vec::new();
 
-        for (id, node) in &graph.nodes {
+        for (id, node) in graph.nodes() {
             if node.hidden || !request.scope.contains(*id) {
                 continue;
             }
@@ -134,23 +134,23 @@ impl ProjectionContext {
         }
 
         let mut edges = Vec::new();
-        for (id, edge) in &graph.edges {
+        for (id, edge) in graph.edges() {
             if edge.hidden {
                 continue;
             }
 
             let source_port = graph
-                .ports
+                .ports()
                 .get(&edge.from)
                 .ok_or(LayoutError::MissingSourcePort(*id))?;
             let target_port = graph
-                .ports
+                .ports()
                 .get(&edge.to)
                 .ok_or(LayoutError::MissingTargetPort(*id))?;
-            if !graph.nodes.contains_key(&source_port.node) {
+            if !graph.nodes().contains_key(&source_port.node) {
                 return Err(LayoutError::MissingSourceNode { edge: *id });
             }
-            if !graph.nodes.contains_key(&target_port.node) {
+            if !graph.nodes().contains_key(&target_port.node) {
                 return Err(LayoutError::MissingTargetNode { edge: *id });
             }
 

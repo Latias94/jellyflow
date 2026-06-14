@@ -60,7 +60,7 @@ fn single_node_drag_commits_set_node_pos_transaction_and_trace() {
         Some(NODE_DRAG_TRANSACTION_LABEL)
     );
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].pos,
+        harness.store().graph().nodes()[&fixture.enabled].pos,
         CanvasPoint { x: 30.0, y: 40.0 },
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -125,7 +125,7 @@ fn single_node_drag_respects_global_nodes_draggable_policy_without_committing() 
 
     assert!(result.is_none());
     assert_eq!(
-        harness.store().graph().nodes[&fixture.enabled].pos,
+        harness.store().graph().nodes()[&fixture.enabled].pos,
         CanvasPoint { x: 10.0, y: 20.0 },
     );
     harness.assert_events(&[]);
@@ -134,20 +134,24 @@ fn single_node_drag_respects_global_nodes_draggable_policy_without_committing() 
 #[test]
 fn single_node_drag_clamps_per_node_rect_with_node_origin() {
     let mut fixture = drag_fixture();
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 10.0,
-    });
-    node.extent = Some(NodeExtent::Rect {
-        rect: CanvasRect {
-            origin: CanvasPoint { x: 0.0, y: 0.0 },
-            size: CanvasSize {
-                width: 100.0,
-                height: 60.0,
-            },
-        },
-    });
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 10.0,
+            });
+            node.extent = Some(NodeExtent::Rect {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 0.0 },
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 60.0,
+                    },
+                },
+            });
+        })
+        .expect("node exists");
 
     let mut harness = InteractionHarness::new("single node per-node extent", fixture.graph);
     harness.store_mut().update_editor_config(|editor_config| {
@@ -176,21 +180,25 @@ fn single_node_drag_clamps_per_node_rect_with_node_origin() {
 #[test]
 fn single_node_drag_uses_node_origin_override_for_extent_clamping() {
     let mut fixture = drag_fixture();
-    let node = fixture.graph.nodes.get_mut(&fixture.enabled).unwrap();
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 10.0,
-    });
-    node.origin = Some(NodeOrigin { x: 1.0, y: 1.0 });
-    node.extent = Some(NodeExtent::Rect {
-        rect: CanvasRect {
-            origin: CanvasPoint { x: 0.0, y: 0.0 },
-            size: CanvasSize {
-                width: 100.0,
-                height: 60.0,
-            },
-        },
-    });
+    fixture
+        .graph
+        .update_node(&fixture.enabled, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 10.0,
+            });
+            node.origin = Some(NodeOrigin { x: 1.0, y: 1.0 });
+            node.extent = Some(NodeExtent::Rect {
+                rect: CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 0.0 },
+                    size: CanvasSize {
+                        width: 100.0,
+                        height: 60.0,
+                    },
+                },
+            });
+        })
+        .expect("node exists");
 
     let mut harness = InteractionHarness::new("single node per-node origin", fixture.graph);
     harness.store_mut().update_editor_config(|editor_config| {

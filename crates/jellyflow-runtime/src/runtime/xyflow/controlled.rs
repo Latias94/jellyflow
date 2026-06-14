@@ -20,10 +20,6 @@ impl ControlledGraph {
         &self.graph
     }
 
-    pub fn graph_mut(&mut self) -> &mut Graph {
-        &mut self.graph
-    }
-
     pub fn into_graph(self) -> Graph {
         self.graph
     }

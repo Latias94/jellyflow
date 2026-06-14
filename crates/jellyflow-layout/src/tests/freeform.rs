@@ -1,6 +1,6 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
 };
 
 use crate::{
@@ -103,7 +103,7 @@ fn freeform_request() -> LayoutRequest {
 }
 
 fn freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let root = NodeId::from_u128(1);
     let branch_a = NodeId::from_u128(2);
     let branch_b = NodeId::from_u128(3);
@@ -114,54 +114,42 @@ fn freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
     let branch_a_out = PortId::from_u128(13);
     let separate_in = PortId::from_u128(14);
 
-    graph.nodes.insert(root, node("demo.root", vec![root_out]));
-    graph.nodes.insert(
+    graph.insert_node(root, node("demo.root", vec![root_out]));
+    graph.insert_node(
         branch_a,
         node("demo.branch-a", vec![branch_a_in, branch_a_out]),
     );
+    graph.insert_node(branch_b, node("demo.branch-b", vec![branch_b_in]));
+    graph.insert_node(separate, node("demo.separate", vec![separate_in]));
     graph
-        .nodes
-        .insert(branch_b, node("demo.branch-b", vec![branch_b_in]));
+        .update_node(&separate, |node| {
+            node.pos = CanvasPoint { x: 150.0, y: 0.0 }
+        })
+        .expect("node exists");
     graph
-        .nodes
-        .insert(separate, node("demo.separate", vec![separate_in]));
-    graph.nodes.get_mut(&separate).unwrap().pos = CanvasPoint { x: 150.0, y: 0.0 };
-    graph.nodes.get_mut(&separate).unwrap().size = Some(CanvasSize {
-        width: 80.0,
-        height: 80.0,
-    });
+        .update_node(&separate, |node| {
+            node.size = Some(CanvasSize {
+                width: 80.0,
+                height: 80.0,
+            })
+        })
+        .expect("node exists");
 
-    graph
-        .ports
-        .insert(root_out, port(root, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(branch_a_in, port(branch_a, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(branch_a_out, port(branch_a, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(branch_b_in, port(branch_b, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(separate_in, port(separate, "in", PortDirection::In));
+    graph.insert_port(root_out, port(root, "out", PortDirection::Out));
+    graph.insert_port(branch_a_in, port(branch_a, "in", PortDirection::In));
+    graph.insert_port(branch_a_out, port(branch_a, "out", PortDirection::Out));
+    graph.insert_port(branch_b_in, port(branch_b, "in", PortDirection::In));
+    graph.insert_port(separate_in, port(separate, "in", PortDirection::In));
 
-    graph
-        .edges
-        .insert(EdgeId::from_u128(20), edge(root_out, branch_a_in));
-    graph
-        .edges
-        .insert(EdgeId::from_u128(21), edge(root_out, branch_b_in));
-    graph
-        .edges
-        .insert(EdgeId::from_u128(22), edge(branch_a_out, separate_in));
+    graph.insert_edge(EdgeId::from_u128(20), edge(root_out, branch_a_in));
+    graph.insert_edge(EdgeId::from_u128(21), edge(root_out, branch_b_in));
+    graph.insert_edge(EdgeId::from_u128(22), edge(branch_a_out, separate_in));
 
-    (graph, root, branch_a, branch_b, separate)
+    (graph.build_unchecked(), root, branch_a, branch_b, separate)
 }
 
 fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(2));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
     let root = NodeId::from_u128(11);
     let note = NodeId::from_u128(12);
     let image = NodeId::from_u128(13);
@@ -175,73 +163,67 @@ fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, Nod
     let detached_in = PortId::from_u128(35);
     let hidden_in = PortId::from_u128(36);
 
-    graph.nodes.insert(root, node("demo.root", vec![root_out]));
-    graph.nodes.get_mut(&root).unwrap().size = Some(CanvasSize {
-        width: 140.0,
-        height: 72.0,
-    });
+    graph.insert_node(root, node("demo.root", vec![root_out]));
     graph
-        .nodes
-        .insert(note, node("demo.note", vec![note_in, note_out]));
-    graph.nodes.get_mut(&note).unwrap().size = None;
+        .update_node(&root, |node| {
+            node.size = Some(CanvasSize {
+                width: 140.0,
+                height: 72.0,
+            })
+        })
+        .expect("node exists");
+    graph.insert_node(note, node("demo.note", vec![note_in, note_out]));
     graph
-        .nodes
-        .insert(image, node("demo.image", vec![image_in, image_out]));
-    graph.nodes.get_mut(&image).unwrap().pos = CanvasPoint { x: 60.0, y: 20.0 };
-    graph.nodes.get_mut(&image).unwrap().size = Some(CanvasSize {
-        width: 96.0,
-        height: 96.0,
-    });
+        .update_node(&note, |node| node.size = None)
+        .expect("node exists");
+    graph.insert_node(image, node("demo.image", vec![image_in, image_out]));
     graph
-        .nodes
-        .insert(detached, node("demo.detached", vec![detached_in]));
-    graph.nodes.get_mut(&detached).unwrap().pos = CanvasPoint { x: 520.0, y: 40.0 };
-    graph.nodes.get_mut(&detached).unwrap().size = Some(CanvasSize {
-        width: 180.0,
-        height: 110.0,
-    });
+        .update_node(&image, |node| node.pos = CanvasPoint { x: 60.0, y: 20.0 })
+        .expect("node exists");
     graph
-        .nodes
-        .insert(hidden, node("demo.hidden", vec![hidden_in]));
-    graph.nodes.get_mut(&hidden).unwrap().pos = CanvasPoint { x: 30.0, y: 30.0 };
-    graph.nodes.get_mut(&hidden).unwrap().hidden = true;
+        .update_node(&image, |node| {
+            node.size = Some(CanvasSize {
+                width: 96.0,
+                height: 96.0,
+            })
+        })
+        .expect("node exists");
+    graph.insert_node(detached, node("demo.detached", vec![detached_in]));
+    graph
+        .update_node(&detached, |node| {
+            node.pos = CanvasPoint { x: 520.0, y: 40.0 }
+        })
+        .expect("node exists");
+    graph
+        .update_node(&detached, |node| {
+            node.size = Some(CanvasSize {
+                width: 180.0,
+                height: 110.0,
+            })
+        })
+        .expect("node exists");
+    graph.insert_node(hidden, node("demo.hidden", vec![hidden_in]));
+    graph
+        .update_node(&hidden, |node| node.pos = CanvasPoint { x: 30.0, y: 30.0 })
+        .expect("node exists");
+    graph
+        .update_node(&hidden, |node| node.hidden = true)
+        .expect("node exists");
 
-    graph
-        .ports
-        .insert(root_out, port(root, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(note_in, port(note, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(note_out, port(note, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(image_in, port(image, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(image_out, port(image, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(detached_in, port(detached, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(hidden_in, port(hidden, "in", PortDirection::In));
+    graph.insert_port(root_out, port(root, "out", PortDirection::Out));
+    graph.insert_port(note_in, port(note, "in", PortDirection::In));
+    graph.insert_port(note_out, port(note, "out", PortDirection::Out));
+    graph.insert_port(image_in, port(image, "in", PortDirection::In));
+    graph.insert_port(image_out, port(image, "out", PortDirection::Out));
+    graph.insert_port(detached_in, port(detached, "in", PortDirection::In));
+    graph.insert_port(hidden_in, port(hidden, "in", PortDirection::In));
 
-    graph
-        .edges
-        .insert(EdgeId::from_u128(40), edge(root_out, note_in));
-    graph
-        .edges
-        .insert(EdgeId::from_u128(41), edge(note_out, image_in));
-    graph
-        .edges
-        .insert(EdgeId::from_u128(42), edge(image_out, detached_in));
-    graph
-        .edges
-        .insert(EdgeId::from_u128(43), edge(root_out, hidden_in));
+    graph.insert_edge(EdgeId::from_u128(40), edge(root_out, note_in));
+    graph.insert_edge(EdgeId::from_u128(41), edge(note_out, image_in));
+    graph.insert_edge(EdgeId::from_u128(42), edge(image_out, detached_in));
+    graph.insert_edge(EdgeId::from_u128(43), edge(root_out, hidden_in));
 
-    (graph, root, note, image, detached, hidden)
+    (graph.build_unchecked(), root, note, image, detached, hidden)
 }
 
 fn freeform_expected_snapshot(

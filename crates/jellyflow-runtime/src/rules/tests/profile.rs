@@ -2,7 +2,7 @@ use super::fixtures::{insert_node, insert_typed_data_input, insert_typed_data_ou
 
 use crate::profile::GraphProfile;
 use crate::rules::Diagnostic;
-use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortId};
+use jellyflow_core::core::{Graph, GraphBuilder, NodeId, PortCapacity, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::TypeDesc;
 
@@ -12,7 +12,7 @@ fn graph_profile_default_plan_connect_uses_type_of_port() {
 
     impl GraphProfile for TypedProfile {
         fn type_of_port(&mut self, graph: &Graph, port: PortId) -> Option<TypeDesc> {
-            graph.ports.get(&port).and_then(|port| port.ty.clone())
+            graph.ports().get(&port).and_then(|port| port.ty.clone())
         }
 
         fn validate_graph(&mut self, _graph: &Graph) -> Vec<Diagnostic> {
@@ -20,7 +20,7 @@ fn graph_profile_default_plan_connect_uses_type_of_port() {
         }
     }
 
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();

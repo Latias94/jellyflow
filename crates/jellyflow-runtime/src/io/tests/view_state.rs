@@ -1,16 +1,16 @@
 use super::*;
 use jellyflow_core::core::{
-    Edge, EdgeId, EdgeKind, Graph, GraphId, NodeId, Port, PortCapacity, PortDirection, PortId,
-    PortKey, PortKind,
+    Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, NodeId, Port, PortCapacity,
+    PortDirection, PortId, PortKey, PortKind,
 };
 
 #[test]
 fn view_state_sanitize_removes_stale_ids() {
     let graph_id = GraphId::new();
-    let mut graph = Graph::new(graph_id);
+    let mut graph = GraphBuilder::new(graph_id);
 
     let keep_node = NodeId::new();
-    graph.nodes.insert(
+    graph.insert_node(
         keep_node,
         jellyflow_core::core::Node {
             kind: jellyflow_core::core::NodeKindKey::new("test"),
@@ -36,7 +36,7 @@ fn view_state_sanitize_removes_stale_ids() {
     let to_port = PortId::new();
     let hidden_edge = EdgeId::new();
     let keep_edge = EdgeId::new();
-    graph.ports.insert(
+    graph.insert_port(
         from_port,
         Port {
             node: keep_node,
@@ -51,7 +51,7 @@ fn view_state_sanitize_removes_stale_ids() {
             data: serde_json::Value::Null,
         },
     );
-    graph.ports.insert(
+    graph.insert_port(
         to_port,
         Port {
             node: keep_node,
@@ -66,7 +66,7 @@ fn view_state_sanitize_removes_stale_ids() {
             data: serde_json::Value::Null,
         },
     );
-    graph.edges.insert(
+    graph.insert_edge(
         hidden_edge,
         Edge {
             kind: EdgeKind::Data,
@@ -80,7 +80,7 @@ fn view_state_sanitize_removes_stale_ids() {
             reconnectable: None,
         },
     );
-    graph.edges.insert(
+    graph.insert_edge(
         keep_edge,
         Edge {
             kind: EdgeKind::Data,

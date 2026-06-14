@@ -71,10 +71,10 @@ pub(super) fn apply_node_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
 }
 
 fn apply_add_node(graph: &mut Graph, id: NodeId, node: &Node) -> Result<(), ApplyError> {
-    if graph.nodes.contains_key(&id) {
+    if graph.nodes().contains_key(&id) {
         return Err(ApplyError::NodeAlreadyExists { id });
     }
-    graph.nodes.insert(id, node.clone());
+    graph.insert_node(id, node.clone());
     Ok(())
 }
 
@@ -86,7 +86,7 @@ fn apply_remove_node(
     edges: &[(EdgeId, Edge)],
     bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
-    let Some(current) = graph.nodes.get(&id) else {
+    let Some(current) = graph.nodes().get(&id) else {
         return Err(ApplyError::MissingNode { id });
     };
     if current.kind != node.kind || current.kind_version != node.kind_version {
@@ -101,7 +101,7 @@ fn apply_remove_node(
         remove_port_exact(graph, *port_id, port)?;
     }
 
-    graph.nodes.remove(&id);
+    graph.remove_node(&id);
     Ok(())
 }
 
@@ -112,7 +112,7 @@ fn apply_set_node_parent(
 ) -> Result<(), ApplyError> {
     ensure_node_exists(graph, id)?;
     if let Some(group) = parent
-        && !graph.groups.contains_key(&group)
+        && !graph.groups().contains_key(&group)
     {
         return Err(ApplyError::NodeParentMissingGroup { node: id, group });
     }
@@ -124,7 +124,7 @@ fn apply_set_node_parent(
 fn apply_set_node_ports(graph: &mut Graph, id: NodeId, ports: &[PortId]) -> Result<(), ApplyError> {
     ensure_node_exists(graph, id)?;
     for port_id in ports {
-        let Some(port) = graph.ports.get(port_id) else {
+        let Some(port) = graph.ports().get(port_id) else {
             return Err(ApplyError::NodePortsUnknownPort {
                 node: id,
                 port: *port_id,
@@ -143,7 +143,7 @@ fn apply_set_node_ports(graph: &mut Graph, id: NodeId, ports: &[PortId]) -> Resu
 }
 
 fn ensure_node_exists(graph: &Graph, id: NodeId) -> Result<(), ApplyError> {
-    if graph.nodes.contains_key(&id) {
+    if graph.nodes().contains_key(&id) {
         Ok(())
     } else {
         Err(ApplyError::MissingNode { id })
@@ -151,8 +151,5 @@ fn ensure_node_exists(graph: &Graph, id: NodeId) -> Result<(), ApplyError> {
 }
 
 fn node_mut(graph: &mut Graph, id: NodeId) -> Result<&mut Node, ApplyError> {
-    graph
-        .nodes
-        .get_mut(&id)
-        .ok_or(ApplyError::MissingNode { id })
+    graph.node_mut(&id).ok_or(ApplyError::MissingNode { id })
 }

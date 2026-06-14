@@ -5,11 +5,11 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     let mut from = Graph::default();
     let a = NodeId::new();
     let b = NodeId::new();
-    from.nodes.insert(a, make_node("core.a"));
-    from.nodes.insert(b, make_node("core.b"));
+    from.insert_node(a, make_node("core.a"));
+    from.insert_node(b, make_node("core.b"));
 
     let group_id = GroupId::new();
-    from.groups.insert(
+    from.insert_group(
         group_id,
         Group {
             title: "G".to_string(),
@@ -23,19 +23,17 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             color: None,
         },
     );
-    from.nodes.get_mut(&a).unwrap().parent = Some(group_id);
+    from.node_mut(&a).unwrap().parent = Some(group_id);
 
     let out = PortId::from_u128(10);
     let inn = PortId::from_u128(11);
-    from.ports
-        .insert(out, make_port(a, "out", PortDirection::Out));
-    from.ports
-        .insert(inn, make_port(b, "in", PortDirection::In));
-    from.nodes.get_mut(&a).unwrap().ports.push(out);
-    from.nodes.get_mut(&b).unwrap().ports.push(inn);
+    from.insert_port(out, make_port(a, "out", PortDirection::Out));
+    from.insert_port(inn, make_port(b, "in", PortDirection::In));
+    from.node_mut(&a).unwrap().ports.push(out);
+    from.node_mut(&b).unwrap().ports.push(inn);
 
     let edge_id = EdgeId::from_u128(123);
-    from.edges.insert(
+    from.insert_edge(
         edge_id,
         Edge {
             kind: EdgeKind::Data,
@@ -51,10 +49,10 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     );
 
     let imported = GraphId::from_u128(10);
-    from.imports.insert(imported, GraphImport::default());
+    from.insert_import(imported, GraphImport::default());
 
     let symbol_id = SymbolId::from_u128(1);
-    from.symbols.insert(
+    from.insert_symbol(
         symbol_id,
         Symbol {
             name: "S".to_string(),
@@ -65,7 +63,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     );
 
     let note_id = StickyNoteId::new();
-    from.sticky_notes.insert(
+    from.insert_sticky_note(
         note_id,
         StickyNote {
             text: "N".to_string(),
@@ -81,13 +79,13 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     );
 
     let mut to = from.clone();
-    to.imports.insert(
+    to.insert_import(
         imported,
         GraphImport {
             alias: Some("stdlib".to_string()),
         },
     );
-    to.symbols.insert(
+    to.insert_symbol(
         symbol_id,
         Symbol {
             name: "T".to_string(),
@@ -96,10 +94,10 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             meta: serde_json::json!({ "k": 1 }),
         },
     );
-    if let Some(group) = to.groups.get_mut(&group_id) {
+    if let Some(group) = to.group_mut(&group_id) {
         group.color = Some("red".to_string());
     }
-    if let Some(edge) = to.edges.get_mut(&edge_id) {
+    if let Some(edge) = to.edge_mut(&edge_id) {
         edge.hidden = true;
         edge.interaction_width = Some(24.0);
         edge.deletable = Some(true);
@@ -107,12 +105,12 @@ fn graph_diff_is_deterministic_and_roundtrips() {
             crate::core::EdgeReconnectableEndpoint::Target,
         ));
     }
-    if let Some(port) = to.ports.get_mut(&out) {
+    if let Some(port) = to.port_mut(&out) {
         port.connectable = Some(false);
         port.ty = Some(TypeDesc::String);
         port.data = serde_json::json!({ "p": 1 });
     }
-    if let Some(node) = to.nodes.get_mut(&a) {
+    if let Some(node) = to.node_mut(&a) {
         node.pos.x = 42.0;
         node.origin = Some(crate::core::NodeOrigin { x: 0.5, y: 0.25 });
         node.selectable = Some(false);
@@ -131,7 +129,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
         node.expand_parent = Some(true);
         node.hidden = true;
     }
-    if let Some(note) = to.sticky_notes.get_mut(&note_id) {
+    if let Some(note) = to.sticky_note_mut(&note_id) {
         note.text = "M".to_string();
         note.rect.origin.x = 9.0;
         note.color = Some("yellow".to_string());

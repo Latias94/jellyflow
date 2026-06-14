@@ -29,7 +29,7 @@ pub(super) fn parent_expansion_ops(
         let Some(target) = item_targets.get(&candidate.node).copied() else {
             continue;
         };
-        let Some(parent_rect) = graph.groups.get(&parent).map(|group| group.rect) else {
+        let Some(parent_rect) = graph.groups().get(&parent).map(|group| group.rect) else {
             continue;
         };
         let Some(child_bounds) = candidate_bounds_at(*candidate, target) else {
@@ -49,7 +49,7 @@ pub(super) fn parent_expansion_ops(
     expanded_by_parent
         .into_iter()
         .filter_map(|(id, to)| {
-            let from = graph.groups.get(&id)?.rect;
+            let from = graph.groups().get(&id)?.rect;
             (from != to).then_some(GraphOp::SetGroupRect { id, from, to })
         })
         .collect()

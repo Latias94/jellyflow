@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, Graph, Node, NodeId, NodeKindKey, PortId};
+use jellyflow_core::core::{CanvasPoint, Graph, GraphBuilder, Node, NodeId, NodeKindKey, PortId};
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 use crate::profile::GraphProfile;
@@ -9,8 +9,8 @@ use super::*;
 #[test]
 fn apply_transaction_with_profile_preserves_label_and_appends_derived_ops() {
     let node = NodeId::new();
-    let mut graph = Graph::default();
-    graph.nodes.insert(node, make_node());
+    let mut graph = GraphBuilder::default();
+    graph.insert_node(node, make_node());
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: node,
@@ -34,17 +34,17 @@ fn apply_transaction_with_profile_preserves_label_and_appends_derived_ops() {
         } if id == node
     ));
     assert_eq!(
-        graph.nodes.get(&node).expect("node").pos,
+        graph.nodes().get(&node).expect("node").pos,
         CanvasPoint { x: 10.0, y: 20.0 }
     );
-    assert!(graph.nodes.get(&node).expect("node").hidden);
+    assert!(graph.nodes().get(&node).expect("node").hidden);
 }
 
 #[test]
 fn apply_transaction_with_profile_rejection_leaves_graph_unchanged() {
     let node = NodeId::new();
-    let mut graph = Graph::default();
-    graph.nodes.insert(node, make_node());
+    let mut graph = GraphBuilder::default();
+    graph.insert_node(node, make_node());
 
     let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
         id: node,
@@ -57,7 +57,7 @@ fn apply_transaction_with_profile_rejection_leaves_graph_unchanged() {
 
     assert!(matches!(err, ApplyPipelineError::Rejected { .. }));
     assert_eq!(
-        graph.nodes.get(&node).expect("node").pos,
+        graph.nodes().get(&node).expect("node").pos,
         CanvasPoint { x: 0.0, y: 0.0 }
     );
 }

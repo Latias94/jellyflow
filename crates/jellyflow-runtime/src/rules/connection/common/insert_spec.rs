@@ -61,14 +61,14 @@ impl InsertNodeSpecValidator<'_> {
     }
 
     fn ensure_inserted_ids_are_available(&self) -> Result<(), ConnectPlan> {
-        if self.graph.nodes.contains_key(&self.inserted.node_id) {
+        if self.graph.nodes().contains_key(&self.inserted.node_id) {
             return Err(ConnectPlan::reject(format!(
                 "node already exists: {:?}",
                 self.inserted.node_id
             )));
         }
         for (port_id, _) in &self.inserted.ports {
-            if self.graph.ports.contains_key(port_id) {
+            if self.graph.ports().contains_key(port_id) {
                 return Err(ConnectPlan::reject(format!(
                     "port already exists: {port_id:?}"
                 )));

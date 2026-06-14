@@ -24,7 +24,7 @@ fn apply_transaction_rejects_node_with_missing_ports_atomically() {
 fn apply_transaction_rejects_unordered_added_port_atomically() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
-    graph.nodes.insert(node_id, make_node("core.a"));
+    graph.insert_node(node_id, make_node("core.a"));
     let before = graph.clone();
 
     let port_id = PortId::new();
@@ -51,9 +51,8 @@ fn graph_transaction_facade_diff_apply_and_inverse_roundtrip() {
     node.ports.push(port_id);
 
     let mut to = from.clone();
-    to.nodes.insert(node_id, node);
-    to.ports
-        .insert(port_id, make_port(node_id, "out", PortDirection::Out));
+    to.insert_node(node_id, node);
+    to.insert_port(port_id, make_port(node_id, "out", PortDirection::Out));
 
     let tx = GraphTransaction::diff(&from, &to);
     let mut patched = from.clone();

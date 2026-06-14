@@ -1,5 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, Edge, EdgeId, EdgeKind, Graph, Node, NodeId, NodeKindKey, Port,
+    Binding, BindingId, CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, Group, GroupId,
+    Node, NodeId, NodeKindKey, Port, PortId, StickyNote, StickyNoteId,
 };
 
 use crate::io::NodeGraphViewState;
@@ -17,6 +18,49 @@ pub(super) fn make_store(graph: Graph) -> NodeGraphStore {
     )
 }
 
+pub(super) fn fixture_insert_node(graph: &mut Graph, id: NodeId, node: Node) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.insert_node(id, node);
+    *graph = builder.build_unchecked();
+}
+
+pub(super) fn fixture_insert_port(graph: &mut Graph, id: PortId, port: Port) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.insert_port(id, port);
+    *graph = builder.build_unchecked();
+}
+
+pub(super) fn fixture_insert_group(graph: &mut Graph, id: GroupId, group: Group) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.insert_group(id, group);
+    *graph = builder.build_unchecked();
+}
+
+pub(super) fn fixture_insert_sticky_note(graph: &mut Graph, id: StickyNoteId, note: StickyNote) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.insert_sticky_note(id, note);
+    *graph = builder.build_unchecked();
+}
+
+pub(super) fn fixture_insert_binding(graph: &mut Graph, id: BindingId, binding: Binding) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.insert_binding(id, binding);
+    *graph = builder.build_unchecked();
+}
+
+pub(super) fn fixture_remove_edge(graph: &mut Graph, id: &EdgeId) -> Option<Edge> {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let removed = builder.remove_edge(id);
+    *graph = builder.build_unchecked();
+    removed
+}
+
+pub(super) fn fixture_clear_edges(graph: &mut Graph) {
+    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    builder.clear_edges();
+    *graph = builder.build_unchecked();
+}
+
 pub(super) fn make_graph() -> (
     Graph,
     NodeId,
@@ -25,7 +69,7 @@ pub(super) fn make_graph() -> (
     jellyflow_core::core::PortId,
     EdgeId,
 ) {
-    let mut g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(jellyflow_core::core::GraphId::from_u128(1));
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -72,9 +116,9 @@ pub(super) fn make_graph() -> (
         data: serde_json::Value::Null,
     };
 
-    g.nodes.insert(a, node_a);
-    g.nodes.insert(b, node_b);
-    g.ports.insert(
+    g.insert_node(a, node_a);
+    g.insert_node(b, node_b);
+    g.insert_port(
         out_port,
         Port {
             node: a,
@@ -89,7 +133,7 @@ pub(super) fn make_graph() -> (
             data: serde_json::Value::Null,
         },
     );
-    g.ports.insert(
+    g.insert_port(
         in_port,
         Port {
             node: b,
@@ -106,7 +150,7 @@ pub(super) fn make_graph() -> (
     );
 
     let eid = EdgeId::new();
-    g.edges.insert(
+    g.insert_edge(
         eid,
         Edge {
             kind: EdgeKind::Data,
@@ -121,5 +165,5 @@ pub(super) fn make_graph() -> (
         },
     );
 
-    (g, a, b, out_port, in_port, eid)
+    (g.into(), a, b, out_port, in_port, eid)
 }

@@ -10,7 +10,7 @@ fn facade_exposes_common_graph_store_entrypoints() {
         NodeGraphEditorConfig::default(),
     );
 
-    assert_eq!(store.graph().graph_id, graph.graph_id);
+    assert_eq!(store.graph().graph_id(), graph.graph_id());
     assert!(NodeGraphPatch::default().is_empty());
     let _ = std::mem::size_of::<DispatchOutcome>();
     let _ = std::mem::size_of::<DispatchError>();

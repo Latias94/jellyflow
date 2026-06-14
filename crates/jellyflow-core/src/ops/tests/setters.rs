@@ -4,7 +4,7 @@ use super::*;
 fn remove_group_detaches_child_nodes_and_inverts() {
     let mut graph = Graph::default();
     let group_id = GroupId::new();
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "Group".to_string(),
@@ -22,19 +22,19 @@ fn remove_group_detaches_child_nodes_and_inverts() {
     let node_id = NodeId::new();
     let mut node = make_node("core.a");
     node.parent = Some(group_id);
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let tx = graph
         .build_remove_group_tx(group_id, "Delete Group")
         .expect("tx");
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(!graph.groups.contains_key(&group_id));
-    assert_eq!(graph.nodes.get(&node_id).unwrap().parent, None);
+    assert!(!graph.groups().contains_key(&group_id));
+    assert_eq!(graph.nodes().get(&node_id).unwrap().parent, None);
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo apply");
-    assert!(graph.groups.contains_key(&group_id));
-    assert_eq!(graph.nodes.get(&node_id).unwrap().parent, Some(group_id));
+    assert!(graph.groups().contains_key(&group_id));
+    assert_eq!(graph.nodes().get(&node_id).unwrap().parent, Some(group_id));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn set_group_rect_and_child_positions_roundtrip_through_invert_transaction() {
             height: 80.0,
         },
     };
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "Group".to_string(),
@@ -65,8 +65,8 @@ fn set_group_rect_and_child_positions_roundtrip_through_invert_transaction() {
     let mut b = make_node("core.b");
     b.parent = Some(group_id);
     b.pos = CanvasPoint { x: 50.0, y: 60.0 };
-    graph.nodes.insert(node_a, a);
-    graph.nodes.insert(node_b, b);
+    graph.insert_node(node_a, a);
+    graph.insert_node(node_b, b);
 
     let rect1 = crate::core::CanvasRect {
         origin: CanvasPoint { x: 110.0, y: 120.0 },
@@ -93,25 +93,25 @@ fn set_group_rect_and_child_positions_roundtrip_through_invert_transaction() {
     .with_label("Move Group");
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert_eq!(graph.groups.get(&group_id).unwrap().rect, rect1);
+    assert_eq!(graph.groups().get(&group_id).unwrap().rect, rect1);
     assert_eq!(
-        graph.nodes.get(&node_a).unwrap().pos,
+        graph.nodes().get(&node_a).unwrap().pos,
         CanvasPoint { x: 130.0, y: 140.0 }
     );
     assert_eq!(
-        graph.nodes.get(&node_b).unwrap().pos,
+        graph.nodes().get(&node_b).unwrap().pos,
         CanvasPoint { x: 150.0, y: 160.0 }
     );
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo apply");
-    assert_eq!(graph.groups.get(&group_id).unwrap().rect, rect0);
+    assert_eq!(graph.groups().get(&group_id).unwrap().rect, rect0);
     assert_eq!(
-        graph.nodes.get(&node_a).unwrap().pos,
+        graph.nodes().get(&node_a).unwrap().pos,
         CanvasPoint { x: 30.0, y: 40.0 }
     );
     assert_eq!(
-        graph.nodes.get(&node_b).unwrap().pos,
+        graph.nodes().get(&node_b).unwrap().pos,
         CanvasPoint { x: 50.0, y: 60.0 }
     );
 }
@@ -134,7 +134,7 @@ fn set_node_size_roundtrips_through_invert_transaction() {
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(
-        graph.nodes.get(&node_id).unwrap().size,
+        graph.nodes().get(&node_id).unwrap().size,
         Some(crate::core::CanvasSize {
             width: 333.0,
             height: 222.0,
@@ -143,14 +143,14 @@ fn set_node_size_roundtrips_through_invert_transaction() {
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo apply");
-    assert_eq!(graph.nodes.get(&node_id).unwrap().size, None);
+    assert_eq!(graph.nodes().get(&node_id).unwrap().size, None);
 }
 
 #[test]
 fn set_group_title_roundtrips_through_invert_transaction() {
     let mut graph = Graph::default();
     let group_id = GroupId::new();
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "Group".to_string(),
@@ -173,11 +173,11 @@ fn set_group_title_roundtrips_through_invert_transaction() {
     .with_label("Rename Group");
 
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert_eq!(graph.groups.get(&group_id).unwrap().title, "My Group");
+    assert_eq!(graph.groups().get(&group_id).unwrap().title, "My Group");
 
     let undo = invert_transaction(&tx);
     apply_transaction(&mut graph, &undo).expect("undo apply");
-    assert_eq!(graph.groups.get(&group_id).unwrap().title, "Group");
+    assert_eq!(graph.groups().get(&group_id).unwrap().title, "Group");
 }
 
 #[test]
@@ -195,14 +195,14 @@ fn set_node_data_roundtrips_through_invert_transaction() {
 
     apply_transaction(&mut graph, &tx).expect("apply");
     assert_eq!(
-        graph.nodes.get(&node).unwrap().data,
+        graph.nodes().get(&node).unwrap().data,
         serde_json::json!({ "value": 1.25 })
     );
 
     let inverse = invert_transaction(&tx);
     apply_transaction(&mut graph, &inverse).expect("apply inverse");
     assert_eq!(
-        graph.nodes.get(&node).unwrap().data,
+        graph.nodes().get(&node).unwrap().data,
         serde_json::Value::Null
     );
 }
@@ -225,7 +225,7 @@ fn set_edge_endpoints_updates_edge_in_place() {
     insert_port(&mut graph, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::new();
-    graph.edges.insert(edge_id, make_edge(out1, inn));
+    graph.insert_edge(edge_id, make_edge(out1, inn));
 
     let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
         id: edge_id,
@@ -240,7 +240,7 @@ fn set_edge_endpoints_updates_edge_in_place() {
     }]);
     apply_transaction(&mut graph, &tx).expect("apply");
 
-    let edge = graph.edges.get(&edge_id).expect("edge");
+    let edge = graph.edges().get(&edge_id).expect("edge");
     assert_eq!(edge.from, out2);
     assert_eq!(edge.to, inn);
 }
@@ -249,7 +249,7 @@ fn set_edge_endpoints_updates_edge_in_place() {
 fn symbol_setters_roundtrip_through_normalize_and_invert() {
     let mut graph = Graph::default();
     let symbol_id = SymbolId::new();
-    graph.symbols.insert(
+    graph.insert_symbol(
         symbol_id,
         Symbol {
             name: "A".to_string(),
@@ -287,13 +287,13 @@ fn symbol_setters_roundtrip_through_normalize_and_invert() {
     assert!(tx.len() < 4, "expected normalize to coalesce setter chain");
 
     apply_transaction(&mut graph, &tx).expect("apply forward");
-    assert_eq!(graph.symbols.get(&symbol_id).unwrap().name, "C");
+    assert_eq!(graph.symbols().get(&symbol_id).unwrap().name, "C");
     assert_eq!(
-        graph.symbols.get(&symbol_id).unwrap().ty,
+        graph.symbols().get(&symbol_id).unwrap().ty,
         Some(TypeDesc::Int)
     );
     assert_eq!(
-        graph.symbols.get(&symbol_id).unwrap().default_value,
+        graph.symbols().get(&symbol_id).unwrap().default_value,
         Some(serde_json::json!(123))
     );
 
@@ -330,8 +330,8 @@ fn graph_import_ops_roundtrip_through_normalize_and_invert() {
 
     let tx = crate::ops::normalize_transaction(tx);
     apply_transaction(&mut graph, &tx).expect("apply");
-    assert!(graph.imports.contains_key(&imported));
-    assert_eq!(graph.imports.get(&imported).unwrap().alias, None);
+    assert!(graph.imports().contains_key(&imported));
+    assert_eq!(graph.imports().get(&imported).unwrap().alias, None);
 
     let inverse = invert_transaction(&tx);
     apply_transaction(&mut graph, &inverse).expect("apply inverse");

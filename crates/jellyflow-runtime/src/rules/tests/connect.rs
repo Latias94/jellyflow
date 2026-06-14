@@ -1,13 +1,13 @@
 use super::fixtures::{insert_data_input, insert_data_output, insert_node};
 
 use crate::rules::{plan_connect, plan_connect_with_mode};
-use jellyflow_core::core::{Graph, NodeId, PortCapacity, PortId};
+use jellyflow_core::core::{GraphBuilder, NodeId, PortCapacity, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn plan_connect_swaps_in_out() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -25,7 +25,7 @@ fn plan_connect_swaps_in_out() {
 
 #[test]
 fn plan_connect_strict_allows_same_node_out_to_in() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     insert_node(&mut graph, a, "core.a");
@@ -42,7 +42,7 @@ fn plan_connect_strict_allows_same_node_out_to_in() {
 
 #[test]
 fn plan_connect_loose_allows_out_to_out_and_preserves_order() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -63,7 +63,7 @@ fn plan_connect_loose_allows_out_to_out_and_preserves_order() {
 
 #[test]
 fn plan_connect_single_input_disconnects_existing() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -82,7 +82,7 @@ fn plan_connect_single_input_disconnects_existing() {
     let plan1 = plan_connect(&graph, out1, inn);
     let tx1 = GraphTransaction::from_ops(plan1.into_ops());
     tx1.apply_to(&mut graph).unwrap();
-    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges().len(), 1);
 
     let plan2 = plan_connect(&graph, out2, inn);
     assert_eq!(plan2.ops().len(), 2);
@@ -90,7 +90,7 @@ fn plan_connect_single_input_disconnects_existing() {
 
 #[test]
 fn plan_connect_respects_node_and_port_connectability() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -102,22 +102,34 @@ fn plan_connect_respects_node_and_port_connectability() {
     insert_data_output(&mut graph, out, a, "out", PortCapacity::Multi);
     insert_data_input(&mut graph, inn, b, "in", PortCapacity::Single);
 
-    graph.nodes.get_mut(&a).unwrap().connectable = Some(false);
+    graph
+        .update_node(&a, |node| node.connectable = Some(false))
+        .expect("node exists");
     let plan = plan_connect(&graph, out, inn);
     assert!(plan.is_reject());
     assert!(plan.ops().is_empty());
 
-    graph.nodes.get_mut(&a).unwrap().connectable = Some(true);
-    graph.ports.get_mut(&out).unwrap().connectable_start = Some(false);
+    graph
+        .update_node(&a, |node| node.connectable = Some(true))
+        .expect("node exists");
+    graph
+        .update_port(&out, |port| port.connectable_start = Some(false))
+        .expect("port exists");
     let plan = plan_connect(&graph, out, inn);
     assert!(plan.is_reject());
 
-    graph.ports.get_mut(&out).unwrap().connectable_start = Some(true);
-    graph.ports.get_mut(&inn).unwrap().connectable_end = Some(false);
+    graph
+        .update_port(&out, |port| port.connectable_start = Some(true))
+        .expect("port exists");
+    graph
+        .update_port(&inn, |port| port.connectable_end = Some(false))
+        .expect("port exists");
     let plan = plan_connect(&graph, out, inn);
     assert!(plan.is_reject());
 
-    graph.ports.get_mut(&inn).unwrap().connectable_end = Some(true);
+    graph
+        .update_port(&inn, |port| port.connectable_end = Some(true))
+        .expect("port exists");
     let plan = plan_connect(&graph, out, inn);
     assert!(plan.is_accept());
 }

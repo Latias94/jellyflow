@@ -52,7 +52,7 @@ fn port_policy_or_reject(
     port: &Port,
     state: &NodeGraphInteractionState,
 ) -> Result<NodeGraphPortInteractionPolicy, ConnectPlan> {
-    let Some(node) = graph.nodes.get(&port.node) else {
+    let Some(node) = graph.nodes().get(&port.node) else {
         return Err(reject_missing_port_owner_node(port.node));
     };
     Ok(state.port_interaction_policy(node, port))

@@ -16,13 +16,13 @@ fn apply_node_changes_removes_ports_and_incident_edges() {
     assert!(report.did_change());
     assert_eq!(report.ignored(), 0);
 
-    assert!(!g0.nodes.contains_key(&a));
-    assert!(g0.nodes.contains_key(&b));
+    assert!(!g0.nodes().contains_key(&a));
+    assert!(g0.nodes().contains_key(&b));
 
-    assert!(!g0.ports.contains_key(&out_port));
-    assert!(g0.ports.contains_key(&in_port));
+    assert!(!g0.ports().contains_key(&out_port));
+    assert!(g0.ports().contains_key(&in_port));
 
-    assert!(!g0.edges.contains_key(&eid));
+    assert!(!g0.edges().contains_key(&eid));
 }
 
 #[test]
@@ -51,11 +51,11 @@ fn apply_node_changes_updates_origin_and_ignores_missing() {
     assert!(report.did_change());
     assert_eq!(report.ignored(), 1);
     assert_eq!(
-        g0.nodes.get(&a).unwrap().pos,
+        g0.nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 12.0, y: 24.0 }
     );
     assert_eq!(
-        g0.nodes.get(&a).unwrap().origin,
+        g0.nodes().get(&a).unwrap().origin,
         Some(NodeOrigin { x: 0.5, y: 0.25 })
     );
 }
@@ -85,9 +85,9 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
     );
     assert!(report.did_change());
     assert_eq!(report.ignored(), 1);
-    assert_eq!(g0.edges.get(&eid).unwrap().kind, EdgeKind::Exec);
-    assert!(g0.edges.get(&eid).unwrap().hidden);
-    assert_eq!(g0.edges.get(&eid).unwrap().interaction_width, Some(30.0));
+    assert_eq!(g0.edges().get(&eid).unwrap().kind, EdgeKind::Exec);
+    assert!(g0.edges().get(&eid).unwrap().hidden);
+    assert_eq!(g0.edges().get(&eid).unwrap().interaction_width, Some(30.0));
 }
 
 #[test]
@@ -131,8 +131,8 @@ fn node_update_changes_apply_and_transaction_paths_agree() {
 
     assert_eq!(report.applied(), 5);
     assert_eq!(report.ignored(), 0);
-    let applied_node = applied.nodes.get(&a).expect("applied node");
-    let transacted_node = transacted.nodes.get(&a).expect("transacted node");
+    let applied_node = applied.nodes().get(&a).expect("applied node");
+    let transacted_node = transacted.nodes().get(&a).expect("transacted node");
     assert_eq!(applied_node.pos, transacted_node.pos);
     assert_eq!(applied_node.origin, transacted_node.origin);
     assert_eq!(applied_node.selectable, transacted_node.selectable);
@@ -177,8 +177,8 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
 
     assert_eq!(report.applied(), 4);
     assert_eq!(report.ignored(), 0);
-    let applied_edge = applied.edges.get(&eid).expect("applied edge");
-    let transacted_edge = transacted.edges.get(&eid).expect("transacted edge");
+    let applied_edge = applied.edges().get(&eid).expect("applied edge");
+    let transacted_edge = transacted.edges().get(&eid).expect("transacted edge");
     assert_eq!(applied_edge.kind, transacted_edge.kind);
     assert_eq!(applied_edge.hidden, transacted_edge.hidden);
     assert_eq!(
@@ -387,11 +387,11 @@ fn apply_xyflow_edge_changes_preserves_react_ordering_semantics() {
 }
 
 fn node_element(g: &jellyflow_core::core::Graph, id: NodeId) -> XyFlowNodeElement {
-    let node = g.nodes.values().next().expect("fixture node").clone();
+    let node = g.nodes().values().next().expect("fixture node").clone();
     XyFlowNodeElement::new(id, node)
 }
 
 fn edge_element(g: &jellyflow_core::core::Graph, id: EdgeId) -> XyFlowEdgeElement {
-    let edge = g.edges.values().next().expect("fixture edge").clone();
+    let edge = g.edges().values().next().expect("fixture edge").clone();
     XyFlowEdgeElement::new(id, edge)
 }

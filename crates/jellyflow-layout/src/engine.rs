@@ -376,7 +376,7 @@ impl LayoutResult {
             }
 
             let from = graph
-                .nodes
+                .nodes()
                 .get(&node.node)
                 .ok_or(LayoutError::MissingTransactionNode(node.node))?
                 .pos;
@@ -601,7 +601,7 @@ pub(crate) fn validate_request(graph: &Graph, request: &LayoutRequest) -> Result
 
     if let LayoutScope::Nodes { nodes } = &request.scope {
         for node in nodes {
-            if !graph.nodes.contains_key(node) {
+            if !graph.nodes().contains_key(node) {
                 return Err(LayoutError::MissingScopeNode(*node));
             }
         }
@@ -617,7 +617,7 @@ pub(crate) fn resolve_node_size(
     node: NodeId,
 ) -> Result<CanvasSize, LayoutError> {
     let size = graph
-        .nodes
+        .nodes()
         .get(&node)
         .and_then(|node| node.size)
         .or_else(|| request.measured_node_sizes.get(&node).copied())

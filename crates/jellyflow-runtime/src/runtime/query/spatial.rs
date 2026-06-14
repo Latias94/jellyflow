@@ -232,7 +232,7 @@ fn resolve_spatial_visible_edges(
     let viewport_bounds = viewport.bounds;
     let mut visible_edge_ids = snapshot
         .graph
-        .edges
+        .edges()
         .iter()
         .filter_map(|(id, edge)| {
             if edge.hidden {
@@ -257,7 +257,7 @@ fn resolve_spatial_all_indexed_visible_edges(
 ) -> (Vec<EdgeId>, Vec<EdgeId>) {
     let visible_edge_ids = snapshot
         .graph
-        .edges
+        .edges()
         .iter()
         .filter_map(|(id, edge)| {
             if edge.hidden {
@@ -352,13 +352,17 @@ impl SpatialNodeIndex {
                 Some(current) => current.union(bounds),
                 None => bounds,
             });
-            index.nodes.insert(*node, bounds);
+            index.insert_node(*node, bounds);
             for cell in covered_cells(bounds, cell_size) {
                 index.cells.entry(cell).or_default().push(*node);
             }
         }
 
         index
+    }
+
+    fn insert_node(&mut self, node: NodeId, bounds: CanvasBounds) {
+        self.nodes.insert(node, bounds);
     }
 
     fn node_bounds(&self, node: NodeId) -> Option<CanvasBounds> {

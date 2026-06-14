@@ -114,10 +114,10 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
         .expect("dispatch with external profile");
 
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
+        store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 42.0, y: 24.0 }
     );
-    assert!(store.graph().nodes.get(&a).unwrap().hidden);
+    assert!(store.graph().nodes().get(&a).unwrap().hidden);
     assert!(store.can_undo());
     assert_eq!(outcome.patch.ops().len(), 2);
     assert_eq!(&*trace.borrow(), &["before", "after"]);

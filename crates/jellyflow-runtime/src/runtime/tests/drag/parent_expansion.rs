@@ -3,6 +3,7 @@ use super::support::drag_fixture;
 
 use crate::io::NodeGraphViewState;
 use crate::runtime::drag::{NODE_DRAG_TRANSACTION_LABEL, NodeDragItem, NodeDragRequest};
+use crate::runtime::tests::fixtures::fixture_insert_group;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Group, GroupId, NodeExtent};
 use jellyflow_core::ops::GraphOp;
 
@@ -11,14 +12,18 @@ fn drag_parent_expansion_keeps_parent_extent_clamp_when_disabled() {
     let mut fixture = drag_fixture();
     let child = fixture.child_in_selected_group;
     let parent = fixture.selected_group;
-    let parent_rect = fixture.graph.groups[&parent].rect;
-    let node = fixture.graph.nodes.get_mut(&child).unwrap();
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(false);
+    let parent_rect = fixture.graph.groups()[&parent].rect;
+    fixture
+        .graph
+        .update_node(&child, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(false);
+        })
+        .expect("child node exists");
 
     let mut harness = InteractionHarness::new("parent extent clamp", fixture.graph);
     let plan = harness
@@ -59,9 +64,9 @@ fn drag_parent_expansion_keeps_parent_extent_clamp_when_disabled() {
         .expect("parent extent drag dispatch succeeds")
         .expect("parent extent drag dispatch commits");
 
-    assert_eq!(harness.store().graph().groups[&parent].rect, parent_rect);
+    assert_eq!(harness.store().graph().groups()[&parent].rect, parent_rect);
     assert_eq!(
-        harness.store().graph().nodes[&child].pos,
+        harness.store().graph().nodes()[&child].pos,
         CanvasPoint { x: 340.0, y: 40.0 },
     );
     harness.assert_events(&[HarnessEvent::graph_commit(
@@ -75,14 +80,18 @@ fn drag_parent_expansion_expands_parent_group_when_enabled() {
     let mut fixture = drag_fixture();
     let child = fixture.child_in_selected_group;
     let parent = fixture.selected_group;
-    let parent_rect = fixture.graph.groups[&parent].rect;
-    let node = fixture.graph.nodes.get_mut(&child).unwrap();
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
+    let parent_rect = fixture.graph.groups()[&parent].rect;
+    fixture
+        .graph
+        .update_node(&child, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("child node exists");
 
     let expected_parent_rect = CanvasRect {
         origin: CanvasPoint { x: 280.0, y: -20.0 },
@@ -146,10 +155,10 @@ fn drag_parent_expansion_expands_parent_group_when_enabled() {
         .expect("parent expansion dispatch commits");
 
     assert_eq!(
-        harness.store().graph().groups[&parent].rect,
+        harness.store().graph().groups()[&parent].rect,
         expected_parent_rect,
     );
-    assert_eq!(harness.store().graph().nodes[&child].pos, target);
+    assert_eq!(harness.store().graph().nodes()[&child].pos, target);
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
         ["set_node_pos", "set_group_rect"],
@@ -163,7 +172,8 @@ fn drag_parent_expansion_expands_multiple_parent_groups_in_sorted_order() {
     let first_parent = fixture.selected_group;
     let second_child = fixture.enabled;
     let second_parent = GroupId::from_u128(101);
-    fixture.graph.groups.insert(
+    fixture_insert_group(
+        &mut fixture.graph,
         second_parent,
         Group {
             title: "Second Group".to_owned(),
@@ -178,22 +188,30 @@ fn drag_parent_expansion_expands_multiple_parent_groups_in_sorted_order() {
         },
     );
 
-    let first = fixture.graph.nodes.get_mut(&first_child).unwrap();
-    first.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
-    first.extent = Some(NodeExtent::Parent);
-    first.expand_parent = Some(true);
+    fixture
+        .graph
+        .update_node(&first_child, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("first child exists");
 
-    let second = fixture.graph.nodes.get_mut(&second_child).unwrap();
-    second.parent = Some(second_parent);
-    second.size = Some(CanvasSize {
-        width: 30.0,
-        height: 20.0,
-    });
-    second.extent = Some(NodeExtent::Parent);
-    second.expand_parent = Some(true);
+    fixture
+        .graph
+        .update_node(&second_child, |node| {
+            node.parent = Some(second_parent);
+            node.size = Some(CanvasSize {
+                width: 30.0,
+                height: 20.0,
+            });
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("second child exists");
 
     let mut view_state = NodeGraphViewState::default();
     view_state.set_selection(vec![second_child], Vec::new(), Vec::new());
@@ -265,18 +283,26 @@ fn drag_parent_expansion_left_top_preserves_absolute_sibling_positions_without_c
     let child = fixture.child_in_selected_group;
     let sibling = fixture.enabled;
     let parent = fixture.selected_group;
-    let child_node = fixture.graph.nodes.get_mut(&child).unwrap();
-    child_node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
-    child_node.extent = Some(NodeExtent::Parent);
-    child_node.expand_parent = Some(true);
+    fixture
+        .graph
+        .update_node(&child, |node| {
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+        })
+        .expect("child node exists");
 
     let sibling_pos = CanvasPoint { x: 320.0, y: 10.0 };
-    let sibling_node = fixture.graph.nodes.get_mut(&sibling).unwrap();
-    sibling_node.parent = Some(parent);
-    sibling_node.pos = sibling_pos;
+    fixture
+        .graph
+        .update_node(&sibling, |node| {
+            node.parent = Some(parent);
+            node.pos = sibling_pos;
+        })
+        .expect("sibling node exists");
 
     let mut harness = InteractionHarness::new("left top parent expansion", fixture.graph);
     let target = CanvasPoint { x: 270.0, y: -30.0 };
@@ -329,11 +355,11 @@ fn drag_parent_expansion_left_top_preserves_absolute_sibling_positions_without_c
         .expect("left top parent expansion dispatch commits");
 
     assert_eq!(
-        harness.store().graph().groups[&parent].rect,
+        harness.store().graph().groups()[&parent].rect,
         expected_parent_rect,
     );
-    assert_eq!(harness.store().graph().nodes[&child].pos, target);
-    assert_eq!(harness.store().graph().nodes[&sibling].pos, sibling_pos);
+    assert_eq!(harness.store().graph().nodes()[&child].pos, target);
+    assert_eq!(harness.store().graph().nodes()[&sibling].pos, sibling_pos);
     harness.assert_events(&[HarnessEvent::graph_commit(
         Some(NODE_DRAG_TRANSACTION_LABEL),
         ["set_node_pos", "set_group_rect"],

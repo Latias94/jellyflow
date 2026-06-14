@@ -1,4 +1,6 @@
-use super::super::super::fixtures::{make_graph, make_store};
+use super::super::super::fixtures::{
+    fixture_insert_node, fixture_insert_port, make_graph, make_store,
+};
 
 use crate::runtime::commit::NodeGraphPatch;
 use crate::runtime::xyflow::callbacks::{
@@ -112,7 +114,8 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
 
     let in2 = PortId::new();
     let c = NodeId::new();
-    g0.nodes.insert(
+    fixture_insert_node(
+        &mut g0,
         c,
         Node {
             kind: NodeKindKey::new("demo.c"),
@@ -134,7 +137,8 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
             data: serde_json::Value::Null,
         },
     );
-    g0.ports.insert(
+    fixture_insert_port(
+        &mut g0,
         in2,
         Port {
             node: c,

@@ -1,6 +1,6 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
 };
 
 use crate::{
@@ -66,7 +66,7 @@ fn layout_separates_disconnected_roots() {
 }
 
 fn radial_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let root = NodeId::from_u128(1);
     let left = NodeId::from_u128(2);
     let right = NodeId::from_u128(3);
@@ -80,51 +80,33 @@ fn radial_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
     let second_edge = EdgeId::from_u128(21);
     let third_edge = EdgeId::from_u128(22);
 
-    graph.nodes.insert(root, node("demo.root", vec![root_out]));
-    graph
-        .nodes
-        .insert(left, node("demo.left", vec![left_in, left_out]));
-    graph
-        .nodes
-        .insert(right, node("demo.right", vec![right_in]));
-    graph
-        .nodes
-        .insert(grandchild, node("demo.grandchild", vec![grandchild_in]));
+    graph.insert_node(root, node("demo.root", vec![root_out]));
+    graph.insert_node(left, node("demo.left", vec![left_in, left_out]));
+    graph.insert_node(right, node("demo.right", vec![right_in]));
+    graph.insert_node(grandchild, node("demo.grandchild", vec![grandchild_in]));
 
-    graph
-        .ports
-        .insert(root_out, port(root, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(left_in, port(left, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(left_out, port(left, "out", PortDirection::Out));
-    graph
-        .ports
-        .insert(right_in, port(right, "in", PortDirection::In));
-    graph
-        .ports
-        .insert(grandchild_in, port(grandchild, "in", PortDirection::In));
+    graph.insert_port(root_out, port(root, "out", PortDirection::Out));
+    graph.insert_port(left_in, port(left, "in", PortDirection::In));
+    graph.insert_port(left_out, port(left, "out", PortDirection::Out));
+    graph.insert_port(right_in, port(right, "in", PortDirection::In));
+    graph.insert_port(grandchild_in, port(grandchild, "in", PortDirection::In));
 
-    graph.edges.insert(first_edge, edge(root_out, left_in));
-    graph.edges.insert(second_edge, edge(root_out, right_in));
-    graph
-        .edges
-        .insert(third_edge, edge(left_out, grandchild_in));
+    graph.insert_edge(first_edge, edge(root_out, left_in));
+    graph.insert_edge(second_edge, edge(root_out, right_in));
+    graph.insert_edge(third_edge, edge(left_out, grandchild_in));
 
-    (graph, root, left, right, grandchild)
+    (graph.build_unchecked(), root, left, right, grandchild)
 }
 
 fn disconnected_roots_graph() -> (Graph, NodeId, NodeId) {
-    let mut graph = Graph::new(GraphId::from_u128(2));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
     let first = NodeId::from_u128(1);
     let second = NodeId::from_u128(2);
 
-    graph.nodes.insert(first, node("demo.first", Vec::new()));
-    graph.nodes.insert(second, node("demo.second", Vec::new()));
+    graph.insert_node(first, node("demo.first", Vec::new()));
+    graph.insert_node(second, node("demo.second", Vec::new()));
 
-    (graph, first, second)
+    (graph.build_unchecked(), first, second)
 }
 
 fn node(kind: &str, ports: Vec<PortId>) -> Node {

@@ -18,7 +18,7 @@ impl DeleteOpBuilder {
     }
 
     pub(super) fn has_edge(&self, edge_id: &EdgeId) -> bool {
-        self.scratch.edges.contains_key(edge_id)
+        self.scratch.edges().contains_key(edge_id)
     }
 
     pub(super) fn remove_node(&mut self, node_id: NodeId) -> Result<(), Diagnostic> {

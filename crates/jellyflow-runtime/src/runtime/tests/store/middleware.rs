@@ -32,7 +32,7 @@ fn store_middleware_can_rewrite_transactions() {
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
     assert!(outcome.patch.ops().is_empty());
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
+        store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 0.0, y: 0.0 }
     );
     assert!(!store.can_undo());
@@ -83,8 +83,8 @@ fn store_middleware_can_reject_transactions() {
     };
     assert_eq!(diagnostics[0].key, "test.middleware.reject");
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
-        g0.nodes.get(&a).unwrap().pos
+        store.graph().nodes().get(&a).unwrap().pos,
+        g0.nodes().get(&a).unwrap().pos
     );
     assert!(!store.can_undo());
 }

@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 pub(super) struct SelectionFixture {
@@ -14,7 +14,7 @@ pub(super) struct SelectionFixture {
 }
 
 pub(super) fn selection_fixture() -> SelectionFixture {
-    let mut graph = Graph::new(GraphId::from_u128(1));
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let low = NodeId::from_u128(10);
     let hidden = NodeId::from_u128(20);
     let high = NodeId::from_u128(30);
@@ -25,7 +25,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
     let (high_in, high_port) = in_port(high, 101);
     let (outside_in, outside_port) = in_port(outside, 102);
 
-    graph.nodes.insert(
+    graph.insert_node(
         high,
         node(
             CanvasPoint { x: 12.0, y: 0.0 },
@@ -38,7 +38,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
             vec![high_in],
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         hidden,
         node(
             CanvasPoint { x: 24.0, y: 0.0 },
@@ -51,7 +51,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
             Vec::new(),
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         low,
         node(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -64,7 +64,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
             vec![low_out],
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         disabled,
         node(
             CanvasPoint { x: 36.0, y: 0.0 },
@@ -77,7 +77,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
             Vec::new(),
         ),
     );
-    graph.nodes.insert(
+    graph.insert_node(
         outside,
         node(
             CanvasPoint { x: 80.0, y: 0.0 },
@@ -90,12 +90,12 @@ pub(super) fn selection_fixture() -> SelectionFixture {
             vec![outside_in],
         ),
     );
-    graph.ports.insert(low_out, low_port);
-    graph.ports.insert(high_in, high_port);
-    graph.ports.insert(outside_in, outside_port);
+    graph.insert_port(low_out, low_port);
+    graph.insert_port(high_in, high_port);
+    graph.insert_port(outside_in, outside_port);
 
     let connected_edge = EdgeId::from_u128(200);
-    graph.edges.insert(
+    graph.insert_edge(
         connected_edge,
         Edge {
             kind: EdgeKind::Data,
@@ -111,7 +111,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
     );
 
     let non_selectable_edge = EdgeId::from_u128(201);
-    graph.edges.insert(
+    graph.insert_edge(
         non_selectable_edge,
         Edge {
             kind: EdgeKind::Data,
@@ -127,7 +127,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
     );
 
     let connected_outside_edge = EdgeId::from_u128(202);
-    graph.edges.insert(
+    graph.insert_edge(
         connected_outside_edge,
         Edge {
             kind: EdgeKind::Data,
@@ -143,7 +143,7 @@ pub(super) fn selection_fixture() -> SelectionFixture {
     );
 
     SelectionFixture {
-        graph,
+        graph: graph.into(),
         low,
         high,
         outside,

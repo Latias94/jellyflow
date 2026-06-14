@@ -20,7 +20,8 @@ fn adapter_conformance_fixture_runner_records_node_drag_gesture_transaction_and_
 fn adapter_conformance_fixture_runner_records_node_drag_parent_expansion_transaction() {
     let (mut graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
     let parent_id = GroupId::from_u128(200);
-    graph.groups.insert(
+    fixture_insert_group(
+        &mut graph,
         parent_id,
         Group {
             title: "Parent".to_owned(),
@@ -34,14 +35,17 @@ fn adapter_conformance_fixture_runner_records_node_drag_parent_expansion_transac
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(true);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(true);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
 
     let target = CanvasPoint { x: 95.0, y: 95.0 };
     let scenario = ConformanceScenario::new("node drag parent expansion", graph)
@@ -69,7 +73,8 @@ fn adapter_conformance_fixture_runner_records_node_drag_parent_expansion_transac
 fn adapter_conformance_fixture_runner_records_nested_parent_canvas_space_drag() {
     let (mut graph, node_id, _b, _out_port, _in_port, _eid) = make_graph();
     let parent_id = GroupId::from_u128(201);
-    graph.groups.insert(
+    fixture_insert_group(
+        &mut graph,
         parent_id,
         Group {
             title: "Nested Parent".to_owned(),
@@ -83,15 +88,18 @@ fn adapter_conformance_fixture_runner_records_nested_parent_canvas_space_drag() 
             color: None,
         },
     );
-    let node = graph.nodes.get_mut(&node_id).expect("node exists");
-    node.parent = Some(parent_id);
-    node.pos = CanvasPoint { x: 220.0, y: 225.0 };
-    node.extent = Some(NodeExtent::Parent);
-    node.expand_parent = Some(false);
-    node.size = Some(CanvasSize {
-        width: 20.0,
-        height: 20.0,
-    });
+    graph
+        .update_node(&node_id, |node| {
+            node.parent = Some(parent_id);
+            node.pos = CanvasPoint { x: 220.0, y: 225.0 };
+            node.extent = Some(NodeExtent::Parent);
+            node.expand_parent = Some(false);
+            node.size = Some(CanvasSize {
+                width: 20.0,
+                height: 20.0,
+            });
+        })
+        .expect("node exists");
 
     let target = CanvasPoint { x: 260.0, y: 265.0 };
     let scenario = ConformanceScenario::new("nested parent canvas-space drag", graph)

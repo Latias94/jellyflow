@@ -109,7 +109,7 @@ impl CapacityDisconnectPlan {
             return;
         }
 
-        for (edge_id, edge) in graph.edges.iter() {
+        for (edge_id, edge) in graph.edges().iter() {
             if Some(*edge_id) == skip_edge {
                 continue;
             }
@@ -153,15 +153,15 @@ fn remove_edge_op(graph: &Graph, edge_id: EdgeId) -> GraphOp {
 mod tests {
     use super::*;
     use crate::rules::connection::common::edge_between;
+    use jellyflow_core::core::GraphBuilder;
 
     #[test]
     fn capacity_disconnects_deduplicate_edges_matching_both_endpoints() {
-        let mut graph = Graph::default();
+        let mut graph = GraphBuilder::default();
         let port_id = PortId::from_u128(1);
         let edge_id = EdgeId::from_u128(2);
-        graph
-            .edges
-            .insert(edge_id, edge_between(EdgeKind::Data, port_id, port_id));
+        graph.insert_edge(edge_id, edge_between(EdgeKind::Data, port_id, port_id));
+        let graph = graph.build_unchecked();
 
         let ops = disconnect_for_capacity(
             &graph,

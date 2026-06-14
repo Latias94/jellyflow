@@ -34,13 +34,13 @@ pub(super) fn apply_port_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
 }
 
 fn apply_add_port(graph: &mut Graph, id: PortId, port: &Port) -> Result<(), ApplyError> {
-    if graph.ports.contains_key(&id) {
+    if graph.ports().contains_key(&id) {
         return Err(ApplyError::PortAlreadyExists { id });
     }
-    if !graph.nodes.contains_key(&port.node) {
+    if !graph.nodes().contains_key(&port.node) {
         return Err(ApplyError::MissingNode { id: port.node });
     }
-    graph.ports.insert(id, port.clone());
+    graph.insert_port(id, port.clone());
     Ok(())
 }
 
@@ -51,7 +51,7 @@ fn apply_remove_port(
     edges: &[(EdgeId, Edge)],
     bindings: &[(BindingId, Binding)],
 ) -> Result<(), ApplyError> {
-    let Some(current) = graph.ports.get(&id) else {
+    let Some(current) = graph.ports().get(&id) else {
         return Err(ApplyError::MissingPort { id });
     };
     if current.node != port.node || current.key != port.key {
@@ -61,16 +61,13 @@ fn apply_remove_port(
     for (edge_id, edge) in edges {
         remove_edge_exact(graph, *edge_id, edge)?;
     }
-    graph.ports.remove(&id);
-    if let Some(node) = graph.nodes.get_mut(&port.node) {
-        node.ports.retain(|p| *p != id);
+    graph.remove_port(&id);
+    if let Some(node) = graph.node_mut(&port.node) {
+        node.retain_ports(|p| *p != id);
     }
     Ok(())
 }
 
 fn port_mut(graph: &mut Graph, id: PortId) -> Result<&mut Port, ApplyError> {
-    graph
-        .ports
-        .get_mut(&id)
-        .ok_or(ApplyError::MissingPort { id })
+    graph.port_mut(&id).ok_or(ApplyError::MissingPort { id })
 }

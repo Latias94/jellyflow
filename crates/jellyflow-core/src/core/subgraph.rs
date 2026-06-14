@@ -70,7 +70,7 @@ pub fn subgraph_target_graph_id(
 /// Invalid subgraph nodes return an error.
 pub fn collect_subgraph_targets(graph: &Graph) -> Result<BTreeSet<GraphId>, SubgraphNodeError> {
     let mut out = BTreeSet::new();
-    for (node_id, node) in &graph.nodes {
+    for (node_id, node) in graph.nodes() {
         if let Some(target) = subgraph_target_graph_id(*node_id, node)? {
             out.insert(target);
         }
@@ -78,16 +78,16 @@ pub fn collect_subgraph_targets(graph: &Graph) -> Result<BTreeSet<GraphId>, Subg
     Ok(out)
 }
 
-/// Validates that every referenced subgraph target graph id is declared in `graph.imports`.
+/// Validates that every referenced subgraph target graph id is declared in `graph.imports()`.
 pub fn validate_subgraph_targets_are_imported(
     graph: &Graph,
 ) -> Result<(), Vec<SubgraphBindingError>> {
     let mut errors = Vec::new();
-    for (node_id, node) in &graph.nodes {
+    for (node_id, node) in graph.nodes() {
         let Ok(Some(target)) = subgraph_target_graph_id(*node_id, node) else {
             continue;
         };
-        if !graph.imports.contains_key(&target) {
+        if !graph.imports().contains_key(&target) {
             errors.push(SubgraphBindingError::TargetNotImported {
                 node: *node_id,
                 graph_id: target,

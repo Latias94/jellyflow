@@ -29,13 +29,13 @@ pub(super) fn remove_binding_exact(
     id: BindingId,
     expected: &Binding,
 ) -> Result<(), ApplyError> {
-    let Some(current) = graph.bindings.get(&id) else {
+    let Some(current) = graph.bindings().get(&id) else {
         return Err(ApplyError::MissingBinding { id });
     };
     if current != expected {
         return Err(ApplyError::RemoveBindingMismatch { id });
     }
-    graph.bindings.remove(&id);
+    graph.remove_binding(&id);
     Ok(())
 }
 
@@ -44,16 +44,15 @@ fn apply_add_binding(
     id: BindingId,
     binding: &Binding,
 ) -> Result<(), ApplyError> {
-    if graph.bindings.contains_key(&id) {
+    if graph.bindings().contains_key(&id) {
         return Err(ApplyError::BindingAlreadyExists { id });
     }
-    graph.bindings.insert(id, binding.clone());
+    graph.insert_binding(id, binding.clone());
     Ok(())
 }
 
 fn binding_mut(graph: &mut Graph, id: BindingId) -> Result<&mut Binding, ApplyError> {
     graph
-        .bindings
-        .get_mut(&id)
+        .binding_mut(&id)
         .ok_or(ApplyError::MissingBinding { id })
 }

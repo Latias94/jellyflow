@@ -2,13 +2,14 @@ use super::fixtures::{insert_data_input, insert_data_output, insert_edge, insert
 
 use crate::rules::{EdgeEndpoint, plan_reconnect_edge};
 use jellyflow_core::core::{
-    EdgeId, EdgeReconnectable, EdgeReconnectableEndpoint, Graph, NodeId, PortCapacity, PortId,
+    EdgeId, EdgeReconnectable, EdgeReconnectableEndpoint, GraphBuilder, NodeId, PortCapacity,
+    PortId,
 };
 use jellyflow_core::ops::GraphTransaction;
 
 #[test]
 fn plan_reconnect_preserves_edge_id() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -46,14 +47,14 @@ fn plan_reconnect_preserves_edge_id() {
     let tx = GraphTransaction::from_ops(plan.into_ops());
     tx.apply_to(&mut graph).unwrap();
 
-    let edge = graph.edges.get(&edge_id).unwrap();
+    let edge = graph.edges().get(&edge_id).unwrap();
     assert_eq!(edge.from, out2);
     assert_eq!(edge.to, inn);
 }
 
 #[test]
 fn plan_reconnect_respects_edge_and_port_policy() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -73,29 +74,41 @@ fn plan_reconnect_respects_edge_and_port_policy() {
 
     let edge_id = EdgeId::new();
     insert_edge(&mut graph, edge_id, out1, in1);
-    graph.edges.get_mut(&edge_id).unwrap().reconnectable = Some(EdgeReconnectable::Endpoint(
-        EdgeReconnectableEndpoint::Target,
-    ));
+    graph
+        .update_edge(&edge_id, |edge| {
+            edge.reconnectable = Some(EdgeReconnectable::Endpoint(
+                EdgeReconnectableEndpoint::Target,
+            ))
+        })
+        .expect("edge exists");
 
     let source_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::From, out2);
     assert!(source_plan.is_reject());
 
-    graph.ports.get_mut(&in2).unwrap().connectable_end = Some(false);
+    graph
+        .update_port(&in2, |port| port.connectable_end = Some(false))
+        .expect("port exists");
     let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
     assert!(target_plan.is_reject());
 
-    graph.ports.get_mut(&in2).unwrap().connectable_end = Some(true);
+    graph
+        .update_port(&in2, |port| port.connectable_end = Some(true))
+        .expect("port exists");
     let target_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
     assert!(target_plan.is_accept());
 
-    graph.edges.get_mut(&edge_id).unwrap().reconnectable = Some(EdgeReconnectable::Bool(false));
+    graph
+        .update_edge(&edge_id, |edge| {
+            edge.reconnectable = Some(EdgeReconnectable::Bool(false))
+        })
+        .expect("edge exists");
     let disabled_plan = plan_reconnect_edge(&graph, edge_id, EdgeEndpoint::To, in2);
     assert!(disabled_plan.is_reject());
 }
 
 #[test]
 fn plan_reconnect_single_target_disconnects_other_edges() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();
@@ -128,17 +141,17 @@ fn plan_reconnect_single_target_disconnects_other_edges() {
     tx.apply_to(&mut graph).unwrap();
 
     assert!(
-        !graph.edges.contains_key(&edge_drop),
+        !graph.edges().contains_key(&edge_drop),
         "expected other edge removed"
     );
-    let edge = graph.edges.get(&edge_keep).unwrap();
+    let edge = graph.edges().get(&edge_keep).unwrap();
     assert_eq!(edge.from, out3);
     assert_eq!(edge.to, inn);
 }
 
 #[test]
 fn plan_reconnect_rejects_duplicate_connection() {
-    let mut graph = Graph::default();
+    let mut graph = GraphBuilder::default();
 
     let a = NodeId::new();
     let b = NodeId::new();

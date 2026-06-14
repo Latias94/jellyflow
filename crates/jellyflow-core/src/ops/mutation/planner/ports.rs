@@ -27,7 +27,7 @@ impl GraphMutationPlanner<'_> {
         insert: PortInsert,
     ) -> Result<Vec<GraphOp>, GraphMutationError> {
         let node_id = port.node;
-        if self.graph.ports.contains_key(&id) {
+        if self.graph.ports().contains_key(&id) {
             return Err(GraphMutationError::PortAlreadyExists(id));
         }
         let node = self
@@ -76,7 +76,7 @@ impl GraphMutationPlanner<'_> {
         let mut ops = Vec::new();
 
         if let GraphOp::RemovePort { port, .. } = &remove_op
-            && let Some(node) = self.graph.nodes.get(&port.node)
+            && let Some(node) = self.graph.nodes().get(&port.node)
         {
             let order = NodePortOrderEdit::remove(&node.ports, id);
             if order.from != order.to {

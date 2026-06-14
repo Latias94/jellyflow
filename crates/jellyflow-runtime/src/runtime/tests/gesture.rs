@@ -26,16 +26,15 @@ use jellyflow_core::core::{
     PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
+use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 #[test]
 fn pointer_session_claim_resolves_common_adapter_targets() {
     let (graph, node_id, _b, out_port, _in_port, _eid) = make_graph();
     let mut blocked_graph = graph.clone();
     blocked_graph
-        .ports
-        .get_mut(&out_port)
-        .expect("source port exists")
-        .connectable_start = Some(false);
+        .update_port(&out_port, |port| port.connectable_start = Some(false))
+        .expect("source port exists");
     let store = super::fixtures::make_store(graph);
     let blocked_store = super::fixtures::make_store(blocked_graph);
     let delta = CanvasPoint { x: 3.0, y: 4.0 };
@@ -256,10 +255,8 @@ fn pointer_session_claim_requires_node_drag_threshold_and_policy() {
     );
 
     graph
-        .nodes
-        .get_mut(&node_id)
-        .expect("node exists")
-        .draggable = Some(false);
+        .update_node(&node_id, |node| node.draggable = Some(false))
+        .expect("node exists");
     let blocked_store = super::fixtures::make_store(graph.clone());
     assert_eq!(
         pointer_session_claim(
@@ -284,11 +281,11 @@ fn pointer_session_claim_requires_node_drag_threshold_and_policy() {
     );
 
     graph
-        .nodes
-        .get_mut(&node_id)
-        .expect("node exists")
-        .draggable = Some(true);
-    graph.nodes.get_mut(&node_id).expect("node exists").hidden = true;
+        .update_node(&node_id, |node| node.draggable = Some(true))
+        .expect("node exists");
+    graph
+        .update_node(&node_id, |node| node.hidden = true)
+        .expect("node exists");
     let hidden_store = super::fixtures::make_store(graph);
     assert_eq!(
         pointer_session_claim(
@@ -438,29 +435,33 @@ fn connect_edge_session_emits_lifecycle_around_store_commit() {
 }
 
 fn insert_input_port(graph: &mut Graph, node: NodeId, key: &str) -> PortId {
-    let port = PortId::new();
-    graph
-        .nodes
-        .get_mut(&node)
-        .expect("node exists")
-        .ports
-        .push(port);
-    graph.ports.insert(
-        port,
-        Port {
-            node,
-            key: PortKey::new(key),
-            dir: PortDirection::In,
-            kind: PortKind::Data,
-            capacity: PortCapacity::Single,
-            connectable: None,
-            connectable_start: None,
-            connectable_end: None,
-            ty: None,
-            data: serde_json::Value::Null,
+    let port_id = PortId::new();
+    let from = graph.nodes().get(&node).expect("node exists").ports.clone();
+    let mut to = from.clone();
+    to.push(port_id);
+
+    GraphTransaction::from_ops([
+        GraphOp::AddPort {
+            id: port_id,
+            port: Port {
+                node,
+                key: PortKey::new(key),
+                dir: PortDirection::In,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Single,
+                connectable: None,
+                connectable_start: None,
+                connectable_end: None,
+                ty: None,
+                data: serde_json::Value::Null,
+            },
         },
-    );
-    port
+        GraphOp::SetNodePorts { id: node, from, to },
+    ])
+    .apply_to(graph)
+    .expect("insert input port");
+
+    port_id
 }
 
 #[test]

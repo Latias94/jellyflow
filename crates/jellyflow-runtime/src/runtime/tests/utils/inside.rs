@@ -3,16 +3,16 @@ use super::fixtures::node_at;
 use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::utils::{GetNodesInsideOptions, NodeInclusion, get_nodes_inside};
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphId, NodeId, NodeOrigin,
+    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeId, NodeOrigin,
 };
 
 #[test]
 fn get_nodes_inside_supports_partial_vs_full_inclusion() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
     let b = NodeId::new();
 
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -22,7 +22,7 @@ fn get_nodes_inside_supports_partial_vs_full_inclusion() {
             }),
         ),
     );
-    g.nodes.insert(
+    g.insert_node(
         b,
         node_at(
             CanvasPoint { x: 9.0, y: 9.0 },
@@ -73,7 +73,7 @@ fn get_nodes_inside_supports_partial_vs_full_inclusion() {
 
 #[test]
 fn get_nodes_inside_uses_node_origin_override() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
     let mut node = node_at(
         CanvasPoint { x: 20.0, y: 10.0 },
@@ -83,7 +83,7 @@ fn get_nodes_inside_uses_node_origin_override() {
         }),
     );
     node.origin = Some(NodeOrigin { x: 0.2, y: 1.0 });
-    g.nodes.insert(a, node);
+    g.insert_node(a, node);
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);
@@ -110,11 +110,11 @@ fn get_nodes_inside_uses_node_origin_override() {
 
 #[test]
 fn get_nodes_inside_linear_fallback_sorts_results() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let high = NodeId::from_u128(30);
     let low = NodeId::from_u128(10);
 
-    g.nodes.insert(
+    g.insert_node(
         high,
         node_at(
             CanvasPoint { x: 5.0, y: 5.0 },
@@ -124,7 +124,7 @@ fn get_nodes_inside_linear_fallback_sorts_results() {
             }),
         ),
     );
-    g.nodes.insert(
+    g.insert_node(
         low,
         node_at(
             CanvasPoint { x: 15.0, y: 5.0 },
@@ -160,12 +160,12 @@ fn get_nodes_inside_linear_fallback_sorts_results() {
 
 #[test]
 fn get_nodes_inside_applies_hidden_and_fallback_size_policies() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let visible = NodeId::from_u128(1);
     let hidden_id = NodeId::from_u128(2);
     let unsized_node = NodeId::from_u128(3);
 
-    g.nodes.insert(
+    g.insert_node(
         visible,
         node_at(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -184,9 +184,8 @@ fn get_nodes_inside_applies_hidden_and_fallback_size_policies() {
         }),
     );
     hidden.hidden = true;
-    g.nodes.insert(hidden_id, hidden);
-    g.nodes
-        .insert(unsized_node, node_at(CanvasPoint { x: 40.0, y: 0.0 }, None));
+    g.insert_node(hidden_id, hidden);
+    g.insert_node(unsized_node, node_at(CanvasPoint { x: 40.0, y: 0.0 }, None));
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);
@@ -235,9 +234,9 @@ fn get_nodes_inside_applies_hidden_and_fallback_size_policies() {
 
 #[test]
 fn get_nodes_inside_rejects_non_finite_query_rect() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 0.0, y: 0.0 },

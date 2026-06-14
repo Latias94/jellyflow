@@ -23,23 +23,23 @@ pub(crate) fn build_visible_edge_projection(
     let mut outgoing: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     let mut visible_edges = Vec::new();
 
-    for (edge_id, edge) in &graph.edges {
+    for (edge_id, edge) in graph.edges() {
         if edge.hidden {
             continue;
         }
 
         let source_port = graph
-            .ports
+            .ports()
             .get(&edge.from)
             .ok_or(LayoutError::MissingSourcePort(*edge_id))?;
         let target_port = graph
-            .ports
+            .ports()
             .get(&edge.to)
             .ok_or(LayoutError::MissingTargetPort(*edge_id))?;
-        if !graph.nodes.contains_key(&source_port.node) {
+        if !graph.nodes().contains_key(&source_port.node) {
             return Err(LayoutError::MissingSourceNode { edge: *edge_id });
         }
-        if !graph.nodes.contains_key(&target_port.node) {
+        if !graph.nodes().contains_key(&target_port.node) {
             return Err(LayoutError::MissingTargetNode { edge: *edge_id });
         }
         if !visible_nodes.contains(&source_port.node) || !visible_nodes.contains(&target_port.node)
@@ -131,7 +131,7 @@ pub(crate) fn result_from_placements(
     }
 
     let nodes = graph
-        .nodes
+        .nodes()
         .keys()
         .filter_map(|node| placements.get(node).copied())
         .collect::<Vec<_>>();

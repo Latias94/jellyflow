@@ -59,7 +59,7 @@ pub fn compute_selection_box(
     );
     nodes.retain(|node| {
         graph
-            .nodes
+            .nodes()
             .get(node)
             .is_some_and(|node| resolve_node_interaction_policy(node, interaction).selectable)
     });

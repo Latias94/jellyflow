@@ -43,14 +43,14 @@ impl<'a> ChangesTransactionPlanner<'a> {
 
     fn existing_node(&self, id: NodeId) -> Result<&'a Node, ChangesToTransactionError> {
         self.graph
-            .nodes
+            .nodes()
             .get(&id)
             .ok_or(ChangesToTransactionError::MissingNode(id))
     }
 
     fn existing_edge(&self, id: EdgeId) -> Result<&'a Edge, ChangesToTransactionError> {
         self.graph
-            .edges
+            .edges()
             .get(&id)
             .ok_or(ChangesToTransactionError::MissingEdge(id))
     }

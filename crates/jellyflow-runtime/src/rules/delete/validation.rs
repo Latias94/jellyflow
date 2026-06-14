@@ -30,7 +30,7 @@ impl<'a> DeletePolicyValidator<'a> {
 
     fn validate_nodes(&self, nodes: &BTreeSet<NodeId>, diagnostics: &mut Vec<Diagnostic>) {
         for node_id in nodes {
-            let Some(node) = self.graph.nodes.get(node_id) else {
+            let Some(node) = self.graph.nodes().get(node_id) else {
                 diagnostics.push(delete_diagnostic(
                     "delete.missing_node",
                     DiagnosticTarget::Node { id: *node_id },
@@ -60,7 +60,7 @@ impl<'a> DeletePolicyValidator<'a> {
                 continue;
             }
 
-            let Some(edge) = self.graph.edges.get(edge_id) else {
+            let Some(edge) = self.graph.edges().get(edge_id) else {
                 diagnostics.push(delete_diagnostic(
                     "delete.missing_edge",
                     DiagnosticTarget::Edge { id: *edge_id },

@@ -1,6 +1,7 @@
 use jellyflow_core::{CanvasSize, NodeId};
 use serde::{Deserialize, Serialize};
 
+use crate::builtin::{BuiltinLayoutPreset, builtin_request};
 use crate::engine::{
     LayoutDirection, LayoutEngineId, LayoutEngineRequest, LayoutOptions, LayoutRequest,
     LayoutScope, LayoutSpacing,
@@ -21,39 +22,30 @@ impl Default for LayoutPresetBuilder {
 impl LayoutPresetBuilder {
     /// Returns a layered workflow preset.
     pub fn workflow() -> Self {
-        Self::new(LayoutEngineId::dugong(), LayoutRequest::all())
+        Self {
+            request: builtin_request(BuiltinLayoutPreset::Workflow),
+        }
     }
 
     /// Returns a tree-shaped layered preset.
     pub fn tree() -> Self {
-        Self::new(LayoutEngineId::tidy_tree(), LayoutRequest::all()).with_options(LayoutOptions {
-            direction: LayoutDirection::TopToBottom,
-            spacing: LayoutSpacing {
-                nodesep: 32.0,
-                ranksep: 72.0,
-                edgesep: 16.0,
-            },
-            ..LayoutOptions::default()
-        })
+        Self {
+            request: builtin_request(BuiltinLayoutPreset::Tree),
+        }
     }
 
     /// Returns a radial mind-map preset.
     pub fn mind_map() -> Self {
-        Self::new(LayoutEngineId::mind_map_radial(), LayoutRequest::all())
+        Self {
+            request: builtin_request(BuiltinLayoutPreset::MindMap),
+        }
     }
 
     /// Returns a freeform mind-map preset.
     pub fn freeform() -> Self {
-        Self::new(LayoutEngineId::mind_map_freeform(), LayoutRequest::all()).with_options(
-            LayoutOptions {
-                spacing: LayoutSpacing {
-                    nodesep: 24.0,
-                    ranksep: 24.0,
-                    edgesep: 24.0,
-                },
-                ..LayoutOptions::default()
-            },
-        )
+        Self {
+            request: builtin_request(BuiltinLayoutPreset::Freeform),
+        }
     }
 
     /// Creates a preset builder for a specific engine.
@@ -143,16 +135,6 @@ impl LayoutPresetBuilder {
     /// Builds a layout engine request.
     pub fn build(self) -> LayoutEngineRequest {
         self.request
-    }
-
-    /// Returns the layout request without consuming the builder.
-    pub fn layout_request(&self) -> LayoutRequest {
-        self.request.layout.clone()
-    }
-
-    /// Returns the engine request without consuming the builder.
-    pub fn engine_request(&self) -> LayoutEngineRequest {
-        self.request.clone()
     }
 }
 

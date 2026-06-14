@@ -1,4 +1,6 @@
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow_core::{
+    CanvasPoint, CanvasSize, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
+};
 use jellyflow_runtime::NodeGraphStore;
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow_runtime::runtime::layout::{
@@ -22,7 +24,7 @@ impl LayoutEngine for RowLayoutEngine {
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
         let nodes = graph
-            .nodes
+            .nodes()
             .keys()
             .enumerate()
             .map(|(index, node)| {
@@ -30,7 +32,7 @@ impl LayoutEngine for RowLayoutEngine {
                     .measured_node_sizes
                     .get(node)
                     .copied()
-                    .or_else(|| graph.nodes.get(node).and_then(|node| node.size))
+                    .or_else(|| graph.nodes().get(node).and_then(|node| node.size))
                     .unwrap_or(request.options.default_node_size);
                 let pos = CanvasPoint {
                     x: index as f32 * (size.width + 48.0),
@@ -83,14 +85,10 @@ fn make_node(kind: &str, x: f32, y: f32) -> Node {
 }
 
 fn make_graph() -> Graph {
-    let mut graph = Graph::new(GraphId::from_u128(1));
-    graph
-        .nodes
-        .insert(NodeId::from_u128(2), make_node("demo.topic", 320.0, 120.0));
-    graph
-        .nodes
-        .insert(NodeId::from_u128(3), make_node("demo.note", 640.0, 240.0));
-    graph
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(NodeId::from_u128(2), make_node("demo.topic", 320.0, 120.0));
+    graph.insert_node(NodeId::from_u128(3), make_node("demo.note", 640.0, 240.0));
+    graph.build_unchecked()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -17,14 +17,14 @@ fn store_dispatch_changes_records_history_and_supports_undo() {
     assert!(!outcome.patch.ops().is_empty());
     assert!(store.can_undo());
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
+        store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 12.0, y: 34.0 }
     );
 
     let undo = store.undo().expect("undo").expect("did undo");
     assert!(!undo.patch.ops().is_empty());
     assert_eq!(
-        store.graph().nodes.get(&a).unwrap().pos,
+        store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 0.0, y: 0.0 }
     );
 }

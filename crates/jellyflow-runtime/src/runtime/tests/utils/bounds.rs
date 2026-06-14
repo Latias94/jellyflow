@@ -4,13 +4,13 @@ use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::utils::{
     GetNodesBoundsOptions, get_node_position_with_origin, get_node_rect, get_nodes_bounds,
 };
-use jellyflow_core::core::{CanvasPoint, CanvasSize, Graph, GraphId, NodeId, NodeOrigin};
+use jellyflow_core::core::{CanvasPoint, CanvasSize, GraphBuilder, GraphId, NodeId, NodeOrigin};
 
 #[test]
 fn get_node_position_with_origin_matches_bounds_top_left() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 20.0, y: 10.0 },
@@ -31,7 +31,7 @@ fn get_node_position_with_origin_matches_bounds_top_left() {
 
 #[test]
 fn get_node_position_with_origin_uses_node_origin_override() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
     let mut node = node_at(
         CanvasPoint { x: 20.0, y: 10.0 },
@@ -41,7 +41,7 @@ fn get_node_position_with_origin_uses_node_origin_override() {
         }),
     );
     node.origin = Some(NodeOrigin { x: 0.2, y: 1.0 });
-    g.nodes.insert(a, node);
+    g.insert_node(a, node);
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);
@@ -53,9 +53,9 @@ fn get_node_position_with_origin_uses_node_origin_override() {
 
 #[test]
 fn get_node_rect_is_consistent_with_get_nodes_bounds_singleton() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 20.0, y: 10.0 },
@@ -89,11 +89,11 @@ fn get_node_rect_is_consistent_with_get_nodes_bounds_singleton() {
 
 #[test]
 fn get_nodes_bounds_respects_node_origin() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
     let b = NodeId::new();
 
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -103,7 +103,7 @@ fn get_nodes_bounds_respects_node_origin() {
             }),
         ),
     );
-    g.nodes.insert(
+    g.insert_node(
         b,
         node_at(
             CanvasPoint { x: 20.0, y: 5.0 },
@@ -150,11 +150,10 @@ fn get_nodes_bounds_respects_node_origin() {
 
 #[test]
 fn get_nodes_bounds_uses_fallback_size_for_unsized_nodes() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
 
-    g.nodes
-        .insert(a, node_at(CanvasPoint { x: 5.0, y: 7.0 }, None));
+    g.insert_node(a, node_at(CanvasPoint { x: 5.0, y: 7.0 }, None));
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);
@@ -185,11 +184,11 @@ fn get_nodes_bounds_uses_fallback_size_for_unsized_nodes() {
 
 #[test]
 fn get_nodes_bounds_skips_hidden_nodes_unless_included() {
-    let mut g = Graph::new(GraphId::from_u128(1));
+    let mut g = GraphBuilder::new(GraphId::from_u128(1));
     let a = NodeId::new();
     let b = NodeId::new();
 
-    g.nodes.insert(
+    g.insert_node(
         a,
         node_at(
             CanvasPoint { x: 0.0, y: 0.0 },
@@ -208,7 +207,7 @@ fn get_nodes_bounds_skips_hidden_nodes_unless_included() {
         }),
     );
     hidden.hidden = true;
-    g.nodes.insert(b, hidden);
+    g.insert_node(b, hidden);
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);

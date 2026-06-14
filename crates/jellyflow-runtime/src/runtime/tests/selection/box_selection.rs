@@ -72,10 +72,8 @@ fn selection_box_skips_hidden_edges() {
     let mut fixture = selection_fixture();
     fixture
         .graph
-        .edges
-        .get_mut(&fixture.connected_edge)
-        .expect("edge")
-        .hidden = true;
+        .update_edge(&fixture.connected_edge, |edge| edge.hidden = true)
+        .expect("edge");
     let mut harness = InteractionHarness::new("selection box hidden edge", fixture.graph);
 
     let result = harness

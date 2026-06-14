@@ -3,6 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::builtin::{engine_metadata_by_id, layered_dag_family, mind_map_family};
 use crate::engine::{
     DUGONG_LAYOUT_ENGINE_ID, LayoutEngineId, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
     MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, TIDY_TREE_LAYOUT_ENGINE_ID,
@@ -76,12 +77,12 @@ impl LayoutFamilyMetadata {
 
     /// Returns metadata for Jellyflow's built-in DAG/layered family.
     pub fn layered_dag() -> Self {
-        Self::new(LayoutFamilyId::layered_dag(), "Layered DAG")
+        layered_dag_family()
     }
 
     /// Returns metadata for Jellyflow's built-in mind-map family.
     pub fn mind_map() -> Self {
-        Self::new(LayoutFamilyId::mind_map(), "Mind map")
+        mind_map_family()
     }
 }
 
@@ -135,56 +136,25 @@ impl LayoutEngineMetadata {
 
     /// Returns metadata for the built-in `dugong` engine.
     pub fn dugong() -> Self {
-        Self::new(
-            LayoutEngineId::new(DUGONG_LAYOUT_ENGINE_ID),
-            LayoutFamilyId::layered_dag(),
-            "Dugong layered DAG",
-        )
-        .with_capabilities([
-            LayoutEngineCapability::DirectionalLayout,
-            LayoutEngineCapability::EdgeRouting,
-        ])
+        engine_metadata_by_id(&LayoutEngineId::new(DUGONG_LAYOUT_ENGINE_ID))
+            .expect("built-in dugong engine metadata should exist")
     }
 
     /// Returns metadata for the built-in tidy tree engine.
     pub fn tidy_tree() -> Self {
-        Self::new(
-            LayoutEngineId::new(TIDY_TREE_LAYOUT_ENGINE_ID),
-            LayoutFamilyId::layered_dag(),
-            "Tidy tree",
-        )
-        .with_capabilities([
-            LayoutEngineCapability::DirectionalLayout,
-            LayoutEngineCapability::EdgeRouting,
-        ])
+        engine_metadata_by_id(&LayoutEngineId::new(TIDY_TREE_LAYOUT_ENGINE_ID))
+            .expect("built-in tidy tree engine metadata should exist")
     }
 
     /// Returns metadata for the built-in radial mind-map engine.
     pub fn mind_map_radial() -> Self {
-        Self::new(
-            LayoutEngineId::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID),
-            LayoutFamilyId::mind_map(),
-            "Radial mind map",
-        )
-        .with_capabilities([
-            LayoutEngineCapability::DirectionalLayout,
-            LayoutEngineCapability::EdgeRouting,
-            LayoutEngineCapability::PinnedNodes,
-        ])
+        engine_metadata_by_id(&LayoutEngineId::new(MIND_MAP_RADIAL_LAYOUT_ENGINE_ID))
+            .expect("built-in radial mind-map engine metadata should exist")
     }
 
     /// Returns metadata for the built-in freeform mind-map engine.
     pub fn mind_map_freeform() -> Self {
-        Self::new(
-            LayoutEngineId::new(MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID),
-            LayoutFamilyId::mind_map(),
-            "Freeform mind map",
-        )
-        .with_capabilities([
-            LayoutEngineCapability::DirectionalLayout,
-            LayoutEngineCapability::EdgeRouting,
-            LayoutEngineCapability::PinnedNodes,
-            LayoutEngineCapability::OverlapAvoidance,
-        ])
+        engine_metadata_by_id(&LayoutEngineId::new(MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID))
+            .expect("built-in freeform mind-map engine metadata should exist")
     }
 }

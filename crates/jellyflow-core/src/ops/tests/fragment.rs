@@ -4,7 +4,7 @@ use super::*;
 fn fragment_paste_transaction_is_deterministic_for_seed() {
     let mut graph = Graph::default();
     let group_id = GroupId::new();
-    graph.groups.insert(
+    graph.insert_group(
         group_id,
         Group {
             title: "G".to_string(),
@@ -19,8 +19,8 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
         },
     );
     let ids = insert_connected_pair(&mut graph);
-    graph.nodes.get_mut(&ids.a).unwrap().parent = Some(group_id);
-    graph.nodes.get_mut(&ids.b).unwrap().parent = Some(group_id);
+    graph.node_mut(&ids.a).unwrap().parent = Some(group_id);
+    graph.node_mut(&ids.b).unwrap().parent = Some(group_id);
 
     let fragment = GraphFragment::from_selection(&graph, [ids.a, ids.b], [group_id]);
     let remapper = IdRemapper::new(IdRemapSeed(Uuid::nil()));
@@ -65,7 +65,7 @@ fn fragment_from_nodes_includes_referenced_symbols() {
     let mut graph = Graph::default();
 
     let symbol_id = SymbolId::from_u128(10);
-    graph.symbols.insert(
+    graph.insert_symbol(
         symbol_id,
         Symbol {
             name: "S".to_string(),
@@ -78,7 +78,7 @@ fn fragment_from_nodes_includes_referenced_symbols() {
     let node_id = NodeId::new();
     let mut node = make_node(SYMBOL_REF_NODE_KIND);
     node.data = serde_json::json!({ "symbol_id": symbol_id });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let fragment = GraphFragment::from_nodes(&graph, [node_id]);
     assert!(
@@ -92,7 +92,7 @@ fn fragment_paste_transaction_remaps_symbol_ref_targets_to_pasted_symbols() {
     let mut graph = Graph::default();
 
     let symbol_id = SymbolId::from_u128(10);
-    graph.symbols.insert(
+    graph.insert_symbol(
         symbol_id,
         Symbol {
             name: "S".to_string(),
@@ -105,7 +105,7 @@ fn fragment_paste_transaction_remaps_symbol_ref_targets_to_pasted_symbols() {
     let node_id = NodeId::new();
     let mut node = make_node(SYMBOL_REF_NODE_KIND);
     node.data = serde_json::json!({ "symbol_id": symbol_id });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let fragment = GraphFragment::from_nodes(&graph, [node_id]);
     let remapper = IdRemapper::new(IdRemapSeed(Uuid::nil()));
@@ -138,7 +138,7 @@ fn fragment_from_nodes_includes_referenced_subgraph_imports() {
     let mut graph = Graph::default();
 
     let imported_graph = GraphId::from_u128(42);
-    graph.imports.insert(
+    graph.insert_import(
         imported_graph,
         GraphImport {
             alias: Some("stdlib".to_string()),
@@ -148,7 +148,7 @@ fn fragment_from_nodes_includes_referenced_subgraph_imports() {
     let node_id = NodeId::new();
     let mut node = make_node(SUBGRAPH_NODE_KIND);
     node.data = serde_json::json!({ "graph_id": imported_graph });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let fragment = GraphFragment::from_nodes(&graph, [node_id]);
     assert!(
@@ -162,7 +162,7 @@ fn fragment_paste_transaction_keeps_subgraph_target_graph_id_and_adds_import() {
     let mut graph = Graph::default();
 
     let imported_graph = GraphId::from_u128(43);
-    graph.imports.insert(
+    graph.insert_import(
         imported_graph,
         GraphImport {
             alias: Some("core".to_string()),
@@ -172,7 +172,7 @@ fn fragment_paste_transaction_keeps_subgraph_target_graph_id_and_adds_import() {
     let node_id = NodeId::new();
     let mut node = make_node(SUBGRAPH_NODE_KIND);
     node.data = serde_json::json!({ "graph_id": imported_graph });
-    graph.nodes.insert(node_id, node);
+    graph.insert_node(node_id, node);
 
     let fragment = GraphFragment::from_nodes(&graph, [node_id]);
     let remapper = IdRemapper::new(IdRemapSeed(Uuid::nil()));

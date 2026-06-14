@@ -41,21 +41,21 @@ impl<'a> StorageValidator<'a> {
     }
 
     fn validate_graph_version(&mut self) -> bool {
-        if self.graph.graph_version == crate::core::model::GRAPH_VERSION {
+        if self.graph.graph_version() == crate::core::model::GRAPH_VERSION {
             return true;
         }
 
         self.report
             .push(GraphValidationError::UnsupportedGraphVersion {
                 expected: crate::core::model::GRAPH_VERSION,
-                found: self.graph.graph_version,
+                found: self.graph.graph_version(),
             });
         false
     }
 
     fn validate_ports_reference_nodes(&mut self) {
-        for (port_id, port) in &self.graph.ports {
-            if !self.graph.nodes.contains_key(&port.node) {
+        for (port_id, port) in self.graph.ports() {
+            if !self.graph.nodes().contains_key(&port.node) {
                 self.report.push(GraphValidationError::PortMissingNode {
                     port: *port_id,
                     node: port.node,
@@ -66,8 +66,8 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_ports_are_listed_by_owner(&mut self) {
         let listed_ports_by_node = listed_ports_by_node(self.graph);
-        for (port_id, port) in &self.graph.ports {
-            if !self.graph.nodes.contains_key(&port.node) {
+        for (port_id, port) in self.graph.ports() {
+            if !self.graph.nodes().contains_key(&port.node) {
                 continue;
             }
             if !node_lists_port(&listed_ports_by_node, port.node, *port_id) {
@@ -81,7 +81,7 @@ impl<'a> StorageValidator<'a> {
     }
 
     fn validate_nodes(&mut self) {
-        for (node_id, node) in &self.graph.nodes {
+        for (node_id, node) in self.graph.nodes() {
             self.validate_node(*node_id, node);
         }
     }
@@ -94,7 +94,7 @@ impl<'a> StorageValidator<'a> {
 
     fn validate_node_parent(&mut self, node_id: NodeId, node: &Node) {
         if let Some(group) = node.parent
-            && !self.graph.groups.contains_key(&group)
+            && !self.graph.groups().contains_key(&group)
         {
             self.report
                 .push(GraphValidationError::NodeParentMissingGroup {
@@ -126,7 +126,7 @@ impl<'a> StorageValidator<'a> {
                 });
                 continue;
             }
-            let Some(port) = self.graph.ports.get(port_id) else {
+            let Some(port) = self.graph.ports().get(port_id) else {
                 self.report
                     .push(GraphValidationError::NodePortsMissingPort {
                         node: node_id,
@@ -145,14 +145,14 @@ impl<'a> StorageValidator<'a> {
     }
 
     fn validate_edges_reference_ports(&mut self) {
-        for (edge_id, edge) in &self.graph.edges {
+        for (edge_id, edge) in self.graph.edges() {
             self.validate_edge_endpoint(*edge_id, edge.from);
             self.validate_edge_endpoint(*edge_id, edge.to);
         }
     }
 
     fn validate_edge_endpoint(&mut self, edge_id: EdgeId, port_id: PortId) {
-        if !self.graph.ports.contains_key(&port_id) {
+        if !self.graph.ports().contains_key(&port_id) {
             self.report.push(GraphValidationError::EdgeMissingPort {
                 edge: edge_id,
                 port: port_id,
@@ -161,7 +161,7 @@ impl<'a> StorageValidator<'a> {
     }
 
     fn validate_bindings_reference_graph_local_targets(&mut self) {
-        for (binding_id, binding) in &self.graph.bindings {
+        for (binding_id, binding) in self.graph.bindings() {
             for target in [
                 binding.subject.graph_local_target(),
                 binding.target.graph_local_target(),
@@ -177,11 +177,13 @@ impl<'a> StorageValidator<'a> {
     fn validate_binding_target(&mut self, binding_id: BindingId, target: GraphLocalBindingTarget) {
         let exists = match target {
             GraphLocalBindingTarget::Graph => true,
-            GraphLocalBindingTarget::Node { id } => self.graph.nodes.contains_key(&id),
-            GraphLocalBindingTarget::Port { id } => self.graph.ports.contains_key(&id),
-            GraphLocalBindingTarget::Edge { id } => self.graph.edges.contains_key(&id),
-            GraphLocalBindingTarget::Group { id } => self.graph.groups.contains_key(&id),
-            GraphLocalBindingTarget::StickyNote { id } => self.graph.sticky_notes.contains_key(&id),
+            GraphLocalBindingTarget::Node { id } => self.graph.nodes().contains_key(&id),
+            GraphLocalBindingTarget::Port { id } => self.graph.ports().contains_key(&id),
+            GraphLocalBindingTarget::Edge { id } => self.graph.edges().contains_key(&id),
+            GraphLocalBindingTarget::Group { id } => self.graph.groups().contains_key(&id),
+            GraphLocalBindingTarget::StickyNote { id } => {
+                self.graph.sticky_notes().contains_key(&id)
+            }
         };
 
         if !exists {

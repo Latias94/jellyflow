@@ -55,10 +55,9 @@ fn make_port(
 
 fn attach_port(graph: &mut Graph, port_id: PortId, port: Port) {
     let node_id = port.node;
-    graph.ports.insert(port_id, port);
+    graph.insert_port(port_id, port);
     graph
-        .nodes
-        .get_mut(&node_id)
+        .node_mut(&node_id)
         .expect("port owner node")
         .ports
         .push(port_id);

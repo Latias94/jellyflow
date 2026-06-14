@@ -33,7 +33,7 @@ fn store_applies_create_node_from_schema_through_dispatch() {
     let port_ids: Vec<_> = outcome.port_ids().collect();
     assert_eq!(port_ids.len(), 2);
 
-    let node = store.graph().nodes.get(&node_id).expect("created node");
+    let node = store.graph().nodes().get(&node_id).expect("created node");
     assert_eq!(node.kind, NodeKindKey::new("demo.note"));
     assert_eq!(node.kind_version, 2);
     assert_eq!(node.pos, CanvasPoint { x: 40.0, y: 80.0 });
@@ -47,14 +47,14 @@ fn store_applies_create_node_from_schema_through_dispatch() {
     assert_eq!(node.ports, port_ids);
     assert_eq!(node.data, json!({ "body": "" }));
 
-    assert_eq!(store.graph().ports[&port_ids[0]].node, node_id);
+    assert_eq!(store.graph().ports()[&port_ids[0]].node, node_id);
     assert_eq!(
-        store.graph().ports[&port_ids[0]].key,
+        store.graph().ports()[&port_ids[0]].key,
         PortKey::new("source")
     );
-    assert_eq!(store.graph().ports[&port_ids[1]].node, node_id);
+    assert_eq!(store.graph().ports()[&port_ids[1]].node, node_id);
     assert_eq!(
-        store.graph().ports[&port_ids[1]].key,
+        store.graph().ports()[&port_ids[1]].key,
         PortKey::new("result")
     );
 
@@ -78,7 +78,7 @@ fn store_applies_create_node_from_schema_through_dispatch() {
             .iter()
             .any(|op| { matches!(op, GraphOp::RemoveNode { id, .. } if *id == node_id) })
     );
-    assert!(!store.graph().nodes.contains_key(&node_id));
+    assert!(!store.graph().nodes().contains_key(&node_id));
 }
 
 #[test]
@@ -98,8 +98,8 @@ fn store_create_node_reports_missing_schema_without_mutating_graph() {
         CreateNodeError::Schema(NodeInstantiationError::MissingSchema(kind))
             if kind == NodeKindKey::new("demo.missing")
     ));
-    assert!(store.graph().nodes.is_empty());
-    assert!(store.graph().ports.is_empty());
+    assert!(store.graph().nodes().is_empty());
+    assert!(store.graph().ports().is_empty());
 }
 
 fn empty_store() -> NodeGraphStore {

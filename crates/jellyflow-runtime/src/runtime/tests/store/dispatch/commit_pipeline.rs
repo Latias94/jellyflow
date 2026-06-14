@@ -44,7 +44,7 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
 
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
 
-    assert!(store.graph().nodes.get(&a).unwrap().hidden);
+    assert!(store.graph().nodes().get(&a).unwrap().hidden);
     assert!(store.lookups().node_lookup.get(&a).unwrap().hidden);
     assert_eq!(
         store.lookups().edge_lookup.get(&eid).unwrap().reconnectable,

@@ -14,13 +14,9 @@ fn graph_diff_roundtrips_when_deleting_a_port_with_incident_edges() {
     );
 
     let mut to = from.clone();
-    to.nodes
-        .get_mut(&ids.a)
-        .unwrap()
-        .ports
-        .retain(|p| *p != ids.out);
-    to.ports.remove(&ids.out);
-    to.edges.remove(&ids.edge);
+    to.node_mut(&ids.a).unwrap().ports.retain(|p| *p != ids.out);
+    to.remove_port(&ids.out);
+    to.remove_edge(&ids.edge);
 
     let tx = graph_diff(&from, &to);
     assert!(
@@ -61,12 +57,12 @@ fn graph_diff_roundtrips_when_port_deletion_moves_incident_edge() {
     insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(790);
-    from.edges.insert(edge_id, make_edge(out1, inn));
+    from.insert_edge(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
-    to.nodes.get_mut(&a).unwrap().ports.retain(|p| *p != out1);
-    to.ports.remove(&out1);
-    to.edges.get_mut(&edge_id).unwrap().from = out2;
+    to.node_mut(&a).unwrap().retain_ports(|p| *p != out1);
+    to.remove_port(&out1);
+    to.edge_mut(&edge_id).unwrap().from = out2;
 
     let tx = graph_diff(&from, &to);
     assert!(
@@ -113,7 +109,7 @@ fn graph_diff_roundtrips_when_a_port_changes_structurally() {
     );
 
     let mut to = from.clone();
-    to.ports.get_mut(&ids.out).unwrap().key = PortKey::new("out2");
+    to.port_mut(&ids.out).unwrap().key = PortKey::new("out2");
 
     let tx = graph_diff(&from, &to);
     assert!(
@@ -180,11 +176,11 @@ fn graph_diff_inverse_roundtrips_when_structural_port_replacement_moves_edge() {
     insert_port(&mut from, inn, b, "in", PortDirection::In);
 
     let edge_id = EdgeId::from_u128(3030);
-    from.edges.insert(edge_id, make_edge(out1, inn));
+    from.insert_edge(edge_id, make_edge(out1, inn));
 
     let mut to = from.clone();
-    to.ports.get_mut(&out1).unwrap().key = PortKey::new("out1-renamed");
-    to.edges.get_mut(&edge_id).unwrap().from = out2;
+    to.port_mut(&out1).unwrap().key = PortKey::new("out1-renamed");
+    to.edge_mut(&edge_id).unwrap().from = out2;
 
     let tx = graph_diff(&from, &to);
     assert!(

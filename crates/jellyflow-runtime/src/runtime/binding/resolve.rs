@@ -24,7 +24,7 @@ pub fn resolve_binding_query(
     options: BindingQueryOptions,
 ) -> BindingQueryResult {
     let bindings = graph
-        .bindings
+        .bindings()
         .iter()
         .map(|(id, binding)| {
             ResolvedBinding::new(
@@ -79,7 +79,7 @@ fn resolve_graph_local_target(
             resolve_edge_target(graph, lookups, id, node_origin, options)
         }
         GraphLocalBindingTarget::Group { id } => graph
-            .groups
+            .groups()
             .get(&id)
             .map(|group| BindingEndpointResolution::GroupRect {
                 group: id,
@@ -88,7 +88,7 @@ fn resolve_graph_local_target(
             })
             .unwrap_or(BindingEndpointResolution::Unresolved),
         GraphLocalBindingTarget::StickyNote { id } => graph
-            .sticky_notes
+            .sticky_notes()
             .get(&id)
             .map(|note| BindingEndpointResolution::StickyNoteRect {
                 note: id,
@@ -108,7 +108,7 @@ fn resolve_node_target(
     node_origin: (f32, f32),
     options: BindingQueryOptions,
 ) -> BindingEndpointResolution {
-    let Some(model) = graph.nodes.get(&node) else {
+    let Some(model) = graph.nodes().get(&node) else {
         return BindingEndpointResolution::Unresolved;
     };
     if model.hidden && !options.include_hidden {
@@ -131,10 +131,10 @@ fn resolve_port_target(
     node_origin: (f32, f32),
     options: BindingQueryOptions,
 ) -> BindingEndpointResolution {
-    let Some(model) = graph.ports.get(&port) else {
+    let Some(model) = graph.ports().get(&port) else {
         return BindingEndpointResolution::Unresolved;
     };
-    let Some(node) = graph.nodes.get(&model.node) else {
+    let Some(node) = graph.nodes().get(&model.node) else {
         return BindingEndpointResolution::Unresolved;
     };
     if node.hidden && !options.include_hidden {
@@ -170,22 +170,22 @@ fn resolve_edge_target(
     node_origin: (f32, f32),
     options: BindingQueryOptions,
 ) -> BindingEndpointResolution {
-    let Some(edge_model) = graph.edges.get(&edge) else {
+    let Some(edge_model) = graph.edges().get(&edge) else {
         return BindingEndpointResolution::Unresolved;
     };
     if edge_model.hidden && !options.include_hidden {
         return BindingEndpointResolution::Hidden;
     }
-    let Some(from_port) = graph.ports.get(&edge_model.from) else {
+    let Some(from_port) = graph.ports().get(&edge_model.from) else {
         return BindingEndpointResolution::Unresolved;
     };
-    let Some(to_port) = graph.ports.get(&edge_model.to) else {
+    let Some(to_port) = graph.ports().get(&edge_model.to) else {
         return BindingEndpointResolution::Unresolved;
     };
-    let Some(source_node) = graph.nodes.get(&from_port.node) else {
+    let Some(source_node) = graph.nodes().get(&from_port.node) else {
         return BindingEndpointResolution::Unresolved;
     };
-    let Some(target_node) = graph.nodes.get(&to_port.node) else {
+    let Some(target_node) = graph.nodes().get(&to_port.node) else {
         return BindingEndpointResolution::Unresolved;
     };
     if (source_node.hidden || target_node.hidden) && !options.include_hidden {
