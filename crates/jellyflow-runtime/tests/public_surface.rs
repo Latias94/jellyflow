@@ -3,7 +3,7 @@ use jellyflow_core::core::{
     PortDirection, PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::GraphTransaction;
+use jellyflow_core::ops::{GraphMutationFootprint, GraphTransaction};
 use jellyflow_runtime::io::{
     GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
     NodeGraphInteractionState, NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons,
@@ -53,6 +53,7 @@ fn crate_root_exposes_canonical_runtime_api() {
 
     assert_eq!(store.graph().graph_id(), graph.graph_id());
     assert!(NodeGraphPatch::default().is_empty());
+    let _: &GraphMutationFootprint = NodeGraphPatch::default().footprint();
     let _ = std::mem::size_of::<DispatchOutcome>();
     let _ = std::mem::size_of::<DispatchError>();
 }

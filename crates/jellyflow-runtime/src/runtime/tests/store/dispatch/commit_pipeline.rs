@@ -8,7 +8,7 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
     let (g0, a, _b, _out_port, _in_port, eid) = make_graph();
     let mut store = make_store(g0);
 
-    let observed: Rc<RefCell<Option<(bool, Option<EdgeReconnectable>)>>> =
+    let observed: Rc<RefCell<Option<(bool, Option<EdgeReconnectable>, bool, bool)>>> =
         Rc::new(RefCell::new(None));
     let observed2 = observed.clone();
     store.subscribe(move |ev| {
@@ -25,7 +25,12 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
                     EdgeChange::Reconnectable { reconnectable, .. } => *reconnectable,
                     _ => None,
                 });
-            *observed2.borrow_mut() = Some((hidden, reconnectable));
+            *observed2.borrow_mut() = Some((
+                hidden,
+                reconnectable,
+                patch.footprint().nodes.contains(&a),
+                patch.footprint().edges.contains(&eid),
+            ));
         }
     });
 
@@ -65,8 +70,11 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
             reconnectable: Some(EdgeReconnectable::Bool(false))
         } if *id == eid
     )));
+    assert!(outcome.footprint().nodes.contains(&a));
+    assert!(outcome.footprint().edges.contains(&eid));
+    assert_eq!(outcome.footprint(), outcome.patch.footprint());
     assert_eq!(
         *observed.borrow(),
-        Some((true, Some(EdgeReconnectable::Bool(false))))
+        Some((true, Some(EdgeReconnectable::Bool(false)), true, true))
     );
 }

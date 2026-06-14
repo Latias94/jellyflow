@@ -11,6 +11,9 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Changed `Graph` collection accessors to return read-only `GraphElements` views instead of direct
   `BTreeMap` references, keeping public graph reads stable while leaving internal storage free to
   evolve.
+- Changed `NodeGraphPatch` to expose committed data through `transaction()`, `footprint()`, and
+  `into_parts()` accessors instead of public fields, keeping cached mutation footprints consistent
+  with their transactions.
 
 ### Added
 
@@ -18,6 +21,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
   collaboration, and indexing boundaries from normal `GraphOp` / `GraphTransaction` values.
 - Added layout dirty-scope helpers that derive `LayoutScope::Nodes` from a transaction or mutation
   footprint using the current graph snapshot.
+- Added cached mutation footprints on runtime `NodeGraphPatch` / `DispatchOutcome` values so
+  middleware, subscribers, and controlled integrations can consume touched ids directly.
 
 ## [0.2.0] - 2026-06-13
 

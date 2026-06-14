@@ -25,7 +25,7 @@ use crate::runtime::lookups::NodeGraphLookups;
 use crate::runtime::middleware::NodeGraphStoreMiddleware;
 use crate::runtime::query::spatial::SpatialQueryCache;
 use jellyflow_core::core::Graph;
-use jellyflow_core::ops::{GraphHistory, GraphTransaction};
+use jellyflow_core::ops::{GraphHistory, GraphMutationFootprint, GraphTransaction};
 
 /// Dispatch outcome for store actions.
 #[derive(Debug, Clone)]
@@ -45,6 +45,10 @@ impl DispatchOutcome {
 
     pub fn committed(&self) -> &GraphTransaction {
         self.patch.transaction()
+    }
+
+    pub fn footprint(&self) -> &GraphMutationFootprint {
+        self.patch.footprint()
     }
 }
 
