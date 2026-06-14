@@ -202,9 +202,16 @@ Run local measurements with:
 
 ```sh
 cargo bench -p jellyflow-layout --bench layout_engines
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines
 cargo bench -p jellyflow-runtime --bench rendering_query
 cargo bench -p jellyflow-runtime --bench schema_create_node
 cargo bench -p jellyflow-runtime --bench layout_pipeline
+```
+
+For a dugong stage breakdown on the same layered DAG fixture sizes, run:
+
+```sh
+DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
 ```
 
 CI runs the same benchmarks in Criterion `--test` mode to catch broken benchmark fixtures without

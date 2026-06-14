@@ -70,3 +70,13 @@ fn plan_builtin_layout(graph: &Graph) -> Result<(), jellyflow_layout::LayoutErro
 For interactive editors, keep product-specific behavior in custom engines. A radial, freeform, or
 mind-map engine can implement `LayoutEngine`, use `LayoutContext` for measured sizes or pinned
 nodes, and still return the same `LayoutResult` / `GraphTransaction` shape as the built-in engine.
+
+## Diagnostics
+
+`dugong` exposes optional internal stage timings through `DUGONG_DAGREISH_TIMING`. Use the local
+diagnostic example when layered DAG performance changes and you need to separate Jellyflow
+projection cost from upstream rank/order/position work:
+
+```sh
+DUGONG_DAGREISH_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
+```
