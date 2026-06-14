@@ -81,6 +81,8 @@ fn benchmark_dugong_layered(c: &mut Criterion) {
         let graph = layered_dag_fixture(layer_count, 10);
         let node_count = graph.nodes().len();
         let request = workflow_request();
+        let layout = layout_graph_with_dugong(&graph, &request)
+            .expect("dugong layout for benchmark fixture");
 
         group.throughput(Throughput::Elements(node_count as u64));
 
@@ -95,14 +97,12 @@ fn benchmark_dugong_layered(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::new("to_transaction", node_count),
-            &graph,
-            |b, graph| {
+            &layout,
+            |b, layout| {
                 b.iter(|| {
-                    let layout = layout_graph_with_dugong(black_box(graph), black_box(&request))
-                        .expect("dugong layout");
                     black_box(
                         layout
-                            .to_transaction(black_box(graph))
+                            .to_transaction(black_box(&graph))
                             .expect("transaction"),
                     );
                 })
