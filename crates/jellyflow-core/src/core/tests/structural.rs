@@ -54,6 +54,32 @@ fn validate_allows_edges_regardless_of_port_direction() {
 }
 
 #[test]
+fn graph_element_views_expose_read_only_collection_operations() {
+    let mut graph = Graph::default();
+    let node_id = NodeId::new();
+    graph.insert_node(node_id, make_node("core.a"));
+
+    let nodes = graph.nodes();
+
+    assert_eq!(nodes.len(), 1);
+    assert!(!nodes.is_empty());
+    assert!(nodes.contains_key(&node_id));
+    assert_eq!(
+        nodes.get(&node_id).map(|node| node.kind.0.as_str()),
+        Some("core.a")
+    );
+    assert_eq!(nodes.keys().copied().collect::<Vec<_>>(), vec![node_id]);
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|(id, node)| (*id, node.kind.0.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(node_id, "core.a")]
+    );
+    assert_eq!(nodes[&node_id].kind.0.as_str(), "core.a");
+}
+
+#[test]
 fn validate_rejects_port_missing_from_owner_ports() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();

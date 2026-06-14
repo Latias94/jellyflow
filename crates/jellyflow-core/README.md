@@ -18,7 +18,7 @@ use jellyflow_core::{Graph, GraphId, NodeId};
 let graph = Graph::new(GraphId::new());
 let node_id = NodeId::new();
 
-assert!(!graph.nodes.contains_key(&node_id));
+assert!(!graph.nodes().contains_key(&node_id));
 ```
 
 Bindings are portable document data. Jellyflow validates graph-local binding targets such as nodes,

@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, btree_map};
+use std::iter::FusedIterator;
+use std::ops::Index;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +18,188 @@ use super::resources::{Group, StickyNote, Symbol};
 
 /// Graph schema version (v1).
 pub const GRAPH_VERSION: u32 = 1;
+
+/// Read-only view over one graph element collection.
+///
+/// This keeps `Graph`'s public API from committing callers to its storage type while preserving the
+/// common map-like read operations adapters need for deterministic traversal and lookup.
+#[derive(Debug, Clone, Copy)]
+pub struct GraphElements<'a, K, V> {
+    entries: &'a BTreeMap<K, V>,
+}
+
+/// Iterator over graph element ids and values.
+#[derive(Debug, Clone)]
+pub struct GraphElementIter<'a, K, V> {
+    inner: btree_map::Iter<'a, K, V>,
+}
+
+/// Iterator over graph element ids.
+#[derive(Debug, Clone)]
+pub struct GraphElementKeys<'a, K, V> {
+    inner: btree_map::Keys<'a, K, V>,
+}
+
+/// Iterator over graph element values.
+#[derive(Debug, Clone)]
+pub struct GraphElementValues<'a, K, V> {
+    inner: btree_map::Values<'a, K, V>,
+}
+
+impl<'a, K, V> GraphElements<'a, K, V> {
+    pub(crate) fn new(entries: &'a BTreeMap<K, V>) -> Self {
+        Self { entries }
+    }
+
+    /// Returns the number of elements.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` when this collection has no elements.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns `true` when the collection contains `key`.
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        self.entries.contains_key(key)
+    }
+
+    /// Returns an element by id.
+    pub fn get<Q>(&self, key: &Q) -> Option<&'a V>
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        self.entries.get(key)
+    }
+
+    /// Returns key-value pairs in deterministic id order.
+    pub fn iter(&self) -> GraphElementIter<'a, K, V> {
+        GraphElementIter {
+            inner: self.entries.iter(),
+        }
+    }
+
+    /// Returns ids in deterministic order.
+    pub fn keys(&self) -> GraphElementKeys<'a, K, V> {
+        GraphElementKeys {
+            inner: self.entries.keys(),
+        }
+    }
+
+    /// Returns element values in deterministic id order.
+    pub fn values(&self) -> GraphElementValues<'a, K, V> {
+        GraphElementValues {
+            inner: self.entries.values(),
+        }
+    }
+}
+
+impl<'a, 'b, K, V> PartialEq<GraphElements<'b, K, V>> for GraphElements<'a, K, V>
+where
+    K: Ord + PartialEq,
+    V: PartialEq,
+{
+    fn eq(&self, other: &GraphElements<'b, K, V>) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl<'a, K, V> Eq for GraphElements<'a, K, V>
+where
+    K: Ord + Eq,
+    V: Eq,
+{
+}
+
+impl<'a, K, V> Index<&K> for GraphElements<'a, K, V>
+where
+    K: Ord,
+{
+    type Output = V;
+
+    fn index(&self, key: &K) -> &Self::Output {
+        self.entries.get(key).expect("no entry found for key")
+    }
+}
+
+impl<'a, K, V> IntoIterator for GraphElements<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = GraphElementIter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K, V> Iterator for GraphElementIter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K, V> DoubleEndedIterator for GraphElementIter<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for GraphElementIter<'a, K, V> {}
+impl<'a, K, V> FusedIterator for GraphElementIter<'a, K, V> {}
+
+impl<'a, K, V> Iterator for GraphElementKeys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K, V> DoubleEndedIterator for GraphElementKeys<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for GraphElementKeys<'a, K, V> {}
+impl<'a, K, V> FusedIterator for GraphElementKeys<'a, K, V> {}
+
+impl<'a, K, V> Iterator for GraphElementValues<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'a, K, V> DoubleEndedIterator for GraphElementValues<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}
+
+impl<'a, K, V> ExactSizeIterator for GraphElementValues<'a, K, V> {}
+impl<'a, K, V> FusedIterator for GraphElementValues<'a, K, V> {}
 
 /// Node graph document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,8 +276,8 @@ impl Graph {
     }
 
     /// Returns graph imports.
-    pub fn imports(&self) -> &BTreeMap<GraphId, GraphImport> {
-        &self.imports
+    pub fn imports(&self) -> GraphElements<'_, GraphId, GraphImport> {
+        GraphElements::new(&self.imports)
     }
 
     /// Returns one graph import.
@@ -135,8 +320,8 @@ impl Graph {
     }
 
     /// Returns graph symbols.
-    pub fn symbols(&self) -> &BTreeMap<SymbolId, Symbol> {
-        &self.symbols
+    pub fn symbols(&self) -> GraphElements<'_, SymbolId, Symbol> {
+        GraphElements::new(&self.symbols)
     }
 
     /// Returns one symbol.
@@ -179,8 +364,8 @@ impl Graph {
     }
 
     /// Returns graph nodes.
-    pub fn nodes(&self) -> &BTreeMap<NodeId, Node> {
-        &self.nodes
+    pub fn nodes(&self) -> GraphElements<'_, NodeId, Node> {
+        GraphElements::new(&self.nodes)
     }
 
     /// Returns one node.
@@ -223,8 +408,8 @@ impl Graph {
     }
 
     /// Returns graph ports.
-    pub fn ports(&self) -> &BTreeMap<PortId, Port> {
-        &self.ports
+    pub fn ports(&self) -> GraphElements<'_, PortId, Port> {
+        GraphElements::new(&self.ports)
     }
 
     /// Returns one port.
@@ -267,8 +452,8 @@ impl Graph {
     }
 
     /// Returns graph edges.
-    pub fn edges(&self) -> &BTreeMap<EdgeId, Edge> {
-        &self.edges
+    pub fn edges(&self) -> GraphElements<'_, EdgeId, Edge> {
+        GraphElements::new(&self.edges)
     }
 
     /// Returns one edge.
@@ -311,8 +496,8 @@ impl Graph {
     }
 
     /// Returns graph groups.
-    pub fn groups(&self) -> &BTreeMap<GroupId, Group> {
-        &self.groups
+    pub fn groups(&self) -> GraphElements<'_, GroupId, Group> {
+        GraphElements::new(&self.groups)
     }
 
     /// Returns one group.
@@ -355,8 +540,8 @@ impl Graph {
     }
 
     /// Returns sticky notes.
-    pub fn sticky_notes(&self) -> &BTreeMap<StickyNoteId, StickyNote> {
-        &self.sticky_notes
+    pub fn sticky_notes(&self) -> GraphElements<'_, StickyNoteId, StickyNote> {
+        GraphElements::new(&self.sticky_notes)
     }
 
     /// Returns one sticky note.
@@ -406,8 +591,8 @@ impl Graph {
     }
 
     /// Returns bindings.
-    pub fn bindings(&self) -> &BTreeMap<BindingId, Binding> {
-        &self.bindings
+    pub fn bindings(&self) -> GraphElements<'_, BindingId, Binding> {
+        GraphElements::new(&self.bindings)
     }
 
     /// Returns one binding.

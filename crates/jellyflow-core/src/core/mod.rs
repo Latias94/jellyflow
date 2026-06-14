@@ -14,9 +14,10 @@ pub use ids::{
 pub use imports::{GraphImport, GraphImportClosure, GraphImportError, resolve_import_closure};
 pub use model::{
     Binding, BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind,
-    EdgeReconnectable, EdgeReconnectableEndpoint, Graph, GraphBuilder, GraphLocalBindingTarget,
-    Group, Node, NodeExtent, NodeOrigin, Port, PortCapacity, PortDirection, PortKind, SourceAnchor,
-    StickyNote, Symbol,
+    EdgeReconnectable, EdgeReconnectableEndpoint, Graph, GraphBuilder, GraphElementIter,
+    GraphElementKeys, GraphElementValues, GraphElements, GraphLocalBindingTarget, Group, Node,
+    NodeExtent, NodeOrigin, Port, PortCapacity, PortDirection, PortKind, SourceAnchor, StickyNote,
+    Symbol,
 };
 pub use subgraph::{
     SUBGRAPH_NODE_KIND, SubgraphBindingError, SubgraphNodeError, collect_subgraph_targets,

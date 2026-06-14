@@ -6,6 +6,12 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- Changed `Graph` collection accessors to return read-only `GraphElements` views instead of direct
+  `BTreeMap` references, keeping public graph reads stable while leaving internal storage free to
+  evolve.
+
 ## [0.2.0] - 2026-06-13
 
 ### Added
