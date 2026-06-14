@@ -33,7 +33,7 @@ impl GraphBuilder {
     }
 
     /// Starts from an existing graph.
-    pub fn from_graph(graph: Graph) -> Self {
+    pub(crate) fn from_graph(graph: Graph) -> Self {
         Self { graph }
     }
 

@@ -1,5 +1,5 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node, NodeId,
     NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
 };
 
@@ -105,8 +105,7 @@ fn disconnected_roots_are_separated() {
 
 #[test]
 fn hidden_nodes_edges_and_scope_are_excluded() {
-    let (graph, root, left, right, _grandchild) = tidy_tree_graph();
-    let mut graph = GraphBuilder::from_graph(graph);
+    let (mut graph, root, left, right, _grandchild) = tidy_tree_graph();
     graph
         .update_node(&right, |node| node.hidden = true)
         .expect("node exists");
@@ -130,8 +129,7 @@ fn hidden_nodes_edges_and_scope_are_excluded() {
 
 #[test]
 fn cycles_are_projected_as_stable_tree_without_looping() {
-    let (graph, root, left, right, _grandchild) = tidy_tree_graph();
-    let mut graph = GraphBuilder::from_graph(graph);
+    let (mut graph, root, left, right, _grandchild) = tidy_tree_graph();
     let left_out = PortId::from_u128(30);
     let root_in = PortId::from_u128(31);
     let cycle_edge = EdgeId::from_u128(32);
@@ -161,7 +159,7 @@ fn cycles_are_projected_as_stable_tree_without_looping() {
     );
 }
 
-fn tidy_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
+fn tidy_tree_graph() -> (GraphBuilder, NodeId, NodeId, NodeId, NodeId) {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let root = NodeId::from_u128(1);
     let left = NodeId::from_u128(2);
@@ -191,10 +189,10 @@ fn tidy_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
     graph.insert_edge(second_edge, edge(root_out, right_in));
     graph.insert_edge(third_edge, edge(left_out, grandchild_in));
 
-    (graph.build_unchecked(), root, left, right, grandchild)
+    (graph, root, left, right, grandchild)
 }
 
-fn disconnected_roots_graph() -> (Graph, NodeId, NodeId) {
+fn disconnected_roots_graph() -> (GraphBuilder, NodeId, NodeId) {
     let mut graph = GraphBuilder::new(GraphId::from_u128(2));
     let first = NodeId::from_u128(1);
     let second = NodeId::from_u128(2);
@@ -202,7 +200,7 @@ fn disconnected_roots_graph() -> (Graph, NodeId, NodeId) {
     graph.insert_node(first, node("demo.first", Vec::new()));
     graph.insert_node(second, node("demo.second", Vec::new()));
 
-    (graph.build_unchecked(), first, second)
+    (graph, first, second)
 }
 
 fn node(kind: &str, ports: Vec<PortId>) -> Node {

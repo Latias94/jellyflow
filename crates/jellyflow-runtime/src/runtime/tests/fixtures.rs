@@ -19,31 +19,31 @@ pub(super) fn make_store(graph: impl Into<Graph>) -> NodeGraphStore {
 }
 
 pub(super) fn fixture_insert_node(graph: &mut Graph, id: NodeId, node: Node) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.insert_node(id, node);
     *graph = builder.build_unchecked();
 }
 
 pub(super) fn fixture_insert_port(graph: &mut Graph, id: PortId, port: Port) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.insert_port(id, port);
     *graph = builder.build_unchecked();
 }
 
 pub(super) fn fixture_insert_group(graph: &mut Graph, id: GroupId, group: Group) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.insert_group(id, group);
     *graph = builder.build_unchecked();
 }
 
 pub(super) fn fixture_insert_sticky_note(graph: &mut Graph, id: StickyNoteId, note: StickyNote) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.insert_sticky_note(id, note);
     *graph = builder.build_unchecked();
 }
 
 pub(super) fn fixture_insert_binding(graph: &mut Graph, id: BindingId, binding: Binding) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.insert_binding(id, binding);
     *graph = builder.build_unchecked();
 }
@@ -56,21 +56,21 @@ pub(super) trait GraphFixtureUpdateExt {
 
 impl GraphFixtureUpdateExt for Graph {
     fn update_node<R>(&mut self, id: &NodeId, f: impl FnOnce(&mut Node) -> R) -> Option<R> {
-        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let mut builder = graph_builder_from_snapshot(self);
         let updated = builder.update_node(id, f);
         *self = builder.build_unchecked();
         updated
     }
 
     fn update_port<R>(&mut self, id: &PortId, f: impl FnOnce(&mut Port) -> R) -> Option<R> {
-        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let mut builder = graph_builder_from_snapshot(self);
         let updated = builder.update_port(id, f);
         *self = builder.build_unchecked();
         updated
     }
 
     fn update_edge<R>(&mut self, id: &EdgeId, f: impl FnOnce(&mut Edge) -> R) -> Option<R> {
-        let mut builder = GraphBuilder::from_graph(std::mem::take(self));
+        let mut builder = graph_builder_from_snapshot(self);
         let updated = builder.update_edge(id, f);
         *self = builder.build_unchecked();
         updated
@@ -78,16 +78,47 @@ impl GraphFixtureUpdateExt for Graph {
 }
 
 pub(super) fn fixture_remove_edge(graph: &mut Graph, id: &EdgeId) -> Option<Edge> {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     let removed = builder.remove_edge(id);
     *graph = builder.build_unchecked();
     removed
 }
 
 pub(super) fn fixture_clear_edges(graph: &mut Graph) {
-    let mut builder = GraphBuilder::from_graph(std::mem::take(graph));
+    let mut builder = graph_builder_from_snapshot(graph);
     builder.clear_edges();
     *graph = builder.build_unchecked();
+}
+
+fn graph_builder_from_snapshot(graph: &Graph) -> GraphBuilder {
+    let mut builder = GraphBuilder::new(graph.graph_id());
+
+    for (id, import) in graph.imports() {
+        builder.insert_import(*id, import.clone());
+    }
+    for (id, symbol) in graph.symbols() {
+        builder.insert_symbol(*id, symbol.clone());
+    }
+    for (id, node) in graph.nodes() {
+        builder.insert_node(*id, node.clone());
+    }
+    for (id, port) in graph.ports() {
+        builder.insert_port(*id, port.clone());
+    }
+    for (id, edge) in graph.edges() {
+        builder.insert_edge(*id, edge.clone());
+    }
+    for (id, group) in graph.groups() {
+        builder.insert_group(*id, group.clone());
+    }
+    for (id, note) in graph.sticky_notes() {
+        builder.insert_sticky_note(*id, note.clone());
+    }
+    for (id, binding) in graph.bindings() {
+        builder.insert_binding(*id, binding.clone());
+    }
+
+    builder
 }
 
 pub(super) fn make_graph() -> (
