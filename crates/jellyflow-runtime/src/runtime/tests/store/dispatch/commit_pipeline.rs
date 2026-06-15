@@ -56,7 +56,7 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
         Some(EdgeReconnectable::Bool(false))
     );
     assert!(store.can_undo());
-    let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
+    let node_edge_changes = NodeGraphChanges::from_patch(outcome.patch());
     assert!(
         node_edge_changes
             .nodes()
@@ -72,7 +72,7 @@ fn store_dispatch_pipeline_publishes_coherent_commit_state() {
     )));
     assert!(outcome.footprint().nodes.contains(&a));
     assert!(outcome.footprint().edges.contains(&eid));
-    assert_eq!(outcome.footprint(), outcome.patch.footprint());
+    assert_eq!(outcome.footprint(), outcome.patch().footprint());
     assert_eq!(
         *observed.borrow(),
         Some((true, Some(EdgeReconnectable::Bool(false)), true, true))

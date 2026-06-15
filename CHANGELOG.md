@@ -14,6 +14,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Changed `NodeGraphPatch` to expose committed data through `transaction()`, `footprint()`, and
   `into_parts()` accessors instead of public fields, keeping cached mutation footprints consistent
   with their transactions.
+- Changed `DispatchOutcome` to expose its patch through `patch()` and `into_patch()` instead of a
+  public field, keeping dispatch payloads on the same accessor-based invalidation contract.
 
 ### Added
 
@@ -23,6 +25,14 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
   footprint using the current graph snapshot.
 - Added cached mutation footprints on runtime `NodeGraphPatch` / `DispatchOutcome` values so
   middleware, subscribers, and controlled integrations can consume touched ids directly.
+- Added `NodeSchemaBuilder` and `PortDecl` builder helpers for renderer-neutral custom node
+  catalogs, including renderer keys, default data, default size, categories, keywords, aliases, and
+  declared ports.
+- Added built-in layout metadata consistency coverage so preset builders, registry entries, engine
+  metadata, family metadata, capabilities, and default options stay aligned.
+- Added runtime layout-pipeline benchmark smoke coverage for footprint-derived dirty scopes.
+- Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch
+  patch accessors, custom node schema builders, built-in layout presets, and dirty-scope helpers.
 
 ## [0.2.0] - 2026-06-13
 

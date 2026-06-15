@@ -137,13 +137,15 @@ def jellyflow_runtime_main_rs() -> str:
         textwrap.dedent(
             """
             use jellyflow_core::{
-                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Graph,
-                GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction, Node,
-                NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey, SourceAnchor,
+                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize,
+                Graph, GraphElementKeys, GraphElements, GraphId, GraphLocalBindingTarget,
+                GraphOp, GraphTransaction, Node, NodeGraphModifierKey, NodeGraphModifiers,
+                NodeId, NodeKindKey, SourceAnchor,
             };
             use jellyflow_layout::{
-                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutFamilyId, LayoutRequest,
-                builtin_layout_engine_registry, layout_graph_with_engine,
+                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutFamilyId,
+                LayoutRequest, LayoutScope, builtin_layout_engine_registry,
+                layout_graph_with_engine,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
             use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
@@ -227,7 +229,19 @@ def jellyflow_runtime_main_rs() -> str:
                 let outcome = store
                     .dispatch_transaction(&move_node)
                     .expect("store dispatch succeeds");
+                let graph_nodes: GraphElements<'_, NodeId, Node> = store.graph().nodes();
+                let graph_node_keys: GraphElementKeys<'_, NodeId, Node> = graph_nodes.keys();
+                assert_eq!(graph_node_keys.count(), graph_nodes.len());
                 assert_eq!(outcome.committed().ops.len(), 1);
+                assert_eq!(outcome.patch().transaction().ops.len(), 1);
+                assert!(outcome.footprint().nodes.contains(&node_id));
+                assert_eq!(outcome.footprint(), outcome.patch().footprint());
+                assert_eq!(
+                    LayoutScope::from_footprint(store.graph(), outcome.footprint()).nodes(),
+                    Some(&[node_id].into_iter().collect())
+                );
+                let owned_patch = outcome.clone().into_patch();
+                assert_eq!(owned_patch.transaction().ops.len(), 1);
                 assert_eq!(
                     store.graph().nodes()[&node_id].pos,
                     CanvasPoint { x: 32.0, y: 48.0 }

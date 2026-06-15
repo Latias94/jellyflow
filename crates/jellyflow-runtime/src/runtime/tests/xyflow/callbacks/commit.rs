@@ -64,10 +64,10 @@ fn install_callbacks_receives_full_patch_for_port_only_commits() {
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
 
     assert!(matches!(
-        outcome.patch.ops().first(),
+        outcome.patch().ops().first(),
         Some(GraphOp::SetPortData { id, .. }) if *id == out_port
     ));
-    let node_edge_changes = NodeGraphChanges::from_patch(&outcome.patch);
+    let node_edge_changes = NodeGraphChanges::from_patch(outcome.patch());
     assert!(node_edge_changes.nodes().is_empty());
     assert!(node_edge_changes.edges().is_empty());
     assert!(*saw_port_patch.borrow());

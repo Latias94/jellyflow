@@ -162,6 +162,18 @@ impl NodeKindKey {
     }
 }
 
+impl From<&str> for NodeKindKey {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for NodeKindKey {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
 /// Stable identifier for a schema-declared port.
 ///
 /// `PortKey` must remain stable across versions of a node kind.
@@ -173,5 +185,17 @@ impl PortKey {
     /// Creates a new port key.
     pub fn new(key: impl Into<String>) -> Self {
         Self(key.into())
+    }
+}
+
+impl From<&str> for PortKey {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for PortKey {
+    fn from(value: String) -> Self {
+        Self::new(value)
     }
 }

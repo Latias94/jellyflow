@@ -57,7 +57,7 @@ fn main() {
     let outcome = store
         .dispatch_transaction(&move_node)
         .expect("store dispatch succeeds");
-    let changes = NodeGraphChanges::from_patch(&outcome.patch);
+    let changes = NodeGraphChanges::from_patch(outcome.patch());
 
     assert_eq!(outcome.committed().ops().len(), 1);
     assert_eq!(changes.nodes.len(), 1);

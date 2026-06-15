@@ -391,7 +391,7 @@ fn pointer_resize_commit_preserves_position_before_size_order_and_trace() {
 
     assert!(
         matches!(
-            outcome.patch.ops(),
+            outcome.patch().ops(),
             [
                 GraphOp::SetNodePos { id: pos_id, to: pos_to, .. },
                 GraphOp::SetNodeSize { id: size_id, to: size_to, .. },
@@ -402,7 +402,7 @@ fn pointer_resize_commit_preserves_position_before_size_order_and_trace() {
                     && *size_to == Some(CanvasSize { width: 110.0, height: 80.0 })
         ),
         "committed pointer resize should move before sizing: {:#?}",
-        outcome.patch.ops(),
+        outcome.patch().ops(),
     );
     assert_eq!(
         harness.store().graph().nodes()[&fixture.enabled].pos,

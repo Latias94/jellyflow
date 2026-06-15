@@ -30,7 +30,7 @@ fn store_middleware_can_rewrite_transactions() {
     }]);
 
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
-    assert!(outcome.patch.ops().is_empty());
+    assert!(outcome.patch().ops().is_empty());
     assert_eq!(
         store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 0.0, y: 0.0 }

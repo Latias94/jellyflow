@@ -23,7 +23,7 @@ fn controlled_graph_applies_projected_store_patch() {
         },
     ]);
     let outcome = store.dispatch_transaction(&tx).expect("dispatch");
-    let report = controlled.apply_patch_changes(&outcome.patch);
+    let report = controlled.apply_patch_changes(outcome.patch());
 
     assert_eq!(report.applied(), 2);
     assert_eq!(report.ignored(), 0);

@@ -119,7 +119,7 @@ fn store_dispatch_with_external_profile_uses_same_commit_pipeline() {
     );
     assert!(store.graph().nodes().get(&a).unwrap().hidden);
     assert!(store.can_undo());
-    assert_eq!(outcome.patch.ops().len(), 2);
+    assert_eq!(outcome.patch().ops().len(), 2);
     assert_eq!(&*trace.borrow(), &["before", "after"]);
     assert_eq!(*observed.borrow(), Some((2, true)));
 }

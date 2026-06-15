@@ -65,6 +65,12 @@ pub struct NodeSchema {
     pub default_data: Value,
 }
 
+/// Builder for adapter-facing node schemas.
+#[derive(Debug, Clone)]
+pub struct NodeSchemaBuilder {
+    schema: NodeSchema,
+}
+
 /// Error returned when a node cannot be instantiated from schema.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NodeInstantiationError {
@@ -132,6 +138,24 @@ impl NodeInstantiation {
 }
 
 impl NodeSchema {
+    /// Starts a node schema builder with renderer-neutral defaults.
+    pub fn builder(kind: impl Into<NodeKindKey>, title: impl Into<String>) -> NodeSchemaBuilder {
+        NodeSchemaBuilder {
+            schema: NodeSchema {
+                kind: kind.into(),
+                latest_kind_version: 1,
+                kind_aliases: Vec::new(),
+                title: title.into(),
+                category: Vec::new(),
+                keywords: Vec::new(),
+                renderer_key: None,
+                default_size: None,
+                ports: Vec::new(),
+                default_data: Value::Null,
+            },
+        }
+    }
+
     /// Instantiates a node and its declared ports with freshly allocated ids.
     pub fn instantiate(&self, pos: CanvasPoint) -> NodeInstantiation {
         let node_id = NodeId::new();
@@ -198,7 +222,135 @@ impl NodeSchema {
     }
 }
 
+impl NodeSchemaBuilder {
+    /// Sets the latest schema version for this node kind.
+    pub fn latest_kind_version(mut self, version: u32) -> Self {
+        self.schema.latest_kind_version = version;
+        self
+    }
+
+    /// Adds one alias for this node kind.
+    pub fn alias(mut self, alias: impl Into<NodeKindKey>) -> Self {
+        self.schema.kind_aliases.push(alias.into());
+        self
+    }
+
+    /// Adds aliases for this node kind.
+    pub fn aliases(mut self, aliases: impl IntoIterator<Item = impl Into<NodeKindKey>>) -> Self {
+        self.schema
+            .kind_aliases
+            .extend(aliases.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets the create-node category path.
+    pub fn category(mut self, category: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.schema.category = category.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Adds one search keyword.
+    pub fn keyword(mut self, keyword: impl Into<String>) -> Self {
+        self.schema.keywords.push(keyword.into());
+        self
+    }
+
+    /// Adds search keywords.
+    pub fn keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.schema
+            .keywords
+            .extend(keywords.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets the adapter-owned renderer lookup key.
+    pub fn renderer_key(mut self, renderer_key: impl Into<String>) -> Self {
+        self.schema.renderer_key = Some(renderer_key.into());
+        self
+    }
+
+    /// Sets the fallback logical node size.
+    pub fn default_size(mut self, size: CanvasSize) -> Self {
+        self.schema.default_size = Some(size);
+        self
+    }
+
+    /// Adds one declared port.
+    pub fn port(mut self, port: PortDecl) -> Self {
+        self.schema.ports.push(port);
+        self
+    }
+
+    /// Adds declared ports.
+    pub fn ports(mut self, ports: impl IntoIterator<Item = PortDecl>) -> Self {
+        self.schema.ports.extend(ports);
+        self
+    }
+
+    /// Sets the default node payload.
+    pub fn default_data(mut self, data: Value) -> Self {
+        self.schema.default_data = data;
+        self
+    }
+
+    /// Builds the schema.
+    pub fn build(self) -> NodeSchema {
+        self.schema
+    }
+}
+
+impl From<NodeSchemaBuilder> for NodeSchema {
+    fn from(value: NodeSchemaBuilder) -> Self {
+        value.build()
+    }
+}
+
 impl PortDecl {
+    /// Creates a port declaration.
+    pub fn new(
+        key: impl Into<PortKey>,
+        dir: PortDirection,
+        kind: PortKind,
+        capacity: PortCapacity,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            dir,
+            kind,
+            capacity,
+            ty: None,
+            label: None,
+        }
+    }
+
+    /// Creates a single-capacity data input port.
+    pub fn data_input(key: impl Into<PortKey>) -> Self {
+        Self::new(key, PortDirection::In, PortKind::Data, PortCapacity::Single)
+    }
+
+    /// Creates a multi-capacity data output port.
+    pub fn data_output(key: impl Into<PortKey>) -> Self {
+        Self::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi)
+    }
+
+    /// Sets the port type descriptor.
+    pub fn with_type(mut self, ty: TypeDesc) -> Self {
+        self.ty = Some(ty);
+        self
+    }
+
+    /// Sets the adapter-facing label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Sets the capacity.
+    pub fn with_capacity(mut self, capacity: PortCapacity) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
     fn instantiate(&self, node: NodeId) -> Port {
         Port {
             node,

@@ -14,7 +14,7 @@ fn store_dispatch_changes_records_history_and_supports_undo() {
     );
 
     let outcome = store.dispatch_changes(&changes).expect("dispatch");
-    assert!(!outcome.patch.ops().is_empty());
+    assert!(!outcome.patch().ops().is_empty());
     assert!(store.can_undo());
     assert_eq!(
         store.graph().nodes().get(&a).unwrap().pos,
@@ -22,7 +22,7 @@ fn store_dispatch_changes_records_history_and_supports_undo() {
     );
 
     let undo = store.undo().expect("undo").expect("did undo");
-    assert!(!undo.patch.ops().is_empty());
+    assert!(!undo.patch().ops().is_empty());
     assert_eq!(
         store.graph().nodes().get(&a).unwrap().pos,
         CanvasPoint { x: 0.0, y: 0.0 }

@@ -171,7 +171,7 @@ pub fn run_controlled_graph_smoke() -> Result<(), String> {
     let outcome = store
         .dispatch_transaction(&tx)
         .map_err(|err| err.to_string())?;
-    let report = controlled.apply_patch_changes(&outcome.patch);
+    let report = controlled.apply_patch_changes(outcome.patch());
     if report.applied() != 2 || report.ignored() != 0 {
         return Err(format!(
             "expected controlled patch to apply 2 changes and ignore 0, got applied={} ignored={}",
@@ -249,38 +249,19 @@ pub fn template_node_registry() -> NodeRegistry {
 }
 
 pub fn template_note_schema() -> NodeSchema {
-    NodeSchema {
-        kind: NodeKindKey::new("template.note"),
-        latest_kind_version: 1,
-        kind_aliases: vec![NodeKindKey::new("template.sticky")],
-        title: "Note".to_owned(),
-        category: vec!["Knowledge".to_owned()],
-        keywords: vec!["memo".to_owned()],
-        renderer_key: Some("note-card".to_owned()),
-        default_size: Some(CanvasSize {
+    NodeSchema::builder("template.note", "Note")
+        .alias("template.sticky")
+        .category(["Knowledge"])
+        .keyword("memo")
+        .renderer_key("note-card")
+        .default_size(CanvasSize {
             width: 160.0,
             height: 96.0,
-        }),
-        ports: vec![
-            PortDecl {
-                key: PortKey::new("source"),
-                dir: PortDirection::In,
-                kind: PortKind::Data,
-                capacity: PortCapacity::Single,
-                ty: None,
-                label: Some("Source".to_owned()),
-            },
-            PortDecl {
-                key: PortKey::new("result"),
-                dir: PortDirection::Out,
-                kind: PortKind::Data,
-                capacity: PortCapacity::Multi,
-                ty: None,
-                label: Some("Result".to_owned()),
-            },
-        ],
-        default_data: serde_json::json!({ "body": "" }),
-    }
+        })
+        .port(PortDecl::data_input("source").with_label("Source"))
+        .port(PortDecl::data_output("result").with_label("Result"))
+        .default_data(serde_json::json!({ "body": "" }))
+        .build()
 }
 
 pub fn run_custom_node_renderer_registry_smoke() -> Result<(), String> {

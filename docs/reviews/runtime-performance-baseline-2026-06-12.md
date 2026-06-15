@@ -6,9 +6,9 @@ Jellyflow now has Criterion coverage for three runtime performance areas:
 
 - `rendering_query`: large-graph visible ordering and culling reads.
 - `schema_create_node`: schema descriptor enumeration, node instantiation, and store-level
-  schema-driven node creation.
+  schema-driven node creation, including builder-created schema fixtures.
 - `layout_pipeline`: runtime layout context construction, engine planning, transaction conversion,
-  and store apply costs.
+  footprint-derived dirty-scope request construction, and store apply costs.
 - `layout_engines`: native layout engine planning and transaction conversion costs.
 
 CI runs these benchmarks in Criterion `--test` mode. This catches compile errors and broken fixtures
@@ -61,6 +61,8 @@ Local baseline from this workspace snapshot:
 | `layout_pipeline/to_transaction` | 100 nodes | about `4.54 us` |
 | `layout_pipeline/to_transaction` | 250 nodes | about `10.67 us` |
 | `layout_pipeline/to_transaction` | 500 nodes | about `24.77 us` |
+| `layout_pipeline/request_from_transaction` | 100/250/500 nodes | smoke-covered; rerun locally before changing dirty-scope derivation |
+| `layout_pipeline/request_from_footprint` | 100/250/500 nodes | smoke-covered; rerun locally before changing footprint expansion |
 | `layout_pipeline/apply` | 100 nodes | about `1.92 ms` |
 | `layout_pipeline/apply` | 250 nodes | about `7.03 ms` |
 | `layout_pipeline/apply` | 500 nodes | about `21.98 ms` |

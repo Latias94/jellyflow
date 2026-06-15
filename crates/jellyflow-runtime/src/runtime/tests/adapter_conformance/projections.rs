@@ -76,7 +76,7 @@ fn adapter_conformance_reconnect_preserves_edge_id_and_projects_endpoint_change(
         ))
         .expect("dispatch reconnect")
         .expect("reconnect should commit");
-    let changes = NodeGraphChanges::from_patch(&outcome.patch);
+    let changes = NodeGraphChanges::from_patch(outcome.patch());
 
     let edge = harness
         .store()
@@ -131,7 +131,7 @@ fn adapter_conformance_delete_node_cascades_edges_and_projects_delete_payload() 
         .apply_delete_selection()
         .expect("dispatch delete node")
         .expect("delete should commit");
-    let changes = NodeGraphChanges::from_patch(&outcome.patch);
+    let changes = NodeGraphChanges::from_patch(outcome.patch());
 
     assert!(!harness.store().graph().nodes().contains_key(&node_id));
     assert!(!harness.store().graph().edges().contains_key(&edge_id));

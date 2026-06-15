@@ -1,9 +1,11 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use jellyflow_core::ops::GraphMutationFootprint;
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
-    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    GraphTransaction, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
 };
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow_runtime::runtime::layout::{
@@ -46,6 +48,15 @@ fn benchmark_runtime_dugong_pipeline(c: &mut Criterion) {
             },
         );
 
+        let mut dirty_footprint = GraphMutationFootprint::new();
+        dirty_footprint.touch_node(node_count_to_node_id(1));
+        let dirty_graph = store.graph().clone();
+        let dirty_tx = GraphTransaction::from_ops([jellyflow_core::ops::GraphOp::SetImportAlias {
+            id: GraphId::from_u128(999),
+            from: None,
+            to: Some("bench".to_owned()),
+        }]);
+
         group.bench_with_input(
             BenchmarkId::new("store_plan_layout", node_count),
             &store,
@@ -71,6 +82,32 @@ fn benchmark_runtime_dugong_pipeline(c: &mut Criterion) {
                             .layout(black_box(store.graph()), black_box(&request), &context)
                             .expect("layout plan"),
                     );
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("request_from_transaction", node_count),
+            &dirty_graph,
+            |b, graph| {
+                b.iter(|| {
+                    black_box(LayoutRequest::from_transaction(
+                        black_box(graph),
+                        black_box(&dirty_tx),
+                    ))
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("request_from_footprint", node_count),
+            &dirty_graph,
+            |b, graph| {
+                b.iter(|| {
+                    black_box(LayoutRequest::all().with_dirty_scope_from_footprint(
+                        black_box(graph),
+                        black_box(&dirty_footprint),
+                    ))
                 });
             },
         );
@@ -283,6 +320,10 @@ fn node_fixture(node: NodeId, ports: Vec<PortId>) -> Node {
         ports,
         data: serde_json::Value::Null,
     }
+}
+
+fn node_count_to_node_id(index: u64) -> NodeId {
+    NodeId::from_u128(index.into())
 }
 
 criterion_group!(benches, layout_pipeline_benchmarks);

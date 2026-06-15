@@ -140,6 +140,47 @@ For create-node palettes, adapters can call
 `NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
 store uses the same dispatch, history, middleware, profile, and patch path as ordinary graph edits.
 
+```rust
+use jellyflow::prelude::*;
+use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl};
+
+let mut registry = NodeRegistry::new();
+registry.register(
+    NodeSchema::builder("task.card", "Task Card")
+        .category(["Workflow", "Tasks"])
+        .keywords(["todo", "kanban"])
+        .renderer_key("task-card")
+        .default_size(CanvasSize {
+            width: 180.0,
+            height: 104.0,
+        })
+        .port(PortDecl::data_input("source").with_label("Source"))
+        .port(PortDecl::data_output("result").with_label("Result"))
+        .build(),
+);
+
+let descriptors = registry.view_descriptors();
+assert_eq!(descriptors[0].renderer_key, "task-card");
+```
+
+For rendering loops, subscribe to small store projections and then query the read model your
+renderer needs. Jellyflow returns stable IDs and render order; adapters keep component state,
+memoization, and renderer lookup outside the graph document.
+
+```rust
+let _token = store.subscribe_selector(
+    |snapshot| (snapshot.graph_revision, snapshot.layout_facts_revision),
+    |_| {
+        // Re-query visible IDs from the host event loop or adapter state.
+    },
+);
+
+let rendering = store.rendering_query(CanvasSize {
+    width: 1280.0,
+    height: 720.0,
+});
+```
+
 ## Layout Engines
 
 `jellyflow-layout` keeps automatic layout outside the core document model. Layout engines receive a

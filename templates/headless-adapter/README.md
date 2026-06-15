@@ -23,5 +23,10 @@ Custom node renderers remain adapter-owned. The template demonstrates the extens
 ports, default data, and default size; the adapter maps that key to its own React, Svelte, native,
 or immediate-mode renderer before calling `NodeGraphStore::apply_create_node_from_schema`.
 
+Use store subscriptions as invalidation signals, not as renderer state containers. Subscribe to
+small projections such as graph and layout-facts revisions, then call
+`NodeGraphStore::rendering_query` for the current viewport to get visible IDs and render order.
+Keep component instances, memoization, batching, and pixel tests in the adapter repository.
+
 When copying this template into another repository, replace the path dependencies in `Cargo.toml`
 with the Jellyflow version you want to consume.

@@ -3,6 +3,7 @@ use serde_json::json;
 use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeSchema};
 use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
 
+mod builder;
 mod canonicalize;
 mod facades;
 mod instantiation;

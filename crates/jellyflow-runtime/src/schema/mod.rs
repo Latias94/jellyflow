@@ -11,7 +11,8 @@ pub use migration::{
 };
 pub use registry::NodeRegistry;
 pub use types::{
-    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeSchema, PortDecl,
+    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeSchema,
+    NodeSchemaBuilder, PortDecl,
 };
 
 #[cfg(test)]

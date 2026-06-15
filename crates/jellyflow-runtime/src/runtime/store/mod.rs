@@ -31,7 +31,7 @@ use jellyflow_core::ops::{GraphHistory, GraphMutationFootprint, GraphTransaction
 #[derive(Debug, Clone)]
 pub struct DispatchOutcome {
     /// Full-fidelity patch that was committed.
-    pub patch: NodeGraphPatch,
+    patch: NodeGraphPatch,
 }
 
 impl DispatchOutcome {
@@ -43,12 +43,20 @@ impl DispatchOutcome {
         Self::new(NodeGraphPatch::new(committed))
     }
 
+    pub fn patch(&self) -> &NodeGraphPatch {
+        &self.patch
+    }
+
     pub fn committed(&self) -> &GraphTransaction {
         self.patch.transaction()
     }
 
     pub fn footprint(&self) -> &GraphMutationFootprint {
         self.patch.footprint()
+    }
+
+    pub fn into_patch(self) -> NodeGraphPatch {
+        self.patch
     }
 }
 

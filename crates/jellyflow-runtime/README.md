@@ -150,6 +150,25 @@ owning endpoint nodes when the current graph snapshot can resolve them. See the 
 cargo run -p jellyflow-runtime --example dirty_scope_layout
 ```
 
+For renderer loops, keep subscriptions narrow and treat read models as pull queries. A typical
+adapter subscribes to graph/layout revisions, then calls `rendering_query` with its current
+viewport. The result contains stable visible node IDs, visible edge IDs, and render order; the
+adapter maps each node kind or descriptor `renderer_key` to framework-local components.
+
+```rust
+let _token = store.subscribe_selector(
+    |snapshot| (snapshot.graph_revision, snapshot.layout_facts_revision),
+    |_| {
+        // Schedule a renderer-side read. Jellyflow does not own the frame loop.
+    },
+);
+
+let rendering = store.rendering_query(CanvasSize {
+    width: 1280.0,
+    height: 720.0,
+});
+```
+
 Run conformance fixture suites before renderer smoke tests. They prove the adapter is translating
 intent into the same runtime actions and callback ordering that Jellyflow expects, and they return
 aggregate reports that separate trace mismatches from scenario execution errors. Suites can be saved

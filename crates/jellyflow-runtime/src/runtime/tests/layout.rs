@@ -178,3 +178,24 @@ fn store_layout_context_uses_runtime_measurements_without_persisting_size() {
         Some(&measured)
     );
 }
+
+#[test]
+fn apply_layout_skips_empty_dirty_scope_transactions() {
+    let (graph, _a, _b, _out, _in, _edge) = make_graph();
+    let mut store = make_store(graph);
+    let request = LayoutRequest::all().with_dirty_scope_from_footprint(
+        store.graph(),
+        &jellyflow_core::ops::GraphMutationFootprint::new(),
+    );
+
+    let outcome = store
+        .apply_layout(
+            &LayoutEngineRequest::dugong(request),
+            builtin_layout_engine_registry(),
+        )
+        .expect("apply empty dirty-scope layout");
+
+    assert!(outcome.layout.nodes.is_empty());
+    assert!(outcome.committed().is_none());
+    assert!(outcome.dispatch.is_none());
+}

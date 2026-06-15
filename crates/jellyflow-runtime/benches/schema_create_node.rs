@@ -127,25 +127,25 @@ fn registry_fixture(schema_count: usize, port_count: usize) -> NodeRegistry {
 }
 
 fn schema_fixture(index: usize, port_count: usize) -> NodeSchema {
-    NodeSchema {
-        kind: NodeKindKey::new(format!("bench.kind.{index:03}")),
-        latest_kind_version: 1,
-        kind_aliases: vec![NodeKindKey::new(format!("bench.alias.{index:03}"))],
-        title: format!("Bench Node {index}"),
-        category: vec!["Bench".to_owned(), format!("Group {}", index % 10)],
-        keywords: vec![format!("node-{index}"), "benchmark".to_owned()],
-        renderer_key: Some("bench-node".to_owned()),
-        default_size: Some(CanvasSize {
-            width: 160.0,
-            height: 96.0,
-        }),
-        ports: (0..port_count).map(port_decl_fixture).collect(),
-        default_data: json!({
-            "index": index,
-            "label": format!("node {index}"),
-            "enabled": true
-        }),
-    }
+    NodeSchema::builder(
+        format!("bench.kind.{index:03}"),
+        format!("Bench Node {index}"),
+    )
+    .alias(format!("bench.alias.{index:03}"))
+    .category(["Bench".to_owned(), format!("Group {}", index % 10)])
+    .keywords([format!("node-{index}"), "benchmark".to_owned()])
+    .renderer_key("bench-node")
+    .default_size(CanvasSize {
+        width: 160.0,
+        height: 96.0,
+    })
+    .ports((0..port_count).map(port_decl_fixture))
+    .default_data(json!({
+        "index": index,
+        "label": format!("node {index}"),
+        "enabled": true
+    }))
+    .build()
 }
 
 fn port_decl_fixture(index: usize) -> PortDecl {

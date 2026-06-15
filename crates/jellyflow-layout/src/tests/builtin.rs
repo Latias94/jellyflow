@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use crate::builtin::{builtin_family_specs, builtin_layout_specs, builtin_request};
-use crate::{LayoutEngineId, LayoutFamilyId, LayoutScope, builtin_layout_engine_registry};
+use crate::{
+    LayoutEngineId, LayoutFamilyId, LayoutPresetBuilder, LayoutScope,
+    builtin_layout_engine_registry,
+};
 
 #[test]
 fn builtin_registry_is_derived_from_specs() {
@@ -49,6 +52,32 @@ fn builtin_presets_are_derived_from_specs() {
 
         assert_eq!(request.engine.as_str(), spec.engine_id());
         assert_eq!(request.layout.options, spec.options());
+        assert_eq!(request.layout.scope, LayoutScope::All);
+    }
+}
+
+#[test]
+fn public_preset_builders_match_registered_builtin_metadata() {
+    let registry = builtin_layout_engine_registry();
+    let presets = [
+        LayoutPresetBuilder::workflow().build(),
+        LayoutPresetBuilder::tree().build(),
+        LayoutPresetBuilder::mind_map().build(),
+        LayoutPresetBuilder::freeform().build(),
+    ];
+
+    for request in presets {
+        let metadata = registry
+            .metadata(&request.engine)
+            .expect("preset engine metadata is registered");
+
+        assert!(registry.get(&request.engine).is_some());
+        assert!(
+            registry.family(&metadata.family).is_some(),
+            "preset engine {} points to missing family {}",
+            request.engine,
+            metadata.family
+        );
         assert_eq!(request.layout.scope, LayoutScope::All);
     }
 }

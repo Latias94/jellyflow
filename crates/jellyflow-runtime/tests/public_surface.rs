@@ -17,7 +17,7 @@ use jellyflow_runtime::runtime::{
 };
 use jellyflow_runtime::schema::{
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
-    PortDecl,
+    NodeSchemaBuilder, PortDecl,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -56,6 +56,9 @@ fn crate_root_exposes_canonical_runtime_api() {
     let _: &GraphMutationFootprint = NodeGraphPatch::default().footprint();
     let _ = std::mem::size_of::<DispatchOutcome>();
     let _ = std::mem::size_of::<DispatchError>();
+    let dispatch = DispatchOutcome::from_committed(GraphTransaction::default());
+    let _: &NodeGraphPatch = dispatch.patch();
+    let _: NodeGraphPatch = dispatch.into_patch();
 }
 
 #[test]
@@ -73,24 +76,23 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert_eq!(editor_file.graph_id, graph.graph_id());
     let _interaction = NodeGraphInteractionConfig::default();
     let mut node_registry = NodeRegistry::new();
-    node_registry.register(NodeSchema {
-        kind: jellyflow_core::core::NodeKindKey::new("public.note"),
-        latest_kind_version: 1,
-        kind_aliases: Vec::new(),
-        title: "Note".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
-        renderer_key: None,
-        default_size: Some(CanvasSize {
-            width: 120.0,
-            height: 80.0,
-        }),
-        ports: Vec::<PortDecl>::new(),
-        default_data: serde_json::Value::Null,
-    });
+    let _: NodeSchemaBuilder = NodeSchema::builder("public.note", "Note");
+    node_registry.register(
+        NodeSchema::builder("public.note", "Note")
+            .default_size(CanvasSize {
+                width: 120.0,
+                height: 80.0,
+            })
+            .port(PortDecl::data_input("source").with_label("Source"))
+            .build(),
+    );
     let view_descriptors = node_registry.view_descriptors();
     let _: &NodeKindViewDescriptor = &view_descriptors[0];
     assert_eq!(view_descriptors[0].renderer_key, "public.note");
+    assert_eq!(
+        view_descriptors[0].ports[0].label.as_deref(),
+        Some("Source")
+    );
     assert!(
         node_registry
             .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
@@ -749,11 +751,21 @@ fn explicit_modules_expose_their_owned_surfaces() {
         events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
     let _resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
 
-    let module_store = store::NodeGraphStore::new(
+    let mut module_store = store::NodeGraphStore::new(
         graph.clone(),
         NodeGraphViewState::default(),
         NodeGraphEditorConfig::default(),
     );
+    let _ = std::mem::size_of::<events::NodeGraphStoreEvent<'_>>();
+    let _ = std::mem::size_of::<events::NodeGraphStoreSnapshot<'_>>();
+    let _ = std::mem::size_of::<events::SubscriptionToken>();
+    let _revision_token = module_store.subscribe_selector(
+        |snapshot| (snapshot.graph_revision, snapshot.layout_facts_revision),
+        |_| {},
+    );
+    let _rendering_token =
+        module_store.subscribe_selector(|snapshot| snapshot.view_state.zoom.to_bits(), |_| {});
+    let _: fn(&NodeGraphStore) -> u64 = NodeGraphStore::graph_revision;
     let _: fn(&NodeGraphStore) -> Vec<GroupId> = NodeGraphStore::group_render_order;
     let _: fn(&NodeGraphStore) -> Vec<NodeId> = NodeGraphStore::node_render_order;
     let _: fn(&NodeGraphStore) -> Vec<EdgeId> = NodeGraphStore::edge_render_order;
