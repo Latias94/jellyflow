@@ -179,6 +179,18 @@ pub struct NodeWidgetRenderInput<'a> {
     pub content_level: NodeContentLevel,
 }
 
+impl NodeWidgetRenderInput<'_> {
+    pub fn region_screen_rect(&self, region: &NodeInteractiveRegion) -> Option<Rect> {
+        self.node_local_screen_rect(region.rect)
+    }
+
+    pub fn node_local_screen_rect(&self, rect: CanvasRect) -> Option<Rect> {
+        let rect =
+            node_local_rect_to_screen(self.node_rect, rect, self.zoom).intersect(self.clip_rect);
+        rect.is_positive().then_some(rect)
+    }
+}
+
 /// Renderer output consumed by the egui canvas fallback painter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRenderLayout {
@@ -462,11 +474,9 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             else {
                 continue;
             };
-            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom)
-                .intersect(input.clip_rect);
-            if !rect.is_positive() {
+            let Some(rect) = input.region_screen_rect(region) else {
                 continue;
-            }
+            };
             let mut child_ui = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("field-region", input.id, &region.key)))
@@ -566,19 +576,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn renderer_catalog_falls_back_and_routes_rich_renderers() {
-        let descriptor = NodeKindViewDescriptor {
+    fn test_descriptor(renderer_key: &str) -> NodeKindViewDescriptor {
+        NodeKindViewDescriptor {
             kind: NodeKindKey::new("demo.rich"),
-            renderer_key: "demo.rich".to_owned(),
+            renderer_key: renderer_key.to_owned(),
             title: "Rich".to_owned(),
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
             ports: Vec::new(),
             default_data: serde_json::Value::Null,
-        };
-        let node = Node {
+        }
+    }
+
+    fn test_node() -> Node {
+        Node {
             kind: NodeKindKey::new("demo.rich"),
             kind_version: 1,
             pos: CanvasPoint::default(),
@@ -596,7 +608,13 @@ mod tests {
             collapsed: false,
             ports: Vec::new(),
             data: serde_json::json!({ "title": "Node" }),
-        };
+        }
+    }
+
+    #[test]
+    fn renderer_catalog_falls_back_and_routes_rich_renderers() {
+        let descriptor = test_descriptor("demo.rich");
+        let node = test_node();
         let input = NodeRenderInput {
             id: NodeId::from_u128(1),
             node: &node,
@@ -655,10 +673,41 @@ mod tests {
             eframe::egui::pos2(130.0, 0.0),
             eframe::egui::pos2(260.0, 100.0),
         );
+        let descriptor = test_descriptor("demo.rich");
+        let node = test_node();
+        let layout = NodeRenderLayout::fallback(
+            &NodeRenderInput {
+                id: NodeId::from_u128(1),
+                node: &node,
+                descriptor: &descriptor,
+                state: NodeRendererState::default(),
+                style: NodeRendererStyle::fallback(),
+            },
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 120.0,
+                    height: 80.0,
+                },
+            },
+        );
+        let input = NodeWidgetRenderInput {
+            id: NodeId::from_u128(1),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::fallback(),
+            layout: &layout,
+            node_rect,
+            clip_rect: clip,
+            zoom: 1.0,
+            content_level: NodeContentLevel::Full,
+        };
 
-        let clipped = node_local_rect_to_screen(node_rect, region, 1.0).intersect(clip);
+        let clipped = input
+            .node_local_screen_rect(region)
+            .expect("region intersects the widget clip rect");
 
-        assert!(clipped.is_positive());
         assert_eq!(clipped.left(), 130.0);
         assert_eq!(clipped.right(), 208.0);
     }

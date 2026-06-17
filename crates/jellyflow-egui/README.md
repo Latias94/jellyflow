@@ -41,6 +41,8 @@ egui canvas call Jellyflow runtime APIs instead of mutating graph storage direct
 Rich renderers return `NodeRenderLayout` plus node-local `NodeInteractiveRegion` values. The egui
 adapter consumes those regions for widget placement and anchor-aware handle placement, so complex
 nodes can align ports to internal rows without changing the headless graph model.
+Use `NodeWidgetRenderInput::region_screen_rect` when placing child widgets so clipping stays
+consistent with the canvas viewport.
 
 ## Custom node widgets
 

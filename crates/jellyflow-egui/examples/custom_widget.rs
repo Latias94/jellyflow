@@ -61,11 +61,9 @@ impl EguiNodeWidgetRenderer for ReviewCardRenderer {
                 .get(key)
                 .and_then(|value| value.as_str())
                 .unwrap_or("unset");
-            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom)
-                .intersect(input.clip_rect);
-            if !rect.is_positive() {
+            let Some(rect) = input.region_screen_rect(region) else {
                 continue;
-            }
+            };
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("review-card", input.id, &region.key)))
@@ -176,15 +174,4 @@ fn custom_widget_app() -> Result<JellyflowEguiApp, Box<dyn std::error::Error>> {
         JellyflowEguiBridge::new(store, registry, builtin_layout_engine_registry(), renderers);
 
     Ok(JellyflowEguiApp::new(bridge))
-}
-
-fn node_local_rect_to_screen(
-    node_rect: egui::Rect,
-    local_rect: CanvasRect,
-    zoom: f32,
-) -> egui::Rect {
-    egui::Rect::from_min_size(
-        node_rect.min + egui::Vec2::new(local_rect.origin.x * zoom, local_rect.origin.y * zoom),
-        egui::Vec2::new(local_rect.size.width * zoom, local_rect.size.height * zoom),
-    )
 }
