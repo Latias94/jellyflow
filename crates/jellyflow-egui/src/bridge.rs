@@ -2,11 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use eframe::egui::{Color32, Stroke};
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphId, NodeId, NodeKindKey, PortCapacity,
-    PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, NodeKindKey, PortDirection, PortId,
 };
 use jellyflow::layout::{LayoutEngineRegistry, builtin_layout_engine_registry};
-use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::{ConnectEdgeRequest, ConnectionHandleRef};
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
 use jellyflow::runtime::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
@@ -29,17 +27,16 @@ use jellyflow::runtime::runtime::selection::{NodePointerDownInput, SelectionBoxI
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
 };
-use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl};
+use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeRegistry};
 use jellyflow::runtime::{DispatchError, DispatchOutcome, NodeGraphStore};
-use serde_json::json;
-use thiserror::Error;
 
+use crate::samples::{SampleGraphError, SampleGraphKind, sample_graph};
 use crate::state::{
     ActiveCanvasInteraction, CanvasSnapshot, LayoutPresetChoice, layout_scope_for_selection,
 };
 
-const DEFAULT_NODE_WIDTH: f32 = 180.0;
-const DEFAULT_NODE_HEIGHT: f32 = 86.0;
+pub(crate) const DEFAULT_NODE_WIDTH: f32 = 180.0;
+pub(crate) const DEFAULT_NODE_HEIGHT: f32 = 86.0;
 const DEFAULT_HANDLE_SIZE: f32 = 10.0;
 
 /// Visual style mapped from an adapter-owned renderer key.
@@ -97,6 +94,42 @@ impl NodeRendererStyle {
         )
     }
 
+    pub const fn topic() -> Self {
+        Self::new(
+            Color32::from_rgb(244, 249, 255),
+            Color32::from_rgb(82, 127, 172),
+            Color32::from_rgb(31, 105, 168),
+            Color32::from_rgb(26, 45, 68),
+        )
+    }
+
+    pub const fn idea() -> Self {
+        Self::new(
+            Color32::from_rgb(248, 250, 240),
+            Color32::from_rgb(134, 152, 86),
+            Color32::from_rgb(88, 128, 54),
+            Color32::from_rgb(43, 55, 34),
+        )
+    }
+
+    pub const fn section() -> Self {
+        Self::new(
+            Color32::from_rgb(246, 246, 252),
+            Color32::from_rgb(118, 118, 158),
+            Color32::from_rgb(72, 88, 150),
+            Color32::from_rgb(42, 44, 68),
+        )
+    }
+
+    pub const fn source() -> Self {
+        Self::new(
+            Color32::from_rgb(252, 248, 241),
+            Color32::from_rgb(160, 128, 86),
+            Color32::from_rgb(150, 94, 46),
+            Color32::from_rgb(64, 48, 34),
+        )
+    }
+
     pub const fn fallback() -> Self {
         Self::new(
             Color32::from_rgb(247, 247, 246),
@@ -138,7 +171,11 @@ impl RendererCatalog {
             .register("task-card", NodeRendererStyle::task())
             .register("decision-card", NodeRendererStyle::decision())
             .register("data-card", NodeRendererStyle::data())
-            .register("output-card", NodeRendererStyle::output());
+            .register("output-card", NodeRendererStyle::output())
+            .register("topic-card", NodeRendererStyle::topic())
+            .register("idea-card", NodeRendererStyle::idea())
+            .register("section-card", NodeRendererStyle::section())
+            .register("source-card", NodeRendererStyle::source());
         catalog
     }
 
@@ -161,14 +198,6 @@ impl RendererCatalog {
             .copied()
             .unwrap_or(self.fallback)
     }
-}
-
-#[derive(Debug, Error)]
-pub enum DemoGraphError {
-    #[error("demo graph create node failed: {0}")]
-    Create(String),
-    #[error("demo graph connect failed: {0}")]
-    Connect(String),
 }
 
 /// Owns the Jellyflow store and exposes small adapter-facing commands for egui widgets.
@@ -194,20 +223,21 @@ impl JellyflowEguiBridge {
         }
     }
 
-    pub fn demo() -> Result<Self, DemoGraphError> {
-        let registry = demo_node_registry();
-        let mut bridge = Self::new(
-            NodeGraphStore::new(
-                Graph::new(GraphId::new()),
-                NodeGraphViewState::default(),
-                NodeGraphEditorConfig::default().with_spatial_index_enabled(true),
+    pub fn sample(kind: SampleGraphKind) -> Result<(Self, LayoutPresetChoice), SampleGraphError> {
+        let sample = sample_graph(kind)?;
+        Ok((
+            Self::new(
+                sample.store,
+                sample.registry,
+                builtin_layout_engine_registry(),
+                RendererCatalog::default(),
             ),
-            registry,
-            builtin_layout_engine_registry(),
-            RendererCatalog::default(),
-        );
-        bridge.populate_demo_graph()?;
-        Ok(bridge)
+            sample.default_layout,
+        ))
+    }
+
+    pub fn demo() -> Result<Self, SampleGraphError> {
+        Self::sample(SampleGraphKind::Workflow).map(|(bridge, _layout)| bridge)
     }
 
     pub fn store(&self) -> &NodeGraphStore {
@@ -667,66 +697,6 @@ impl JellyflowEguiBridge {
             );
         }
     }
-
-    fn populate_demo_graph(&mut self) -> Result<(), DemoGraphError> {
-        let start = self
-            .create_node(
-                NodeKindKey::from("demo.start"),
-                CanvasPoint { x: -360.0, y: 20.0 },
-            )
-            .map_err(DemoGraphError::Create)?
-            .committed()
-            .clone();
-        let task = self
-            .create_node(
-                NodeKindKey::from("demo.task"),
-                CanvasPoint { x: -80.0, y: -40.0 },
-            )
-            .map_err(DemoGraphError::Create)?
-            .committed()
-            .clone();
-        let decision = self
-            .create_node(
-                NodeKindKey::from("demo.decision"),
-                CanvasPoint { x: 220.0, y: -46.0 },
-            )
-            .map_err(DemoGraphError::Create)?
-            .committed()
-            .clone();
-        let output = self
-            .create_node(
-                NodeKindKey::from("demo.output"),
-                CanvasPoint { x: 520.0, y: 46.0 },
-            )
-            .map_err(DemoGraphError::Create)?
-            .committed()
-            .clone();
-
-        let _ = (start, task, decision, output);
-        self.connect_first("demo.start", "demo.task")
-            .map_err(DemoGraphError::Connect)?;
-        self.connect_first("demo.task", "demo.decision")
-            .map_err(DemoGraphError::Connect)?;
-        self.connect_first("demo.decision", "demo.output")
-            .map_err(DemoGraphError::Connect)?;
-        let _ = self.fit_view(CanvasSize {
-            width: 1100.0,
-            height: 700.0,
-        });
-        Ok(())
-    }
-
-    fn connect_first(&mut self, source_kind: &str, target_kind: &str) -> Result<(), String> {
-        let source = first_port(self.store.graph(), source_kind, PortDirection::Out)
-            .ok_or_else(|| format!("missing output port for `{source_kind}`"))?;
-        let target = first_port(self.store.graph(), target_kind, PortDirection::In)
-            .ok_or_else(|| format!("missing input port for `{target_kind}`"))?;
-        let mode = self.store.resolved_interaction_state().connection_mode;
-        self.store
-            .apply_connect_edge(ConnectEdgeRequest::new(source, target, mode))
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
 }
 
 fn layout_request_for_choice(
@@ -790,88 +760,4 @@ fn side_handle_bounds(
             )
         })
         .collect()
-}
-
-fn first_port(graph: &Graph, kind: &str, direction: PortDirection) -> Option<PortId> {
-    graph.nodes().iter().find_map(|(node_id, node)| {
-        (node.kind.0 == kind).then(|| {
-            node.ports.iter().copied().find(|port| {
-                graph
-                    .ports()
-                    .get(port)
-                    .is_some_and(|record| record.node == *node_id && record.dir == direction)
-            })
-        })?
-    })
-}
-
-fn demo_node_registry() -> NodeRegistry {
-    let mut registry = NodeRegistry::new();
-    registry.register(
-        NodeSchema::builder("demo.start", "Start")
-            .category(["Workflow"])
-            .renderer_key("data-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_output("out").with_label("out"))
-            .default_data(json!({ "summary": "Entry point" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.task", "Task")
-            .category(["Workflow"])
-            .renderer_key("task-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_input("in").with_label("in"))
-            .port(PortDecl::data_output("out").with_label("out"))
-            .default_data(json!({ "summary": "Run a unit of work" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.decision", "Decision")
-            .category(["Workflow"])
-            .renderer_key("decision-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(
-                PortDecl::new(
-                    "in",
-                    PortDirection::In,
-                    PortKind::Data,
-                    PortCapacity::Single,
-                )
-                .with_label("in"),
-            )
-            .port(
-                PortDecl::new(
-                    "yes",
-                    PortDirection::Out,
-                    PortKind::Data,
-                    PortCapacity::Multi,
-                )
-                .with_label("yes"),
-            )
-            .default_data(json!({ "summary": "Branch the flow" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.output", "Output")
-            .category(["Workflow"])
-            .renderer_key("output-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_input("in").with_label("in"))
-            .default_data(json!({ "summary": "Publish the result" }))
-            .build(),
-    );
-    registry
 }

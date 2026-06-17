@@ -45,6 +45,9 @@ adapter crates such as `jellyflow-egui`.
   layout facts, measured handles, and connection target candidates.
 - Layout engine registry with built-in layered DAG and mind-map families, plus host-provided custom
   engines.
+- XYFlow-style editor primitives for custom node schemas, multiple handles, typed ports,
+  selectable/draggable/connectable policy flags, node extent and parent expansion, view state,
+  controlled-change projection, and renderer-owned node/edge presentation.
 - Headless conformance fixtures that adapter crates can run before DOM, GPU, screenshot, or pixel
   tests.
 
@@ -69,6 +72,10 @@ cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
 cargo run -p jellyflow-egui --example demo
+cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example mind_map
+cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example knowledge_board
 ```
 
 MSRV is `rust-version = 1.95`.
@@ -128,6 +135,10 @@ cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
 cargo run -p jellyflow-runtime --example dirty_scope_layout
 cargo run -p jellyflow-egui --example demo
+cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example mind_map
+cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example knowledge_board
 ```
 
 ## Custom Nodes And Adapters
@@ -198,6 +209,16 @@ Built-in engines:
 - `tidy_tree`: tree layout that centers parents over children for hierarchy and outline views.
 - `mind_map_radial`: radial mind-map layout.
 - `mind_map_freeform`: overlap-resolving freeform mind-map layout that respects pinned nodes.
+
+Typical user-facing graph shapes map to the same headless model with different schemas, renderer
+keys, and layout presets:
+
+- Workflow and automation editors use directed task, decision, and output nodes with layered DAG
+  layout.
+- MindNode-style mind maps use topic/idea nodes with radial or freeform mind-map layout.
+- Outline and organization views use section nodes with tidy-tree layout.
+- MarginNote-style knowledge boards use source, claim, question, and action cards with freeform
+  layout, explicit positions, and normal typed edges between cards.
 
 Custom engines implement `LayoutEngine` and register with `LayoutEngineRegistry`. Runtime callers
 can build a `LayoutContext` from store measurements and binding pins through

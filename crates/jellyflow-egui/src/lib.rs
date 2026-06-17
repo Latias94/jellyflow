@@ -10,11 +10,13 @@ pub use eframe::egui;
 pub mod app;
 pub mod bridge;
 pub mod input;
+pub mod samples;
 pub mod state;
 pub mod ui;
 
 pub use app::JellyflowEguiApp;
-pub use bridge::{DemoGraphError, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog};
+pub use bridge::{JellyflowEguiBridge, NodeRendererStyle, RendererCatalog};
+pub use samples::{SampleGraphError, SampleGraphKind};
 pub use state::{
     ActiveCanvasInteraction, CanvasSnapshot, CanvasTool, HoverTarget, InspectorState,
     JellyflowEguiState, LayoutPresetChoice,
@@ -24,7 +26,7 @@ pub use state::{
 mod tests {
     use super::{
         ActiveCanvasInteraction, JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle,
-        RendererCatalog,
+        RendererCatalog, SampleGraphKind,
     };
     use jellyflow::core::{CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection};
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
@@ -35,6 +37,24 @@ mod tests {
 
         assert!(!app.bridge.store().graph().nodes().is_empty());
         assert!(app.bridge.descriptors().len() >= 4);
+    }
+
+    #[test]
+    fn all_sample_graphs_build_with_nodes_edges_and_default_layouts() {
+        for sample in SampleGraphKind::ALL {
+            let app = JellyflowEguiApp::sample(sample).expect("sample app builds");
+
+            assert_eq!(app.state.selected_sample, sample);
+            assert_eq!(app.state.selected_layout_preset, sample.default_layout());
+            assert!(
+                app.bridge.store().graph().nodes().len() >= 4,
+                "{sample:?} should contain multiple nodes"
+            );
+            assert!(
+                !app.bridge.store().graph().edges().is_empty(),
+                "{sample:?} should contain edges"
+            );
+        }
     }
 
     #[test]
@@ -60,6 +80,15 @@ mod tests {
         assert_eq!(
             RendererCatalog::default().style_for_descriptor(&descriptor),
             NodeRendererStyle::task()
+        );
+        let topic = bridge
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.renderer_key == "topic-card")
+            .expect("demo registry exposes topic renderer");
+        assert_eq!(
+            RendererCatalog::default().style_for_descriptor(&topic),
+            NodeRendererStyle::topic()
         );
     }
 

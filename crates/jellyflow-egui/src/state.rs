@@ -13,6 +13,8 @@ use jellyflow::runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow::runtime::runtime::resize::{NodeResizeDirection, NodeResizePlan};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 
+use crate::samples::SampleGraphKind;
+
 /// Common layout presets exposed by the egui adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LayoutPresetChoice {
@@ -212,6 +214,7 @@ impl CanvasSnapshot {
 pub struct JellyflowEguiState {
     pub palette_filter: String,
     pub pending_create_kind: Option<NodeKindKey>,
+    pub selected_sample: SampleGraphKind,
     pub selected_layout_preset: LayoutPresetChoice,
     pub canvas_tool: CanvasTool,
     pub canvas: CanvasInteractionState,
@@ -224,6 +227,7 @@ impl Default for JellyflowEguiState {
         Self {
             palette_filter: String::new(),
             pending_create_kind: None,
+            selected_sample: SampleGraphKind::default(),
             selected_layout_preset: LayoutPresetChoice::default(),
             canvas_tool: CanvasTool::Select,
             canvas: CanvasInteractionState::default(),

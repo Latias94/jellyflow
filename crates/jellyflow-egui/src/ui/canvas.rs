@@ -120,7 +120,7 @@ fn draw_nodes(
         painter.text(
             rect.center_top() + Vec2::new(0.0, 14.0),
             Align2::CENTER_TOP,
-            descriptor.title,
+            node_title(bridge, *node_id).unwrap_or(descriptor.title),
             TextStyle::Button.resolve(&painter.ctx().global_style()),
             style.text,
         );
@@ -149,6 +149,16 @@ fn node_summary(bridge: &JellyflowEguiBridge, node_id: NodeId) -> Option<String>
         .and_then(|value| value.as_str())
         .unwrap_or("");
     (!summary.is_empty()).then(|| summary.to_owned())
+}
+
+fn node_title(bridge: &JellyflowEguiBridge, node_id: NodeId) -> Option<String> {
+    let node = bridge.store().graph().nodes().get(&node_id)?;
+    let title = node
+        .data
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 fn draw_handles(

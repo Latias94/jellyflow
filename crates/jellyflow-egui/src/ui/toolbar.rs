@@ -1,6 +1,7 @@
 use eframe::egui::{ComboBox, Ui};
 
 use crate::bridge::JellyflowEguiBridge;
+use crate::samples::SampleGraphKind;
 use crate::state::{CanvasTool, JellyflowEguiState, LayoutPresetChoice};
 
 pub fn show_toolbar(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut JellyflowEguiState) {
@@ -42,6 +43,30 @@ pub fn show_toolbar(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut J
             match bridge.redo() {
                 Ok(Some(_)) => state.set_status("Redo"),
                 Ok(None) => state.set_status("Nothing to redo"),
+                Err(err) => state.set_status(err.to_string()),
+            }
+        }
+
+        ui.separator();
+
+        ComboBox::from_id_salt("jellyflow_sample_graph")
+            .selected_text(state.selected_sample.label())
+            .show_ui(ui, |ui| {
+                for sample in SampleGraphKind::ALL {
+                    ui.selectable_value(&mut state.selected_sample, sample, sample.label());
+                }
+            });
+
+        if ui.button("Load").clicked() {
+            match JellyflowEguiBridge::sample(state.selected_sample) {
+                Ok((next_bridge, default_layout)) => {
+                    *bridge = next_bridge;
+                    state.selected_layout_preset = default_layout;
+                    state.canvas.clear_active();
+                    state.canvas.hovered = None;
+                    state.pending_create_kind = None;
+                    state.set_status(format!("Loaded {}", state.selected_sample.label()));
+                }
                 Err(err) => state.set_status(err.to_string()),
             }
         }

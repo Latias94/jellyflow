@@ -9,11 +9,16 @@ resize, connect, delete, undo/redo, viewport math, layout, and rendering queries
 
 ```sh
 cargo run -p jellyflow-egui --example demo
+cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example mind_map
+cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example knowledge_board
 ```
 
-The demo includes selection, marquee selection, node dragging, handle-to-handle connections, selected
-node resize handles, viewport panning and zooming, keyboard nudging, cursor feedback, layout
-presets, undo/redo, delete, a schema-driven palette, and a read-only inspector.
+The demo ships with a sample gallery for workflow, mind map, tree, and knowledge-board style graphs.
+It includes selection, marquee selection, node dragging, handle-to-handle connections, selected node
+resize handles, viewport panning and zooming, keyboard nudging, cursor feedback, layout presets,
+undo/redo, delete, a schema-driven palette, and a read-only inspector.
 
 Use `JellyflowEguiBridge` when embedding the adapter into your own app. Register node schemas in a
 `NodeRegistry`, map each descriptor `renderer_key` to your own `RendererCatalog` style, then let the

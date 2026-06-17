@@ -1,7 +1,8 @@
 use eframe::egui;
 
-use crate::bridge::{DemoGraphError, JellyflowEguiBridge};
-use crate::state::JellyflowEguiState;
+use crate::bridge::JellyflowEguiBridge;
+use crate::samples::{SampleGraphError, SampleGraphKind};
+use crate::state::{JellyflowEguiState, LayoutPresetChoice};
 
 /// Ready-to-run `eframe` application for Jellyflow node graphs.
 pub struct JellyflowEguiApp {
@@ -17,8 +18,21 @@ impl JellyflowEguiApp {
         }
     }
 
-    pub fn demo() -> Result<Self, DemoGraphError> {
-        JellyflowEguiBridge::demo().map(Self::new)
+    pub fn sample(kind: SampleGraphKind) -> Result<Self, SampleGraphError> {
+        let (bridge, default_layout) = JellyflowEguiBridge::sample(kind)?;
+        let mut state = JellyflowEguiState {
+            selected_sample: kind,
+            selected_layout_preset: default_layout,
+            ..JellyflowEguiState::default()
+        };
+        if matches!(default_layout, LayoutPresetChoice::Freeform) {
+            state.set_status("Knowledge board sample loaded");
+        }
+        Ok(Self { bridge, state })
+    }
+
+    pub fn demo() -> Result<Self, SampleGraphError> {
+        Self::sample(SampleGraphKind::Workflow)
     }
 }
 
