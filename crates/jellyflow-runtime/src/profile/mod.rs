@@ -8,10 +8,15 @@
 //!
 //! This module is intentionally headless (no `fret-ui` dependency).
 
+mod domain;
 mod pipeline;
 
 use crate::io::NodeGraphInteractionState;
 use crate::rules::{ConnectPlan, Diagnostic};
+pub use domain::{
+    ConnectionRuleDescriptor, FieldSchema, GraphProfileMetadata, NodeFieldSchemaSet,
+    ValidationHint, VariableDescriptor, VariableSurfaceDescriptor,
+};
 use jellyflow_core::core::{EdgeKind, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
@@ -22,6 +27,11 @@ pub use pipeline::{
 
 /// Profile hooks for typed graphs and domain specialization.
 pub trait GraphProfile {
+    /// Returns renderer-neutral metadata for adapter forms, variables, rule labels, and diagnostics.
+    fn metadata(&self) -> GraphProfileMetadata {
+        GraphProfileMetadata::default()
+    }
+
     /// Returns the current type of a port.
     ///
     /// Default implementations may read `Port::ty` and/or derive from node payloads.

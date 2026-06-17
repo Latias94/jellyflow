@@ -104,20 +104,7 @@ fn from_selection_keeps_parent_when_group_is_selected_and_includes_children() {
     graph.insert_port(b_in, port(b, "in", PortDirection::In));
 
     let e = EdgeId::new();
-    graph.insert_edge(
-        e,
-        Edge {
-            kind: EdgeKind::Data,
-            from: a_out,
-            to: b_in,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(e, Edge::new(EdgeKind::Data, a_out, b_in));
 
     let fragment = GraphFragment::from_selection(&graph, std::iter::empty(), [group_id]);
     assert_eq!(fragment.groups.len(), 1);

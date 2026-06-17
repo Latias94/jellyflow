@@ -39,10 +39,21 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added `jellyflow-egui` keyboard nudging and cursor feedback for editor-grade canvas interactions.
 - Added `jellyflow-egui` sample gallery and runnable workflow, mind-map, tree, and knowledge-board
   examples that demonstrate user-facing graph shapes on the same headless model.
+- Added edge-owned domain data and renderer-neutral `EdgeViewDescriptor` metadata so branch labels,
+  ERD cardinality, markers, renderer keys, and edge hit-target hints flow through graph
+  transactions, diffing, undo/redo, XyFlow compatibility, and external smoke coverage.
+- Added `PortViewDescriptor` metadata on schema `PortDecl` values for adapter-facing handle side,
+  order, group, anchor, lane, slot, label, icon, and visibility hints.
+- Added graph profile metadata for product-facing node field schemas, variable surfaces,
+  validation hints, and connection-rule labels without introducing a workflow domain crate.
+- Added `jellyflow-egui` automation-builder, ERD, and org-chart sample entrypoints, plus runtime
+  adapter-conformance product fixtures for automation, ERD, mind-map, org-chart, and knowledge-board
+  shapes.
 - Added release, CI package-list, dependency-boundary, and external-consumer smoke coverage for
   `jellyflow-egui`.
 - Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch
-  patch accessors, custom node schema builders, built-in layout presets, and dirty-scope helpers.
+  patch accessors, custom node schema builders, built-in layout presets, dirty-scope helpers, port
+  view metadata, edge data/view metadata, and profile diagnostics.
 
 ## [0.2.0] - 2026-06-13
 

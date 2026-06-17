@@ -34,20 +34,7 @@ fn validate_allows_edges_regardless_of_port_direction() {
     );
 
     let edge_id = EdgeId::new();
-    graph.insert_edge(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out_a,
-            to: out_b,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge_id, Edge::new(EdgeKind::Data, out_a, out_b));
 
     let report = validate_graph(&graph);
     assert!(report.is_ok());
@@ -172,20 +159,7 @@ fn validate_rejects_edge_kind_that_does_not_match_port_kind() {
     );
 
     let edge_id = EdgeId::new();
-    graph.insert_edge(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Exec,
-            from: out_a,
-            to: in_b,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge_id, Edge::new(EdgeKind::Exec, out_a, in_b));
 
     let report = validate_graph(&graph);
     assert!(!report.is_ok());
@@ -197,20 +171,7 @@ fn validate_reports_both_missing_edge_endpoints() {
     let edge_id = EdgeId::new();
     let from = PortId::new();
     let to = PortId::new();
-    graph.insert_edge(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from,
-            to,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge_id, Edge::new(EdgeKind::Data, from, to));
 
     let report = validate_graph(&graph);
     let missing_ports = report
@@ -261,20 +222,7 @@ fn validate_reports_duplicate_edges() {
     let first = EdgeId::new();
     let duplicate = EdgeId::new();
     for edge_id in [first, duplicate] {
-        graph.insert_edge(
-            edge_id,
-            Edge {
-                kind: EdgeKind::Data,
-                from: out_a,
-                to: in_b,
-                hidden: false,
-                selectable: None,
-                focusable: None,
-                interaction_width: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        );
+        graph.insert_edge(edge_id, Edge::new(EdgeKind::Data, out_a, in_b));
     }
 
     let report = validate_graph(&graph);
@@ -339,20 +287,7 @@ fn validate_reports_single_port_capacity_exceeded() {
     );
 
     for from in [out_a, out_c] {
-        graph.insert_edge(
-            EdgeId::new(),
-            Edge {
-                kind: EdgeKind::Data,
-                from,
-                to: in_b,
-                hidden: false,
-                selectable: None,
-                focusable: None,
-                interaction_width: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        );
+        graph.insert_edge(EdgeId::new(), Edge::new(EdgeKind::Data, from, in_b));
     }
 
     let report = validate_graph(&graph);

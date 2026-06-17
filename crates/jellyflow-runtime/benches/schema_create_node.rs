@@ -164,6 +164,7 @@ fn port_decl_fixture(index: usize) -> PortDecl {
         },
         ty: None,
         label: Some(format!("Port {index}")),
+        view: Default::default(),
     }
 }
 

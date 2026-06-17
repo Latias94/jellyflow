@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{
     Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
-    EdgeKind, EdgeReconnectable, GraphId, GraphImport, Group, GroupId, Node, NodeExtent, NodeId,
-    NodeKindKey, NodeOrigin, Port, PortId, StickyNote, StickyNoteId, Symbol, SymbolId,
+    EdgeKind, EdgeReconnectable, EdgeViewDescriptor, GraphId, GraphImport, Group, GroupId, Node,
+    NodeExtent, NodeId, NodeKindKey, NodeOrigin, Port, PortId, StickyNote, StickyNoteId, Symbol,
+    SymbolId,
 };
 use crate::types::TypeDesc;
 
@@ -215,6 +216,18 @@ pub enum GraphOp {
         id: EdgeId,
         from: Option<EdgeReconnectable>,
         to: Option<EdgeReconnectable>,
+    },
+    /// Sets an edge's domain-owned data payload.
+    SetEdgeData {
+        id: EdgeId,
+        from: serde_json::Value,
+        to: serde_json::Value,
+    },
+    /// Sets an edge's renderer-neutral view descriptor.
+    SetEdgeView {
+        id: EdgeId,
+        from: EdgeViewDescriptor,
+        to: EdgeViewDescriptor,
     },
     /// Sets an edge's endpoints (preserving edge identity for reconnection workflows).
     SetEdgeEndpoints {

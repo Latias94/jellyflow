@@ -149,8 +149,5 @@ fn measured_handle_bounds(
 }
 
 fn fallback_handle_position(direction: PortDirection) -> HandlePosition {
-    match direction {
-        PortDirection::In => HandlePosition::Left,
-        PortDirection::Out => HandlePosition::Right,
-    }
+    HandlePosition::fallback_for_direction(direction)
 }

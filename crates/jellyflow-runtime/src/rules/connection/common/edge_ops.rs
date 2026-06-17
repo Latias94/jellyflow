@@ -34,17 +34,7 @@ pub(in crate::rules::connection) fn add_existing_ports_edge_op(
 }
 
 pub(in crate::rules::connection) fn edge_between(kind: EdgeKind, from: PortId, to: PortId) -> Edge {
-    Edge {
-        kind,
-        from,
-        to,
-        hidden: false,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
-    }
+    Edge::new(kind, from, to)
 }
 
 pub(in crate::rules::connection) fn edge_like(edge: &Edge, from: PortId, to: PortId) -> Edge {
@@ -58,6 +48,8 @@ pub(in crate::rules::connection) fn edge_like(edge: &Edge, from: PortId, to: Por
         interaction_width: edge.interaction_width,
         deletable: edge.deletable,
         reconnectable: edge.reconnectable,
+        data: edge.data.clone(),
+        view: edge.view.clone(),
     }
 }
 

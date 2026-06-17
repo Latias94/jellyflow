@@ -657,14 +657,7 @@ fn port_model(node: NodeId, dir: PortDirection) -> Port {
 
 fn edge_model(from: PortId, to: PortId, hidden: bool) -> Edge {
     Edge {
-        kind: EdgeKind::Data,
-        from,
-        to,
         hidden,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
+        ..Edge::new(EdgeKind::Data, from, to)
     }
 }

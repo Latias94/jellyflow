@@ -47,6 +47,18 @@ pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bo
             GraphOp::SetEdgeReconnectable { id: b, from, to },
         ) => coalesce_value(a, last_to, b, from, to),
         (
+            GraphOp::SetEdgeData {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeData { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeView {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeView { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
             GraphOp::SetEdgeEndpoints {
                 id: a, to: last_to, ..
             },

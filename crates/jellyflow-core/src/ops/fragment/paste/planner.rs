@@ -173,6 +173,8 @@ impl<'a> FragmentPastePlanner<'a> {
             interaction_width: old_edge.interaction_width,
             deletable: old_edge.deletable,
             reconnectable: old_edge.reconnectable,
+            data: old_edge.data.clone(),
+            view: old_edge.view.clone(),
         }
     }
 

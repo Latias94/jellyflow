@@ -242,7 +242,9 @@ impl GraphOp {
             | Self::SetEdgeHidden { id, .. }
             | Self::SetEdgeInteractionWidth { id, .. }
             | Self::SetEdgeDeletable { id, .. }
-            | Self::SetEdgeReconnectable { id, .. } => {
+            | Self::SetEdgeReconnectable { id, .. }
+            | Self::SetEdgeData { id, .. }
+            | Self::SetEdgeView { id, .. } => {
                 footprint.touch_edge(*id);
             }
             Self::SetEdgeEndpoints { id, from, to } => {

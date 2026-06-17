@@ -1,9 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use eframe::egui::{Color32, Stroke};
-use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, NodeKindKey, PortDirection, PortId,
-};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, NodeKindKey};
 use jellyflow::layout::{LayoutEngineRegistry, builtin_layout_engine_registry};
 use jellyflow::runtime::runtime::connection::{ConnectEdgeRequest, ConnectionHandleRef};
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
@@ -11,9 +8,7 @@ use jellyflow::runtime::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use jellyflow::runtime::runtime::fit_view::{
     FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
 };
-use jellyflow::runtime::runtime::geometry::{
-    BezierEdgeOptions, HandleBounds, HandlePosition, bezier_edge_path,
-};
+use jellyflow::runtime::runtime::geometry::{BezierEdgeOptions, HandleBounds, bezier_edge_path};
 use jellyflow::runtime::runtime::keyboard::{
     KeyboardActionError, KeyboardActionOutcome, KeyboardIntent,
 };
@@ -30,6 +25,8 @@ use jellyflow::runtime::runtime::viewport::{
 use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeRegistry};
 use jellyflow::runtime::{DispatchError, DispatchOutcome, NodeGraphStore};
 
+use crate::handle_layout::{HandleLayoutPort, handle_bounds_for_node};
+use crate::renderer::RendererCatalog;
 use crate::samples::{SampleGraphError, SampleGraphKind, sample_graph};
 use crate::state::{
     ActiveCanvasInteraction, CanvasSnapshot, LayoutPresetChoice, layout_scope_for_selection,
@@ -37,168 +34,7 @@ use crate::state::{
 
 pub(crate) const DEFAULT_NODE_WIDTH: f32 = 180.0;
 pub(crate) const DEFAULT_NODE_HEIGHT: f32 = 86.0;
-const DEFAULT_HANDLE_SIZE: f32 = 10.0;
-
-/// Visual style mapped from an adapter-owned renderer key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NodeRendererStyle {
-    pub fill: Color32,
-    pub stroke: Color32,
-    pub accent: Color32,
-    pub text: Color32,
-}
-
-impl NodeRendererStyle {
-    pub const fn new(fill: Color32, stroke: Color32, accent: Color32, text: Color32) -> Self {
-        Self {
-            fill,
-            stroke,
-            accent,
-            text,
-        }
-    }
-
-    pub const fn task() -> Self {
-        Self::new(
-            Color32::from_rgb(245, 248, 252),
-            Color32::from_rgb(124, 139, 160),
-            Color32::from_rgb(42, 106, 166),
-            Color32::from_rgb(31, 41, 55),
-        )
-    }
-
-    pub const fn decision() -> Self {
-        Self::new(
-            Color32::from_rgb(255, 248, 235),
-            Color32::from_rgb(191, 129, 45),
-            Color32::from_rgb(200, 83, 44),
-            Color32::from_rgb(61, 46, 28),
-        )
-    }
-
-    pub const fn data() -> Self {
-        Self::new(
-            Color32::from_rgb(238, 250, 246),
-            Color32::from_rgb(79, 146, 121),
-            Color32::from_rgb(18, 128, 96),
-            Color32::from_rgb(27, 53, 48),
-        )
-    }
-
-    pub const fn output() -> Self {
-        Self::new(
-            Color32::from_rgb(249, 244, 255),
-            Color32::from_rgb(135, 107, 177),
-            Color32::from_rgb(108, 81, 158),
-            Color32::from_rgb(49, 38, 70),
-        )
-    }
-
-    pub const fn topic() -> Self {
-        Self::new(
-            Color32::from_rgb(244, 249, 255),
-            Color32::from_rgb(82, 127, 172),
-            Color32::from_rgb(31, 105, 168),
-            Color32::from_rgb(26, 45, 68),
-        )
-    }
-
-    pub const fn idea() -> Self {
-        Self::new(
-            Color32::from_rgb(248, 250, 240),
-            Color32::from_rgb(134, 152, 86),
-            Color32::from_rgb(88, 128, 54),
-            Color32::from_rgb(43, 55, 34),
-        )
-    }
-
-    pub const fn section() -> Self {
-        Self::new(
-            Color32::from_rgb(246, 246, 252),
-            Color32::from_rgb(118, 118, 158),
-            Color32::from_rgb(72, 88, 150),
-            Color32::from_rgb(42, 44, 68),
-        )
-    }
-
-    pub const fn source() -> Self {
-        Self::new(
-            Color32::from_rgb(252, 248, 241),
-            Color32::from_rgb(160, 128, 86),
-            Color32::from_rgb(150, 94, 46),
-            Color32::from_rgb(64, 48, 34),
-        )
-    }
-
-    pub const fn fallback() -> Self {
-        Self::new(
-            Color32::from_rgb(247, 247, 246),
-            Color32::from_rgb(142, 142, 135),
-            Color32::from_rgb(82, 82, 74),
-            Color32::from_rgb(36, 36, 32),
-        )
-    }
-
-    pub fn selected_stroke(self) -> Stroke {
-        Stroke::new(2.0, self.accent)
-    }
-}
-
-/// Adapter-owned renderer catalog keyed by `NodeKindViewDescriptor::renderer_key`.
-#[derive(Debug, Clone)]
-pub struct RendererCatalog {
-    fallback: NodeRendererStyle,
-    by_renderer_key: BTreeMap<String, NodeRendererStyle>,
-}
-
-impl Default for RendererCatalog {
-    fn default() -> Self {
-        Self::with_builtin_styles()
-    }
-}
-
-impl RendererCatalog {
-    pub fn new() -> Self {
-        Self {
-            fallback: NodeRendererStyle::fallback(),
-            by_renderer_key: BTreeMap::new(),
-        }
-    }
-
-    pub fn with_builtin_styles() -> Self {
-        let mut catalog = Self::new();
-        catalog
-            .register("task-card", NodeRendererStyle::task())
-            .register("decision-card", NodeRendererStyle::decision())
-            .register("data-card", NodeRendererStyle::data())
-            .register("output-card", NodeRendererStyle::output())
-            .register("topic-card", NodeRendererStyle::topic())
-            .register("idea-card", NodeRendererStyle::idea())
-            .register("section-card", NodeRendererStyle::section())
-            .register("source-card", NodeRendererStyle::source());
-        catalog
-    }
-
-    pub fn register(
-        &mut self,
-        renderer_key: impl Into<String>,
-        style: NodeRendererStyle,
-    ) -> &mut Self {
-        self.by_renderer_key.insert(renderer_key.into(), style);
-        self
-    }
-
-    pub fn style_for_descriptor(&self, descriptor: &NodeKindViewDescriptor) -> NodeRendererStyle {
-        self.style_for_key(&descriptor.renderer_key)
-    }
-
-    pub fn style_for_key(&self, renderer_key: &str) -> NodeRendererStyle {
-        self.by_renderer_key
-            .get(renderer_key)
-            .copied()
-            .unwrap_or(self.fallback)
-    }
-}
+pub(crate) const DEFAULT_HANDLE_SIZE: f32 = 10.0;
 
 /// Owns the Jellyflow store and exposes small adapter-facing commands for egui widgets.
 pub struct JellyflowEguiBridge {
@@ -346,8 +182,8 @@ impl JellyflowEguiBridge {
             .size
             .or_else(|| {
                 self.node_registry
-                    .view_descriptor(&node_record.kind)
-                    .and_then(|descriptor| descriptor.default_size)
+                    .get(&node_record.kind)
+                    .and_then(|schema| schema.default_size)
             })
             .unwrap_or(CanvasSize {
                 width: DEFAULT_NODE_WIDTH,
@@ -363,31 +199,6 @@ impl JellyflowEguiBridge {
         let Some(node_record) = self.store.graph().nodes().get(&node) else {
             return Vec::new();
         };
-
-        let inputs: Vec<_> = node_record
-            .ports
-            .iter()
-            .copied()
-            .filter(|port| {
-                self.store
-                    .graph()
-                    .ports()
-                    .get(port)
-                    .is_some_and(|record| record.dir == PortDirection::In)
-            })
-            .collect();
-        let outputs: Vec<_> = node_record
-            .ports
-            .iter()
-            .copied()
-            .filter(|port| {
-                self.store
-                    .graph()
-                    .ports()
-                    .get(port)
-                    .is_some_and(|record| record.dir == PortDirection::Out)
-            })
-            .collect();
         let size = self
             .node_rect(node)
             .map(|rect| rect.size)
@@ -395,11 +206,19 @@ impl JellyflowEguiBridge {
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
             });
+        let schema = self.node_registry.get(&node_record.kind);
+        let ports = node_record.ports.iter().copied().filter_map(|port| {
+            let port_record = self.store.graph().ports().get(&port)?;
+            let decl = schema
+                .and_then(|schema| schema.ports.iter().find(|decl| decl.key == port_record.key));
+            Some(HandleLayoutPort {
+                id: port,
+                direction: port_record.dir,
+                decl,
+            })
+        });
 
-        let mut handles = Vec::with_capacity(inputs.len() + outputs.len());
-        handles.extend(side_handle_bounds(node, &inputs, PortDirection::In, size));
-        handles.extend(side_handle_bounds(node, &outputs, PortDirection::Out, size));
-        handles
+        handle_bounds_for_node(node, ports, size)
     }
 
     pub fn create_node(
@@ -460,8 +279,8 @@ impl JellyflowEguiBridge {
                 }
                 let size = node.size.or_else(|| {
                     self.node_registry
-                        .view_descriptor(&node.kind)
-                        .and_then(|descriptor| descriptor.default_size)
+                        .get(&node.kind)
+                        .and_then(|schema| schema.default_size)
                 })?;
                 Some(FitViewNodeInfo {
                     pos: node.pos,
@@ -723,41 +542,4 @@ fn visible_or_full_edges(visible: &[EdgeId], full: &[EdgeId]) -> Vec<EdgeId> {
     } else {
         visible.to_vec()
     }
-}
-
-fn side_handle_bounds(
-    node: NodeId,
-    ports: &[PortId],
-    direction: PortDirection,
-    node_size: CanvasSize,
-) -> Vec<(ConnectionHandleRef, HandleBounds)> {
-    let count = ports.len().max(1) as f32;
-    ports
-        .iter()
-        .enumerate()
-        .map(|(index, port)| {
-            let y =
-                ((index + 1) as f32 / (count + 1.0)) * node_size.height - DEFAULT_HANDLE_SIZE * 0.5;
-            let x = match direction {
-                PortDirection::In => -DEFAULT_HANDLE_SIZE * 0.5,
-                PortDirection::Out => node_size.width - DEFAULT_HANDLE_SIZE * 0.5,
-            };
-            (
-                ConnectionHandleRef::new(node, *port, direction),
-                HandleBounds {
-                    rect: CanvasRect {
-                        origin: CanvasPoint { x, y },
-                        size: CanvasSize {
-                            width: DEFAULT_HANDLE_SIZE,
-                            height: DEFAULT_HANDLE_SIZE,
-                        },
-                    },
-                    position: match direction {
-                        PortDirection::In => HandlePosition::Left,
-                        PortDirection::Out => HandlePosition::Right,
-                    },
-                },
-            )
-        })
-        .collect()
 }

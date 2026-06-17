@@ -21,6 +21,16 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
     let ids = insert_connected_pair(&mut graph);
     graph.node_mut(&ids.a).unwrap().parent = Some(group_id);
     graph.node_mut(&ids.b).unwrap().parent = Some(group_id);
+    graph.edge_mut(&ids.edge).unwrap().data = serde_json::json!({ "branch": "approved" });
+    graph.edge_mut(&ids.edge).unwrap().view = EdgeViewDescriptor {
+        renderer_key: Some("branch-edge".to_string()),
+        label: Some("Approved".to_string()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: None,
+        target_marker_key: Some("arrow".to_string()),
+        style_token: Some("success".to_string()),
+        hit_target_width: Some(24.0),
+    };
 
     let fragment = GraphFragment::from_selection(&graph, [ids.a, ids.b], [group_id]);
     let remapper = IdRemapper::new(IdRemapSeed(Uuid::nil()));
@@ -58,6 +68,18 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
     assert_eq!(dst.nodes[&pasted_b].ports, vec![pasted_in]);
     assert_eq!(dst.edges[&pasted_edge].from, pasted_out);
     assert_eq!(dst.edges[&pasted_edge].to, pasted_in);
+    assert_eq!(
+        dst.edges[&pasted_edge].data,
+        serde_json::json!({ "branch": "approved" })
+    );
+    assert_eq!(
+        dst.edges[&pasted_edge].view.label.as_deref(),
+        Some("Approved")
+    );
+    assert_eq!(
+        dst.edges[&pasted_edge].view.target_marker_key.as_deref(),
+        Some("arrow")
+    );
 }
 
 #[test]

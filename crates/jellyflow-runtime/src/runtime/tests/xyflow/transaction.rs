@@ -3,12 +3,24 @@ use super::super::fixtures::make_graph;
 use crate::runtime::xyflow::changes::{
     ChangesToTransactionError, EdgeChange, NodeChange, NodeGraphChanges,
 };
-use jellyflow_core::core::{CanvasPoint, EdgeId, NodeId, NodeOrigin, PortId};
+use jellyflow_core::core::{
+    CanvasPoint, EdgeId, EdgeLabelAnchor, EdgeViewDescriptor, NodeId, NodeOrigin, PortId,
+};
 use jellyflow_core::ops::GraphOp;
 
 #[test]
 fn changes_to_transaction_is_reversible_and_applicable() {
     let (g0, a, _b, out_port, in_port, eid) = make_graph();
+    let edge_data = serde_json::json!({ "condition": "approved" });
+    let edge_view = EdgeViewDescriptor {
+        renderer_key: Some("decision-edge".to_owned()),
+        label: Some("Approved".to_owned()),
+        label_anchor: Some(EdgeLabelAnchor::Target),
+        source_marker_key: None,
+        target_marker_key: Some("arrow".to_owned()),
+        style_token: Some("success".to_owned()),
+        hit_target_width: Some(26.0),
+    };
 
     let changes = NodeGraphChanges::from_parts(
         vec![
@@ -35,6 +47,14 @@ fn changes_to_transaction_is_reversible_and_applicable() {
                 id: eid,
                 interaction_width: Some(30.0),
             },
+            EdgeChange::Data {
+                id: eid,
+                data: edge_data.clone(),
+            },
+            EdgeChange::View {
+                id: eid,
+                view: edge_view.clone(),
+            },
         ],
     );
 
@@ -54,6 +74,8 @@ fn changes_to_transaction_is_reversible_and_applicable() {
     assert_eq!(g1.edges().get(&eid).unwrap().to, in_port);
     assert!(g1.edges().get(&eid).unwrap().hidden);
     assert_eq!(g1.edges().get(&eid).unwrap().interaction_width, Some(30.0));
+    assert_eq!(g1.edges().get(&eid).unwrap().data, edge_data);
+    assert_eq!(g1.edges().get(&eid).unwrap().view, edge_view);
 }
 
 #[test]

@@ -12,6 +12,8 @@ pub(in crate::runtime::xyflow) fn edge_update_id(change: &EdgeChange) -> Option<
         | EdgeChange::InteractionWidth { id, .. }
         | EdgeChange::Deletable { id, .. }
         | EdgeChange::Reconnectable { id, .. }
+        | EdgeChange::Data { id, .. }
+        | EdgeChange::View { id, .. }
         | EdgeChange::Endpoints { id, .. } => Some(*id),
     }
 }
@@ -60,6 +62,16 @@ pub(in crate::runtime::xyflow) fn edge_update_op(
             from: edge.reconnectable,
             to: *reconnectable,
         },
+        EdgeChange::Data { id, data } => GraphOp::SetEdgeData {
+            id: *id,
+            from: edge.data.clone(),
+            to: data.clone(),
+        },
+        EdgeChange::View { id, view } => GraphOp::SetEdgeView {
+            id: *id,
+            from: edge.view.clone(),
+            to: view.clone(),
+        },
         EdgeChange::Endpoints { id, from, to } => GraphOp::SetEdgeEndpoints {
             id: *id,
             from: EdgeEndpoints::from_edge(edge),
@@ -94,6 +106,14 @@ pub(in crate::runtime::xyflow) fn edge_update_change_from_op(op: &GraphOp) -> Op
         GraphOp::SetEdgeReconnectable { id, to, .. } => EdgeChange::Reconnectable {
             id: *id,
             reconnectable: *to,
+        },
+        GraphOp::SetEdgeData { id, to, .. } => EdgeChange::Data {
+            id: *id,
+            data: to.clone(),
+        },
+        GraphOp::SetEdgeView { id, to, .. } => EdgeChange::View {
+            id: *id,
+            view: to.clone(),
         },
         GraphOp::SetEdgeEndpoints { id, to, .. } => EdgeChange::Endpoints {
             id: *id,

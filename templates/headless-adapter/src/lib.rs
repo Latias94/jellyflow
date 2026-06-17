@@ -1251,20 +1251,7 @@ fn connected_nodes_builder(
             data: serde_json::Value::Null,
         },
     );
-    graph.insert_edge(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out_port,
-            to: in_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge_id, Edge::new(EdgeKind::Data, out_port, in_port));
     graph
 }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use jellyflow_core::core::{Edge, EdgeId, EdgeKind, EdgeReconnectable, PortId};
+use jellyflow_core::core::{Edge, EdgeId, EdgeKind, EdgeReconnectable, EdgeViewDescriptor, PortId};
 
 /// Changes targeting edges (graph-owned).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +41,14 @@ pub enum EdgeChange {
     Reconnectable {
         id: EdgeId,
         reconnectable: Option<EdgeReconnectable>,
+    },
+    Data {
+        id: EdgeId,
+        data: serde_json::Value,
+    },
+    View {
+        id: EdgeId,
+        view: EdgeViewDescriptor,
     },
     Endpoints {
         id: EdgeId,

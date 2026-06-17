@@ -69,31 +69,11 @@ fn view_state_sanitize_removes_stale_ids() {
     graph.insert_edge(
         hidden_edge,
         Edge {
-            kind: EdgeKind::Data,
-            from: from_port,
-            to: to_port,
             hidden: true,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
+            ..Edge::new(EdgeKind::Data, from_port, to_port)
         },
     );
-    graph.insert_edge(
-        keep_edge,
-        Edge {
-            kind: EdgeKind::Data,
-            from: from_port,
-            to: to_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(keep_edge, Edge::new(EdgeKind::Data, from_port, to_port));
 
     let mut state = NodeGraphViewState {
         selected_nodes: vec![keep_node, NodeId::new()],

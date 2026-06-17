@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasSize, Graph, GraphId, NodeId, NodeKindKey, PortCapacity, PortDirection,
-    PortId, PortKind,
+    CanvasPoint, CanvasSize, EdgeId, EdgeLabelAnchor, EdgeViewDescriptor, Graph, GraphId, GraphOp,
+    GraphTransaction, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::ConnectEdgeRequest;
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
-use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl};
+use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor};
 use jellyflow::runtime::{DispatchOutcome, NodeGraphStore};
 use serde_json::json;
 use thiserror::Error;
@@ -19,34 +19,43 @@ use crate::state::LayoutPresetChoice;
 pub enum SampleGraphKind {
     #[default]
     Workflow,
+    AutomationBuilder,
     MindMap,
     Tree,
+    OrgChart,
     KnowledgeBoard,
+    Erd,
 }
 
 impl SampleGraphKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 7] = [
         Self::Workflow,
+        Self::AutomationBuilder,
         Self::MindMap,
         Self::Tree,
+        Self::OrgChart,
         Self::KnowledgeBoard,
+        Self::Erd,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Workflow => "Workflow",
+            Self::AutomationBuilder => "Automation builder",
             Self::MindMap => "Mind map",
             Self::Tree => "Tree",
+            Self::OrgChart => "Org chart",
             Self::KnowledgeBoard => "Knowledge board",
+            Self::Erd => "ERD",
         }
     }
 
     pub fn default_layout(self) -> LayoutPresetChoice {
         match self {
-            Self::Workflow => LayoutPresetChoice::Workflow,
+            Self::Workflow | Self::AutomationBuilder => LayoutPresetChoice::Workflow,
             Self::MindMap => LayoutPresetChoice::MindMap,
-            Self::Tree => LayoutPresetChoice::Tree,
-            Self::KnowledgeBoard => LayoutPresetChoice::Freeform,
+            Self::Tree | Self::OrgChart => LayoutPresetChoice::Tree,
+            Self::KnowledgeBoard | Self::Erd => LayoutPresetChoice::Freeform,
         }
     }
 }
@@ -77,9 +86,12 @@ pub(crate) fn sample_graph(kind: SampleGraphKind) -> Result<SampleGraph, SampleG
     let mut builder = SampleGraphBuilder::new(registry.clone());
     match kind {
         SampleGraphKind::Workflow => populate_workflow(&mut builder)?,
+        SampleGraphKind::AutomationBuilder => populate_automation_builder(&mut builder)?,
         SampleGraphKind::MindMap => populate_mind_map(&mut builder)?,
         SampleGraphKind::Tree => populate_tree(&mut builder)?,
+        SampleGraphKind::OrgChart => populate_org_chart(&mut builder)?,
         SampleGraphKind::KnowledgeBoard => populate_knowledge_board(&mut builder)?,
+        SampleGraphKind::Erd => populate_erd(&mut builder)?,
     }
     builder.fit_view();
 
@@ -147,6 +159,87 @@ fn populate_workflow(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraph
     builder.connect("draft", "publish")?;
     builder.connect("review", "publish")?;
     builder.apply_default_layout(SampleGraphKind::Workflow.default_layout());
+    Ok(())
+}
+
+fn populate_automation_builder(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
+    for (alias, kind, title, summary, pos) in [
+        (
+            "trigger",
+            "demo.trigger",
+            "Webhook trigger",
+            "Receives customer intake events",
+            CanvasPoint {
+                x: -620.0,
+                y: -40.0,
+            },
+        ),
+        (
+            "normalize",
+            "demo.tool",
+            "Normalize JSON",
+            "Maps request fields into variables",
+            CanvasPoint {
+                x: -300.0,
+                y: -120.0,
+            },
+        ),
+        (
+            "classify",
+            "demo.llm",
+            "Classify request",
+            "LLM chooses priority and route",
+            CanvasPoint { x: 20.0, y: -120.0 },
+        ),
+        (
+            "condition",
+            "demo.switch",
+            "Needs human review?",
+            "Branch on confidence and policy",
+            CanvasPoint {
+                x: 350.0,
+                y: -120.0,
+            },
+        ),
+        (
+            "notify",
+            "demo.tool",
+            "Notify assignee",
+            "Posts a Slack task",
+            CanvasPoint {
+                x: 680.0,
+                y: -210.0,
+            },
+        ),
+        (
+            "error",
+            "demo.error",
+            "Error path",
+            "Capture failed tool calls",
+            CanvasPoint { x: 680.0, y: 10.0 },
+        ),
+        (
+            "output",
+            "demo.workflow_output",
+            "Workflow output",
+            "Return ticket id and route",
+            CanvasPoint {
+                x: 1010.0,
+                y: -100.0,
+            },
+        ),
+    ] {
+        builder.node(alias, kind, title, summary, pos)?;
+    }
+
+    builder.connect("trigger", "normalize")?;
+    builder.connect("normalize", "classify")?;
+    builder.connect("classify", "condition")?;
+    builder.connect_ports("condition", "yes", "notify", "in")?;
+    builder.connect_ports("condition", "no", "error", "error")?;
+    builder.connect("notify", "output")?;
+    builder.connect("error", "output")?;
+    builder.apply_default_layout(SampleGraphKind::AutomationBuilder.default_layout());
     Ok(())
 }
 
@@ -249,6 +342,91 @@ fn populate_tree(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphErro
     Ok(())
 }
 
+fn populate_org_chart(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
+    for (alias, kind, title, summary, pos) in [
+        (
+            "ceo",
+            "demo.person",
+            "Avery Chen",
+            "CEO · strategy and capital",
+            CanvasPoint::default(),
+        ),
+        (
+            "product",
+            "demo.department",
+            "Product",
+            "Roadmap, research, UX",
+            CanvasPoint::default(),
+        ),
+        (
+            "engineering",
+            "demo.department",
+            "Engineering",
+            "Runtime, adapters, infra",
+            CanvasPoint::default(),
+        ),
+        (
+            "gtm",
+            "demo.department",
+            "Go to market",
+            "Sales, success, community",
+            CanvasPoint::default(),
+        ),
+        (
+            "pm",
+            "demo.person",
+            "Mina Rao",
+            "Head of Product",
+            CanvasPoint::default(),
+        ),
+        (
+            "design",
+            "demo.person",
+            "Noah Park",
+            "Design systems",
+            CanvasPoint::default(),
+        ),
+        (
+            "platform",
+            "demo.person",
+            "Iris Lin",
+            "Platform lead",
+            CanvasPoint::default(),
+        ),
+        (
+            "adapter",
+            "demo.person",
+            "Sam Patel",
+            "Adapter lead",
+            CanvasPoint::default(),
+        ),
+        (
+            "success",
+            "demo.person",
+            "Leah Gomez",
+            "Customer success",
+            CanvasPoint::default(),
+        ),
+    ] {
+        builder.node(alias, kind, title, summary, pos)?;
+    }
+
+    for (from, to) in [
+        ("ceo", "product"),
+        ("ceo", "engineering"),
+        ("ceo", "gtm"),
+        ("product", "pm"),
+        ("product", "design"),
+        ("engineering", "platform"),
+        ("engineering", "adapter"),
+        ("gtm", "success"),
+    ] {
+        builder.connect(from, to)?;
+    }
+    builder.apply_default_layout(SampleGraphKind::OrgChart.default_layout());
+    Ok(())
+}
+
 fn populate_knowledge_board(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
     for (alias, kind, title, summary, pos) in [
         (
@@ -315,6 +493,65 @@ fn populate_knowledge_board(builder: &mut SampleGraphBuilder) -> Result<(), Samp
     Ok(())
 }
 
+fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
+    for (alias, title, summary, pos) in [
+        (
+            "customers",
+            "customers",
+            "id · email · plan_id",
+            CanvasPoint {
+                x: -460.0,
+                y: -100.0,
+            },
+        ),
+        (
+            "orders",
+            "orders",
+            "id · customer_id · total",
+            CanvasPoint {
+                x: -70.0,
+                y: -120.0,
+            },
+        ),
+        (
+            "order_items",
+            "order_items",
+            "id · order_id · sku_id · qty",
+            CanvasPoint {
+                x: 330.0,
+                y: -120.0,
+            },
+        ),
+        (
+            "skus",
+            "skus",
+            "id · title · price",
+            CanvasPoint {
+                x: 720.0,
+                y: -120.0,
+            },
+        ),
+        (
+            "plans",
+            "plans",
+            "id · name · limits",
+            CanvasPoint {
+                x: -460.0,
+                y: 130.0,
+            },
+        ),
+    ] {
+        builder.node(alias, "demo.table", title, summary, pos)?;
+    }
+
+    builder.connect_ports("customers", "pk", "orders", "fk")?;
+    builder.connect_ports("orders", "pk", "order_items", "fk")?;
+    builder.connect_ports("skus", "pk", "order_items", "fk")?;
+    builder.connect_ports("plans", "pk", "customers", "fk")?;
+    builder.apply_default_layout(SampleGraphKind::Erd.default_layout());
+    Ok(())
+}
+
 struct SampleGraphBuilder {
     store: NodeGraphStore,
     registry: NodeRegistry,
@@ -357,15 +594,39 @@ impl SampleGraphBuilder {
     }
 
     fn connect(&mut self, from_alias: &str, to_alias: &str) -> Result<(), SampleGraphError> {
+        self.connect_by(from_alias, None, to_alias, None)
+    }
+
+    fn connect_ports(
+        &mut self,
+        from_alias: &str,
+        from_port_key: &str,
+        to_alias: &str,
+        to_port_key: &str,
+    ) -> Result<(), SampleGraphError> {
+        self.connect_by(from_alias, Some(from_port_key), to_alias, Some(to_port_key))
+    }
+
+    fn connect_by(
+        &mut self,
+        from_alias: &str,
+        from_port_key: Option<&str>,
+        to_alias: &str,
+        to_port_key: Option<&str>,
+    ) -> Result<(), SampleGraphError> {
         let from = self.node_id(from_alias)?;
         let to = self.node_id(to_alias)?;
-        let source = self.port(from, from_alias, PortDirection::Out)?;
-        let target = self.port(to, to_alias, PortDirection::In)?;
+        let source = self.port(from, from_alias, PortDirection::Out, from_port_key)?;
+        let target = self.port(to, to_alias, PortDirection::In, to_port_key)?;
         let mode = self.store.resolved_interaction_state().connection_mode;
-        self.store
+        let outcome = self
+            .store
             .apply_connect_edge(ConnectEdgeRequest::new(source, target, mode))
-            .map(|_| ())
-            .map_err(|err| SampleGraphError::Connect(err.to_string()))
+            .map_err(|err| SampleGraphError::Connect(err.to_string()))?;
+        if let Some(edge) = outcome.as_ref().and_then(edge_from_outcome) {
+            self.decorate_edge(edge, from_alias, to_alias)?;
+        }
+        Ok(())
     }
 
     fn apply_default_layout(&mut self, choice: LayoutPresetChoice) {
@@ -420,6 +681,7 @@ impl SampleGraphBuilder {
         node: NodeId,
         alias: &str,
         direction: PortDirection,
+        key: Option<&str>,
     ) -> Result<PortId, SampleGraphError> {
         self.store
             .graph()
@@ -427,11 +689,10 @@ impl SampleGraphBuilder {
             .get(&node)
             .and_then(|record| {
                 record.ports.iter().copied().find(|port| {
-                    self.store
-                        .graph()
-                        .ports()
-                        .get(port)
-                        .is_some_and(|record| record.dir == direction)
+                    self.store.graph().ports().get(port).is_some_and(|record| {
+                        record.dir == direction
+                            && key.is_none_or(|expected| record.key.0 == expected)
+                    })
                 })
             })
             .ok_or_else(|| SampleGraphError::MissingPort {
@@ -466,6 +727,75 @@ impl SampleGraphBuilder {
             )
             .map_err(|err| err.to_string())
     }
+
+    fn decorate_edge(
+        &mut self,
+        edge: EdgeId,
+        from_alias: &str,
+        to_alias: &str,
+    ) -> Result<(), SampleGraphError> {
+        let label = edge_label_for_aliases(from_alias, to_alias);
+        let data = json!({ "label": label, "from": from_alias, "to": to_alias });
+        let view = EdgeViewDescriptor::new()
+            .with_renderer_key("sample-edge")
+            .with_label(label)
+            .with_label_anchor(EdgeLabelAnchor::Center)
+            .with_target_marker_key("arrow")
+            .with_style_token("default")
+            .with_hit_target_width(24.0);
+        self.store
+            .dispatch_transaction(
+                &GraphTransaction::from_ops([
+                    GraphOp::SetEdgeData {
+                        id: edge,
+                        from: serde_json::Value::Null,
+                        to: data,
+                    },
+                    GraphOp::SetEdgeView {
+                        id: edge,
+                        from: EdgeViewDescriptor::default(),
+                        to: view,
+                    },
+                ])
+                .with_label("Set sample edge metadata"),
+            )
+            .map(|_| ())
+            .map_err(|err| SampleGraphError::Connect(err.to_string()))
+    }
+}
+
+fn edge_from_outcome(outcome: &DispatchOutcome) -> Option<EdgeId> {
+    outcome.committed().ops().iter().find_map(|op| match op {
+        GraphOp::AddEdge { id, .. } => Some(*id),
+        _ => None,
+    })
+}
+
+fn edge_label_for_aliases(from_alias: &str, to_alias: &str) -> &'static str {
+    match (from_alias, to_alias) {
+        ("decide", "draft") => "yes",
+        ("decide", "review") => "no",
+        ("trigger", "normalize") => "event",
+        ("normalize", "classify") => "variables",
+        ("classify", "condition") => "classification",
+        ("condition", "notify") => "yes",
+        ("condition", "error") => "error",
+        ("notify", "output") => "success",
+        ("error", "output") => "recovered",
+        ("customers", "orders") => "1:N",
+        ("orders", "order_items") => "1:N",
+        ("skus", "order_items") => "1:N",
+        ("plans", "customers") => "1:N",
+        ("ceo", "product") | ("ceo", "engineering") | ("ceo", "gtm") => "reports",
+        ("product", "pm")
+        | ("product", "design")
+        | ("engineering", "platform")
+        | ("engineering", "adapter")
+        | ("gtm", "success") => "member",
+        ("question", "output") => "answer",
+        ("action", "output") => "deliver",
+        _ => "flow",
+    }
 }
 
 fn sample_node_registry() -> NodeRegistry {
@@ -478,8 +808,27 @@ fn sample_node_registry() -> NodeRegistry {
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
             })
-            .port(PortDecl::data_output("out").with_label("out"))
+            .port(PortDecl::data_output("out").with_label("out").on_right())
             .default_data(json!({ "title": "Start", "summary": "Entry point" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.trigger", "Trigger")
+            .category(["Automation", "Workflow"])
+            .keywords(["webhook", "schedule", "event"])
+            .renderer_key("data-card")
+            .default_size(CanvasSize {
+                width: 208.0,
+                height: 96.0,
+            })
+            .port(exec_output("event").on_right().with_view_group("exec"))
+            .port(
+                data_output("payload")
+                    .on_bottom()
+                    .with_view_group("data")
+                    .with_view_order(1),
+            )
+            .default_data(json!({ "title": "Trigger", "summary": "Starts an automation" }))
             .build(),
     );
     registry.register(
@@ -490,9 +839,70 @@ fn sample_node_registry() -> NodeRegistry {
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
             })
-            .port(PortDecl::data_input("in").with_label("in"))
-            .port(PortDecl::data_output("out").with_label("out"))
+            .port(PortDecl::data_input("in").with_label("in").on_left())
+            .port(PortDecl::data_output("out").with_label("out").on_right())
             .default_data(json!({ "title": "Task", "summary": "Run a unit of work" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.tool", "Tool")
+            .category(["Automation", "Workflow"])
+            .keywords(["api", "function", "action"])
+            .renderer_key("task-card")
+            .default_size(CanvasSize {
+                width: 208.0,
+                height: 104.0,
+            })
+            .port(exec_input("in").on_left().with_view_group("exec"))
+            .port(exec_output("out").on_right().with_view_group("exec"))
+            .port(
+                data_input("args")
+                    .on_top()
+                    .with_view_group("data")
+                    .with_view_order(0),
+            )
+            .port(
+                data_output("result")
+                    .on_bottom()
+                    .with_view_group("data")
+                    .with_view_order(0),
+            )
+            .default_data(json!({ "title": "Tool", "summary": "Runs an external action" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.llm", "LLM")
+            .category(["Automation", "AI"])
+            .keywords(["prompt", "model", "dify"])
+            .renderer_key("decision-card")
+            .default_size(CanvasSize {
+                width: 228.0,
+                height: 118.0,
+            })
+            .port(exec_input("in").on_left().with_view_group("exec"))
+            .port(exec_output("out").on_right().with_view_group("exec"))
+            .port(
+                data_input("prompt")
+                    .on_top()
+                    .with_view_anchor("field.prompt")
+                    .with_view_group("parameters")
+                    .with_view_order(0),
+            )
+            .port(
+                data_output("completion")
+                    .on_bottom()
+                    .with_view_anchor("field.completion")
+                    .with_view_group("outputs")
+                    .with_view_order(0),
+            )
+            .default_data(json!({
+                "title": "LLM",
+                "summary": "Prompt, model, tools, and variables",
+                "fields": {
+                    "model": "gpt-4.1-mini",
+                    "temperature": 0.2
+                }
+            }))
             .build(),
     );
     registry.register(
@@ -504,9 +914,24 @@ fn sample_node_registry() -> NodeRegistry {
                 height: DEFAULT_NODE_HEIGHT,
             })
             .port(input_port("in"))
-            .port(output_port("yes"))
-            .port(output_port("no"))
+            .port(output_port("yes").on_top().with_view_order(0))
+            .port(output_port("no").on_bottom().with_view_order(1))
             .default_data(json!({ "title": "Decision", "summary": "Branch the flow" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.switch", "Switch")
+            .category(["Automation", "Workflow"])
+            .keywords(["branch", "condition", "router"])
+            .renderer_key("decision-card")
+            .default_size(CanvasSize {
+                width: DEFAULT_NODE_WIDTH,
+                height: DEFAULT_NODE_HEIGHT,
+            })
+            .port(exec_input("in").on_left().with_view_group("exec"))
+            .port(exec_output("yes").on_top().with_view_order(0))
+            .port(exec_output("no").on_bottom().with_view_order(1))
+            .default_data(json!({ "title": "Switch", "summary": "Branch execution" }))
             .build(),
     );
     registry.register(
@@ -517,8 +942,43 @@ fn sample_node_registry() -> NodeRegistry {
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
             })
-            .port(PortDecl::data_input("in").with_label("in"))
+            .port(PortDecl::data_input("in").with_label("in").on_left())
             .default_data(json!({ "title": "Output", "summary": "Publish the result" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.workflow_output", "Workflow output")
+            .category(["Automation", "Workflow"])
+            .keywords(["return", "response", "result"])
+            .renderer_key("output-card")
+            .default_size(CanvasSize {
+                width: DEFAULT_NODE_WIDTH,
+                height: DEFAULT_NODE_HEIGHT,
+            })
+            .port(exec_input("in").on_left().with_view_group("exec"))
+            .port(
+                data_input("result")
+                    .on_top()
+                    .with_view_group("data")
+                    .with_view_order(0),
+            )
+            .default_data(
+                json!({ "title": "Workflow output", "summary": "Returns data to caller" }),
+            )
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.error", "Error")
+            .category(["Automation", "Workflow"])
+            .keywords(["failure", "retry", "fallback"])
+            .renderer_key("output-card")
+            .default_size(CanvasSize {
+                width: DEFAULT_NODE_WIDTH,
+                height: DEFAULT_NODE_HEIGHT,
+            })
+            .port(exec_input("error").on_left().with_view_group("exec"))
+            .port(exec_output("out").on_right().with_view_group("exec"))
+            .default_data(json!({ "title": "Error path", "summary": "Retry or recover" }))
             .build(),
     );
     registry.register(
@@ -564,6 +1024,34 @@ fn sample_node_registry() -> NodeRegistry {
             .build(),
     );
     registry.register(
+        NodeSchema::builder("demo.department", "Department")
+            .category(["Org chart"])
+            .keywords(["team", "department", "hierarchy"])
+            .renderer_key("section-card")
+            .default_size(CanvasSize {
+                width: 206.0,
+                height: 84.0,
+            })
+            .port(input_port("manager"))
+            .port(output_port("reports"))
+            .default_data(json!({ "title": "Department", "summary": "Team branch" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.person", "Person")
+            .category(["Org chart"])
+            .keywords(["employee", "role", "reports"])
+            .renderer_key("idea-card")
+            .default_size(CanvasSize {
+                width: 196.0,
+                height: 78.0,
+            })
+            .port(input_port("manager"))
+            .port(output_port("reports"))
+            .default_data(json!({ "title": "Person", "summary": "Role and ownership" }))
+            .build(),
+    );
+    registry.register(
         NodeSchema::builder("demo.source", "Source")
             .category(["Knowledge"])
             .keywords(["paper", "quote", "annotation", "marginnote"])
@@ -576,13 +1064,61 @@ fn sample_node_registry() -> NodeRegistry {
             .default_data(json!({ "title": "Source", "summary": "Evidence card" }))
             .build(),
     );
+    registry.register(
+        NodeSchema::builder("demo.table", "Table")
+            .category(["ERD"])
+            .keywords(["database", "schema", "relation"])
+            .renderer_key("section-card")
+            .default_size(CanvasSize {
+                width: 226.0,
+                height: 126.0,
+            })
+            .port(
+                data_input("fk")
+                    .with_label("foreign key")
+                    .on_left()
+                    .with_view_anchor("field.foreign_key")
+                    .with_view_group("fields")
+                    .with_view_order(0),
+            )
+            .port(
+                data_output("pk")
+                    .with_label("primary key")
+                    .on_right()
+                    .with_view_anchor("field.primary_key")
+                    .with_view_group("fields")
+                    .with_view_order(0),
+            )
+            .default_data(json!({ "title": "Table", "summary": "id · field · field" }))
+            .build(),
+    );
     registry
 }
 
 fn input_port(key: &str) -> PortDecl {
-    PortDecl::new(key, PortDirection::In, PortKind::Data, PortCapacity::Multi).with_label(key)
+    PortDecl::new(key, PortDirection::In, PortKind::Data, PortCapacity::Multi)
+        .with_label(key)
+        .on_left()
 }
 
 fn output_port(key: &str) -> PortDecl {
+    PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi)
+        .with_label(key)
+        .with_view(PortViewDescriptor::right())
+}
+
+fn data_input(key: &str) -> PortDecl {
+    PortDecl::new(key, PortDirection::In, PortKind::Data, PortCapacity::Multi).with_label(key)
+}
+
+fn data_output(key: &str) -> PortDecl {
     PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi).with_label(key)
+}
+
+fn exec_input(key: &str) -> PortDecl {
+    PortDecl::new(key, PortDirection::In, PortKind::Exec, PortCapacity::Single).with_label(key)
+}
+
+fn exec_output(key: &str) -> PortDecl {
+    PortDecl::new(key, PortDirection::Out, PortKind::Exec, PortCapacity::Multi).with_label(key)
 }

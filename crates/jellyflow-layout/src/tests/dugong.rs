@@ -488,17 +488,7 @@ fn size(width: f32, height: f32) -> CanvasSize {
 }
 
 fn data_edge(from: PortId, to: PortId) -> Edge {
-    Edge {
-        kind: EdgeKind::Data,
-        from,
-        to,
-        hidden: false,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
-    }
+    Edge::new(EdgeKind::Data, from, to)
 }
 
 fn node(kind: &str, ports: Vec<PortId>) -> Node {

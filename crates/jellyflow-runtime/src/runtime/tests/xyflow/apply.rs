@@ -6,7 +6,10 @@ use crate::runtime::xyflow::apply::{
     apply_node_changes, apply_xyflow_edge_changes, apply_xyflow_node_changes,
 };
 use crate::runtime::xyflow::changes::{EdgeChange, NodeChange, NodeGraphChanges};
-use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, EdgeKind, NodeId, NodeOrigin};
+use jellyflow_core::core::{
+    CanvasPoint, CanvasSize, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, NodeId,
+    NodeOrigin,
+};
 
 #[test]
 fn apply_node_changes_removes_ports_and_incident_edges() {
@@ -64,6 +67,16 @@ fn apply_node_changes_updates_origin_and_ignores_missing() {
 fn apply_edge_changes_updates_kind_and_ignores_missing() {
     let (mut g0, _a, _b, _out_port, _in_port, eid) = make_graph();
     let missing = EdgeId::new();
+    let edge_data = serde_json::json!({ "cardinality": "1:n" });
+    let edge_view = EdgeViewDescriptor {
+        renderer_key: Some("erd-relation".to_owned()),
+        label: Some("owns".to_owned()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: Some("one".to_owned()),
+        target_marker_key: Some("many".to_owned()),
+        style_token: Some("relation".to_owned()),
+        hit_target_width: Some(24.0),
+    };
 
     let report = apply_edge_changes(
         &mut g0,
@@ -80,6 +93,14 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
                 id: eid,
                 interaction_width: Some(30.0),
             },
+            EdgeChange::Data {
+                id: eid,
+                data: edge_data.clone(),
+            },
+            EdgeChange::View {
+                id: eid,
+                view: edge_view.clone(),
+            },
             EdgeChange::Remove { id: missing },
         ],
     );
@@ -88,6 +109,8 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
     assert_eq!(g0.edges().get(&eid).unwrap().kind, EdgeKind::Exec);
     assert!(g0.edges().get(&eid).unwrap().hidden);
     assert_eq!(g0.edges().get(&eid).unwrap().interaction_width, Some(30.0));
+    assert_eq!(g0.edges().get(&eid).unwrap().data, edge_data);
+    assert_eq!(g0.edges().get(&eid).unwrap().view, edge_view);
 }
 
 #[test]
@@ -145,6 +168,16 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
     let (g0, _a, _b, out_port, in_port, eid) = make_graph();
     let replacement_from = out_port;
     let replacement_to = in_port;
+    let edge_data = serde_json::json!({ "path": "error" });
+    let edge_view = EdgeViewDescriptor {
+        renderer_key: Some("error-edge".to_owned()),
+        label: Some("Error".to_owned()),
+        label_anchor: Some(EdgeLabelAnchor::Source),
+        source_marker_key: None,
+        target_marker_key: Some("arrow".to_owned()),
+        style_token: Some("danger".to_owned()),
+        hit_target_width: Some(36.0),
+    };
     let changes = NodeGraphChanges::from_parts(
         Vec::new(),
         vec![
@@ -159,6 +192,14 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
             EdgeChange::InteractionWidth {
                 id: eid,
                 interaction_width: Some(32.0),
+            },
+            EdgeChange::Data {
+                id: eid,
+                data: edge_data.clone(),
+            },
+            EdgeChange::View {
+                id: eid,
+                view: edge_view.clone(),
             },
             EdgeChange::Endpoints {
                 id: eid,
@@ -175,7 +216,7 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
     tx.apply_to(&mut transacted)
         .expect("edge update tx applies");
 
-    assert_eq!(report.applied(), 4);
+    assert_eq!(report.applied(), 6);
     assert_eq!(report.ignored(), 0);
     let applied_edge = applied.edges().get(&eid).expect("applied edge");
     let transacted_edge = transacted.edges().get(&eid).expect("transacted edge");
@@ -187,6 +228,10 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
     );
     assert_eq!(applied_edge.from, transacted_edge.from);
     assert_eq!(applied_edge.to, transacted_edge.to);
+    assert_eq!(applied_edge.data, transacted_edge.data);
+    assert_eq!(applied_edge.view, transacted_edge.view);
+    assert_eq!(applied_edge.data, edge_data);
+    assert_eq!(applied_edge.view, edge_view);
 }
 
 #[test]

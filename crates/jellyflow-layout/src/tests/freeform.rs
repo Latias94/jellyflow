@@ -385,15 +385,5 @@ fn port(node: NodeId, key: &str, dir: PortDirection) -> Port {
 }
 
 fn edge(from: PortId, to: PortId) -> Edge {
-    Edge {
-        kind: EdgeKind::Data,
-        from,
-        to,
-        hidden: false,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
-    }
+    Edge::new(EdgeKind::Data, from, to)
 }

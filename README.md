@@ -48,6 +48,9 @@ adapter crates such as `jellyflow-egui`.
 - XYFlow-style editor primitives for custom node schemas, multiple handles, typed ports,
   selectable/draggable/connectable policy flags, node extent and parent expansion, view state,
   controlled-change projection, and renderer-owned node/edge presentation.
+- Renderer-neutral product protocols for port view metadata, edge-owned data/view descriptors, and
+  graph profile metadata for node fields, variable surfaces, validation hints, and connection-rule
+  labels.
 - Headless conformance fixtures that adapter crates can run before DOM, GPU, screenshot, or pixel
   tests.
 
@@ -73,9 +76,12 @@ cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
 cargo run -p jellyflow-egui --example demo
 cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example automation_builder
 cargo run -p jellyflow-egui --example mind_map
 cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
+cargo run -p jellyflow-egui --example erd
 ```
 
 MSRV is `rust-version = 1.95`.
@@ -89,6 +95,7 @@ MSRV is `rust-version = 1.95`.
 - [Custom Nodes And Adapters](#custom-nodes-and-adapters)
 - [Layout Engines](#layout-engines)
 - [Adapter Conformance](#adapter-conformance)
+- [Protocol Boundaries](#protocol-boundaries)
 - [Performance](#performance)
 - [Developing](#developing)
 - [Quality Gates](#quality-gates)
@@ -136,9 +143,12 @@ cargo run -p jellyflow-runtime --example layout_engines
 cargo run -p jellyflow-runtime --example dirty_scope_layout
 cargo run -p jellyflow-egui --example demo
 cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example automation_builder
 cargo run -p jellyflow-egui --example mind_map
 cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
+cargo run -p jellyflow-egui --example erd
 ```
 
 ## Custom Nodes And Adapters
@@ -151,6 +161,13 @@ Jellyflow treats custom nodes as headless schema data. Adapters register semanti
 React, Svelte, native, egui, wgpu, and Fret-style adapters can map the same headless schema to
 different renderer implementations while preserving graph semantics, ports, default data, default
 size, category, and search metadata.
+
+Ports can carry `PortViewDescriptor` metadata for side, order, group, anchor, lane, slot, label,
+icon key, and handle visibility. Edges can carry opaque domain data plus `EdgeViewDescriptor`
+metadata for labels, renderer keys, markers, style tokens, and hit-target width. These are normal
+graph fields, so they serialize, diff, undo/redo, and flow through transaction footprints.
+Adapter-only state such as hover, focused inputs, open menus, and transient connection previews
+stays outside the graph.
 
 For create-node palettes, adapters can call
 `NodeGraphStore::apply_create_node_from_schema(registry, CreateNodeRequest::new(kind, pos))`. The
@@ -170,14 +187,19 @@ registry.register(
             width: 180.0,
             height: 104.0,
         })
-        .port(PortDecl::data_input("source").with_label("Source"))
-        .port(PortDecl::data_output("result").with_label("Result"))
+        .port(PortDecl::data_input("source").with_label("Source").on_left())
+        .port(PortDecl::data_output("result").with_label("Result").on_right())
         .build(),
 );
 
 let descriptors = registry.view_descriptors();
 assert_eq!(descriptors[0].renderer_key, "task-card");
 ```
+
+Use `jellyflow_runtime::profile::GraphProfileMetadata` when a product needs reusable field schemas,
+variable surfaces, validation hints, or connection-rule labels without creating a domain crate. A
+future `jellyflow-workflow` crate is intentionally deferred until the workflow and Dify-like
+fixtures prove those profile rules repeat cleanly outside local examples.
 
 For rendering loops, subscribe to small store projections and then query the read model your
 renderer needs. Jellyflow returns stable IDs and render order; adapters keep component state,
@@ -264,6 +286,29 @@ cargo run --manifest-path templates/headless-adapter/Cargo.toml -- check
 Renderer-specific pointer capture, DOM measurement, accessibility text, GPU resources, screenshots,
 and pixel tests belong in adapter crates. Jellyflow owns the deterministic headless behavior that
 those adapters consume.
+
+## Protocol Boundaries
+
+The canonical model is always the Jellyflow graph plus `DispatchOutcome` and `NodeGraphPatch`.
+`runtime::xyflow` is a compatibility dialect for hosts that want XyFlow-style node and edge change
+arrays. It is useful for adapter integration, but it is not the full persistence format.
+
+| Surface | XyFlow-style compatibility | Full-fidelity Jellyflow path |
+| --- | --- | --- |
+| Node and edge add/remove/update changes | Supported through `NodeGraphChanges` and apply helpers. | `GraphTransaction`, `DispatchOutcome`, and graph snapshots. |
+| Node data, dimensions, position, selection, and interaction policy | Supported where there is an XyFlow-shaped change. | Graph fields, view state, policy, and transaction footprints. |
+| Edge kind, endpoints, data, and `EdgeViewDescriptor` | Supported by Jellyflow edge change variants in the compatibility dialect. | Edge-owned graph fields with serde, diff, undo/redo, and footprints. |
+| Port view metadata, profile metadata, bindings, groups, sticky notes, and layout facts | Not represented as ordinary XyFlow node/edge arrays. | Schema descriptors, `GraphProfileMetadata`, binding/layout queries, and patches. |
+| Adapter-local hover, focus, open menus, and connection previews | Not persisted or projected. | Adapter state only. |
+
+Unsupported compatibility fields must not clear full-fidelity graph data. If an integration needs
+lossless state, use the store patch and graph APIs instead of only `NodeGraphChanges`.
+
+New domain protocols are promoted only after they are reused by at least two product fixtures, or by
+one product fixture plus external consumer smoke coverage, and have public-surface tests plus a
+renderer-independent conformance path. Until then, workflow, ERD, mind-map, org-chart, and
+knowledge-board semantics stay as examples and profile/schema fixtures rather than new domain
+crates.
 
 ## Performance
 

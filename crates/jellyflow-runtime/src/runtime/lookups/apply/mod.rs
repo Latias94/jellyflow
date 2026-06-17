@@ -65,6 +65,8 @@ impl NodeGraphLookups {
             | GraphOp::SetEdgeHidden { .. }
             | GraphOp::SetEdgeInteractionWidth { .. }
             | GraphOp::SetEdgeDeletable { .. }
+            | GraphOp::SetEdgeData { .. }
+            | GraphOp::SetEdgeView { .. }
             | GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }
             | GraphOp::SetImportAlias { .. }

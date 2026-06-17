@@ -62,6 +62,8 @@ fn apply_op(graph: &mut Graph, op: &GraphOp) -> Result<(), ApplyError> {
         | GraphOp::SetEdgeInteractionWidth { .. }
         | GraphOp::SetEdgeDeletable { .. }
         | GraphOp::SetEdgeReconnectable { .. }
+        | GraphOp::SetEdgeData { .. }
+        | GraphOp::SetEdgeView { .. }
         | GraphOp::SetEdgeEndpoints { .. } => super::edges::apply_edge_op(graph, op),
 
         GraphOp::AddImport { .. }

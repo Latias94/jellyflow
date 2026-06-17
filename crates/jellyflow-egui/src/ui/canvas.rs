@@ -3,7 +3,7 @@ use eframe::egui::{
     StrokeKind, TextStyle, Ui, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
-use jellyflow::core::{CanvasPoint, CanvasRect, NodeId, PortDirection};
+use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
 use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
 use jellyflow::runtime::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, EdgePath, HandlePosition,
@@ -11,7 +11,8 @@ use jellyflow::runtime::runtime::geometry::{
 };
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
-use crate::bridge::{JellyflowEguiBridge, NodeRendererStyle};
+use crate::bridge::JellyflowEguiBridge;
+use crate::renderer::{NodeRenderInput, NodeRendererState, NodeRendererStyle};
 use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
 
 const NODE_ROUNDING: f32 = 8.0;
@@ -100,17 +101,30 @@ fn draw_nodes(
         let Some(canvas_rect) = visual_node_canvas_rect(state, *node_id) else {
             continue;
         };
-        let rect = canvas_rect_to_screen(state, canvas_rect);
         let Some(descriptor) = bridge.descriptor_for_node(*node_id) else {
             continue;
         };
+        let Some(node_record) = bridge.store().graph().nodes().get(node_id) else {
+            continue;
+        };
         let style = bridge.renderers().style_for_descriptor(&descriptor);
-        let is_selected = bridge.store().view_state().selected_nodes.contains(node_id);
+        let renderer_state = node_renderer_state(bridge, state, *node_id);
+        let layout = bridge.renderers().render_node(
+            &NodeRenderInput {
+                id: *node_id,
+                node: node_record,
+                descriptor: &descriptor,
+                state: renderer_state,
+                style,
+            },
+            canvas_rect,
+        );
+        let rect = canvas_rect_to_screen(state, layout.body_rect);
         painter.rect_filled(rect, CornerRadius::same(NODE_ROUNDING as u8), style.fill);
         painter.rect_stroke(
             rect,
             CornerRadius::same(NODE_ROUNDING as u8),
-            if is_selected {
+            if renderer_state.selected {
                 style.selected_stroke()
             } else {
                 Stroke::new(1.0, style.stroke)
@@ -120,11 +134,11 @@ fn draw_nodes(
         painter.text(
             rect.center_top() + Vec2::new(0.0, 14.0),
             Align2::CENTER_TOP,
-            node_title(bridge, *node_id).unwrap_or(descriptor.title),
+            layout.title,
             TextStyle::Button.resolve(&painter.ctx().global_style()),
             style.text,
         );
-        if let Some(summary) = node_summary(bridge, *node_id) {
+        if let Some(summary) = layout.summary {
             painter.text(
                 rect.center_top() + Vec2::new(0.0, 34.0),
                 Align2::CENTER_TOP,
@@ -133,32 +147,13 @@ fn draw_nodes(
                 style.text.gamma_multiply(0.85),
             );
         }
+        draw_port_summary(painter, &descriptor, rect, style);
 
         draw_handles(painter, state, *node_id, rect, style);
-        if is_selected {
+        if renderer_state.selected {
             draw_resize_handles(painter, rect, style);
         }
     }
-}
-
-fn node_summary(bridge: &JellyflowEguiBridge, node_id: NodeId) -> Option<String> {
-    let node = bridge.store().graph().nodes().get(&node_id)?;
-    let summary = node
-        .data
-        .get("summary")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    (!summary.is_empty()).then(|| summary.to_owned())
-}
-
-fn node_title(bridge: &JellyflowEguiBridge, node_id: NodeId) -> Option<String> {
-    let node = bridge.store().graph().nodes().get(&node_id)?;
-    let title = node
-        .data
-        .get("title")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    (!title.is_empty()).then(|| title.to_owned())
 }
 
 fn draw_handles(
@@ -197,6 +192,57 @@ fn draw_handles(
     }
 }
 
+fn draw_port_summary(
+    painter: &eframe::egui::Painter,
+    descriptor: &jellyflow::runtime::schema::NodeKindViewDescriptor,
+    rect: Rect,
+    style: NodeRendererStyle,
+) {
+    if descriptor.ports.is_empty() {
+        return;
+    }
+    let mut summary = String::new();
+    for decl in &descriptor.ports {
+        let label = decl.label.as_deref().unwrap_or(decl.key.0.as_str());
+        if !summary.is_empty() {
+            summary.push_str(" · ");
+        }
+        summary.push_str(label);
+    }
+    painter.text(
+        rect.center_bottom() - Vec2::new(0.0, 14.0),
+        Align2::CENTER_BOTTOM,
+        summary,
+        TextStyle::Small.resolve(&painter.ctx().global_style()),
+        style.text.gamma_multiply(0.75),
+    );
+}
+
+fn node_renderer_state(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+) -> NodeRendererState {
+    NodeRendererState {
+        selected: bridge.store().view_state().selected_nodes.contains(&node),
+        hovered: matches!(state.canvas.hovered, Some(HoverTarget::Node(found)) if found == node),
+        focused: false,
+        dragging: matches!(state.canvas.active, ActiveCanvasInteraction::NodeDrag { primary, .. } if primary == node),
+        resizing: matches!(state.canvas.active, ActiveCanvasInteraction::NodeResize { node: found, .. } if found == node),
+        connection_preview: matches!(state.canvas.active, ActiveCanvasInteraction::Connect { .. }),
+        valid_target: false,
+        invalid_target: false,
+        disabled: false,
+        hidden: bridge
+            .store()
+            .graph()
+            .nodes()
+            .get(&node)
+            .is_none_or(|record| record.hidden),
+        diagnostic: false,
+    }
+}
+
 fn draw_resize_handles(painter: &eframe::egui::Painter, rect: Rect, style: NodeRendererStyle) {
     for direction in resize_directions() {
         let handle = resize_handle_rect(rect, direction);
@@ -223,8 +269,10 @@ fn draw_edges(
         };
         if let Some(path) = preview_edge_path(state, bridge, *edge_id) {
             draw_edge_path(painter, state, &path, color);
+            draw_edge_label(painter, bridge, state, *edge_id, &path, color);
         } else if let Some(path) = state.canvas.snapshot.edge_paths.get(edge_id) {
             draw_edge_path(painter, state, path, color);
+            draw_edge_label(painter, bridge, state, *edge_id, path, color);
         }
     }
 }
@@ -294,6 +342,81 @@ fn draw_edge_path(
                 painter.add(Shape::Path(PathShape::line(points, stroke)));
             }
         }
+    }
+}
+
+fn draw_edge_label(
+    painter: &eframe::egui::Painter,
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    edge_id: jellyflow::core::EdgeId,
+    path: &EdgePath,
+    color: Color32,
+) {
+    let Some(label) = edge_label(bridge, edge_id) else {
+        return;
+    };
+    let label_anchor = bridge
+        .store()
+        .graph()
+        .edges()
+        .get(&edge_id)
+        .and_then(|edge| edge.view.label_anchor)
+        .unwrap_or(EdgeLabelAnchor::Center);
+    let label_pos = to_screen(state, edge_label_point(path, label_anchor));
+    let font = TextStyle::Small.resolve(&painter.ctx().global_style());
+    let galley = painter.layout_no_wrap(label.to_owned(), font, color);
+    let padding = Vec2::new(8.0, 4.0);
+    let rect = Rect::from_center_size(label_pos, galley.size() + padding * 2.0);
+    painter.rect_filled(rect, CornerRadius::same(4), Color32::WHITE);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, color.gamma_multiply(0.65)),
+        StrokeKind::Outside,
+    );
+    painter.galley(rect.center() - galley.size() * 0.5, galley, color);
+}
+
+pub(crate) fn edge_label(
+    bridge: &JellyflowEguiBridge,
+    edge_id: jellyflow::core::EdgeId,
+) -> Option<&str> {
+    let edge = bridge.store().graph().edges().get(&edge_id)?;
+    if let Some(label) = edge.view.label.as_ref().filter(|label| !label.is_empty()) {
+        return Some(label);
+    }
+    for key in ["label", "condition", "cardinality", "branch"] {
+        if let Some(label) = edge.data.get(key).and_then(|value| value.as_str())
+            && !label.is_empty()
+        {
+            return Some(label);
+        }
+    }
+    None
+}
+
+fn edge_label_point(path: &EdgePath, anchor: EdgeLabelAnchor) -> CanvasPoint {
+    match anchor {
+        EdgeLabelAnchor::Source => path
+            .commands
+            .first()
+            .map(path_command_point)
+            .unwrap_or(path.label.point),
+        EdgeLabelAnchor::Center => path.label.point,
+        EdgeLabelAnchor::Target => path
+            .commands
+            .last()
+            .map(path_command_point)
+            .unwrap_or(path.label.point),
+    }
+}
+
+fn path_command_point(command: &jellyflow::runtime::runtime::geometry::PathCommand) -> CanvasPoint {
+    match *command {
+        jellyflow::runtime::runtime::geometry::PathCommand::MoveTo(point)
+        | jellyflow::runtime::runtime::geometry::PathCommand::LineTo(point) => point,
+        jellyflow::runtime::runtime::geometry::PathCommand::CubicTo { to, .. } => to,
     }
 }
 
@@ -523,7 +646,7 @@ fn handle_pointer(
             }
         } else if let Some(node) = hit_node(state, pointer) {
             bridge.select_node(node, ui.input(|i| i.modifiers.shift));
-        } else if let Some(edge) = hit_edge(state, pointer) {
+        } else if let Some(edge) = hit_edge(state, bridge, pointer) {
             bridge.select_edge(edge, ui.input(|i| i.modifiers.shift));
         } else {
             bridge.clear_selection();
@@ -592,20 +715,45 @@ fn hit_target(
     if let Some(node) = hit_node(state, pointer) {
         return Some(HoverTarget::Node(node));
     }
-    hit_edge(state, pointer).map(HoverTarget::Edge)
+    hit_edge(state, bridge, pointer).map(HoverTarget::Edge)
 }
 
-fn hit_edge(state: &JellyflowEguiState, pointer: Pos2) -> Option<jellyflow::core::EdgeId> {
+fn hit_edge(
+    state: &JellyflowEguiState,
+    bridge: &JellyflowEguiBridge,
+    pointer: Pos2,
+) -> Option<jellyflow::core::EdgeId> {
     for (edge_id, path) in state.canvas.snapshot.edge_paths() {
+        let Some(edge) = bridge.store().graph().edges().get(edge_id) else {
+            continue;
+        };
+        let hit_target_width = edge.view.hit_target_width;
+        let base_options = bridge
+            .store()
+            .resolved_interaction_state()
+            .edge_hit_test_options_for(edge);
         if edge_path_contains_point(
             path,
             state.canvas.snapshot.screen_point_to_canvas(pointer),
-            EdgeHitTestOptions::default(),
+            edge_hit_test_options(base_options, hit_target_width),
         ) {
             return Some(*edge_id);
         }
     }
     None
+}
+
+fn edge_hit_test_options(
+    base_options: EdgeHitTestOptions,
+    hit_target_width: Option<f32>,
+) -> EdgeHitTestOptions {
+    hit_target_width
+        .filter(|width| width.is_finite() && *width > 0.0)
+        .map(|width| EdgeHitTestOptions {
+            interaction_width: width,
+            ..base_options
+        })
+        .unwrap_or(base_options)
 }
 
 fn hit_handle(state: &JellyflowEguiState, pointer: Pos2) -> Option<ConnectionHandleRef> {
@@ -740,10 +888,7 @@ fn has_node_geometry_preview(state: &JellyflowEguiState) -> bool {
 }
 
 fn handle_fallback_position(direction: PortDirection) -> HandlePosition {
-    match direction {
-        PortDirection::In => HandlePosition::Left,
-        PortDirection::Out => HandlePosition::Right,
-    }
+    HandlePosition::fallback_for_direction(direction)
 }
 
 fn canvas_rect_to_screen(state: &JellyflowEguiState, rect: CanvasRect) -> Rect {
@@ -843,10 +988,13 @@ fn resize_cursor(direction: NodeResizeDirection) -> CursorIcon {
 #[cfg(test)]
 mod tests {
     use eframe::egui::{Pos2, Rect, Vec2};
-    use jellyflow::core::{CanvasPoint, NodeId};
-    use jellyflow::runtime::runtime::geometry::PathCommand;
+    use jellyflow::core::{CanvasPoint, EdgeLabelAnchor, NodeId};
+    use jellyflow::runtime::runtime::geometry::{EdgeHitTestOptions, PathCommand};
 
-    use super::{preview_edge_path, visual_node_canvas_rect};
+    use super::{
+        edge_hit_test_options, edge_label, edge_label_point, preview_edge_path,
+        visual_node_canvas_rect,
+    };
     use crate::bridge::JellyflowEguiBridge;
     use crate::state::{ActiveCanvasInteraction, CanvasSnapshot, JellyflowEguiState};
 
@@ -908,6 +1056,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn edge_label_prefers_view_label_and_falls_back_to_edge_data() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let edge = *bridge
+            .store()
+            .graph()
+            .edges()
+            .keys()
+            .next()
+            .expect("sample edge exists");
+
+        assert!(edge_label(&bridge, edge).is_some());
+
+        let from_data = bridge.store().graph().edges()[&edge].data.clone();
+        let from_view = bridge.store().graph().edges()[&edge].view.clone();
+        let mut to_view = from_view.clone();
+        to_view.label = None;
+        bridge
+            .store_mut()
+            .dispatch_transaction(&jellyflow::core::GraphTransaction::from_ops([
+                jellyflow::core::GraphOp::SetEdgeData {
+                    id: edge,
+                    from: from_data,
+                    to: serde_json::json!({ "condition": "approved" }),
+                },
+                jellyflow::core::GraphOp::SetEdgeView {
+                    id: edge,
+                    from: from_view,
+                    to: to_view,
+                },
+            ]))
+            .expect("edge metadata dispatches");
+
+        assert_eq!(edge_label(&bridge, edge), Some("approved"));
+    }
+
+    #[test]
+    fn edge_label_point_honors_edge_view_anchor() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let state = state_with_snapshot(&mut bridge);
+        let edge = *state
+            .canvas
+            .snapshot
+            .visible_edge_render_order
+            .first()
+            .expect("demo edge exists");
+        let path = preview_or_snapshot_edge_path(&state, &bridge, edge);
+
+        assert_eq!(
+            edge_label_point(&path, EdgeLabelAnchor::Source),
+            first_path_point(&path)
+        );
+        assert_eq!(
+            edge_label_point(&path, EdgeLabelAnchor::Target),
+            last_path_point(&path)
+        );
+        assert_eq!(
+            edge_label_point(&path, EdgeLabelAnchor::Center),
+            path.label.point
+        );
+    }
+
+    #[test]
+    fn edge_hit_test_options_use_positive_hit_target_width() {
+        let base_options = EdgeHitTestOptions {
+            interaction_width: 17.0,
+            ..EdgeHitTestOptions::default()
+        };
+        assert_eq!(
+            edge_hit_test_options(base_options, Some(30.0)).interaction_width,
+            30.0
+        );
+        assert_eq!(
+            edge_hit_test_options(base_options, Some(f32::NAN)).interaction_width,
+            base_options.interaction_width
+        );
+        assert_eq!(
+            edge_hit_test_options(base_options, Some(0.0)).interaction_width,
+            base_options.interaction_width
+        );
+    }
+
     fn state_with_snapshot(bridge: &mut JellyflowEguiBridge) -> JellyflowEguiState {
         let mut state = JellyflowEguiState::default();
         state.canvas.snapshot = bridge.rebuild_snapshot(
@@ -938,6 +1168,13 @@ mod tests {
 
     fn first_path_point(path: &jellyflow::runtime::runtime::geometry::EdgePath) -> CanvasPoint {
         match path.commands.first().expect("path has a move command") {
+            PathCommand::MoveTo(point) | PathCommand::LineTo(point) => *point,
+            PathCommand::CubicTo { to, .. } => *to,
+        }
+    }
+
+    fn last_path_point(path: &jellyflow::runtime::runtime::geometry::EdgePath) -> CanvasPoint {
+        match path.commands.last().expect("path has a last command") {
             PathCommand::MoveTo(point) | PathCommand::LineTo(point) => *point,
             PathCommand::CubicTo { to, .. } => *to,
         }

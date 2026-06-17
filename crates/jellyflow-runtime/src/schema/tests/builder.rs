@@ -6,7 +6,9 @@ use super::IdentityMigrator;
 use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use crate::runtime::create_node::CreateNodeRequest;
 use crate::runtime::store::NodeGraphStore;
-use crate::schema::{NodeRegistry, NodeSchema, NodeSchemaBuilder, PortDecl};
+use crate::schema::{
+    NodeRegistry, NodeSchema, NodeSchemaBuilder, PortDecl, PortHandleVisibility, PortViewSide,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Graph, GraphId, NodeKindKey, PortCapacity, PortKey,
 };
@@ -34,8 +36,16 @@ fn node_schema_builder_creates_adapter_facing_schema() {
     assert_eq!(schema.ports[0].key, PortKey::new("source"));
     assert_eq!(schema.ports[0].capacity, PortCapacity::Single);
     assert_eq!(schema.ports[0].label.as_deref(), Some("Source"));
+    assert_eq!(schema.ports[0].view.side, Some(PortViewSide::Left));
+    assert_eq!(schema.ports[0].view.order, Some(0));
+    assert_eq!(schema.ports[0].view.anchor.as_deref(), Some("field.source"));
     assert_eq!(schema.ports[1].key, PortKey::new("result"));
     assert_eq!(schema.ports[1].capacity, PortCapacity::Multi);
+    assert_eq!(schema.ports[1].view.side, Some(PortViewSide::Right));
+    assert_eq!(
+        schema.ports[1].view.visibility,
+        Some(PortHandleVisibility::Hidden)
+    );
     assert_eq!(schema.default_data, json!({ "title": "", "done": false }));
 }
 
@@ -116,9 +126,17 @@ fn task_card_schema() -> NodeSchema {
                     key: "markdown".to_owned(),
                     params: Vec::new(),
                 })
-                .with_label("Source"),
+                .with_label("Source")
+                .on_left()
+                .with_view_order(0)
+                .with_view_anchor("field.source"),
         )
-        .port(PortDecl::data_output("result").with_label("Result"))
+        .port(
+            PortDecl::data_output("result")
+                .with_label("Result")
+                .on_right()
+                .hidden_handle(),
+        )
         .default_data(json!({ "title": "", "done": false }))
         .build()
 }

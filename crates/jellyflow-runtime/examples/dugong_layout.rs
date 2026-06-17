@@ -55,20 +55,7 @@ fn make_graph() -> (Graph, NodeId, NodeId) {
     graph.insert_node(target, make_node("demo.target", vec![target_port]));
     graph.insert_port(source_port, make_port(source, "out", PortDirection::Out));
     graph.insert_port(target_port, make_port(target, "in", PortDirection::In));
-    graph.insert_edge(
-        edge,
-        Edge {
-            kind: EdgeKind::Data,
-            from: source_port,
-            to: target_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge, Edge::new(EdgeKind::Data, source_port, target_port));
 
     (graph.build_unchecked(), source, target)
 }

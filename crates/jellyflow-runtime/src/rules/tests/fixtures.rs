@@ -134,18 +134,5 @@ pub(super) fn insert_typed_data_input(
 }
 
 pub(super) fn insert_edge(graph: &mut GraphBuilder, id: EdgeId, from: PortId, to: PortId) {
-    graph.insert_edge(
-        id,
-        Edge {
-            kind: EdgeKind::Data,
-            from,
-            to,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(id, Edge::new(EdgeKind::Data, from, to));
 }

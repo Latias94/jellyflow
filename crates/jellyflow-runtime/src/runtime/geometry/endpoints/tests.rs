@@ -2,7 +2,7 @@ use super::{
     EdgeEndpointInput, HandleBounds, HandlePosition, edge_position, handle_anchor_position,
     handle_center_position,
 };
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, PortDirection};
 
 #[test]
 fn edge_position_uses_handle_rect_side_anchors() {
@@ -82,6 +82,18 @@ fn edge_position_falls_back_to_node_side_without_handle_bounds() {
     assert_eq!(target.position, HandlePosition::Top);
     assert!((target.point.x - 50.0).abs() <= 1.0e-6);
     assert!((target.point.y - 20.0).abs() <= 1.0e-6);
+}
+
+#[test]
+fn handle_position_fallback_matches_port_direction() {
+    assert_eq!(
+        HandlePosition::fallback_for_direction(PortDirection::In),
+        HandlePosition::Left
+    );
+    assert_eq!(
+        HandlePosition::fallback_for_direction(PortDirection::Out),
+        HandlePosition::Right
+    );
 }
 
 #[test]

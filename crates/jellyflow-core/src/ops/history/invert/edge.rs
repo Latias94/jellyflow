@@ -59,6 +59,16 @@ pub(super) fn invert_edge_op(op: &GraphOp) -> Vec<GraphOp> {
                 to: *from,
             }]
         }
+        GraphOp::SetEdgeData { id, from, to } => vec![GraphOp::SetEdgeData {
+            id: *id,
+            from: to.clone(),
+            to: from.clone(),
+        }],
+        GraphOp::SetEdgeView { id, from, to } => vec![GraphOp::SetEdgeView {
+            id: *id,
+            from: to.clone(),
+            to: from.clone(),
+        }],
         GraphOp::SetEdgeEndpoints { id, from, to } => vec![GraphOp::SetEdgeEndpoints {
             id: *id,
             from: *to,

@@ -262,17 +262,7 @@ mod tests {
         }
 
         fn edge(&self) -> Edge {
-            Edge {
-                kind: EdgeKind::Data,
-                from: self.from,
-                to: self.to,
-                hidden: false,
-                selectable: None,
-                focusable: None,
-                interaction_width: None,
-                deletable: None,
-                reconnectable: None,
-            }
+            Edge::new(EdgeKind::Data, self.from, self.to)
         }
 
         fn endpoints(&self) -> EdgeEndpoints {

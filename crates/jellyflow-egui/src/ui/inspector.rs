@@ -55,6 +55,22 @@ pub fn show_inspector(ui: &mut Ui, bridge: &JellyflowEguiBridge, state: &mut Jel
                         ui.label(format!("from: {:?}", edge.from));
                         ui.label(format!("to: {:?}", edge.to));
                         ui.label(format!("kind: {:?}", edge.kind));
+                        if let Some(renderer_key) = &edge.view.renderer_key {
+                            ui.label(format!("renderer: {renderer_key}"));
+                        }
+                        if let Some(label) = &edge.view.label {
+                            ui.label(format!("label: {label}"));
+                        }
+                        if edge.data != serde_json::Value::Null {
+                            match serde_json::to_string_pretty(&edge.data) {
+                                Ok(data) => {
+                                    ui.monospace(data);
+                                }
+                                Err(err) => {
+                                    ui.label(err.to_string());
+                                }
+                            }
+                        }
                     });
                 }
             }

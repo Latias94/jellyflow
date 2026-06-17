@@ -166,17 +166,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
     let e2 = EdgeId::new();
     let tx_add = GraphTransaction::from_ops([GraphOp::AddEdge {
         id: e2,
-        edge: Edge {
-            kind: EdgeKind::Data,
-            from: out_port,
-            to: in_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge: Edge::new(EdgeKind::Data, out_port, in_port),
     }]);
     let _ = store.dispatch_transaction(&tx_add).expect("dispatch add");
 
@@ -197,17 +187,7 @@ fn install_callbacks_calls_viewport_selection_and_connection_hooks() {
 
     let tx_remove = GraphTransaction::from_ops([GraphOp::RemoveEdge {
         id: e2,
-        edge: Edge {
-            kind: EdgeKind::Data,
-            from: out_port,
-            to: in2,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge: Edge::new(EdgeKind::Data, out_port, in2),
         bindings: Vec::new(),
     }]);
     let _ = store

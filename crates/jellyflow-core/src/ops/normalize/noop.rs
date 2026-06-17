@@ -33,6 +33,8 @@ pub(super) fn op_is_noop(op: &GraphOp) -> bool {
         GraphOp::SetEdgeInteractionWidth { from, to, .. } => from == to,
         GraphOp::SetEdgeDeletable { from, to, .. } => from == to,
         GraphOp::SetEdgeReconnectable { from, to, .. } => from == to,
+        GraphOp::SetEdgeData { from, to, .. } => from == to,
+        GraphOp::SetEdgeView { from, to, .. } => from == to,
         GraphOp::SetEdgeEndpoints { from, to, .. } => from == to,
 
         GraphOp::SetImportAlias { from, to, .. } => from == to,

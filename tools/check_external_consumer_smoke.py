@@ -143,7 +143,8 @@ def jellyflow_egui_main_rs() -> str:
         textwrap.dedent(
             """
             use jellyflow_egui::{
-                JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog, egui,
+                JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog,
+                SampleGraphKind, egui,
             };
 
             fn main() {
@@ -159,6 +160,15 @@ def jellyflow_egui_main_rs() -> str:
 
                 let bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
                 assert!(bridge.descriptors().len() >= 4);
+                for sample in [
+                    SampleGraphKind::AutomationBuilder,
+                    SampleGraphKind::Erd,
+                    SampleGraphKind::OrgChart,
+                ] {
+                    let app = JellyflowEguiApp::sample(sample).expect("product sample app builds");
+                    assert!(!app.bridge.store().graph().nodes().is_empty());
+                    assert!(!app.bridge.store().graph().edges().is_empty());
+                }
                 let _ = egui::Color32::WHITE;
             }
             """
@@ -194,10 +204,11 @@ def jellyflow_runtime_main_rs() -> str:
         textwrap.dedent(
             """
             use jellyflow_core::{
-                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize,
-                Graph, GraphElementKeys, GraphElements, GraphId, GraphLocalBindingTarget,
-                GraphOp, GraphTransaction, Node, NodeGraphModifierKey, NodeGraphModifiers,
-                NodeId, NodeKindKey, SourceAnchor,
+                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge,
+                EdgeId, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, Graph, GraphElementKeys,
+                GraphElements, GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction, Node,
+                NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey, Port,
+                PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor,
             };
             use jellyflow_layout::{
                 LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutFamilyId,
@@ -205,6 +216,15 @@ def jellyflow_runtime_main_rs() -> str:
                 layout_graph_with_engine,
             };
             use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
+            use jellyflow_runtime::profile::{
+                ConnectionRuleDescriptor, FieldSchema, GraphProfileMetadata, NodeFieldSchemaSet,
+                ValidationHint, VariableDescriptor, VariableSurfaceDescriptor,
+            };
+            use jellyflow_runtime::rules::{Diagnostic, DiagnosticTarget};
+            use jellyflow_runtime::schema::{
+                NodeRegistry, NodeSchema, PortDecl, PortHandleVisibility, PortViewDescriptor,
+                PortViewSide,
+            };
             use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
             use jellyflow_runtime::runtime::conformance::{
                 run_conformance_scenario, ConformanceAction, ConformanceFixtureDirectory,
@@ -249,6 +269,32 @@ def jellyflow_runtime_main_rs() -> str:
                 let node_id = NodeId::from_u128(2);
                 let node = make_node("demo.source", 10.0, 20.0);
                 let mut graph = Graph::new(GraphId::from_u128(1));
+                let mut registry = NodeRegistry::new();
+                registry.register(
+                    NodeSchema::builder("demo.workflow", "Workflow")
+                        .port(
+                            PortDecl::data_input("input").with_view(
+                                PortViewDescriptor::left()
+                                    .with_order(0)
+                                    .with_group("data")
+                                    .with_anchor("field.input")
+                                    .with_visibility(PortHandleVisibility::Visible),
+                            ),
+                        )
+                        .port(PortDecl::data_output("result").on_right().with_view_order(1))
+                        .build(),
+                );
+                let workflow_descriptor = registry
+                    .view_descriptor(&NodeKindKey::new("demo.workflow"))
+                    .expect("workflow descriptor");
+                assert_eq!(
+                    workflow_descriptor.ports[0].view.side,
+                    Some(PortViewSide::Left)
+                );
+                assert_eq!(
+                    workflow_descriptor.ports[0].view.anchor.as_deref(),
+                    Some("field.input")
+                );
 
                 let mut add = GraphTransaction::new().with_label("add demo node");
                 add.push(GraphOp::AddNode { id: node_id, node });
@@ -271,6 +317,115 @@ def jellyflow_runtime_main_rs() -> str:
                     },
                 });
                 binding_tx.apply_to(&mut graph).expect("binding applies");
+                let target_id = NodeId::from_u128(3);
+                let from_port = PortId::from_u128(50);
+                let to_port = PortId::from_u128(51);
+                let edge_id = EdgeId::from_u128(52);
+                let edge_view = EdgeViewDescriptor::new()
+                    .with_renderer_key("branch-edge")
+                    .with_label("approved")
+                    .with_label_anchor(EdgeLabelAnchor::Center);
+
+                let target_node = make_node("demo.target", 220.0, 20.0);
+                let mut edge_tx = GraphTransaction::new().with_label("add edge metadata");
+                edge_tx.push(GraphOp::AddNode {
+                    id: target_id,
+                    node: target_node,
+                });
+                edge_tx.push(GraphOp::AddPort {
+                    id: from_port,
+                    port: Port {
+                        node: node_id,
+                        key: PortKey::new("out"),
+                        dir: PortDirection::Out,
+                        kind: PortKind::Data,
+                        capacity: PortCapacity::Multi,
+                        connectable: None,
+                        connectable_start: None,
+                        connectable_end: None,
+                        ty: None,
+                        data: serde_json::Value::Null,
+                    },
+                });
+                edge_tx.push(GraphOp::AddPort {
+                    id: to_port,
+                    port: Port {
+                        node: target_id,
+                        key: PortKey::new("in"),
+                        dir: PortDirection::In,
+                        kind: PortKind::Data,
+                        capacity: PortCapacity::Single,
+                        connectable: None,
+                        connectable_start: None,
+                        connectable_end: None,
+                        ty: None,
+                        data: serde_json::Value::Null,
+                    },
+                });
+                edge_tx.push(GraphOp::SetNodePorts {
+                    id: node_id,
+                    from: Vec::new(),
+                    to: vec![from_port],
+                });
+                edge_tx.push(GraphOp::SetNodePorts {
+                    id: target_id,
+                    from: Vec::new(),
+                    to: vec![to_port],
+                });
+                edge_tx.push(GraphOp::AddEdge {
+                    id: edge_id,
+                    edge: Edge::new(EdgeKind::Data, from_port, to_port),
+                });
+                edge_tx.push(GraphOp::SetEdgeData {
+                    id: edge_id,
+                    from: serde_json::Value::Null,
+                    to: serde_json::json!({ "branch": "approved" }),
+                });
+                edge_tx.push(GraphOp::SetEdgeView {
+                    id: edge_id,
+                    from: EdgeViewDescriptor::default(),
+                    to: edge_view.clone(),
+                });
+                edge_tx.apply_to(&mut graph).expect("edge metadata applies");
+                assert_eq!(
+                    graph.edges()[&edge_id].data,
+                    serde_json::json!({ "branch": "approved" })
+                );
+                assert_eq!(graph.edges()[&edge_id].view, edge_view);
+                let profile_metadata =
+                    GraphProfileMetadata::new("external.workflow", "External workflow")
+                        .with_node_fields(
+                            NodeFieldSchemaSet::new("demo.workflow").with_field(
+                                FieldSchema::new("prompt", "Prompt")
+                                    .with_type(jellyflow_core::TypeDesc::String)
+                                    .required()
+                                    .with_hint(ValidationHint::new(
+                                        "external.prompt_required",
+                                        "Prompt is required",
+                                    ))
+                                    .with_port_anchor("input"),
+                            ),
+                        )
+                        .with_variable_surface(
+                            VariableSurfaceDescriptor::new("inputs", "Inputs").with_variable(
+                                VariableDescriptor::new("topic", "Topic")
+                                    .with_type(jellyflow_core::TypeDesc::String),
+                            ),
+                        )
+                        .with_connection_rule(
+                            ConnectionRuleDescriptor::new(
+                                "external.exec_dag",
+                                "Execution flow must be acyclic",
+                            )
+                            .for_edge_kind(EdgeKind::Exec),
+                        );
+                assert_eq!(profile_metadata.node_fields[0].fields[0].key, "prompt");
+                let diagnostic = Diagnostic::error(
+                    "external.edge.invalid",
+                    DiagnosticTarget::Edge { id: edge_id },
+                    "edge is invalid",
+                );
+                assert_eq!(diagnostic.key, "external.edge.invalid");
 
                 let mut store = NodeGraphStore::new(
                     graph,
@@ -353,6 +508,7 @@ def jellyflow_runtime_main_rs() -> str:
                         .pinned_nodes
                         .contains(&node_id)
                 );
+                assert!(store.graph().edges().contains_key(&edge_id));
 
                 let conformance_scenario =
                     ConformanceScenario::new("external node drag fixture", store.graph().clone())

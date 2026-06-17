@@ -29,15 +29,13 @@ mod tests {
         let from = PortId::new();
         let to = PortId::new();
         let edge = Edge {
-            kind: EdgeKind::Data,
-            from,
-            to,
             hidden: false,
             selectable: Some(true),
             focusable: None,
             interaction_width: None,
             deletable: Some(false),
             reconnectable: Some(EdgeReconnectable::Bool(true)),
+            ..Edge::new(EdgeKind::Data, from, to)
         };
 
         assert_eq!(

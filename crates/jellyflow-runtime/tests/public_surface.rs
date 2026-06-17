@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, Graph, GraphId, GroupId, NodeId,
-    PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor,
+    Graph, GraphId, GroupId, NodeId, PortDirection, PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphMutationFootprint, GraphTransaction};
@@ -9,15 +9,19 @@ use jellyflow_runtime::io::{
     NodeGraphInteractionState, NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons,
     NodeGraphViewState,
 };
-use jellyflow_runtime::profile::{ApplyPipelineError, GraphProfile as ModuleGraphProfile};
-use jellyflow_runtime::rules::{ConnectPlan, EdgeEndpoint};
+use jellyflow_runtime::profile::{
+    ApplyPipelineError, ConnectionRuleDescriptor, FieldSchema, GraphProfile as ModuleGraphProfile,
+    GraphProfileMetadata, NodeFieldSchemaSet, ValidationHint, VariableDescriptor,
+    VariableSurfaceDescriptor,
+};
+use jellyflow_runtime::rules::{ConnectPlan, Diagnostic, DiagnosticTarget, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
     auto_pan, commit, conformance, connection, create_node, delete, drag, events, geometry,
     gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::schema::{
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
-    NodeSchemaBuilder, PortDecl,
+    NodeSchemaBuilder, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -64,6 +68,54 @@ fn crate_root_exposes_canonical_runtime_api() {
 #[test]
 fn explicit_modules_expose_their_owned_surfaces() {
     let graph = Graph::new(GraphId::new());
+    let edge_view = EdgeViewDescriptor {
+        renderer_key: Some("public.edge".to_owned()),
+        label: Some("Public edge".to_owned()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: None,
+        target_marker_key: Some("arrow".to_owned()),
+        style_token: Some("accent".to_owned()),
+        hit_target_width: Some(24.0),
+    };
+    assert_eq!(edge_view.label_anchor, Some(EdgeLabelAnchor::Center));
+    let profile_metadata = GraphProfileMetadata::new("public.workflow", "Public workflow")
+        .with_node_fields(
+            NodeFieldSchemaSet::new("public.note").with_field(
+                FieldSchema::new("prompt", "Prompt")
+                    .with_type(jellyflow_core::types::TypeDesc::String)
+                    .required()
+                    .with_hint(ValidationHint::new(
+                        "public.prompt_required",
+                        "Prompt is required",
+                    ))
+                    .with_port_anchor("source"),
+            ),
+        )
+        .with_variable_surface(
+            VariableSurfaceDescriptor::new("inputs", "Inputs").with_variable(
+                VariableDescriptor::new("topic", "Topic")
+                    .with_type(jellyflow_core::types::TypeDesc::String),
+            ),
+        )
+        .with_connection_rule(
+            ConnectionRuleDescriptor::new("public.exec_dag", "Execution flow must be acyclic")
+                .for_edge_kind(EdgeKind::Exec),
+        );
+    assert_eq!(profile_metadata.key.as_deref(), Some("public.workflow"));
+    assert_eq!(profile_metadata.node_fields[0].fields[0].key, "prompt");
+    assert_eq!(
+        profile_metadata.node_fields[0].fields[0]
+            .port_anchor
+            .as_ref()
+            .map(|key| key.0.as_str()),
+        Some("source")
+    );
+    let profile_diagnostic = Diagnostic::error(
+        "public.edge.invalid",
+        DiagnosticTarget::Edge { id: EdgeId::new() },
+        "edge is invalid",
+    );
+    assert_eq!(profile_diagnostic.key, "public.edge.invalid");
 
     let graph_file = GraphFileV1::from_graph(graph.clone());
     assert_eq!(graph_file.graph_id, graph.graph_id());
@@ -83,7 +135,18 @@ fn explicit_modules_expose_their_owned_surfaces() {
                 width: 120.0,
                 height: 80.0,
             })
-            .port(PortDecl::data_input("source").with_label("Source"))
+            .port(
+                PortDecl::data_input("source")
+                    .with_label("Source")
+                    .with_view(
+                        PortViewDescriptor::left()
+                            .with_order(1)
+                            .with_group("inputs")
+                            .with_anchor("field.source")
+                            .with_icon_key("file-text")
+                            .with_visibility(PortHandleVisibility::Visible),
+                    ),
+            )
             .build(),
     );
     let view_descriptors = node_registry.view_descriptors();
@@ -92,6 +155,15 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert_eq!(
         view_descriptors[0].ports[0].label.as_deref(),
         Some("Source")
+    );
+    assert_eq!(
+        view_descriptors[0].ports[0].view.side,
+        Some(PortViewSide::Left)
+    );
+    assert_eq!(view_descriptors[0].ports[0].view.order, Some(1));
+    assert_eq!(
+        view_descriptors[0].ports[0].view.anchor.as_deref(),
+        Some("field.source")
     );
     assert!(
         node_registry

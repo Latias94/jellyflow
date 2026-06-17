@@ -208,6 +208,86 @@ fn set_node_data_roundtrips_through_invert_transaction() {
 }
 
 #[test]
+fn set_edge_data_and_view_roundtrip_through_invert_transaction() {
+    let mut graph = Graph::default();
+    let ids = insert_connected_pair(&mut graph);
+    let view = EdgeViewDescriptor::new()
+        .with_renderer_key("branch-edge")
+        .with_label("approved")
+        .with_label_anchor(EdgeLabelAnchor::Center)
+        .with_target_marker_key("arrow")
+        .with_style_token("success")
+        .with_hit_target_width(28.0);
+
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetEdgeData {
+            id: ids.edge,
+            from: serde_json::Value::Null,
+            to: serde_json::json!({ "branch": "approved", "priority": 2 }),
+        },
+        GraphOp::SetEdgeView {
+            id: ids.edge,
+            from: EdgeViewDescriptor::default(),
+            to: view.clone(),
+        },
+    ])
+    .with_label("Set edge data");
+
+    apply_transaction(&mut graph, &tx).expect("apply");
+    let edge = graph.edges().get(&ids.edge).expect("edge");
+    assert_eq!(
+        edge.data,
+        serde_json::json!({ "branch": "approved", "priority": 2 })
+    );
+    assert_eq!(edge.view, view);
+
+    let inverse = invert_transaction(&tx);
+    apply_transaction(&mut graph, &inverse).expect("apply inverse");
+    let edge = graph.edges().get(&ids.edge).expect("edge");
+    assert_eq!(edge.data, serde_json::Value::Null);
+    assert_eq!(edge.view, EdgeViewDescriptor::default());
+}
+
+#[test]
+fn edge_deserializes_missing_data_and_view_as_defaults() {
+    let from = PortId::new();
+    let to = PortId::new();
+    let mut value = serde_json::to_value(Edge::new(EdgeKind::Data, from, to)).expect("edge json");
+    value.as_object_mut().expect("edge object").remove("data");
+    value.as_object_mut().expect("edge object").remove("view");
+
+    let edge: Edge = serde_json::from_value(value).expect("edge defaults");
+
+    assert_eq!(edge.from, from);
+    assert_eq!(edge.to, to);
+    assert_eq!(edge.data, serde_json::Value::Null);
+    assert_eq!(edge.view, EdgeViewDescriptor::default());
+}
+
+#[test]
+fn edge_view_descriptor_builder_matches_explicit_construction() {
+    let explicit = EdgeViewDescriptor {
+        renderer_key: Some("branch-edge".to_string()),
+        label: Some("approved".to_string()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: Some("source-dot".to_string()),
+        target_marker_key: Some("arrow".to_string()),
+        style_token: Some("success".to_string()),
+        hit_target_width: Some(28.0),
+    };
+    let built = EdgeViewDescriptor::new()
+        .with_renderer_key("branch-edge")
+        .with_label("approved")
+        .with_label_anchor(EdgeLabelAnchor::Center)
+        .with_source_marker_key("source-dot")
+        .with_target_marker_key("arrow")
+        .with_style_token("success")
+        .with_hit_target_width(28.0);
+
+    assert_eq!(built, explicit);
+}
+
+#[test]
 fn set_edge_endpoints_updates_edge_in_place() {
     let mut graph = Graph::default();
     let a = NodeId::new();

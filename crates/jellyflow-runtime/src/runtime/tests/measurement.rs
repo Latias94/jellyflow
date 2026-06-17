@@ -314,20 +314,7 @@ fn graph_with_unsized_connected_nodes(
     );
     graph.insert_port(out, port_fixture(source, PortDirection::Out));
     graph.insert_port(input, port_fixture(target, PortDirection::In));
-    graph.insert_edge(
-        edge,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: input,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(edge, Edge::new(EdgeKind::Data, out, input));
     graph.into()
 }
 

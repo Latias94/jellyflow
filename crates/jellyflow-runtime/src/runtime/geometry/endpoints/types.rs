@@ -1,4 +1,4 @@
-use jellyflow_core::core::{CanvasPoint, CanvasRect};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, PortDirection};
 use serde::{Deserialize, Serialize};
 
 /// Side of a node or handle where an edge endpoint attaches.
@@ -9,6 +9,15 @@ pub enum HandlePosition {
     Right,
     Bottom,
     Left,
+}
+
+impl HandlePosition {
+    pub fn fallback_for_direction(direction: PortDirection) -> Self {
+        match direction {
+            PortDirection::In => Self::Left,
+            PortDirection::Out => Self::Right,
+        }
+    }
 }
 
 /// Renderer-neutral handle bounds relative to the owning node's top-left corner.

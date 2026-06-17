@@ -118,6 +118,38 @@ fn store_rejects_non_finite_transactions() {
 }
 
 #[test]
+fn store_rejects_non_finite_edge_width_transactions() {
+    let (g, _a, _b, out_port, in_port, edge_id) = make_graph();
+
+    assert_rejects_non_finite_edge_tx(
+        g.clone(),
+        GraphTransaction::from_ops([GraphOp::SetEdgeInteractionWidth {
+            id: edge_id,
+            from: None,
+            to: Some(f32::INFINITY),
+        }]),
+    );
+    assert_rejects_non_finite_edge_tx(
+        g.clone(),
+        GraphTransaction::from_ops([GraphOp::SetEdgeView {
+            id: edge_id,
+            from: EdgeViewDescriptor::default(),
+            to: EdgeViewDescriptor::new().with_hit_target_width(f32::NAN),
+        }]),
+    );
+
+    let mut edge = Edge::new(EdgeKind::Data, out_port, in_port);
+    edge.interaction_width = Some(f32::INFINITY);
+    assert_rejects_non_finite_edge_tx(
+        g,
+        GraphTransaction::from_ops([GraphOp::AddEdge {
+            id: jellyflow_core::core::EdgeId::new(),
+            edge,
+        }]),
+    );
+}
+
+#[test]
 fn store_rejects_invalid_size_transactions() {
     let g = Graph::new(jellyflow_core::core::GraphId::from_u128(1));
     let node_id = NodeId::new();
@@ -160,5 +192,23 @@ fn store_rejects_invalid_size_transactions() {
     assert_eq!(diagnostics[0].key, "tx.invalid_size");
     assert!(store.graph().nodes().is_empty());
     assert_eq!(store.graph().graph_id(), g.graph_id());
+    assert!(!store.can_undo());
+}
+
+fn assert_rejects_non_finite_edge_tx(g: Graph, tx: GraphTransaction) {
+    let mut store = make_store(g.clone());
+    let err = store.dispatch_transaction(&tx).expect_err("reject");
+    let crate::runtime::store::DispatchError::Apply(crate::profile::ApplyPipelineError::Rejected {
+        diagnostics,
+        ..
+    }) = err
+    else {
+        panic!("unexpected error: {err:?}");
+    };
+    assert_eq!(diagnostics[0].key, "tx.non_finite");
+    assert_eq!(
+        serde_json::to_value(store.graph()).expect("store graph serializes"),
+        serde_json::to_value(&g).expect("fixture graph serializes")
+    );
     assert!(!store.can_undo());
 }

@@ -63,6 +63,37 @@ fn set_edge_endpoints_footprint_records_old_and_new_ports() {
 }
 
 #[test]
+fn edge_data_and_view_footprint_records_touched_edge_only() {
+    let edge = EdgeId::from_u128(1);
+    let tx = GraphTransaction::from_ops([
+        GraphOp::SetEdgeData {
+            id: edge,
+            from: serde_json::Value::Null,
+            to: serde_json::json!({ "branch": "yes" }),
+        },
+        GraphOp::SetEdgeView {
+            id: edge,
+            from: EdgeViewDescriptor::default(),
+            to: EdgeViewDescriptor {
+                renderer_key: Some("branch-edge".to_string()),
+                label: Some("Yes".to_string()),
+                label_anchor: Some(EdgeLabelAnchor::Center),
+                source_marker_key: None,
+                target_marker_key: None,
+                style_token: None,
+                hit_target_width: None,
+            },
+        },
+    ]);
+
+    let footprint = tx.footprint();
+
+    assert_eq!(footprint.edges, [edge].into_iter().collect());
+    assert!(footprint.nodes.is_empty());
+    assert!(footprint.ports.is_empty());
+}
+
+#[test]
 fn set_node_parent_footprint_records_old_and_new_groups() {
     let node = NodeId::from_u128(1);
     let old_group = GroupId::from_u128(2);

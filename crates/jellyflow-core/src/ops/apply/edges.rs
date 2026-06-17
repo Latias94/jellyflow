@@ -32,6 +32,12 @@ pub(super) fn apply_edge_op(graph: &mut Graph, op: &GraphOp) -> Result<(), Apply
         GraphOp::SetEdgeReconnectable { id, to, .. } => {
             edge_mut(graph, *id)?.reconnectable = *to;
         }
+        GraphOp::SetEdgeData { id, to, .. } => {
+            edge_mut(graph, *id)?.data = to.clone();
+        }
+        GraphOp::SetEdgeView { id, to, .. } => {
+            edge_mut(graph, *id)?.view = to.clone();
+        }
         GraphOp::SetEdgeEndpoints { id, to, .. } => {
             ensure_edge_exists(graph, *id)?;
             ensure_edge_ports_exist(graph, *id, to.from, to.to)?;

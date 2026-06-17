@@ -1,6 +1,8 @@
 use serde_json::json;
 
-use crate::schema::{NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl};
+use crate::schema::{
+    NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, GraphBuilder, NodeId, NodeKindKey, PortCapacity, PortDirection,
     PortId, PortKey, PortKind,
@@ -32,6 +34,7 @@ fn note_schema() -> NodeSchema {
                     params: Vec::new(),
                 }),
                 label: Some("Source".into()),
+                view: PortViewDescriptor::default(),
             },
             PortDecl {
                 key: PortKey::new("result"),
@@ -40,6 +43,7 @@ fn note_schema() -> NodeSchema {
                 capacity: PortCapacity::Multi,
                 ty: None,
                 label: None,
+                view: PortViewDescriptor::default(),
             },
         ],
         default_data: json!({ "body": "" }),

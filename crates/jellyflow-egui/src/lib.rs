@@ -9,13 +9,19 @@ pub use eframe::egui;
 
 pub mod app;
 pub mod bridge;
+mod handle_layout;
 pub mod input;
+pub mod renderer;
 pub mod samples;
 pub mod state;
 pub mod ui;
 
 pub use app::JellyflowEguiApp;
-pub use bridge::{JellyflowEguiBridge, NodeRendererStyle, RendererCatalog};
+pub use bridge::JellyflowEguiBridge;
+pub use renderer::{
+    NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeRendererState, NodeRendererStyle,
+    RendererCatalog, RichNodeRenderer,
+};
 pub use samples::{SampleGraphError, SampleGraphKind};
 pub use state::{
     ActiveCanvasInteraction, CanvasSnapshot, CanvasTool, HoverTarget, InspectorState,
@@ -28,8 +34,11 @@ mod tests {
         ActiveCanvasInteraction, JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle,
         RendererCatalog, SampleGraphKind,
     };
-    use jellyflow::core::{CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection};
+    use jellyflow::core::{
+        CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection, PortKind,
+    };
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
+    use jellyflow::runtime::runtime::geometry::HandlePosition;
 
     #[test]
     fn demo_app_builds_without_windowing() {
@@ -55,6 +64,38 @@ mod tests {
                 "{sample:?} should contain edges"
             );
         }
+    }
+
+    #[test]
+    fn product_samples_reuse_edge_metadata_and_port_descriptors() {
+        let app =
+            JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder).expect("sample builds");
+
+        assert!(app.bridge.store().graph().edges().values().any(|edge| {
+            edge.view.label.as_deref() == Some("error")
+                && edge.view.renderer_key.as_deref() == Some("sample-edge")
+        }));
+        assert!(app.bridge.store().graph().ports().values().any(|port| {
+            port.kind == PortKind::Exec && port.dir == PortDirection::Out && port.key.0 == "yes"
+        }));
+
+        let erd = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let table_descriptor = erd
+            .bridge
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.kind.0 == "demo.table")
+            .expect("table descriptor exists");
+        assert!(
+            table_descriptor
+                .ports
+                .iter()
+                .any(|port| port.view.anchor.as_deref() == Some("field.primary_key"))
+        );
+        assert!(erd.bridge.store().graph().edges().values().any(|edge| {
+            edge.view.label.as_deref() == Some("1:N")
+                && edge.data.get("label").and_then(|value| value.as_str()) == Some("1:N")
+        }));
     }
 
     #[test]
@@ -124,6 +165,31 @@ mod tests {
 
         assert_eq!(output.1.rect.origin.x, to_size.width - 5.0);
         assert_eq!(output.1.rect.origin.y, to_size.height * 0.5 - 5.0);
+    }
+
+    #[test]
+    fn handle_bounds_follow_port_view_descriptor_sides() {
+        let bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let decision = bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.decision").then_some(*node))
+            .expect("decision node exists");
+        let handles = bridge.default_handle_bounds(decision);
+
+        assert!(handles.iter().any(|(handle, bounds)| {
+            handle.direction == PortDirection::In && bounds.position == HandlePosition::Left
+        }));
+        assert!(handles.iter().any(|(handle, bounds)| {
+            bridge.store().graph().ports()[&handle.port].key.0 == "yes"
+                && bounds.position == HandlePosition::Top
+        }));
+        assert!(handles.iter().any(|(handle, bounds)| {
+            bridge.store().graph().ports()[&handle.port].key.0 == "no"
+                && bounds.position == HandlePosition::Bottom
+        }));
     }
 
     #[test]

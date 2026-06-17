@@ -321,20 +321,8 @@ impl FixtureGraphBuilder {
         let edge = EdgeId::from_u128(self.next_edge);
         self.next_edge += 1;
 
-        self.graph.insert_edge(
-            edge,
-            Edge {
-                kind: EdgeKind::Data,
-                from: source_port,
-                to: target_port,
-                hidden: false,
-                selectable: None,
-                focusable: None,
-                interaction_width: None,
-                deletable: None,
-                reconnectable: None,
-            },
-        );
+        self.graph
+            .insert_edge(edge, Edge::new(EdgeKind::Data, source_port, target_port));
 
         edge
     }

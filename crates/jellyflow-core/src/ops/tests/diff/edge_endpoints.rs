@@ -44,3 +44,53 @@ fn graph_diff_roundtrips_when_edge_endpoints_change() {
         "diff must roundtrip"
     );
 }
+
+#[test]
+fn graph_diff_roundtrips_when_edge_data_and_view_change() {
+    let mut from = Graph::default();
+    let ids = insert_connected_pair_with_ids(
+        &mut from,
+        ConnectedPairIds {
+            a: NodeId::from_u128(1),
+            b: NodeId::from_u128(2),
+            out: PortId::from_u128(3),
+            inn: PortId::from_u128(4),
+            edge: EdgeId::from_u128(5),
+        },
+    );
+
+    let mut to = from.clone();
+    let edge = to.edge_mut(&ids.edge).expect("edge");
+    edge.data = serde_json::json!({ "cardinality": "1:n" });
+    edge.view = EdgeViewDescriptor {
+        renderer_key: Some("erd-relation".to_string()),
+        label: Some("owns".to_string()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: Some("one".to_string()),
+        target_marker_key: Some("many".to_string()),
+        style_token: Some("relation".to_string()),
+        hit_target_width: Some(24.0),
+    };
+
+    let tx = graph_diff(&from, &to);
+    assert!(
+        tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeData { id, .. } if *id == ids.edge)),
+        "diff must emit edge data setter"
+    );
+    assert!(
+        tx.ops()
+            .iter()
+            .any(|op| matches!(op, GraphOp::SetEdgeView { id, .. } if *id == ids.edge)),
+        "diff must emit edge view setter"
+    );
+
+    let mut patched = from.clone();
+    apply_transaction(&mut patched, &tx).expect("apply diff");
+    assert_eq!(
+        serde_json::to_value(&patched).unwrap(),
+        serde_json::to_value(&to).unwrap(),
+        "diff must roundtrip"
+    );
+}

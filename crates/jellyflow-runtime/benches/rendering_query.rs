@@ -362,17 +362,7 @@ fn graph_fixture(node_count: usize) -> Graph {
     for index in 0..node_count.saturating_sub(1) {
         graph.insert_edge(
             edge_id(index),
-            Edge {
-                kind: EdgeKind::Data,
-                from: out_port_id(index),
-                to: in_port_id(index + 1),
-                hidden: false,
-                selectable: None,
-                focusable: None,
-                interaction_width: None,
-                deletable: None,
-                reconnectable: None,
-            },
+            Edge::new(EdgeKind::Data, out_port_id(index), in_port_id(index + 1)),
         );
     }
 

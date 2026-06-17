@@ -82,17 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let edge = EdgeId::from_u128(20);
     let tx = GraphTransaction::from_ops([GraphOp::AddEdge {
         id: edge,
-        edge: Edge {
-            kind: EdgeKind::Data,
-            from: source_port,
-            to: target_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge: Edge::new(EdgeKind::Data, source_port, target_port),
     }])
     .with_label("connect source to target");
 

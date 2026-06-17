@@ -50,17 +50,7 @@ pub(super) fn make_node(kind: &str) -> Node {
 }
 
 pub(super) fn make_edge(from: PortId, to: PortId) -> Edge {
-    Edge {
-        kind: EdgeKind::Data,
-        from,
-        to,
-        hidden: false,
-        selectable: None,
-        focusable: None,
-        interaction_width: None,
-        deletable: None,
-        reconnectable: None,
-    }
+    Edge::new(EdgeKind::Data, from, to)
 }
 
 pub(super) fn make_port(node: NodeId, key: &str, dir: PortDirection) -> Port {

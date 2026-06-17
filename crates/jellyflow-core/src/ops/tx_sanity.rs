@@ -60,6 +60,11 @@ impl NonFiniteGeometry {
             GraphOp::AddStickyNote { note, .. } => {
                 (!note.rect.is_finite()).then_some("AddStickyNote.rect")
             }
+            GraphOp::AddEdge { edge, .. } => edge_non_finite_field(
+                edge,
+                "AddEdge.edge.interaction_width",
+                "AddEdge.edge.view.hit_target_width",
+            ),
 
             GraphOp::SetNodePos { to, .. } => (!to.is_finite()).then_some("SetNodePos.to"),
             GraphOp::SetNodeOrigin { to, .. } => {
@@ -78,6 +83,12 @@ impl NonFiniteGeometry {
                 }
                 Some(NodeExtent::Parent) | None => None,
             },
+            GraphOp::SetEdgeInteractionWidth { to, .. } => {
+                option_non_finite(*to).then_some("SetEdgeInteractionWidth.to")
+            }
+            GraphOp::SetEdgeView { to, .. } => {
+                edge_view_non_finite_field(to, "SetEdgeView.to.hit_target_width")
+            }
 
             GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }
@@ -100,9 +111,9 @@ impl NonFiniteGeometry {
             | GraphOp::SetEdgeSelectable { .. }
             | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeHidden { .. }
-            | GraphOp::SetEdgeInteractionWidth { .. }
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::SetEdgeReconnectable { .. }
+            | GraphOp::SetEdgeData { .. }
             | GraphOp::RemoveNode { .. }
             | GraphOp::SetNodeKind { .. }
             | GraphOp::SetNodeKindVersion { .. }
@@ -122,7 +133,6 @@ impl NonFiniteGeometry {
             | GraphOp::SetBindingMeta { .. }
             | GraphOp::AddPort { .. }
             | GraphOp::RemovePort { .. }
-            | GraphOp::AddEdge { .. }
             | GraphOp::RemoveEdge { .. }
             | GraphOp::SetEdgeEndpoints { .. }
             | GraphOp::SetEdgeKind { .. }
@@ -133,6 +143,27 @@ impl NonFiniteGeometry {
             | GraphOp::RemoveStickyNote { .. } => None,
         }
     }
+}
+
+fn edge_non_finite_field(
+    edge: &crate::core::Edge,
+    interaction_width_field: &'static str,
+    view_hit_target_width_field: &'static str,
+) -> Option<&'static str> {
+    option_non_finite(edge.interaction_width)
+        .then_some(interaction_width_field)
+        .or_else(|| edge_view_non_finite_field(&edge.view, view_hit_target_width_field))
+}
+
+fn edge_view_non_finite_field(
+    view: &crate::core::EdgeViewDescriptor,
+    hit_target_width_field: &'static str,
+) -> Option<&'static str> {
+    option_non_finite(view.hit_target_width).then_some(hit_target_width_field)
+}
+
+fn option_non_finite(value: Option<f32>) -> bool {
+    value.is_some_and(|value| !value.is_finite())
 }
 
 struct InvalidNodeSize;

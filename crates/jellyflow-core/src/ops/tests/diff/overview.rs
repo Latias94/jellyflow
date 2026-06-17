@@ -33,20 +33,7 @@ fn graph_diff_is_deterministic_and_roundtrips() {
     from.node_mut(&b).unwrap().ports.push(inn);
 
     let edge_id = EdgeId::from_u128(123);
-    from.insert_edge(
-        edge_id,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out,
-            to: inn,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    from.insert_edge(edge_id, Edge::new(EdgeKind::Data, out, inn));
 
     let imported = GraphId::from_u128(10);
     from.insert_import(imported, GraphImport::default());

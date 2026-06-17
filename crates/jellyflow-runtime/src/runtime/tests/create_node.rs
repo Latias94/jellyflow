@@ -5,7 +5,9 @@ use crate::runtime::create_node::{
     CREATE_NODE_TRANSACTION_LABEL, CreateNodeError, CreateNodeRequest,
 };
 use crate::runtime::store::NodeGraphStore;
-use crate::schema::{NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl};
+use crate::schema::{
+    NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Graph, GraphId, NodeKindKey, PortCapacity, PortDirection, PortKey,
     PortKind,
@@ -134,6 +136,7 @@ fn note_schema() -> NodeSchema {
                     params: Vec::new(),
                 }),
                 label: Some("Source".into()),
+                view: PortViewDescriptor::default(),
             },
             PortDecl {
                 key: PortKey::new("result"),
@@ -142,6 +145,7 @@ fn note_schema() -> NodeSchema {
                 capacity: PortCapacity::Multi,
                 ty: None,
                 label: Some("Result".into()),
+                view: PortViewDescriptor::default(),
             },
         ],
         default_data: json!({ "body": "" }),

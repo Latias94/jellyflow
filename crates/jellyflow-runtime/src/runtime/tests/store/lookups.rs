@@ -19,17 +19,7 @@ fn store_lookups_update_after_dispatch_transaction() {
 
     let tx = GraphTransaction::from_ops([GraphOp::AddEdge {
         id: eid,
-        edge: Edge {
-            kind: EdgeKind::Data,
-            from: out_port,
-            to: in_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        edge: Edge::new(EdgeKind::Data, out_port, in_port),
     }]);
 
     store.dispatch_transaction(&tx).expect("dispatch");

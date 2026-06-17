@@ -1,6 +1,8 @@
 use serde_json::json;
 
-use crate::schema::{NodeRegistry, NodeSchema, PortDecl};
+use crate::schema::{
+    NodeRegistry, NodeSchema, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+};
 use jellyflow_core::core::{
     CanvasSize, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind,
 };
@@ -31,6 +33,11 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
                 params: Vec::new(),
             }),
             label: Some("Source".into()),
+            view: PortViewDescriptor::left()
+                .with_order(10)
+                .with_group("input")
+                .with_anchor("field.source")
+                .with_icon_key("file-text"),
         }],
         default_data: json!({ "body": "" }),
     });
@@ -68,6 +75,17 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         })
     );
     assert_eq!(descriptors[1].ports.len(), 1);
+    assert_eq!(descriptors[1].ports[0].view.side, Some(PortViewSide::Left));
+    assert_eq!(descriptors[1].ports[0].view.order, Some(10));
+    assert_eq!(descriptors[1].ports[0].view.group.as_deref(), Some("input"));
+    assert_eq!(
+        descriptors[1].ports[0].view.anchor.as_deref(),
+        Some("field.source")
+    );
+    assert_eq!(
+        descriptors[1].ports[0].view.icon_key.as_deref(),
+        Some("file-text")
+    );
     assert_eq!(descriptors[1].default_data, json!({ "body": "" }));
 
     let alias_descriptor = registry
@@ -93,4 +111,87 @@ fn node_schema_deserializes_without_adapter_view_fields() {
 
     assert_eq!(descriptors[0].renderer_key, "demo.legacy");
     assert_eq!(descriptors[0].default_size, None);
+}
+
+#[test]
+fn port_view_descriptors_cover_sides_anchors_and_visibility() {
+    let schema = NodeSchema::builder("demo.table", "Table")
+        .port(
+            PortDecl::data_input("filter")
+                .on_top()
+                .with_view_order(0)
+                .with_label("Filter"),
+        )
+        .port(
+            PortDecl::data_output("rows")
+                .on_right()
+                .with_view_group("result")
+                .with_view_order(1)
+                .with_label("Rows"),
+        )
+        .port(
+            PortDecl::data_input("field.id")
+                .with_view(
+                    PortViewDescriptor::left()
+                        .with_anchor("field.id")
+                        .with_lane("fields")
+                        .with_slot("id")
+                        .with_label("id")
+                        .with_icon_key("key"),
+                )
+                .hidden_handle(),
+        )
+        .port(
+            PortDecl::data_output("summary")
+                .on_bottom()
+                .with_view_anchor("footer.summary")
+                .with_view_order(2),
+        )
+        .build();
+
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.table"))
+        .expect("descriptor");
+
+    assert_eq!(descriptor.ports.len(), 4);
+    assert_eq!(descriptor.ports[0].view.side, Some(PortViewSide::Top));
+    assert_eq!(descriptor.ports[1].view.side, Some(PortViewSide::Right));
+    assert_eq!(descriptor.ports[1].view.group.as_deref(), Some("result"));
+    assert_eq!(descriptor.ports[2].view.side, Some(PortViewSide::Left));
+    assert_eq!(descriptor.ports[2].view.anchor.as_deref(), Some("field.id"));
+    assert_eq!(descriptor.ports[2].view.lane.as_deref(), Some("fields"));
+    assert_eq!(descriptor.ports[2].view.slot.as_deref(), Some("id"));
+    assert_eq!(
+        descriptor.ports[2].view.visibility,
+        Some(PortHandleVisibility::Hidden)
+    );
+    assert_eq!(descriptor.ports[3].view.side, Some(PortViewSide::Bottom));
+    assert_eq!(
+        descriptor.ports[3].view.anchor.as_deref(),
+        Some("footer.summary")
+    );
+}
+
+#[test]
+fn builder_helpers_match_explicit_port_view_descriptor_construction() {
+    let explicit = PortDecl::data_output("result").with_view(PortViewDescriptor {
+        side: Some(PortViewSide::Right),
+        order: Some(3),
+        group: Some("output".to_owned()),
+        anchor: Some("row.result".to_owned()),
+        lane: None,
+        slot: None,
+        label: None,
+        icon_key: None,
+        visibility: None,
+    });
+    let helper = PortDecl::data_output("result")
+        .on_right()
+        .with_view_order(3)
+        .with_view_group("output")
+        .with_view_anchor("row.result");
+
+    assert_eq!(helper, explicit);
 }

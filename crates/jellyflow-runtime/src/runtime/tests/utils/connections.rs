@@ -9,6 +9,10 @@ use jellyflow_core::core::{
     PortDirection, PortId, PortKey, PortKind,
 };
 
+fn data_edge(from: PortId, to: PortId) -> Edge {
+    Edge::new(EdgeKind::Data, from, to)
+}
+
 #[test]
 fn outgoers_incomers_connected_edges_are_derived_from_connections() {
     let mut g = GraphBuilder::new(GraphId::from_u128(1));
@@ -30,34 +34,8 @@ fn outgoers_incomers_connected_edges_are_derived_from_connections() {
 
     let e1 = EdgeId::new();
     let e2 = EdgeId::new();
-    g.insert_edge(
-        e1,
-        Edge {
-            kind: EdgeKind::Data,
-            from: a_out_id,
-            to: b_in_id,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
-    g.insert_edge(
-        e2,
-        Edge {
-            kind: EdgeKind::Data,
-            from: a_out_id,
-            to: c_in_id,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    g.insert_edge(e1, data_edge(a_out_id, b_in_id));
+    g.insert_edge(e2, data_edge(a_out_id, c_in_id));
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);
@@ -156,63 +134,11 @@ fn helpers_are_deterministic_under_insertion_order_variance() {
         let e1 = EdgeId(uuid::Uuid::from_u128(20));
         let e2 = EdgeId(uuid::Uuid::from_u128(21));
         if insert_a_first {
-            g.insert_edge(
-                e1,
-                Edge {
-                    kind: EdgeKind::Data,
-                    from: a_out_id,
-                    to: b_in_id,
-                    hidden: false,
-                    selectable: None,
-                    focusable: None,
-                    interaction_width: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
-            );
-            g.insert_edge(
-                e2,
-                Edge {
-                    kind: EdgeKind::Data,
-                    from: a_out_id,
-                    to: c_in_id,
-                    hidden: false,
-                    selectable: None,
-                    focusable: None,
-                    interaction_width: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
-            );
+            g.insert_edge(e1, data_edge(a_out_id, b_in_id));
+            g.insert_edge(e2, data_edge(a_out_id, c_in_id));
         } else {
-            g.insert_edge(
-                e2,
-                Edge {
-                    kind: EdgeKind::Data,
-                    from: a_out_id,
-                    to: c_in_id,
-                    hidden: false,
-                    selectable: None,
-                    focusable: None,
-                    interaction_width: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
-            );
-            g.insert_edge(
-                e1,
-                Edge {
-                    kind: EdgeKind::Data,
-                    from: a_out_id,
-                    to: b_in_id,
-                    hidden: false,
-                    selectable: None,
-                    focusable: None,
-                    interaction_width: None,
-                    deletable: None,
-                    reconnectable: None,
-                },
-            );
+            g.insert_edge(e2, data_edge(a_out_id, c_in_id));
+            g.insert_edge(e1, data_edge(a_out_id, b_in_id));
         }
 
         (g.into(), a, b, c, e1, e2)
@@ -256,34 +182,8 @@ fn outgoers_and_incomers_include_self_for_self_loops_and_dedup() {
     // Two self-loop edges should still dedup to a single node in outgoers/incomers.
     let e1 = EdgeId::new();
     let e2 = EdgeId::new();
-    g.insert_edge(
-        e1,
-        Edge {
-            kind: EdgeKind::Data,
-            from: a_out_id,
-            to: a_in_id,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
-    g.insert_edge(
-        e2,
-        Edge {
-            kind: EdgeKind::Data,
-            from: a_out_id,
-            to: a_in_id,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    g.insert_edge(e1, data_edge(a_out_id, a_in_id));
+    g.insert_edge(e2, data_edge(a_out_id, a_in_id));
 
     let mut lookups = NodeGraphLookups::default();
     lookups.rebuild_from(&g);

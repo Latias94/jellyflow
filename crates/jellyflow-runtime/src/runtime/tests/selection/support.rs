@@ -95,51 +95,21 @@ pub(super) fn selection_fixture() -> SelectionFixture {
     graph.insert_port(outside_in, outside_port);
 
     let connected_edge = EdgeId::from_u128(200);
-    graph.insert_edge(
-        connected_edge,
-        Edge {
-            kind: EdgeKind::Data,
-            from: low_out,
-            to: high_in,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    graph.insert_edge(connected_edge, Edge::new(EdgeKind::Data, low_out, high_in));
 
     let non_selectable_edge = EdgeId::from_u128(201);
     graph.insert_edge(
         non_selectable_edge,
         Edge {
-            kind: EdgeKind::Data,
-            from: low_out,
-            to: outside_in,
-            hidden: false,
             selectable: Some(false),
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
+            ..Edge::new(EdgeKind::Data, low_out, outside_in)
         },
     );
 
     let connected_outside_edge = EdgeId::from_u128(202);
     graph.insert_edge(
         connected_outside_edge,
-        Edge {
-            kind: EdgeKind::Data,
-            from: low_out,
-            to: outside_in,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
+        Edge::new(EdgeKind::Data, low_out, outside_in),
     );
 
     SelectionFixture {

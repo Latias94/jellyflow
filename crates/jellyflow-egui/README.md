@@ -10,15 +10,27 @@ resize, connect, delete, undo/redo, viewport math, layout, and rendering queries
 ```sh
 cargo run -p jellyflow-egui --example demo
 cargo run -p jellyflow-egui --example workflow
+cargo run -p jellyflow-egui --example automation_builder
 cargo run -p jellyflow-egui --example mind_map
 cargo run -p jellyflow-egui --example tree
+cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
+cargo run -p jellyflow-egui --example erd
 ```
 
-The demo ships with a sample gallery for workflow, mind map, tree, and knowledge-board style graphs.
-It includes selection, marquee selection, node dragging, handle-to-handle connections, selected node
-resize handles, viewport panning and zooming, keyboard nudging, cursor feedback, layout presets,
-undo/redo, delete, a schema-driven palette, and a read-only inspector.
+The demo ships with a sample gallery for workflow, automation builder, mind map, tree, org chart,
+knowledge-board, and ERD-style graphs. It includes selection, marquee selection, node dragging,
+handle-to-handle connections, selected node resize handles, viewport panning and zooming, keyboard
+nudging, cursor feedback, layout presets, undo/redo, delete, a schema-driven palette, and a read-only
+inspector.
+
+The samples are product fixtures, not separate domain frameworks:
+
+- Workflow and automation builder reuse schema descriptors, exec/data ports, edge labels, and
+  profile-ready metadata for Dify-like LLM/tool branches and error paths.
+- ERD stresses field-anchor metadata, multi-side handles, and edge-owned cardinality labels.
+- Mind map and org chart stress hierarchy layout with the same node/edge graph model.
+- Knowledge board stresses freeform source, claim, question, action, and output cards.
 
 Use `JellyflowEguiBridge` when embedding the adapter into your own app. Register node schemas in a
 `NodeRegistry`, map each descriptor `renderer_key` to your own `RendererCatalog` style, then let the

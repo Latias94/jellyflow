@@ -100,6 +100,20 @@ impl<'a> GraphDiffPlanner<'a> {
                 to: edge_to.reconnectable,
             });
         }
+        if edge_from.data != edge_to.data {
+            self.push_op(GraphOp::SetEdgeData {
+                id,
+                from: edge_from.data.clone(),
+                to: edge_to.data.clone(),
+            });
+        }
+        if edge_from.view != edge_to.view {
+            self.push_op(GraphOp::SetEdgeView {
+                id,
+                from: edge_from.view.clone(),
+                to: edge_to.view.clone(),
+            });
+        }
     }
 
     fn diff_removed_edges(&mut self) {

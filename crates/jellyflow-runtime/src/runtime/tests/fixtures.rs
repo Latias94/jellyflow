@@ -210,20 +210,7 @@ pub(super) fn make_graph() -> (
     );
 
     let eid = EdgeId::new();
-    g.insert_edge(
-        eid,
-        Edge {
-            kind: EdgeKind::Data,
-            from: out_port,
-            to: in_port,
-            hidden: false,
-            selectable: None,
-            focusable: None,
-            interaction_width: None,
-            deletable: None,
-            reconnectable: None,
-        },
-    );
+    g.insert_edge(eid, Edge::new(EdgeKind::Data, out_port, in_port));
 
     (g.into(), a, b, out_port, in_port, eid)
 }

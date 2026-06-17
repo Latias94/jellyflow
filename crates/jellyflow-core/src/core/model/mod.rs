@@ -9,7 +9,10 @@ mod resources;
 
 pub use binding::{Binding, BindingEndpoint, GraphLocalBindingTarget, SourceAnchor};
 pub use builder::GraphBuilder;
-pub use edge::{Edge, EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint};
+pub use edge::{
+    Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeReconnectableEndpoint,
+    EdgeViewDescriptor,
+};
 pub use geometry::{CanvasPoint, CanvasRect, CanvasSize};
 pub use graph::{
     GRAPH_VERSION, Graph, GraphElementIter, GraphElementKeys, GraphElementValues, GraphElements,

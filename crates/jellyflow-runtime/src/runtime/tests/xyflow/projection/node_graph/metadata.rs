@@ -52,6 +52,16 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
         },
     };
     let origin = NodeOrigin { x: 0.5, y: 0.25 };
+    let edge_data = serde_json::json!({ "branch": "fallback", "priority": 2 });
+    let edge_view = EdgeViewDescriptor {
+        renderer_key: Some("branch-edge".to_owned()),
+        label: Some("Fallback".to_owned()),
+        label_anchor: Some(EdgeLabelAnchor::Center),
+        source_marker_key: None,
+        target_marker_key: Some("arrow".to_owned()),
+        style_token: Some("warning".to_owned()),
+        hit_target_width: Some(30.0),
+    };
 
     let tx = GraphTransaction::from_ops([
         GraphOp::SetNodeSelectable {
@@ -129,11 +139,21 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
             from: None,
             to: Some(true),
         },
+        GraphOp::SetEdgeData {
+            id: eid,
+            from: serde_json::Value::Null,
+            to: edge_data.clone(),
+        },
+        GraphOp::SetEdgeView {
+            id: eid,
+            from: EdgeViewDescriptor::default(),
+            to: edge_view.clone(),
+        },
     ]);
 
     let changes = NodeGraphChanges::from_transaction(&tx);
     assert_eq!(changes.nodes().len(), 10);
-    assert_eq!(changes.edges().len(), 5);
+    assert_eq!(changes.edges().len(), 7);
 
     assert!(
         changes
@@ -206,5 +226,11 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
     ));
     assert!(changes.edges().iter().any(
         |change| matches!(change, EdgeChange::Deletable { id, deletable: Some(true) } if *id == eid)
+    ));
+    assert!(changes.edges().iter().any(
+        |change| matches!(change, EdgeChange::Data { id, data } if *id == eid && data == &edge_data)
+    ));
+    assert!(changes.edges().iter().any(
+        |change| matches!(change, EdgeChange::View { id, view } if *id == eid && view == &edge_view)
     ));
 }

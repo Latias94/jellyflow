@@ -8,6 +8,10 @@ use jellyflow_core::core::{
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 use jellyflow_core::types::TypeDesc;
 
+fn port_view_descriptor_is_default(value: &PortViewDescriptor) -> bool {
+    value.is_default()
+}
+
 /// Declares a port for a node kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortDecl {
@@ -25,6 +29,150 @@ pub struct PortDecl {
     /// UI-facing label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Adapter-facing handle and label presentation metadata.
+    #[serde(default, skip_serializing_if = "port_view_descriptor_is_default")]
+    pub view: PortViewDescriptor,
+}
+
+/// Adapter-facing side hint for a node port handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortViewSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+impl PortViewSide {
+    pub fn fallback_for_direction(dir: PortDirection) -> Self {
+        match dir {
+            PortDirection::In => Self::Left,
+            PortDirection::Out => Self::Right,
+        }
+    }
+}
+
+/// Adapter-facing visibility hint for a node port handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortHandleVisibility {
+    Visible,
+    Hidden,
+    Collapsed,
+}
+
+/// Renderer-neutral metadata that helps adapters place and present handles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PortViewDescriptor {
+    /// Preferred side for the handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<PortViewSide>,
+    /// Deterministic order within side/group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
+    /// Optional grouping key for adapters that cluster ports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Optional adapter anchor id, such as a table field or form row id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// Optional lane key inside a node renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// Optional slot key inside a lane or anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    /// Optional label override for adapter handle labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Optional adapter icon key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_key: Option<String>,
+    /// Optional handle visibility hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<PortHandleVisibility>,
+}
+
+impl PortViewDescriptor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn side(side: PortViewSide) -> Self {
+        Self {
+            side: Some(side),
+            ..Self::default()
+        }
+    }
+
+    pub fn top() -> Self {
+        Self::side(PortViewSide::Top)
+    }
+
+    pub fn right() -> Self {
+        Self::side(PortViewSide::Right)
+    }
+
+    pub fn bottom() -> Self {
+        Self::side(PortViewSide::Bottom)
+    }
+
+    pub fn left() -> Self {
+        Self::side(PortViewSide::Left)
+    }
+
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    pub fn with_anchor(mut self, anchor: impl Into<String>) -> Self {
+        self.anchor = Some(anchor.into());
+        self
+    }
+
+    pub fn with_lane(mut self, lane: impl Into<String>) -> Self {
+        self.lane = Some(lane.into());
+        self
+    }
+
+    pub fn with_slot(mut self, slot: impl Into<String>) -> Self {
+        self.slot = Some(slot.into());
+        self
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_icon_key(mut self, icon_key: impl Into<String>) -> Self {
+        self.icon_key = Some(icon_key.into());
+        self
+    }
+
+    pub fn with_visibility(mut self, visibility: PortHandleVisibility) -> Self {
+        self.visibility = Some(visibility);
+        self
+    }
+
+    pub fn hidden(self) -> Self {
+        self.with_visibility(PortHandleVisibility::Hidden)
+    }
+
+    pub fn collapsed(self) -> Self {
+        self.with_visibility(PortHandleVisibility::Collapsed)
+    }
+
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// Schema for a node kind.
@@ -320,6 +468,7 @@ impl PortDecl {
             capacity,
             ty: None,
             label: None,
+            view: PortViewDescriptor::default(),
         }
     }
 
@@ -342,6 +491,56 @@ impl PortDecl {
     /// Sets the adapter-facing label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Sets the adapter-facing port view descriptor.
+    pub fn with_view(mut self, view: PortViewDescriptor) -> Self {
+        self.view = view;
+        self
+    }
+
+    /// Places this port on the top side.
+    pub fn on_top(self) -> Self {
+        self.with_view(PortViewDescriptor::top())
+    }
+
+    /// Places this port on the right side.
+    pub fn on_right(self) -> Self {
+        self.with_view(PortViewDescriptor::right())
+    }
+
+    /// Places this port on the bottom side.
+    pub fn on_bottom(self) -> Self {
+        self.with_view(PortViewDescriptor::bottom())
+    }
+
+    /// Places this port on the left side.
+    pub fn on_left(self) -> Self {
+        self.with_view(PortViewDescriptor::left())
+    }
+
+    /// Sets deterministic ordering within the selected side/group.
+    pub fn with_view_order(mut self, order: i32) -> Self {
+        self.view.order = Some(order);
+        self
+    }
+
+    /// Groups this port with related handles for adapter presentation.
+    pub fn with_view_group(mut self, group: impl Into<String>) -> Self {
+        self.view.group = Some(group.into());
+        self
+    }
+
+    /// Anchors this port to an adapter-owned region such as a field row.
+    pub fn with_view_anchor(mut self, anchor: impl Into<String>) -> Self {
+        self.view.anchor = Some(anchor.into());
+        self
+    }
+
+    /// Hides this handle from adapter hit testing without removing the semantic port.
+    pub fn hidden_handle(mut self) -> Self {
+        self.view.visibility = Some(PortHandleVisibility::Hidden);
         self
     }
 
