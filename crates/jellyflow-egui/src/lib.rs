@@ -19,8 +19,9 @@ pub mod ui;
 pub use app::JellyflowEguiApp;
 pub use bridge::JellyflowEguiBridge;
 pub use renderer::{
-    FieldListNodeRenderer, NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout,
-    NodeRendererState, NodeRendererStyle, RendererCatalog, RichNodeRenderer,
+    EguiNodeWidgetRenderer, FieldListNodeRenderer, NodeContentLevel, NodeInteractiveRegion,
+    NodeRenderInput, NodeRenderLayout, NodeRendererState, NodeRendererStyle, NodeWidgetRenderInput,
+    RendererCatalog, RichNodeRenderer,
 };
 pub use samples::{SampleGraphError, SampleGraphKind};
 pub use state::{

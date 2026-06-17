@@ -1,6 +1,6 @@
 use eframe::egui::{
-    Align, Align2, Color32, CornerRadius, CursorIcon, Frame, Id, Key, Layout, Pos2, Rect, Response,
-    Sense, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
+    Align2, Color32, CornerRadius, CursorIcon, Key, Pos2, Rect, Response, Sense, Stroke,
+    StrokeKind, TextStyle, Ui, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
@@ -12,7 +12,9 @@ use jellyflow::runtime::runtime::geometry::{
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
 use crate::bridge::JellyflowEguiBridge;
-use crate::renderer::{NodeRenderLayout, NodeRendererState, NodeRendererStyle};
+use crate::renderer::{
+    NodeContentLevel, NodeRenderLayout, NodeRendererState, NodeRendererStyle, NodeWidgetRenderInput,
+};
 use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
 
 const NODE_ROUNDING: f32 = 8.0;
@@ -113,19 +115,24 @@ fn draw_nodes(
             continue;
         };
         let rect = canvas_rect_to_screen(state, layout.body_rect);
-        let has_field_regions = layout
-            .interactive_regions
-            .iter()
-            .any(|region| region.key.starts_with("field."));
+        let content_level = NodeContentLevel::from_zoom(state.canvas.snapshot.transform.zoom);
+        let has_widget_renderer = bridge
+            .renderers()
+            .has_widget_renderer(&descriptor.renderer_key);
         draw_node_shell(painter, rect, style, renderer_state);
-        painter.text(
-            rect.left_top() + Vec2::new(18.0, 13.0),
-            Align2::LEFT_TOP,
-            &layout.title,
-            TextStyle::Button.resolve(&painter.ctx().global_style()),
-            style.text,
-        );
-        if !has_field_regions && let Some(summary) = &layout.summary {
+        if content_level != NodeContentLevel::Shell {
+            painter.text(
+                rect.left_top() + Vec2::new(18.0, 13.0),
+                Align2::LEFT_TOP,
+                &layout.title,
+                TextStyle::Button.resolve(&painter.ctx().global_style()),
+                style.text,
+            );
+        }
+        if content_level.shows_text()
+            && !has_widget_renderer
+            && let Some(summary) = &layout.summary
+        {
             painter.text(
                 rect.left_top() + Vec2::new(18.0, 31.0),
                 Align2::LEFT_TOP,
@@ -134,8 +141,21 @@ fn draw_nodes(
                 style.text.gamma_multiply(0.68),
             );
         }
-        draw_interactive_regions(ui, state, *node_id, &layout, rect, style);
-        if !has_field_regions {
+        let widgets_rendered = draw_node_widgets(
+            ui,
+            bridge,
+            state,
+            NodeWidgetDrawRequest {
+                node: *node_id,
+                descriptor: &descriptor,
+                layout: &layout,
+                node_rect: rect,
+                style,
+                renderer_state,
+                content_level,
+            },
+        );
+        if content_level.shows_text() && !widgets_rendered {
             draw_port_summary(painter, &descriptor, rect, style);
         }
 
@@ -198,89 +218,39 @@ fn visual_node_render_layout(
     }
 }
 
-fn draw_interactive_regions(
-    ui: &mut Ui,
-    state: &JellyflowEguiState,
+struct NodeWidgetDrawRequest<'a> {
     node: NodeId,
-    layout: &NodeRenderLayout,
+    descriptor: &'a jellyflow::runtime::schema::NodeKindViewDescriptor,
+    layout: &'a NodeRenderLayout,
     node_rect: Rect,
     style: NodeRendererStyle,
-) {
-    let zoom = state.canvas.snapshot.transform.zoom;
-    for region in layout
-        .interactive_regions
-        .iter()
-        .filter(|region| region.key.starts_with("field."))
-    {
-        let rect = node_local_rect_to_screen(node_rect, region.rect, zoom);
-        draw_field_region(ui, node, rect, style, region);
-    }
+    renderer_state: NodeRendererState,
+    content_level: NodeContentLevel,
 }
 
-fn draw_field_region(
+fn draw_node_widgets(
     ui: &mut Ui,
-    node: NodeId,
-    rect: Rect,
-    style: NodeRendererStyle,
-    region: &crate::renderer::NodeInteractiveRegion,
-) {
-    let key = region
-        .key
-        .strip_prefix("field.")
-        .unwrap_or(region.key.as_str());
-    let badge = field_badge(key);
-    let text = region
-        .label
-        .as_deref()
-        .filter(|label| !label.is_empty())
-        .unwrap_or(key);
-    let mut child_ui = ui.new_child(
-        UiBuilder::new()
-            .id_salt(Id::new(("field-region", node, &region.key)))
-            .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center)),
-    );
-    child_ui.set_clip_rect(rect);
-    child_ui.set_min_size(rect.size());
-    child_ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
-    Frame::new()
-        .fill(Color32::from_rgb(255, 255, 255).gamma_multiply(0.9))
-        .stroke(Stroke::new(0.75, style.stroke.gamma_multiply(0.55)))
-        .corner_radius(CornerRadius::same(4))
-        .inner_margin(eframe::egui::Margin::symmetric(8, 2))
-        .show(&mut child_ui, |ui| {
-            ui.set_min_size(rect.size() - Vec2::new(2.0, 2.0));
-            ui.horizontal_centered(|ui| {
-                if let Some(badge) = badge {
-                    let badge_color = style.accent;
-                    Frame::new()
-                        .fill(badge_color.gamma_multiply(0.12))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(eframe::egui::Margin::symmetric(4, 0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                eframe::egui::RichText::new(badge)
-                                    .small()
-                                    .strong()
-                                    .color(badge_color),
-                            );
-                        });
-                }
-                ui.label(
-                    eframe::egui::RichText::new(text)
-                        .small()
-                        .color(style.text.gamma_multiply(0.82)),
-                );
-            });
-        });
-}
-
-fn field_badge(key: &str) -> Option<&'static str> {
-    match key {
-        "primary_key" | "pk" => Some("PK"),
-        "foreign_key" | "fk" => Some("FK"),
-        _ => None,
-    }
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    request: NodeWidgetDrawRequest<'_>,
+) -> bool {
+    let Some(node_record) = bridge.store().graph().nodes().get(&request.node) else {
+        return false;
+    };
+    bridge.renderers().render_widgets(
+        ui,
+        &NodeWidgetRenderInput {
+            id: request.node,
+            node: node_record,
+            descriptor: request.descriptor,
+            state: request.renderer_state,
+            style: request.style,
+            layout: request.layout,
+            node_rect: request.node_rect,
+            zoom: state.canvas.snapshot.transform.zoom,
+            content_level: request.content_level,
+        },
+    )
 }
 
 fn draw_handles(

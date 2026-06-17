@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use eframe::egui::{Color32, Stroke};
+use eframe::egui::{
+    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, Stroke, Ui, UiBuilder, Vec2,
+};
 use jellyflow::core::{CanvasRect, CanvasSize, Node, NodeId};
 use jellyflow::runtime::schema::NodeKindViewDescriptor;
 
@@ -135,6 +137,44 @@ pub struct NodeRenderInput<'a> {
     pub style: NodeRendererStyle,
 }
 
+/// Zoom-aware node content level for adapter-owned widget renderers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeContentLevel {
+    Full,
+    Compact,
+    Shell,
+}
+
+impl NodeContentLevel {
+    pub fn from_zoom(zoom: f32) -> Self {
+        if zoom >= 0.72 {
+            Self::Full
+        } else if zoom >= 0.38 {
+            Self::Compact
+        } else {
+            Self::Shell
+        }
+    }
+
+    pub fn shows_text(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+/// egui-specific widget rendering input for rich node internals.
+#[derive(Debug)]
+pub struct NodeWidgetRenderInput<'a> {
+    pub id: NodeId,
+    pub node: &'a Node,
+    pub descriptor: &'a NodeKindViewDescriptor,
+    pub state: NodeRendererState,
+    pub style: NodeRendererStyle,
+    pub layout: &'a NodeRenderLayout,
+    pub node_rect: Rect,
+    pub zoom: f32,
+    pub content_level: NodeContentLevel,
+}
+
 /// Renderer output consumed by the egui canvas fallback painter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRenderLayout {
@@ -176,6 +216,11 @@ pub trait RichNodeRenderer: Send + Sync {
     fn render(&self, input: &NodeRenderInput<'_>, rect: CanvasRect) -> NodeRenderLayout;
 }
 
+/// Adapter-owned egui widget renderer for drawing controls inside a node.
+pub trait EguiNodeWidgetRenderer: Send + Sync {
+    fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool;
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FallbackRichNodeRenderer;
 
@@ -190,6 +235,7 @@ pub struct RendererCatalog {
     fallback: NodeRendererStyle,
     by_renderer_key: BTreeMap<String, NodeRendererStyle>,
     rich_renderers: BTreeMap<String, Box<dyn RichNodeRenderer>>,
+    widget_renderers: BTreeMap<String, Box<dyn EguiNodeWidgetRenderer>>,
 }
 
 impl std::fmt::Debug for RendererCatalog {
@@ -198,6 +244,7 @@ impl std::fmt::Debug for RendererCatalog {
             .field("fallback", &self.fallback)
             .field("style_count", &self.by_renderer_key.len())
             .field("rich_renderer_count", &self.rich_renderers.len())
+            .field("widget_renderer_count", &self.widget_renderers.len())
             .finish()
     }
 }
@@ -217,6 +264,7 @@ impl RendererCatalog {
             fallback: NodeRendererStyle::fallback(),
             by_renderer_key: BTreeMap::new(),
             rich_renderers: BTreeMap::new(),
+            widget_renderers: BTreeMap::new(),
         }
     }
 
@@ -232,7 +280,8 @@ impl RendererCatalog {
             .register("section-card", NodeRendererStyle::section())
             .register("source-card", NodeRendererStyle::source())
             .register("table-card", NodeRendererStyle::section())
-            .register_rich("table-card", FieldListNodeRenderer);
+            .register_rich("table-card", FieldListNodeRenderer)
+            .register_widgets("table-card", FieldListNodeRenderer);
         catalog
     }
 
@@ -255,12 +304,32 @@ impl RendererCatalog {
         self
     }
 
+    pub fn register_widgets(
+        &mut self,
+        renderer_key: impl Into<String>,
+        renderer: impl EguiNodeWidgetRenderer + 'static,
+    ) -> &mut Self {
+        self.widget_renderers
+            .insert(renderer_key.into(), Box::new(renderer));
+        self
+    }
+
     pub fn render_node(&self, input: &NodeRenderInput<'_>, rect: CanvasRect) -> NodeRenderLayout {
         self.rich_renderers
             .get(&input.descriptor.renderer_key)
             .map(|renderer| renderer.as_ref())
             .unwrap_or(&FallbackRichNodeRenderer)
             .render(input, rect)
+    }
+
+    pub fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool {
+        self.widget_renderers
+            .get(&input.descriptor.renderer_key)
+            .is_some_and(|renderer| renderer.render_widgets(ui, input))
+    }
+
+    pub fn has_widget_renderer(&self, renderer_key: &str) -> bool {
+        self.widget_renderers.contains_key(renderer_key)
     }
 
     pub fn style_for_descriptor(&self, descriptor: &NodeKindViewDescriptor) -> NodeRendererStyle {
@@ -353,11 +422,115 @@ impl RichNodeRenderer for FieldListNodeRenderer {
     }
 }
 
+impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
+    fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool {
+        if input.content_level == NodeContentLevel::Shell {
+            return false;
+        }
+
+        let Some(fields) = input
+            .node
+            .data
+            .get("fields")
+            .and_then(|value| value.as_object())
+        else {
+            return false;
+        };
+
+        let show_badges = matches!(input.content_level, NodeContentLevel::Full);
+        let row_padding = if show_badges { 8.0 } else { 6.0 };
+        let row_height = if show_badges { 20.0 } else { 18.0 };
+
+        for region in input
+            .layout
+            .interactive_regions
+            .iter()
+            .filter(|region| region.key.starts_with("field."))
+        {
+            let key = region
+                .key
+                .strip_prefix("field.")
+                .unwrap_or(region.key.as_str());
+            let Some(label) = fields
+                .get(key)
+                .map(field_value_label)
+                .filter(|label| !label.is_empty())
+            else {
+                continue;
+            };
+            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom);
+            let mut child_ui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt(Id::new(("field-region", input.id, &region.key)))
+                    .max_rect(rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            child_ui.set_clip_rect(rect);
+            child_ui.set_min_size(rect.size());
+            child_ui.spacing_mut().item_spacing =
+                Vec2::new(if show_badges { 6.0 } else { 4.0 }, 0.0);
+            Frame::new()
+                .fill(Color32::from_rgb(255, 255, 255).gamma_multiply(0.9))
+                .stroke(Stroke::new(
+                    0.75,
+                    input
+                        .style
+                        .stroke
+                        .gamma_multiply(if show_badges { 0.55 } else { 0.4 }),
+                ))
+                .corner_radius(CornerRadius::same(if show_badges { 4 } else { 3 }))
+                .inner_margin(eframe::egui::Margin::symmetric(row_padding as i8, 2))
+                .show(&mut child_ui, |ui| {
+                    ui.set_min_size(Vec2::new(rect.width(), row_height));
+                    ui.horizontal_centered(|ui| {
+                        if show_badges && let Some(badge) = field_badge(key) {
+                            let badge_color = input.style.accent;
+                            Frame::new()
+                                .fill(badge_color.gamma_multiply(0.12))
+                                .corner_radius(CornerRadius::same(3))
+                                .inner_margin(eframe::egui::Margin::symmetric(4, 0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        eframe::egui::RichText::new(badge)
+                                            .small()
+                                            .strong()
+                                            .color(badge_color),
+                                    );
+                                });
+                        }
+                        ui.label(
+                            eframe::egui::RichText::new(label)
+                                .small()
+                                .color(input.style.text.gamma_multiply(0.82)),
+                        );
+                    });
+                });
+        }
+
+        true
+    }
+}
+
 fn field_value_label(value: &serde_json::Value) -> String {
     value
         .as_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| value.to_string())
+}
+
+fn field_badge(key: &str) -> Option<&'static str> {
+    match key {
+        "primary_key" | "pk" => Some("PK"),
+        "foreign_key" | "fk" => Some("FK"),
+        _ => None,
+    }
+}
+
+fn node_local_rect_to_screen(node_rect: Rect, local_rect: CanvasRect, zoom: f32) -> Rect {
+    Rect::from_min_size(
+        node_rect.min + Vec2::new(local_rect.origin.x * zoom, local_rect.origin.y * zoom),
+        Vec2::new(local_rect.size.width * zoom, local_rect.size.height * zoom),
+    )
 }
 
 #[cfg(test)]
@@ -437,6 +610,26 @@ mod tests {
         let layout = catalog.render_node(&input, rect);
         assert_eq!(layout.title, "rich:Node");
         assert_eq!(layout.interactive_regions[0].key, "body");
+    }
+
+    #[test]
+    fn renderer_catalog_tracks_widget_renderers_separately() {
+        let mut catalog = RendererCatalog::new();
+
+        assert!(!catalog.has_widget_renderer("table-card"));
+        catalog.register_widgets("table-card", FieldListNodeRenderer);
+
+        assert!(catalog.has_widget_renderer("table-card"));
+        assert!(!catalog.has_widget_renderer("unknown"));
+    }
+
+    #[test]
+    fn node_content_level_derives_from_zoom() {
+        assert_eq!(NodeContentLevel::from_zoom(1.0), NodeContentLevel::Full);
+        assert_eq!(NodeContentLevel::from_zoom(0.5), NodeContentLevel::Compact);
+        assert_eq!(NodeContentLevel::from_zoom(0.2), NodeContentLevel::Shell);
+        assert!(NodeContentLevel::Full.shows_text());
+        assert!(!NodeContentLevel::Compact.shows_text());
     }
 
     #[test]
