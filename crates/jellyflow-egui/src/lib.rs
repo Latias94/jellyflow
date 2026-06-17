@@ -50,6 +50,10 @@ mod tests {
 
         assert!(!app.bridge.store().graph().nodes().is_empty());
         assert!(app.bridge.descriptors().len() >= 4);
+        assert!(
+            app.state.canvas.fit_view_requested,
+            "new demo apps should fit once after the real canvas size is known"
+        );
     }
 
     #[test]
@@ -59,6 +63,7 @@ mod tests {
 
             assert_eq!(app.state.selected_sample, sample);
             assert_eq!(app.state.selected_layout_preset, sample.default_layout());
+            assert!(app.state.status_message.is_none());
             assert!(
                 app.bridge.store().graph().nodes().len() >= 4,
                 "{sample:?} should contain multiple nodes"

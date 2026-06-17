@@ -500,7 +500,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
             "customers",
             ["id", "email", "plan_id"].as_slice(),
             CanvasPoint {
-                x: -460.0,
+                x: -260.0,
                 y: -100.0,
             },
         ),
@@ -509,7 +509,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
             "orders",
             ["id", "customer_id", "total"].as_slice(),
             CanvasPoint {
-                x: -70.0,
+                x: -60.0,
                 y: -120.0,
             },
         ),
@@ -518,7 +518,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
             "order_items",
             ["id", "order_id", "sku_id", "qty"].as_slice(),
             CanvasPoint {
-                x: 330.0,
+                x: 140.0,
                 y: -120.0,
             },
         ),
@@ -527,7 +527,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
             "skus",
             ["id", "title", "price"].as_slice(),
             CanvasPoint {
-                x: 720.0,
+                x: 340.0,
                 y: -120.0,
             },
         ),
@@ -536,7 +536,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
             "plans",
             ["id", "name", "limits"].as_slice(),
             CanvasPoint {
-                x: -460.0,
+                x: -260.0,
                 y: 130.0,
             },
         ),

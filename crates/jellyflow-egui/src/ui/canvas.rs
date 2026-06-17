@@ -32,6 +32,12 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     state.canvas.snapshot = bridge.rebuild_snapshot(&state.canvas.snapshot, rect);
+    if state.canvas.fit_view_requested {
+        state.canvas.fit_view_requested = false;
+        if bridge.fit_view(state.canvas.snapshot.viewport_size) {
+            state.canvas.snapshot = bridge.rebuild_snapshot(&state.canvas.snapshot, rect);
+        }
+    }
 
     if handle_pointer(ui, &response, bridge, state) {
         state.canvas.snapshot = bridge.rebuild_snapshot(&state.canvas.snapshot, rect);
@@ -120,26 +126,12 @@ fn draw_nodes(
             .renderers()
             .has_widget_renderer(&descriptor.renderer_key);
         draw_node_shell(painter, rect, style, renderer_state);
-        if content_level != NodeContentLevel::Shell {
-            painter.text(
-                rect.left_top() + Vec2::new(18.0, 13.0),
-                Align2::LEFT_TOP,
-                &layout.title,
-                TextStyle::Button.resolve(&painter.ctx().global_style()),
-                style.text,
-            );
-        }
-        if content_level.shows_text()
+        draw_node_title(painter, rect, &layout.title, style, content_level);
+        if content_level.shows_detail()
             && !has_widget_renderer
             && let Some(summary) = &layout.summary
         {
-            painter.text(
-                rect.left_top() + Vec2::new(18.0, 31.0),
-                Align2::LEFT_TOP,
-                summary,
-                TextStyle::Small.resolve(&painter.ctx().global_style()),
-                style.text.gamma_multiply(0.68),
-            );
+            draw_node_summary(painter, rect, summary, style);
         }
         let widgets_rendered = draw_node_widgets(
             ui,
@@ -156,7 +148,7 @@ fn draw_nodes(
                 clip_rect: state.canvas.snapshot.viewport_rect,
             },
         );
-        if content_level.shows_text() && !widgets_rendered {
+        if content_level.shows_detail() && !widgets_rendered {
             draw_port_summary(painter, &descriptor, rect, style);
         }
 
@@ -165,6 +157,77 @@ fn draw_nodes(
             draw_resize_handles(painter, rect, style);
         }
     }
+}
+
+fn draw_node_title(
+    painter: &eframe::egui::Painter,
+    rect: Rect,
+    title: &str,
+    style: NodeRendererStyle,
+    content_level: NodeContentLevel,
+) {
+    if !content_level.shows_text() || rect.width() < 34.0 || rect.height() < 18.0 {
+        return;
+    }
+
+    let Some(text_rect) = node_title_text_rect(rect, content_level) else {
+        return;
+    };
+
+    let font = if content_level.shows_detail() {
+        TextStyle::Button.resolve(&painter.ctx().global_style())
+    } else {
+        TextStyle::Small.resolve(&painter.ctx().global_style())
+    };
+    let clipped = painter.with_clip_rect(text_rect);
+    let galley = clipped.layout_no_wrap(title.to_owned(), font, style.text);
+    clipped.galley(text_rect.left_top(), galley, style.text);
+}
+
+fn node_title_text_rect(rect: Rect, content_level: NodeContentLevel) -> Option<Rect> {
+    let margin = if content_level.shows_detail() {
+        18.0
+    } else {
+        8.0
+    };
+    let top = if content_level.shows_detail() {
+        13.0
+    } else {
+        6.0
+    };
+    let text_rect = Rect::from_min_max(
+        rect.left_top() + Vec2::new(margin, top),
+        rect.right_top() + Vec2::new(-8.0, rect.height().min(28.0)),
+    );
+    (text_rect.width() >= 18.0 && text_rect.height() >= 8.0).then_some(text_rect)
+}
+
+fn draw_node_summary(
+    painter: &eframe::egui::Painter,
+    rect: Rect,
+    summary: &str,
+    style: NodeRendererStyle,
+) {
+    let Some(text_rect) = node_summary_text_rect(rect) else {
+        return;
+    };
+
+    let color = style.text.gamma_multiply(0.68);
+    let clipped = painter.with_clip_rect(text_rect);
+    let galley = clipped.layout_no_wrap(
+        summary.to_owned(),
+        TextStyle::Small.resolve(&painter.ctx().global_style()),
+        color,
+    );
+    clipped.galley(text_rect.left_top(), galley, color);
+}
+
+fn node_summary_text_rect(rect: Rect) -> Option<Rect> {
+    let text_rect = Rect::from_min_max(
+        rect.left_top() + Vec2::new(18.0, 31.0),
+        rect.right_top() + Vec2::new(-8.0, rect.height().min(50.0)),
+    );
+    (text_rect.width() >= 24.0 && text_rect.height() >= 8.0).then_some(text_rect)
 }
 
 fn draw_node_shell(
@@ -398,12 +461,20 @@ fn draw_edges(
         };
         if let Some(path) = preview_edge_path(state, bridge, *edge_id) {
             draw_edge_path(painter, state, &path, color);
-            draw_edge_label(painter, bridge, state, *edge_id, &path, color);
+            if should_draw_edge_labels(state) {
+                draw_edge_label(painter, bridge, state, *edge_id, &path, color);
+            }
         } else if let Some(path) = state.canvas.snapshot.edge_paths.get(edge_id) {
             draw_edge_path(painter, state, path, color);
-            draw_edge_label(painter, bridge, state, *edge_id, path, color);
+            if should_draw_edge_labels(state) {
+                draw_edge_label(painter, bridge, state, *edge_id, path, color);
+            }
         }
     }
+}
+
+fn should_draw_edge_labels(state: &JellyflowEguiState) -> bool {
+    NodeContentLevel::from_zoom(state.canvas.snapshot.transform.zoom).shows_detail()
 }
 
 fn draw_edge_path(
@@ -1190,8 +1261,8 @@ mod tests {
 
     use super::{
         edge_hit_test_options, edge_label, edge_label_point, hit_target, node_local_rect_to_screen,
-        preview_edge_path, resize_handle_rect, visual_handle_screen_rect, visual_node_canvas_rect,
-        visual_node_screen_rect,
+        node_title_text_rect, preview_edge_path, resize_handle_rect, should_draw_edge_labels,
+        visual_handle_screen_rect, visual_node_canvas_rect, visual_node_screen_rect,
     };
     use crate::bridge::JellyflowEguiBridge;
     use crate::samples::SampleGraphKind;
@@ -1461,6 +1532,26 @@ mod tests {
             edge_hit_test_options(base_options, Some(0.0)).interaction_width,
             base_options.interaction_width
         );
+    }
+
+    #[test]
+    fn compact_title_rect_stays_inside_node_bounds() {
+        let node_rect = Rect::from_min_size(Pos2::new(100.0, 20.0), Vec2::new(64.0, 28.0));
+        let text_rect = node_title_text_rect(node_rect, crate::renderer::NodeContentLevel::Compact)
+            .expect("compact node should still expose a title rect");
+
+        assert!(node_rect.contains_rect(text_rect));
+        assert!(text_rect.width() < node_rect.width());
+    }
+
+    #[test]
+    fn edge_labels_are_hidden_in_compact_zoom() {
+        let mut state = JellyflowEguiState::default();
+        state.canvas.snapshot.transform.zoom = 0.5;
+        assert!(!should_draw_edge_labels(&state));
+
+        state.canvas.snapshot.transform.zoom = 1.0;
+        assert!(should_draw_edge_labels(&state));
     }
 
     fn state_with_snapshot(bridge: &mut JellyflowEguiBridge) -> JellyflowEguiState {

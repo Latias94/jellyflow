@@ -247,9 +247,14 @@ pub struct CanvasInteractionState {
     pub active: ActiveCanvasInteraction,
     pub snapshot: CanvasSnapshot,
     pub node_measurements: HashMap<NodeId, (CanvasSize, Vec<(ConnectionHandleRef, HandleBounds)>)>,
+    pub fit_view_requested: bool,
 }
 
 impl CanvasInteractionState {
+    pub fn request_fit_view(&mut self) {
+        self.fit_view_requested = true;
+    }
+
     pub fn set_active(&mut self, active: ActiveCanvasInteraction) {
         self.active = active;
     }

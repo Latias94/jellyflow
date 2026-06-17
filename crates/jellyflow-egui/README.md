@@ -17,6 +17,7 @@ cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
 cargo run -p jellyflow-egui --example erd
 cargo run -p jellyflow-egui --example custom_widget
+cargo run -p jellyflow-egui --example gallery_snapshot
 ```
 
 The demo ships with a sample gallery for workflow, automation builder, mind map, tree, org chart,
@@ -85,6 +86,12 @@ let schema = NodeSchema::builder("demo.review_card", "Review card")
 
 The complete example lives in `examples/custom_widget.rs`. It builds a custom review-card node with
 embedded egui rows, zoom-aware content levels, and ports anchored to row regions.
+
+## Visual review gallery
+
+Run `cargo run -p jellyflow-egui --example gallery_snapshot` to export PNGs for every product
+sample into `target/jellyflow-egui-gallery`. This is intentionally a local review aid instead of a
+CI pixel gate, because GPU snapshot output can vary across platforms.
 
 The crate intentionally depends on `eframe`; the core `jellyflow`, `jellyflow-core`,
 `jellyflow-layout`, and `jellyflow-runtime` crates remain renderer-free.

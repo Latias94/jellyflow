@@ -64,6 +64,8 @@ pub fn show_toolbar(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut J
                     state.selected_layout_preset = default_layout;
                     state.canvas.clear_active();
                     state.canvas.hovered = None;
+                    state.canvas.snapshot = crate::state::CanvasSnapshot::empty();
+                    state.canvas.request_fit_view();
                     state.pending_create_kind = None;
                     state.set_status(format!("Loaded {}", state.selected_sample.label()));
                 }

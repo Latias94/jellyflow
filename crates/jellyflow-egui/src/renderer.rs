@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{
-    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, Stroke, Ui, UiBuilder, Vec2,
+    Align, Color32, CornerRadius, Id, Label, Layout, Rect, Stroke, Ui, UiBuilder, Vec2,
 };
 use jellyflow::core::{CanvasRect, CanvasSize, Node, NodeId};
 use jellyflow::runtime::schema::NodeKindViewDescriptor;
@@ -147,9 +147,9 @@ pub enum NodeContentLevel {
 
 impl NodeContentLevel {
     pub fn from_zoom(zoom: f32) -> Self {
-        if zoom >= 0.72 {
+        if zoom >= 0.62 {
             Self::Full
-        } else if zoom >= 0.38 {
+        } else if zoom >= 0.18 {
             Self::Compact
         } else {
             Self::Shell
@@ -157,6 +157,10 @@ impl NodeContentLevel {
     }
 
     pub fn shows_text(self) -> bool {
+        matches!(self, Self::Full | Self::Compact)
+    }
+
+    pub fn shows_detail(self) -> bool {
         matches!(self, Self::Full)
     }
 }
@@ -185,8 +189,9 @@ impl NodeWidgetRenderInput<'_> {
     }
 
     pub fn node_local_screen_rect(&self, rect: CanvasRect) -> Option<Rect> {
-        let rect =
-            node_local_rect_to_screen(self.node_rect, rect, self.zoom).intersect(self.clip_rect);
+        let rect = node_local_rect_to_screen(self.node_rect, rect, self.zoom)
+            .intersect(self.node_rect)
+            .intersect(self.clip_rect);
         rect.is_positive().then_some(rect)
     }
 }
@@ -410,30 +415,18 @@ impl RichNodeRenderer for FieldListNodeRenderer {
                 keys.push(key.clone());
             }
         }
-        let base_top = 46.0;
-        let row_height = 20.0;
-        let row_width = (rect.size.width - 28.0).max(80.0);
+        let metrics = FieldListMetrics::new(rect.size);
         let field_count = keys.len();
         for (index, key) in keys.into_iter().enumerate() {
-            let row_top = base_top + index as f32 * row_height;
+            let row_rect = metrics.row_rect(index);
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: format!("field.{key}"),
-                rect: CanvasRect {
-                    origin: jellyflow::core::CanvasPoint {
-                        x: 14.0,
-                        y: row_top,
-                    },
-                    size: CanvasSize {
-                        width: row_width,
-                        height: row_height - 2.0,
-                    },
-                },
+                rect: row_rect,
                 label: fields.get(&key).map(field_value_label),
                 z_index: 1,
             });
         }
-        let desired_height = base_top + field_count as f32 * row_height + 14.0;
-        layout.min_size.height = layout.min_size.height.max(desired_height);
+        layout.min_size = metrics.min_size(layout.min_size, field_count);
         layout
     }
 }
@@ -453,9 +446,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             return false;
         };
 
-        let show_badges = matches!(input.content_level, NodeContentLevel::Full);
-        let row_padding = if show_badges { 8.0 } else { 6.0 };
-        let row_height = if show_badges { 20.0 } else { 18.0 };
+        let show_detail = input.content_level.shows_detail();
 
         for region in input
             .layout
@@ -485,48 +476,113 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             );
             child_ui.set_clip_rect(rect);
             child_ui.set_min_size(rect.size());
-            child_ui.spacing_mut().item_spacing =
-                Vec2::new(if show_badges { 6.0 } else { 4.0 }, 0.0);
-            Frame::new()
-                .fill(Color32::from_rgb(255, 255, 255).gamma_multiply(0.9))
-                .stroke(Stroke::new(
-                    0.75,
-                    input
-                        .style
-                        .stroke
-                        .gamma_multiply(if show_badges { 0.55 } else { 0.4 }),
-                ))
-                .corner_radius(CornerRadius::same(if show_badges { 4 } else { 3 }))
-                .inner_margin(eframe::egui::Margin::symmetric(row_padding as i8, 2))
-                .show(&mut child_ui, |ui| {
-                    ui.set_min_size(Vec2::new(rect.width(), row_height));
-                    ui.horizontal_centered(|ui| {
-                        if show_badges && let Some(badge) = field_badge(key) {
-                            let badge_color = input.style.accent;
-                            Frame::new()
-                                .fill(badge_color.gamma_multiply(0.12))
-                                .corner_radius(CornerRadius::same(3))
-                                .inner_margin(eframe::egui::Margin::symmetric(4, 0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        eframe::egui::RichText::new(badge)
-                                            .small()
-                                            .strong()
-                                            .color(badge_color),
-                                    );
-                                });
-                        }
-                        ui.label(
-                            eframe::egui::RichText::new(label)
-                                .small()
-                                .color(input.style.text.gamma_multiply(0.82)),
+            child_ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(4),
+                Color32::from_rgb(255, 255, 255),
+            );
+            child_ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(4),
+                Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
+                eframe::egui::StrokeKind::Inside,
+            );
+
+            let mut content_rect = rect.shrink2(Vec2::new(7.0, 2.0));
+            if content_rect.width() <= 6.0 || content_rect.height() <= 6.0 {
+                continue;
+            }
+            child_ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.set_clip_rect(content_rect);
+                ui.set_min_size(content_rect.size());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                    if show_detail && let Some(badge) = field_badge(key) {
+                        let badge_width = 24.0f32.min(content_rect.width() * 0.38);
+                        let badge_rect = Rect::from_min_size(
+                            content_rect.min,
+                            Vec2::new(badge_width, content_rect.height()),
+                        );
+                        draw_field_badge(ui, badge_rect, badge, input.style.accent);
+                        content_rect.min.x = badge_rect.max.x + 6.0;
+                    }
+                    ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                        ui.set_clip_rect(content_rect);
+                        ui.add(
+                            Label::new(
+                                eframe::egui::RichText::new(label)
+                                    .small()
+                                    .color(input.style.text.gamma_multiply(0.84)),
+                            )
+                            .truncate(),
                         );
                     });
                 });
+            });
         }
 
         true
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FieldListMetrics {
+    left: f32,
+    top: f32,
+    row_width: f32,
+    row_height: f32,
+    row_gap: f32,
+    bottom_padding: f32,
+}
+
+impl FieldListMetrics {
+    fn new(size: CanvasSize) -> Self {
+        Self {
+            left: 14.0,
+            top: 46.0,
+            row_width: (size.width - 28.0).max(80.0),
+            row_height: 22.0,
+            row_gap: 4.0,
+            bottom_padding: 14.0,
+        }
+    }
+
+    fn row_rect(self, index: usize) -> CanvasRect {
+        CanvasRect {
+            origin: jellyflow::core::CanvasPoint {
+                x: self.left,
+                y: self.top + index as f32 * (self.row_height + self.row_gap),
+            },
+            size: CanvasSize {
+                width: self.row_width,
+                height: self.row_height,
+            },
+        }
+    }
+
+    fn min_size(self, current: CanvasSize, row_count: usize) -> CanvasSize {
+        CanvasSize {
+            width: current.width.max(self.row_width + self.left * 2.0),
+            height: current.height.max(
+                self.top
+                    + row_count as f32 * self.row_height
+                    + row_count.saturating_sub(1) as f32 * self.row_gap
+                    + self.bottom_padding,
+            ),
+        }
+    }
+}
+
+fn draw_field_badge(ui: &mut Ui, rect: Rect, badge: &str, color: Color32) {
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(3), color.gamma_multiply(0.12));
+    ui.painter().text(
+        rect.center(),
+        eframe::egui::Align2::CENTER_CENTER,
+        badge,
+        eframe::egui::TextStyle::Small.resolve(ui.style()),
+        color,
+    );
 }
 
 fn field_value_label(value: &serde_json::Value) -> String {
@@ -653,9 +709,11 @@ mod tests {
     fn node_content_level_derives_from_zoom() {
         assert_eq!(NodeContentLevel::from_zoom(1.0), NodeContentLevel::Full);
         assert_eq!(NodeContentLevel::from_zoom(0.5), NodeContentLevel::Compact);
-        assert_eq!(NodeContentLevel::from_zoom(0.2), NodeContentLevel::Shell);
+        assert_eq!(NodeContentLevel::from_zoom(0.12), NodeContentLevel::Shell);
         assert!(NodeContentLevel::Full.shows_text());
-        assert!(!NodeContentLevel::Compact.shows_text());
+        assert!(NodeContentLevel::Compact.shows_text());
+        assert!(NodeContentLevel::Full.shows_detail());
+        assert!(!NodeContentLevel::Compact.shows_detail());
     }
 
     #[test]
@@ -710,6 +768,80 @@ mod tests {
 
         assert_eq!(clipped.left(), 130.0);
         assert_eq!(clipped.right(), 208.0);
+    }
+
+    #[test]
+    fn widget_region_rect_is_clipped_to_node_bounds() {
+        let node_rect =
+            Rect::from_min_size(eframe::egui::pos2(100.0, 20.0), Vec2::new(120.0, 80.0));
+        let descriptor = test_descriptor("demo.rich");
+        let node = test_node();
+        let layout = NodeRenderLayout::fallback(
+            &NodeRenderInput {
+                id: NodeId::from_u128(1),
+                node: &node,
+                descriptor: &descriptor,
+                state: NodeRendererState::default(),
+                style: NodeRendererStyle::fallback(),
+            },
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 120.0,
+                    height: 80.0,
+                },
+            },
+        );
+        let input = NodeWidgetRenderInput {
+            id: NodeId::from_u128(1),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::fallback(),
+            layout: &layout,
+            node_rect,
+            clip_rect: Rect::from_min_max(
+                eframe::egui::pos2(0.0, 0.0),
+                eframe::egui::pos2(300.0, 300.0),
+            ),
+            zoom: 1.0,
+            content_level: NodeContentLevel::Full,
+        };
+
+        let clipped = input
+            .node_local_screen_rect(CanvasRect {
+                origin: CanvasPoint { x: 80.0, y: 62.0 },
+                size: CanvasSize {
+                    width: 72.0,
+                    height: 40.0,
+                },
+            })
+            .expect("oversized local rect should still intersect the node");
+
+        assert_eq!(clipped.right(), node_rect.right());
+        assert_eq!(clipped.bottom(), node_rect.bottom());
+    }
+
+    #[test]
+    fn field_list_metrics_space_rows_and_grow_min_height() {
+        let metrics = FieldListMetrics::new(CanvasSize {
+            width: 226.0,
+            height: 80.0,
+        });
+        let first = metrics.row_rect(0);
+        let second = metrics.row_rect(1);
+        let min_size = metrics.min_size(
+            CanvasSize {
+                width: 160.0,
+                height: 80.0,
+            },
+            3,
+        );
+
+        assert_eq!(first.size.height, 22.0);
+        assert_eq!(second.origin.y - first.origin.y, 26.0);
+        assert!(min_size.width >= 226.0);
+        assert!(min_size.height >= 132.0);
     }
 
     #[test]
@@ -780,6 +912,7 @@ mod tests {
             .expect("foreign key region exists");
         assert_eq!(primary.rect.origin.x, 14.0);
         assert_eq!(primary.rect.origin.y, 46.0);
+        assert_eq!(primary.rect.size.height, 22.0);
         assert_eq!(primary.label.as_deref(), Some("id"));
         assert!(foreign.rect.origin.y > primary.rect.origin.y);
         assert_eq!(foreign.label.as_deref(), Some("customer_id"));
