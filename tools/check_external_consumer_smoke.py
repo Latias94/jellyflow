@@ -28,6 +28,7 @@ def jellyflow_external_consumer_scenarios(repo_root: Path) -> list[SmokeScenario
     return [
         jellyflow_facade_scenario(repo_root),
         jellyflow_runtime_scenario(repo_root),
+        jellyflow_egui_scenario(repo_root),
     ]
 
 
@@ -107,6 +108,62 @@ def jellyflow_runtime_scenario(repo_root: Path) -> SmokeScenario:
         slug="jellyflow-external-smoke",
         cargo_toml=jellyflow_runtime_cargo_toml(repo_root),
         main_rs=jellyflow_runtime_main_rs(),
+    )
+
+
+def jellyflow_egui_scenario(repo_root: Path) -> SmokeScenario:
+    return SmokeScenario(
+        slug="jellyflow-egui-external-smoke",
+        cargo_toml=jellyflow_egui_cargo_toml(repo_root),
+        main_rs=jellyflow_egui_main_rs(),
+    )
+
+
+def jellyflow_egui_cargo_toml(repo_root: Path) -> str:
+    return (
+        textwrap.dedent(
+            f"""
+            [package]
+            name = "jellyflow-egui-external-smoke"
+            version = "0.0.0"
+            edition = "2024"
+            rust-version = "1.95"
+            publish = false
+
+            [dependencies]
+            jellyflow-egui = {{ path = "{(repo_root / "crates/jellyflow-egui").as_posix()}" }}
+            """
+        ).strip()
+        + "\n"
+    )
+
+
+def jellyflow_egui_main_rs() -> str:
+    return (
+        textwrap.dedent(
+            """
+            use jellyflow_egui::{
+                JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog, egui,
+            };
+
+            fn main() {
+                let app = JellyflowEguiApp::demo().expect("demo app builds");
+                assert!(!app.bridge.store().graph().nodes().is_empty());
+
+                let mut catalog = RendererCatalog::new();
+                catalog.register("custom-card", NodeRendererStyle::fallback());
+                assert_eq!(
+                    catalog.style_for_key("custom-card"),
+                    NodeRendererStyle::fallback()
+                );
+
+                let bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+                assert!(bridge.descriptors().len() >= 4);
+                let _ = egui::Color32::WHITE;
+            }
+            """
+        ).strip()
+        + "\n"
     )
 
 

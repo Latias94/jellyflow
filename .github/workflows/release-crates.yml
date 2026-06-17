@@ -142,6 +142,7 @@ jobs:
             jellyflow-layout
             jellyflow-runtime
             jellyflow
+            jellyflow-egui
           )
 
           for crate in "${crates[@]}"; do

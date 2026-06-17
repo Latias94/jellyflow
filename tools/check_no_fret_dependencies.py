@@ -14,6 +14,7 @@ DEFAULT_PACKAGES = (
     "jellyflow-layout",
     "jellyflow-runtime",
     "jellyflow",
+    "jellyflow-egui",
 )
 
 

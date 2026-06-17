@@ -1,0 +1,20 @@
+[package]
+name = "jellyflow-egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/jellyflow-egui"
+readme = "README.md"
+description = "Immediate-mode egui adapter for Jellyflow node graphs."
+keywords = ["egui", "graph", "node-graph", "adapter"]
+categories = ["gui", "visualization"]
+
+[dependencies]
+eframe = "0.34.3"
+jellyflow.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

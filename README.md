@@ -15,8 +15,9 @@ Jellyflow owns the portable graph document model, undoable graph transactions, h
 store, schema/profile pipeline, renderer-neutral interaction planners, layout engine boundary, and
 adapter conformance fixtures for node graph editors.
 
-It is extracted from Fret, but it does not depend on Fret UI, renderer, platform, windowing, DOM,
-React, wgpu, or egui crates. Product-specific rendering and input binding stay in adapter crates.
+The headless crates are extracted from Fret, but they do not depend on Fret UI, renderer, platform,
+windowing, DOM, React, wgpu, or egui crates. Product-specific rendering and input binding stay in
+adapter crates such as `jellyflow-egui`.
 
 ## Choose Your Entry Point
 
@@ -26,6 +27,7 @@ React, wgpu, or egui crates. Product-specific rendering and input binding stay i
 | Store and edit portable graph documents | [`jellyflow-core`](https://crates.io/crates/jellyflow-core) | IDs, graph data, ports, bindings, symbols, operations, transactions, fragments, and history. |
 | Drive headless graph interaction behavior | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Store dispatch, policy, schema/profile hooks, selection, delete, drag, resize, viewport, geometry, XyFlow-style projections, and conformance fixtures. |
 | Add automatic layout without renderer dependencies | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Built-in `dugong`, tidy tree, radial mind-map, and freeform mind-map engines, plus custom engine registration. |
+| Embed an immediate-mode native graph editor | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | `eframe` adapter with a palette, toolbar, inspector, canvas rendering, pointer input, and demo app. |
 | Start a renderer integration | [`templates/headless-adapter`](templates/headless-adapter) | Copyable external adapter skeleton with conformance checks before renderer smoke tests. |
 
 ## What Jellyflow Provides
@@ -50,12 +52,13 @@ React, wgpu, or egui crates. Product-specific rendering and input binding stay i
 
 ```sh
 # Main facade crate
-cargo add jellyflow@0.2.0
+cargo add jellyflow@0.3.0
 
 # Narrow dependencies for lower-level consumers
-cargo add jellyflow-core@0.2.0
-cargo add jellyflow-layout@0.2.0
-cargo add jellyflow-runtime@0.2.0
+cargo add jellyflow-core@0.3.0
+cargo add jellyflow-layout@0.3.0
+cargo add jellyflow-runtime@0.3.0
+cargo add jellyflow-egui@0.3.0
 ```
 
 From a local checkout:
@@ -65,6 +68,7 @@ cargo test -p jellyflow
 cargo run -p jellyflow-runtime --example store_dispatch
 cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
+cargo run -p jellyflow-egui --example demo
 ```
 
 MSRV is `rust-version = 1.95`.
@@ -123,6 +127,7 @@ cargo run -p jellyflow-runtime --example geometry_edge
 cargo run -p jellyflow-runtime --example knowledge_canvas
 cargo run -p jellyflow-runtime --example layout_engines
 cargo run -p jellyflow-runtime --example dirty_scope_layout
+cargo run -p jellyflow-egui --example demo
 ```
 
 ## Custom Nodes And Adapters
@@ -298,7 +303,7 @@ Crates.io release notes, version checks, and publish order live in
 [`docs/releasing/CRATES_IO.md`](docs/releasing/CRATES_IO.md).
 
 Release CI follows the same split as the source Rust workspace this project was extracted from:
-`release-preflight` is a manual publish-readiness check, `release-crates` publishes the four crates
+`release-preflight` is a manual publish-readiness check, `release-crates` publishes the five crates
 in dependency order from a `v*` tag or manual dispatch, and `release` creates or updates the GitHub
 Release notes for the same tag.
 
@@ -317,11 +322,11 @@ assets before publishing.
 
 ## Limitations
 
-- Jellyflow is headless. It does not render nodes, edges, handles, panels, menus, or accessibility
-  text.
+- The core `jellyflow`, `jellyflow-core`, `jellyflow-layout`, and `jellyflow-runtime` crates are
+  headless. Use adapter crates such as `jellyflow-egui` for rendered editor surfaces.
 - It does not own raw pointer capture, keyboard focus policy, DOM/React provider state, browser
   measurement APIs, GPU resources, screenshot tests, or pixel comparisons.
-- `0.1.x` is the initial public line. Public APIs are intentionally small but may still change as
+- `0.x` is still an early public line. Public APIs are intentionally small but may still change as
   adapter crates harden their integration patterns.
 - First-time crates.io dry-runs for dependent crates can fail until earlier Jellyflow crates are
   visible on crates.io. Publish in dependency order.
@@ -335,6 +340,8 @@ assets before publishing.
   projections, and conformance fixtures.
 - `jellyflow` is a thin facade. It re-exports the lower-level crates and common entry points without
   adding another behavior layer.
+- `jellyflow-egui` owns the immediate-mode egui adapter surface and depends on the facade instead of
+  the lower-level crates directly.
 - `fret-node` remains the Fret adapter and compatibility facade in the Fret repository.
 
 This repository was created by a history-preserving path-filtered extraction from Fret. The source
@@ -350,6 +357,7 @@ filter command is recorded in
 | [`jellyflow-core`](https://crates.io/crates/jellyflow-core) | Portable graph document model, IDs, validation, transactions, fragments, and history. |
 | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Optional headless layout engines and custom layout registry. |
 | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Headless store, rules, schema/profile pipeline, interaction planners, geometry, rendering reads, XyFlow projections, and conformance fixtures. |
+| [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | Immediate-mode egui adapter with a demo app, canvas, palette, toolbar, and inspector. |
 
 ## Links
 

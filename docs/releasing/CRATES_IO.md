@@ -1,16 +1,18 @@
 # Publishing To crates.io
 
-Jellyflow is a Cargo workspace with four publishable crates:
+Jellyflow is a Cargo workspace with five publishable crates:
 
 1. `jellyflow-core`
 2. `jellyflow-layout`
 3. `jellyflow-runtime`
 4. `jellyflow`
+5. `jellyflow-egui`
 
 `jellyflow-layout` depends on `jellyflow-core`, `jellyflow-runtime` depends on
 `jellyflow-core` and `jellyflow-layout`, and the top-level `jellyflow` facade
-depends on all three lower-level crates. Publish and dry-run checks must respect
-that order.
+depends on all three lower-level crates. `jellyflow-egui` depends on the facade
+crate and must publish after it. Publish and dry-run checks must respect that
+order.
 
 ## Release Gates
 
@@ -45,12 +47,13 @@ cargo package --locked --no-verify --list -p jellyflow-core
 cargo package --locked --no-verify --list -p jellyflow-layout
 cargo package --locked --no-verify --list -p jellyflow-runtime
 cargo package --locked --no-verify --list -p jellyflow
+cargo package --locked --no-verify --list -p jellyflow-egui
 ```
 
 The package list should not include Trellis task files, `repo-ref`, historical
 workstream archives, or renderer/platform assets. Each crate package should
 include its crate README and the files needed to build that crate from crates.io.
-`--no-verify` is used for package-list review so first-release dependent crates
+`--no-verify` is used for package-list review so same-version dependent crates
 do not fail only because earlier Jellyflow crates are not visible on crates.io
 yet.
 
@@ -63,14 +66,15 @@ cargo publish --dry-run -p jellyflow-core
 cargo publish --dry-run -p jellyflow-layout
 cargo publish --dry-run -p jellyflow-runtime
 cargo publish --dry-run -p jellyflow
+cargo publish --dry-run -p jellyflow-egui
 ```
 
 Cargo rewrites workspace path dependencies into registry dependencies during
-packaging and publishing. For a first release, dry-runs for crates that depend
-on unpublished workspace crates may fail because those dependency names are not
-available on crates.io yet. Treat that as an expected dependency-order blocker
-only after confirming no unrelated metadata or packaging error appears earlier
-in the output.
+packaging and publishing. For a first release or same-version multi-crate
+release, dry-runs for crates that depend on unpublished workspace crates may
+fail because those dependency versions are not available on crates.io yet. Treat
+that as an expected dependency-order blocker only after confirming no unrelated
+metadata or packaging error appears earlier in the output.
 
 ## Publish Order
 
@@ -81,6 +85,7 @@ cargo publish -p jellyflow-core
 cargo publish -p jellyflow-layout
 cargo publish -p jellyflow-runtime
 cargo publish -p jellyflow
+cargo publish -p jellyflow-egui
 ```
 
 Actual crates.io publishing is handled by

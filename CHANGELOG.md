@@ -31,6 +31,10 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added built-in layout metadata consistency coverage so preset builders, registry entries, engine
   metadata, family metadata, capabilities, and default options stay aligned.
 - Added runtime layout-pipeline benchmark smoke coverage for footprint-derived dirty scopes.
+- Added the `jellyflow-egui` immediate-mode adapter crate with a demo app, palette, toolbar,
+  inspector, canvas rendering, and pointer input.
+- Added release, CI package-list, dependency-boundary, and external-consumer smoke coverage for
+  `jellyflow-egui`.
 - Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch
   patch accessors, custom node schema builders, built-in layout presets, and dirty-scope helpers.
 

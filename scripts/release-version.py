@@ -16,6 +16,7 @@ PUBLISHABLE_CRATES = (
     "jellyflow-layout",
     "jellyflow-runtime",
     "jellyflow",
+    "jellyflow-egui",
 )
 
 

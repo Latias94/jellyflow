@@ -82,6 +82,7 @@ jobs:
             jellyflow-layout
             jellyflow-runtime
             jellyflow
+            jellyflow-egui
           )
           for crate in "${crates[@]}"; do
             cargo package --locked --no-verify --list -p "$crate" > "target/package-lists/$crate.txt"
