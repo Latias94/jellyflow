@@ -153,6 +153,7 @@ fn draw_nodes(
                 style,
                 renderer_state,
                 content_level,
+                clip_rect: state.canvas.snapshot.viewport_rect,
             },
         );
         if content_level.shows_text() && !widgets_rendered {
@@ -226,6 +227,7 @@ struct NodeWidgetDrawRequest<'a> {
     style: NodeRendererStyle,
     renderer_state: NodeRendererState,
     content_level: NodeContentLevel,
+    clip_rect: Rect,
 }
 
 fn draw_node_widgets(
@@ -247,6 +249,7 @@ fn draw_node_widgets(
             style: request.style,
             layout: request.layout,
             node_rect: request.node_rect,
+            clip_rect: request.clip_rect,
             zoom: state.canvas.snapshot.transform.zoom,
             content_level: request.content_level,
         },

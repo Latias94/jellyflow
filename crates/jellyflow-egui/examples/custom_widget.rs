@@ -61,7 +61,11 @@ impl EguiNodeWidgetRenderer for ReviewCardRenderer {
                 .get(key)
                 .and_then(|value| value.as_str())
                 .unwrap_or("unset");
-            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom);
+            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom)
+                .intersect(input.clip_rect);
+            if !rect.is_positive() {
+                continue;
+            }
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("review-card", input.id, &region.key)))

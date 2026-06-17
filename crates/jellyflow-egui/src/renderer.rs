@@ -171,6 +171,10 @@ pub struct NodeWidgetRenderInput<'a> {
     pub style: NodeRendererStyle,
     pub layout: &'a NodeRenderLayout,
     pub node_rect: Rect,
+    /// Screen-space clip rect inherited from the canvas viewport.
+    ///
+    /// Widget renderers should intersect child widget rects with this value before painting.
+    pub clip_rect: Rect,
     pub zoom: f32,
     pub content_level: NodeContentLevel,
 }
@@ -458,7 +462,11 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             else {
                 continue;
             };
-            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom);
+            let rect = node_local_rect_to_screen(input.node_rect, region.rect, input.zoom)
+                .intersect(input.clip_rect);
+            if !rect.is_positive() {
+                continue;
+            }
             let mut child_ui = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("field-region", input.id, &region.key)))
@@ -630,6 +638,29 @@ mod tests {
         assert_eq!(NodeContentLevel::from_zoom(0.2), NodeContentLevel::Shell);
         assert!(NodeContentLevel::Full.shows_text());
         assert!(!NodeContentLevel::Compact.shows_text());
+    }
+
+    #[test]
+    fn widget_clip_rect_can_clip_node_local_regions() {
+        let node_rect =
+            Rect::from_min_size(eframe::egui::pos2(100.0, 20.0), Vec2::new(120.0, 80.0));
+        let region = CanvasRect {
+            origin: CanvasPoint { x: 8.0, y: 16.0 },
+            size: CanvasSize {
+                width: 100.0,
+                height: 20.0,
+            },
+        };
+        let clip = Rect::from_min_max(
+            eframe::egui::pos2(130.0, 0.0),
+            eframe::egui::pos2(260.0, 100.0),
+        );
+
+        let clipped = node_local_rect_to_screen(node_rect, region, 1.0).intersect(clip);
+
+        assert!(clipped.is_positive());
+        assert_eq!(clipped.left(), 130.0);
+        assert_eq!(clipped.right(), 208.0);
     }
 
     #[test]
