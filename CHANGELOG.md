@@ -36,6 +36,7 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added `jellyflow-egui` canvas interactions for toolbar modes, handle-to-handle connections,
   selected-node resize handles, edge selection, pan mode, drag previews, and connection/resize
   feedback.
+- Added `jellyflow-egui` keyboard nudging and cursor feedback for editor-grade canvas interactions.
 - Added release, CI package-list, dependency-boundary, and external-consumer smoke coverage for
   `jellyflow-egui`.
 - Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch

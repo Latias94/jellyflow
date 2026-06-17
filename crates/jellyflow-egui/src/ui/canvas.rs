@@ -1,6 +1,6 @@
 use eframe::egui::{
-    Align2, Color32, CornerRadius, Key, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextStyle,
-    Ui, Vec2,
+    Align2, Color32, CornerRadius, CursorIcon, Key, Pos2, Rect, Response, Sense, Stroke,
+    StrokeKind, TextStyle, Ui, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, NodeId, PortDirection};
@@ -35,6 +35,7 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
     draw_selection(&painter, state);
 
     handle_pointer(ui, &response, bridge, state);
+    update_cursor(ui, state);
 }
 
 fn draw_background(painter: &eframe::egui::Painter, rect: Rect) {
@@ -695,4 +696,31 @@ fn resize_handle_rect(node_rect: Rect, direction: NodeResizeDirection) -> Rect {
         NodeResizeDirection::TopLeft => node_rect.left_top(),
     };
     Rect::from_center_size(center, Vec2::new(RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE))
+}
+
+fn update_cursor(ui: &mut Ui, state: &JellyflowEguiState) {
+    let cursor = match state.canvas.active {
+        ActiveCanvasInteraction::Pan { .. } => CursorIcon::Grabbing,
+        ActiveCanvasInteraction::Connect { .. } => CursorIcon::Crosshair,
+        ActiveCanvasInteraction::NodeResize { direction, .. } => resize_cursor(direction),
+        ActiveCanvasInteraction::NodeDrag { .. } => CursorIcon::Grabbing,
+        ActiveCanvasInteraction::SelectionBox { .. } => CursorIcon::Crosshair,
+        ActiveCanvasInteraction::None => match state.canvas.hovered {
+            Some(HoverTarget::Handle(_)) => CursorIcon::Crosshair,
+            Some(HoverTarget::ResizeHandle { direction, .. }) => resize_cursor(direction),
+            Some(HoverTarget::Node(_)) => CursorIcon::Grab,
+            Some(HoverTarget::Edge(_)) => CursorIcon::PointingHand,
+            None => CursorIcon::Default,
+        },
+    };
+    ui.ctx().set_cursor_icon(cursor);
+}
+
+fn resize_cursor(direction: NodeResizeDirection) -> CursorIcon {
+    match direction {
+        NodeResizeDirection::Top | NodeResizeDirection::Bottom => CursorIcon::ResizeVertical,
+        NodeResizeDirection::Left | NodeResizeDirection::Right => CursorIcon::ResizeHorizontal,
+        NodeResizeDirection::TopRight | NodeResizeDirection::BottomLeft => CursorIcon::ResizeNeSw,
+        NodeResizeDirection::TopLeft | NodeResizeDirection::BottomRight => CursorIcon::ResizeNwSe,
+    }
 }

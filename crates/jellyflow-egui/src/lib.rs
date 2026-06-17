@@ -24,6 +24,7 @@ pub use state::{
 mod tests {
     use super::{JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog};
     use jellyflow::core::{CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection};
+    use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
 
     #[test]
     fn demo_app_builds_without_windowing() {
@@ -127,5 +128,40 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(planned_nodes.contains(&primary));
         assert!(planned_nodes.contains(&secondary));
+    }
+
+    #[test]
+    fn bridge_nudge_selection_commits_keyboard_move() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let node = *bridge
+            .store()
+            .graph()
+            .nodes()
+            .keys()
+            .next()
+            .expect("demo node exists");
+        let before = bridge.store().graph().nodes()[&node].pos;
+        bridge.select_node(node, false);
+
+        let outcome = bridge
+            .nudge_selection(NodeNudgeDirection::Right, false)
+            .expect("nudge dispatch succeeds")
+            .expect("nudge commits");
+
+        assert!(!outcome.dispatch().committed().ops().is_empty());
+        assert!(bridge.store().graph().nodes()[&node].pos.x > before.x);
+        assert_eq!(bridge.store().graph().nodes()[&node].pos.y, before.y);
+    }
+
+    #[test]
+    fn bridge_nudge_selection_is_noop_without_selection() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        bridge.clear_selection();
+
+        let outcome = bridge
+            .nudge_selection(NodeNudgeDirection::Right, false)
+            .expect("nudge no-selection path succeeds");
+
+        assert!(outcome.is_none());
     }
 }

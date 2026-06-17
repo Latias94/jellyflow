@@ -9,11 +9,15 @@ use jellyflow::layout::{LayoutEngineRegistry, builtin_layout_engine_registry};
 use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::{ConnectEdgeRequest, ConnectionHandleRef};
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
+use jellyflow::runtime::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use jellyflow::runtime::runtime::fit_view::{
     FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
 };
 use jellyflow::runtime::runtime::geometry::{
     BezierEdgeOptions, HandleBounds, HandlePosition, bezier_edge_path,
+};
+use jellyflow::runtime::runtime::keyboard::{
+    KeyboardActionError, KeyboardActionOutcome, KeyboardIntent,
 };
 use jellyflow::runtime::runtime::layout::{LayoutApplyError, LayoutEngineRequest};
 use jellyflow::runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
@@ -21,8 +25,7 @@ use jellyflow::runtime::runtime::resize::{
     NodePointerResizeRequest, NodeResizeDirection, NodeResizeSession,
     NodeResizeSessionUpdateRequest,
 };
-use jellyflow::runtime::runtime::selection::NodePointerDownInput;
-use jellyflow::runtime::runtime::selection::SelectionBoxInput;
+use jellyflow::runtime::runtime::selection::{NodePointerDownInput, SelectionBoxInput};
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
 };
@@ -647,6 +650,18 @@ impl JellyflowEguiBridge {
         self.store
             .apply_delete_selection()
             .map_err(|err| err.to_string())
+    }
+
+    pub fn nudge_selection(
+        &mut self,
+        direction: NodeNudgeDirection,
+        fast: bool,
+    ) -> Result<Option<KeyboardActionOutcome>, KeyboardActionError> {
+        self.store
+            .apply_keyboard_intent(KeyboardIntent::NudgeSelection(NodeNudgeRequest {
+                direction,
+                fast,
+            }))
     }
 
     fn report_snapshot_measurements(&mut self, snapshot: &CanvasSnapshot) {
