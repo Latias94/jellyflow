@@ -29,7 +29,7 @@ impl NodeResizeConstraints {
     }
 
     pub(super) fn clamp(self, target: CanvasSize) -> Option<CanvasSize> {
-        if !target.is_positive_finite() {
+        if !target.is_finite() {
             return None;
         }
         let min = valid_constraint(self.min)?;
@@ -40,7 +40,7 @@ impl NodeResizeConstraints {
             return None;
         }
 
-        Some(CanvasSize {
+        let clamped = CanvasSize {
             width: clamp_axis(
                 target.width,
                 min.map(|size| size.width),
@@ -51,7 +51,8 @@ impl NodeResizeConstraints {
                 min.map(|size| size.height),
                 max.map(|size| size.height),
             ),
-        })
+        };
+        clamped.is_positive_finite().then_some(clamped)
     }
 }
 

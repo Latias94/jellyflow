@@ -25,44 +25,44 @@ impl NodeRendererStyle {
 
     pub const fn task() -> Self {
         Self::new(
-            Color32::from_rgb(245, 248, 252),
-            Color32::from_rgb(124, 139, 160),
-            Color32::from_rgb(42, 106, 166),
+            Color32::from_rgb(252, 253, 255),
+            Color32::from_rgb(198, 207, 219),
+            Color32::from_rgb(42, 104, 176),
             Color32::from_rgb(31, 41, 55),
         )
     }
 
     pub const fn decision() -> Self {
         Self::new(
-            Color32::from_rgb(255, 248, 235),
-            Color32::from_rgb(191, 129, 45),
-            Color32::from_rgb(200, 83, 44),
+            Color32::from_rgb(255, 252, 246),
+            Color32::from_rgb(219, 201, 168),
+            Color32::from_rgb(188, 113, 32),
             Color32::from_rgb(61, 46, 28),
         )
     }
 
     pub const fn data() -> Self {
         Self::new(
-            Color32::from_rgb(238, 250, 246),
-            Color32::from_rgb(79, 146, 121),
-            Color32::from_rgb(18, 128, 96),
+            Color32::from_rgb(247, 252, 250),
+            Color32::from_rgb(177, 207, 196),
+            Color32::from_rgb(22, 128, 96),
             Color32::from_rgb(27, 53, 48),
         )
     }
 
     pub const fn output() -> Self {
         Self::new(
-            Color32::from_rgb(249, 244, 255),
-            Color32::from_rgb(135, 107, 177),
-            Color32::from_rgb(108, 81, 158),
+            Color32::from_rgb(253, 251, 255),
+            Color32::from_rgb(206, 195, 222),
+            Color32::from_rgb(111, 88, 161),
             Color32::from_rgb(49, 38, 70),
         )
     }
 
     pub const fn topic() -> Self {
         Self::new(
-            Color32::from_rgb(244, 249, 255),
-            Color32::from_rgb(82, 127, 172),
+            Color32::from_rgb(249, 252, 255),
+            Color32::from_rgb(186, 205, 225),
             Color32::from_rgb(31, 105, 168),
             Color32::from_rgb(26, 45, 68),
         )
@@ -70,8 +70,8 @@ impl NodeRendererStyle {
 
     pub const fn idea() -> Self {
         Self::new(
-            Color32::from_rgb(248, 250, 240),
-            Color32::from_rgb(134, 152, 86),
+            Color32::from_rgb(252, 253, 248),
+            Color32::from_rgb(195, 207, 163),
             Color32::from_rgb(88, 128, 54),
             Color32::from_rgb(43, 55, 34),
         )
@@ -79,27 +79,27 @@ impl NodeRendererStyle {
 
     pub const fn section() -> Self {
         Self::new(
-            Color32::from_rgb(246, 246, 252),
-            Color32::from_rgb(118, 118, 158),
-            Color32::from_rgb(72, 88, 150),
+            Color32::from_rgb(252, 252, 255),
+            Color32::from_rgb(198, 201, 216),
+            Color32::from_rgb(70, 91, 148),
             Color32::from_rgb(42, 44, 68),
         )
     }
 
     pub const fn source() -> Self {
         Self::new(
-            Color32::from_rgb(252, 248, 241),
-            Color32::from_rgb(160, 128, 86),
-            Color32::from_rgb(150, 94, 46),
+            Color32::from_rgb(255, 252, 247),
+            Color32::from_rgb(215, 196, 169),
+            Color32::from_rgb(145, 94, 46),
             Color32::from_rgb(64, 48, 34),
         )
     }
 
     pub const fn fallback() -> Self {
         Self::new(
-            Color32::from_rgb(247, 247, 246),
-            Color32::from_rgb(142, 142, 135),
-            Color32::from_rgb(82, 82, 74),
+            Color32::from_rgb(252, 252, 251),
+            Color32::from_rgb(202, 202, 196),
+            Color32::from_rgb(91, 91, 82),
             Color32::from_rgb(36, 36, 32),
         )
     }
@@ -325,9 +325,9 @@ impl RichNodeRenderer for FieldListNodeRenderer {
                 keys.push(key.clone());
             }
         }
-        let base_top = 40.0;
+        let base_top = 46.0;
         let row_height = 20.0;
-        let row_width = (rect.size.width - 24.0).max(80.0);
+        let row_width = (rect.size.width - 28.0).max(80.0);
         let field_count = keys.len();
         for (index, key) in keys.into_iter().enumerate() {
             let row_top = base_top + index as f32 * row_height;
@@ -335,7 +335,7 @@ impl RichNodeRenderer for FieldListNodeRenderer {
                 key: format!("field.{key}"),
                 rect: CanvasRect {
                     origin: jellyflow::core::CanvasPoint {
-                        x: 12.0,
+                        x: 14.0,
                         y: row_top,
                     },
                     size: CanvasSize {
@@ -347,7 +347,7 @@ impl RichNodeRenderer for FieldListNodeRenderer {
                 z_index: 1,
             });
         }
-        let desired_height = base_top + field_count as f32 * row_height + 10.0;
+        let desired_height = base_top + field_count as f32 * row_height + 14.0;
         layout.min_size.height = layout.min_size.height.max(desired_height);
         layout
     }
@@ -505,8 +505,8 @@ mod tests {
             .iter()
             .find(|region| region.key == "field.foreign_key")
             .expect("foreign key region exists");
-        assert_eq!(primary.rect.origin.x, 12.0);
-        assert_eq!(primary.rect.origin.y, 40.0);
+        assert_eq!(primary.rect.origin.x, 14.0);
+        assert_eq!(primary.rect.origin.y, 46.0);
         assert_eq!(primary.label.as_deref(), Some("id"));
         assert!(foreign.rect.origin.y > primary.rect.origin.y);
         assert_eq!(foreign.label.as_deref(), Some("customer_id"));

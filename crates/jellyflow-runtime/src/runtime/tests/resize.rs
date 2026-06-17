@@ -571,6 +571,43 @@ fn pointer_resize_clamps_to_min_max_constraints() {
 }
 
 #[test]
+fn pointer_resize_clamps_past_zero_to_min_constraints() {
+    let fixture = resize_fixture();
+    let harness = InteractionHarness::new("pointer resize past zero constraints", fixture.graph);
+    let constraints = NodeResizeConstraints::new(
+        Some(CanvasSize {
+            width: 80.0,
+            height: 50.0,
+        }),
+        None,
+    );
+
+    let plan = harness
+        .store()
+        .plan_node_pointer_resize(
+            NodePointerResizeRequest::new(
+                fixture.enabled,
+                CanvasPoint { x: 110.0, y: 80.0 },
+                CanvasPoint {
+                    x: -400.0,
+                    y: -400.0,
+                },
+                NodeResizeDirection::BottomRight,
+            )
+            .with_constraints(constraints),
+        )
+        .expect("overshot pointer resize should clamp to minimum");
+
+    assert_eq!(
+        plan.to,
+        CanvasSize {
+            width: 80.0,
+            height: 50.0,
+        },
+    );
+}
+
+#[test]
 fn pointer_resize_preserves_aspect_ratio_for_diagonal_and_axis_handles() {
     let fixture = resize_fixture();
     let harness = InteractionHarness::new("pointer resize aspect ratio", fixture.graph);

@@ -41,6 +41,7 @@ mod tests {
     use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
     use jellyflow::runtime::runtime::geometry::HandlePosition;
+    use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
     #[test]
     fn demo_app_builds_without_windowing() {
@@ -231,6 +232,98 @@ mod tests {
         assert!(
             pk.rect.origin.y < fk.rect.origin.y,
             "pk should align to the first table field and fk to a later field"
+        );
+    }
+
+    #[test]
+    fn snapshot_caches_node_render_layouts_for_visible_nodes() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+
+        assert!(
+            snapshot
+                .visible_node_ids
+                .iter()
+                .all(|node| snapshot.node_render_layouts.contains_key(node))
+        );
+        assert!(snapshot.node_render_layouts.values().any(|layout| {
+            layout
+                .interactive_regions
+                .iter()
+                .any(|region| region.key == "field.primary_key")
+        }));
+    }
+
+    #[test]
+    fn table_resize_clamps_to_renderer_minimum_size() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let graph = app.bridge.store().graph();
+        let table = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
+            .expect("table node exists");
+        let from_size = graph.nodes()[&table].size;
+        app.bridge
+            .store_mut()
+            .dispatch_transaction(&GraphTransaction::from_ops([GraphOp::SetNodeSize {
+                id: table,
+                from: from_size,
+                to: Some(CanvasSize {
+                    width: 360.0,
+                    height: 240.0,
+                }),
+            }]))
+            .expect("table can be enlarged for resize test");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let rect = snapshot
+            .node_rects
+            .get(&table)
+            .copied()
+            .expect("table rect exists");
+        let min_size = snapshot
+            .node_render_layouts
+            .get(&table)
+            .expect("table render layout exists")
+            .min_size;
+        let start = CanvasPoint {
+            x: rect.origin.x + rect.size.width,
+            y: rect.origin.y + rect.size.height,
+        };
+        let current = CanvasPoint {
+            x: start.x - 1_000.0,
+            y: start.y - 1_000.0,
+        };
+
+        let plan = app
+            .bridge
+            .plan_pointer_resize(table, start, current, NodeResizeDirection::BottomRight)
+            .expect("overshot resize clamps to renderer minimum");
+
+        assert_eq!(plan.to, min_size);
+        app.bridge
+            .commit_interaction(ActiveCanvasInteraction::NodeResize {
+                node: table,
+                direction: NodeResizeDirection::BottomRight,
+                start_pointer: start,
+                current_pointer: current,
+                preview: Some(plan),
+            })
+            .expect("resize commit succeeds")
+            .expect("resize commits");
+        assert_eq!(
+            app.bridge.store().graph().nodes()[&table].size,
+            Some(min_size)
         );
     }
 

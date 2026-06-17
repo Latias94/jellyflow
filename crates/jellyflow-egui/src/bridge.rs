@@ -15,8 +15,7 @@ use jellyflow::runtime::runtime::keyboard::{
 use jellyflow::runtime::runtime::layout::{LayoutApplyError, LayoutEngineRequest};
 use jellyflow::runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
 use jellyflow::runtime::runtime::resize::{
-    NodePointerResizeRequest, NodeResizeDirection, NodeResizeSession,
-    NodeResizeSessionUpdateRequest,
+    NodePointerResizeRequest, NodeResizeConstraints, NodeResizeDirection,
 };
 use jellyflow::runtime::runtime::selection::{NodePointerDownInput, SelectionBoxInput};
 use jellyflow::runtime::runtime::viewport::{
@@ -36,6 +35,8 @@ use crate::state::{
 
 pub(crate) const DEFAULT_NODE_WIDTH: f32 = 180.0;
 pub(crate) const DEFAULT_NODE_HEIGHT: f32 = 86.0;
+pub(crate) const MIN_NODE_WIDTH: f32 = 96.0;
+pub(crate) const MIN_NODE_HEIGHT: f32 = 56.0;
 pub(crate) const DEFAULT_HANDLE_SIZE: f32 = 10.0;
 
 /// Owns the Jellyflow store and exposes small adapter-facing commands for egui widgets.
@@ -139,16 +140,23 @@ impl JellyflowEguiBridge {
             }
         }
 
+        let mut node_render_layouts = BTreeMap::new();
+        for (node, rect) in &node_rects {
+            if let Some(layout) =
+                self.node_render_layout(*node, *rect, NodeRendererState::default())
+            {
+                node_render_layouts.insert(*node, layout);
+            }
+        }
+
         let mut handle_bounds = HashMap::new();
         for node in &visible_node_ids {
             let regions = node_rects
                 .get(node)
-                .and_then(|rect| {
-                    self.node_render_layout(*node, *rect, NodeRendererState::default())
-                        .map(|layout| layout.interactive_regions)
-                })
-                .unwrap_or_default();
-            for (handle, bounds) in self.handle_bounds_with_regions(*node, &regions) {
+                .and_then(|_| node_render_layouts.get(node))
+                .map(|layout| layout.interactive_regions.as_slice())
+                .unwrap_or(&[]);
+            for (handle, bounds) in self.handle_bounds_with_regions(*node, regions) {
                 handle_bounds.insert(handle, bounds);
             }
         }
@@ -171,6 +179,7 @@ impl JellyflowEguiBridge {
             viewport_size,
             transform,
             node_rects,
+            node_render_layouts,
             handle_bounds,
             edge_paths,
             rendering,
@@ -189,6 +198,7 @@ impl JellyflowEguiBridge {
         }
         let size = node_record
             .size
+            .filter(|size| size.is_positive_finite())
             .or_else(|| {
                 self.node_registry
                     .get(&node_record.kind)
@@ -200,7 +210,7 @@ impl JellyflowEguiBridge {
             });
         Some(CanvasRect {
             origin: node_record.pos,
-            size,
+            size: minimum_render_size(size),
         })
     }
 
@@ -447,22 +457,13 @@ impl JellyflowEguiBridge {
                     .map(Some)
                     .map_err(|err| err.to_string())
             }
-            ActiveCanvasInteraction::NodeResize {
-                node,
-                direction,
-                start_pointer,
-                current_pointer,
-                preview,
-            } => {
-                let Some(_preview) = preview else {
+            ActiveCanvasInteraction::NodeResize { preview, .. } => {
+                let Some(plan) = preview else {
                     return Ok(None);
                 };
                 self.store
-                    .apply_node_resize_session(
-                        NodeResizeSession::new(node, start_pointer, direction),
-                        NodeResizeSessionUpdateRequest::new(current_pointer),
-                    )
-                    .map(|outcome| outcome.update.map(|update| update.dispatch))
+                    .dispatch_transaction(plan.transaction())
+                    .map(Some)
                     .map_err(|err| err.to_string())
             }
             ActiveCanvasInteraction::Connect { from, target, .. } => {
@@ -507,10 +508,10 @@ impl JellyflowEguiBridge {
         current: CanvasPoint,
         direction: NodeResizeDirection,
     ) -> Option<jellyflow::runtime::runtime::resize::NodeResizePlan> {
-        self.store
-            .plan_node_pointer_resize(NodePointerResizeRequest::new(
-                node, start, current, direction,
-            ))
+        self.store.plan_node_pointer_resize(
+            NodePointerResizeRequest::new(node, start, current, direction)
+                .with_constraints(self.resize_constraints_for_node(node)),
+        )
     }
 
     pub fn resolve_connection_target(
@@ -571,6 +572,23 @@ impl JellyflowEguiBridge {
             .iter()
             .filter_map(move |(handle, bounds)| (handle.node == node).then_some((*handle, *bounds)))
     }
+
+    fn resize_constraints_for_node(&self, node: NodeId) -> NodeResizeConstraints {
+        NodeResizeConstraints::new(Some(self.minimum_node_size(node)), None)
+    }
+
+    fn minimum_node_size(&self, node: NodeId) -> CanvasSize {
+        let fallback = CanvasSize {
+            width: MIN_NODE_WIDTH,
+            height: MIN_NODE_HEIGHT,
+        };
+        let Some(rect) = self.node_rect(node) else {
+            return fallback;
+        };
+        self.node_render_layout(node, rect, NodeRendererState::default())
+            .map(|layout| minimum_render_size(layout.min_size))
+            .unwrap_or(fallback)
+    }
 }
 
 fn layout_request_for_choice(
@@ -596,5 +614,18 @@ fn visible_or_full_edges(visible: &[EdgeId], full: &[EdgeId]) -> Vec<EdgeId> {
         full.to_vec()
     } else {
         visible.to_vec()
+    }
+}
+
+fn minimum_render_size(size: CanvasSize) -> CanvasSize {
+    if !size.is_finite() {
+        return CanvasSize {
+            width: MIN_NODE_WIDTH,
+            height: MIN_NODE_HEIGHT,
+        };
+    }
+    CanvasSize {
+        width: size.width.max(MIN_NODE_WIDTH),
+        height: size.height.max(MIN_NODE_HEIGHT),
     }
 }

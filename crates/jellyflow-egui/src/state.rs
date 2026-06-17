@@ -13,6 +13,7 @@ use jellyflow::runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow::runtime::runtime::resize::{NodeResizeDirection, NodeResizePlan};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 
+use crate::renderer::NodeRenderLayout;
 use crate::samples::SampleGraphKind;
 
 /// Common layout presets exposed by the egui adapter.
@@ -124,6 +125,7 @@ pub struct CanvasSnapshot {
     pub viewport_size: CanvasSize,
     pub transform: ViewportTransform,
     pub node_rects: BTreeMap<NodeId, CanvasRect>,
+    pub node_render_layouts: BTreeMap<NodeId, NodeRenderLayout>,
     pub handle_bounds: HashMap<ConnectionHandleRef, HandleBounds>,
     pub edge_paths: BTreeMap<EdgeId, EdgePath>,
     pub rendering: RenderingQueryResult,
@@ -147,6 +149,7 @@ impl CanvasSnapshot {
                 zoom: 1.0,
             },
             node_rects: BTreeMap::new(),
+            node_render_layouts: BTreeMap::new(),
             handle_bounds: HashMap::new(),
             edge_paths: BTreeMap::new(),
             rendering: RenderingQueryResult::default(),

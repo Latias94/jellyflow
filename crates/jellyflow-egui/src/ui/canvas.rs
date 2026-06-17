@@ -1,6 +1,6 @@
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, Key, Pos2, Rect, Response, Sense, Stroke,
-    StrokeKind, TextStyle, Ui, Vec2,
+    Align, Align2, Color32, CornerRadius, CursorIcon, Frame, Id, Key, Layout, Pos2, Rect, Response,
+    Sense, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
@@ -12,17 +12,17 @@ use jellyflow::runtime::runtime::geometry::{
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
 use crate::bridge::JellyflowEguiBridge;
-use crate::renderer::{NodeRendererState, NodeRendererStyle};
+use crate::renderer::{NodeRenderLayout, NodeRendererState, NodeRendererStyle};
 use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
 
 const NODE_ROUNDING: f32 = 8.0;
-const CANVAS_BG: Color32 = Color32::from_rgb(248, 249, 251);
-const GRID_MINOR: Color32 = Color32::from_rgb(229, 233, 238);
-const GRID_MAJOR: Color32 = Color32::from_rgb(210, 216, 223);
-const EDGE_COLOR: Color32 = Color32::from_rgb(107, 114, 128);
-const EDGE_HOVER_COLOR: Color32 = Color32::from_rgb(59, 130, 246);
+const CANVAS_BG: Color32 = Color32::from_rgb(246, 247, 249);
+const GRID_MINOR: Color32 = Color32::from_rgb(232, 235, 240);
+const GRID_MAJOR: Color32 = Color32::from_rgb(216, 222, 230);
+const EDGE_COLOR: Color32 = Color32::from_rgb(119, 128, 141);
+const EDGE_HOVER_COLOR: Color32 = Color32::from_rgb(37, 99, 180);
 const EDGE_INVALID_COLOR: Color32 = Color32::from_rgb(220, 76, 76);
-const HANDLE_COLOR: Color32 = Color32::from_rgb(255, 255, 255);
+const HANDLE_FILL: Color32 = Color32::from_rgb(250, 252, 255);
 const RESIZE_HANDLE_SIZE: f32 = 8.0;
 
 pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut JellyflowEguiState) {
@@ -37,7 +37,7 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
 
     draw_background(&painter, state);
     draw_edges(&painter, bridge, state);
-    draw_nodes(&painter, bridge, state);
+    draw_nodes(ui, &painter, bridge, state);
     draw_interaction_preview(&painter, state);
     draw_selection(&painter, state);
     update_cursor(ui, &response, state);
@@ -93,6 +93,7 @@ fn draw_background(painter: &eframe::egui::Painter, state: &JellyflowEguiState) 
 }
 
 fn draw_nodes(
+    ui: &mut Ui,
     painter: &eframe::egui::Painter,
     bridge: &JellyflowEguiBridge,
     state: &JellyflowEguiState,
@@ -106,42 +107,34 @@ fn draw_nodes(
         };
         let style = bridge.renderers().style_for_descriptor(&descriptor);
         let renderer_state = node_renderer_state(bridge, state, *node_id);
-        let Some(layout) = bridge.node_render_layout(*node_id, canvas_rect, renderer_state) else {
+        let Some(layout) =
+            visual_node_render_layout(bridge, state, *node_id, canvas_rect, renderer_state)
+        else {
             continue;
         };
         let rect = canvas_rect_to_screen(state, layout.body_rect);
-        painter.rect_filled(rect, CornerRadius::same(NODE_ROUNDING as u8), style.fill);
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(NODE_ROUNDING as u8),
-            if renderer_state.selected {
-                style.selected_stroke()
-            } else {
-                Stroke::new(1.0, style.stroke)
-            },
-            StrokeKind::Outside,
-        );
-        painter.text(
-            rect.center_top() + Vec2::new(0.0, 14.0),
-            Align2::CENTER_TOP,
-            layout.title,
-            TextStyle::Button.resolve(&painter.ctx().global_style()),
-            style.text,
-        );
-        if let Some(summary) = layout.summary {
-            painter.text(
-                rect.center_top() + Vec2::new(0.0, 34.0),
-                Align2::CENTER_TOP,
-                summary,
-                TextStyle::Small.resolve(&painter.ctx().global_style()),
-                style.text.gamma_multiply(0.85),
-            );
-        }
         let has_field_regions = layout
             .interactive_regions
             .iter()
             .any(|region| region.key.starts_with("field."));
-        draw_interactive_regions(painter, state, &layout.interactive_regions, rect, style);
+        draw_node_shell(painter, rect, style, renderer_state);
+        painter.text(
+            rect.left_top() + Vec2::new(18.0, 13.0),
+            Align2::LEFT_TOP,
+            &layout.title,
+            TextStyle::Button.resolve(&painter.ctx().global_style()),
+            style.text,
+        );
+        if !has_field_regions && let Some(summary) = &layout.summary {
+            painter.text(
+                rect.left_top() + Vec2::new(18.0, 31.0),
+                Align2::LEFT_TOP,
+                summary,
+                TextStyle::Small.resolve(&painter.ctx().global_style()),
+                style.text.gamma_multiply(0.68),
+            );
+        }
+        draw_interactive_regions(ui, state, *node_id, &layout, rect, style);
         if !has_field_regions {
             draw_port_summary(painter, &descriptor, rect, style);
         }
@@ -153,39 +146,140 @@ fn draw_nodes(
     }
 }
 
-fn draw_interactive_regions(
+fn draw_node_shell(
     painter: &eframe::egui::Painter,
+    rect: Rect,
+    style: NodeRendererStyle,
+    state: NodeRendererState,
+) {
+    let rounding = CornerRadius::same(NODE_ROUNDING as u8);
+    let shadow_rect = rect.translate(Vec2::new(0.0, 1.5));
+    painter.rect_filled(
+        shadow_rect,
+        rounding,
+        Color32::from_rgba_premultiplied(21, 31, 48, if state.selected { 28 } else { 14 }),
+    );
+    painter.rect_filled(rect, rounding, style.fill);
+    let rail = Rect::from_min_max(
+        rect.left_top() + Vec2::new(0.0, 9.0),
+        Pos2::new(rect.left() + 3.0, rect.bottom() - 9.0),
+    );
+    painter.rect_filled(rail, CornerRadius::same(2), style.accent);
+    painter.rect_stroke(
+        rect,
+        rounding,
+        if state.selected {
+            style.selected_stroke()
+        } else if state.hovered {
+            Stroke::new(1.25, style.accent.gamma_multiply(0.78))
+        } else {
+            Stroke::new(1.0, style.stroke)
+        },
+        StrokeKind::Outside,
+    );
+}
+
+fn visual_node_render_layout(
+    bridge: &JellyflowEguiBridge,
     state: &JellyflowEguiState,
-    regions: &[crate::renderer::NodeInteractiveRegion],
+    node: NodeId,
+    canvas_rect: CanvasRect,
+    renderer_state: NodeRendererState,
+) -> Option<NodeRenderLayout> {
+    if has_node_geometry_preview(state) {
+        bridge.node_render_layout(node, canvas_rect, renderer_state)
+    } else {
+        state
+            .canvas
+            .snapshot
+            .node_render_layouts
+            .get(&node)
+            .cloned()
+    }
+}
+
+fn draw_interactive_regions(
+    ui: &mut Ui,
+    state: &JellyflowEguiState,
+    node: NodeId,
+    layout: &NodeRenderLayout,
     node_rect: Rect,
     style: NodeRendererStyle,
 ) {
     let zoom = state.canvas.snapshot.transform.zoom;
-    for region in regions
+    for region in layout
+        .interactive_regions
         .iter()
         .filter(|region| region.key.starts_with("field."))
     {
         let rect = node_local_rect_to_screen(node_rect, region.rect, zoom);
-        painter.rect_filled(
-            rect,
-            CornerRadius::same(4),
-            Color32::WHITE.gamma_multiply(0.72),
-        );
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(4),
-            Stroke::new(0.75, style.stroke.gamma_multiply(0.45)),
-            StrokeKind::Outside,
-        );
-        if let Some(label) = region.label.as_deref().filter(|label| !label.is_empty()) {
-            painter.text(
-                rect.left_center() + Vec2::new(8.0, 0.0),
-                Align2::LEFT_CENTER,
-                label,
-                TextStyle::Small.resolve(&painter.ctx().global_style()),
-                style.text.gamma_multiply(0.86),
-            );
-        }
+        draw_field_region(ui, node, rect, style, region);
+    }
+}
+
+fn draw_field_region(
+    ui: &mut Ui,
+    node: NodeId,
+    rect: Rect,
+    style: NodeRendererStyle,
+    region: &crate::renderer::NodeInteractiveRegion,
+) {
+    let key = region
+        .key
+        .strip_prefix("field.")
+        .unwrap_or(region.key.as_str());
+    let badge = field_badge(key);
+    let text = region
+        .label
+        .as_deref()
+        .filter(|label| !label.is_empty())
+        .unwrap_or(key);
+    let mut child_ui = ui.new_child(
+        UiBuilder::new()
+            .id_salt(Id::new(("field-region", node, &region.key)))
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child_ui.set_clip_rect(rect);
+    child_ui.set_min_size(rect.size());
+    child_ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+    Frame::new()
+        .fill(Color32::from_rgb(255, 255, 255).gamma_multiply(0.9))
+        .stroke(Stroke::new(0.75, style.stroke.gamma_multiply(0.55)))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(eframe::egui::Margin::symmetric(8, 2))
+        .show(&mut child_ui, |ui| {
+            ui.set_min_size(rect.size() - Vec2::new(2.0, 2.0));
+            ui.horizontal_centered(|ui| {
+                if let Some(badge) = badge {
+                    let badge_color = style.accent;
+                    Frame::new()
+                        .fill(badge_color.gamma_multiply(0.12))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(eframe::egui::Margin::symmetric(4, 0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                eframe::egui::RichText::new(badge)
+                                    .small()
+                                    .strong()
+                                    .color(badge_color),
+                            );
+                        });
+                }
+                ui.label(
+                    eframe::egui::RichText::new(text)
+                        .small()
+                        .color(style.text.gamma_multiply(0.82)),
+                );
+            });
+        });
+}
+
+fn field_badge(key: &str) -> Option<&'static str> {
+    match key {
+        "primary_key" | "pk" => Some("PK"),
+        "foreign_key" | "fk" => Some("FK"),
+        _ => None,
     }
 }
 
@@ -204,25 +298,59 @@ fn draw_handles(
         .filter(|(handle, _)| handle.node == node_id);
     for (handle, bounds) in handles {
         let handle_rect = handle_screen_rect_for_node(state, node_rect, bounds.rect);
-        painter.rect_filled(handle_rect, CornerRadius::same(5), HANDLE_COLOR);
-        painter.rect_stroke(
+        draw_handle(
+            painter,
             handle_rect,
-            CornerRadius::same(5),
-            Stroke::new(1.0, style.accent),
-            StrokeKind::Outside,
-        );
-        let label = match handle.direction {
-            PortDirection::In => "<",
-            PortDirection::Out => ">",
-        };
-        painter.text(
-            handle_rect.center(),
-            Align2::CENTER_CENTER,
-            label,
-            TextStyle::Body.resolve(&painter.ctx().global_style()),
-            style.accent,
+            bounds.position,
+            handle.direction,
+            style,
         );
     }
+}
+
+fn draw_handle(
+    painter: &eframe::egui::Painter,
+    rect: Rect,
+    position: HandlePosition,
+    direction: PortDirection,
+    style: NodeRendererStyle,
+) {
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) * 0.42;
+    match direction {
+        PortDirection::In => {
+            painter.circle_filled(center, radius, HANDLE_FILL);
+            painter.circle_stroke(center, radius, Stroke::new(1.25, style.accent));
+        }
+        PortDirection::Out => {
+            let points = diamond_points(center, radius, position);
+            painter.add(Shape::convex_polygon(
+                points.to_vec(),
+                HANDLE_FILL,
+                Stroke::new(1.25, style.accent),
+            ));
+        }
+    }
+}
+
+fn diamond_points(center: Pos2, radius: f32, position: HandlePosition) -> [Pos2; 4] {
+    let horizontal_bias = match position {
+        HandlePosition::Left => -0.8,
+        HandlePosition::Right => 0.8,
+        HandlePosition::Top | HandlePosition::Bottom => 0.0,
+    };
+    let vertical_bias = match position {
+        HandlePosition::Top => -0.8,
+        HandlePosition::Bottom => 0.8,
+        HandlePosition::Left | HandlePosition::Right => 0.0,
+    };
+    let center = center + Vec2::new(horizontal_bias, vertical_bias);
+    [
+        center + Vec2::new(0.0, -radius),
+        center + Vec2::new(radius, 0.0),
+        center + Vec2::new(0.0, radius),
+        center + Vec2::new(-radius, 0.0),
+    ]
 }
 
 fn draw_port_summary(
