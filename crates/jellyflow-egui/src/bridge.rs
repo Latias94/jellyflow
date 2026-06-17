@@ -244,9 +244,6 @@ impl JellyflowEguiBridge {
         node: NodeId,
         regions: &[NodeInteractiveRegion],
     ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
-        let Some(node_record) = self.store.graph().nodes().get(&node) else {
-            return Vec::new();
-        };
         let size = self
             .node_rect(node)
             .map(|rect| rect.size)
@@ -254,6 +251,18 @@ impl JellyflowEguiBridge {
                 width: DEFAULT_NODE_WIDTH,
                 height: DEFAULT_NODE_HEIGHT,
             });
+        self.handle_bounds_for_size(node, size, regions)
+    }
+
+    pub(crate) fn handle_bounds_for_size(
+        &self,
+        node: NodeId,
+        size: CanvasSize,
+        regions: &[NodeInteractiveRegion],
+    ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
+        let Some(node_record) = self.store.graph().nodes().get(&node) else {
+            return Vec::new();
+        };
         let schema = self.node_registry.get(&node_record.kind);
         let ports = node_record.ports.iter().copied().filter_map(|port| {
             let port_record = self.store.graph().ports().get(&port)?;

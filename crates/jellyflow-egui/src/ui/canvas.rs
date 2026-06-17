@@ -6,8 +6,8 @@ use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
 use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
 use jellyflow::runtime::runtime::geometry::{
-    BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, EdgePath, HandlePosition,
-    bezier_edge_path, edge_path_contains_point, edge_position,
+    BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, EdgePath, HandleBounds,
+    HandlePosition, bezier_edge_path, edge_path_contains_point, edge_position,
 };
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
@@ -38,7 +38,7 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
     draw_background(&painter, state);
     draw_edges(&painter, bridge, state);
     draw_nodes(ui, &painter, bridge, state);
-    draw_interaction_preview(&painter, state);
+    draw_interaction_preview(&painter, bridge, state);
     draw_selection(&painter, state);
     update_cursor(ui, &response, state);
 }
@@ -139,7 +139,7 @@ fn draw_nodes(
             draw_port_summary(painter, &descriptor, rect, style);
         }
 
-        draw_handles(painter, state, *node_id, rect, style);
+        draw_handles(painter, bridge, state, *node_id, rect, style);
         if renderer_state.selected {
             draw_resize_handles(painter, rect, style);
         }
@@ -285,18 +285,13 @@ fn field_badge(key: &str) -> Option<&'static str> {
 
 fn draw_handles(
     painter: &eframe::egui::Painter,
+    bridge: &JellyflowEguiBridge,
     state: &JellyflowEguiState,
     node_id: NodeId,
     node_rect: Rect,
     style: NodeRendererStyle,
 ) {
-    let handles = state
-        .canvas
-        .snapshot
-        .handle_bounds
-        .iter()
-        .filter(|(handle, _)| handle.node == node_id);
-    for (handle, bounds) in handles {
+    for (handle, bounds) in visual_handle_bounds_for_node(bridge, state, node_id) {
         let handle_rect = handle_screen_rect_for_node(state, node_rect, bounds.rect);
         draw_handle(
             painter,
@@ -604,7 +599,11 @@ fn draw_selection(painter: &eframe::egui::Painter, state: &JellyflowEguiState) {
     }
 }
 
-fn draw_interaction_preview(painter: &eframe::egui::Painter, state: &JellyflowEguiState) {
+fn draw_interaction_preview(
+    painter: &eframe::egui::Painter,
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+) {
     match &state.canvas.active {
         ActiveCanvasInteraction::NodeDrag { .. } => {}
         ActiveCanvasInteraction::NodeResize { .. } => {}
@@ -614,7 +613,7 @@ fn draw_interaction_preview(painter: &eframe::egui::Painter, state: &JellyflowEg
             target,
             ..
         } => {
-            draw_connection_preview(painter, state, *from, *current_pointer, *target);
+            draw_connection_preview(painter, bridge, state, *from, *current_pointer, *target);
         }
         ActiveCanvasInteraction::SelectionBox { .. }
         | ActiveCanvasInteraction::Pan { .. }
@@ -624,18 +623,19 @@ fn draw_interaction_preview(painter: &eframe::egui::Painter, state: &JellyflowEg
 
 fn draw_connection_preview(
     painter: &eframe::egui::Painter,
+    bridge: &JellyflowEguiBridge,
     state: &JellyflowEguiState,
     from: ConnectionHandleRef,
     current_pointer: CanvasPoint,
     target: Option<jellyflow::runtime::runtime::connection::ResolvedConnectionTarget>,
 ) {
-    let Some(start_rect) = visual_handle_screen_rect(state, from) else {
+    let Some(start_rect) = visual_handle_screen_rect(bridge, state, from) else {
         return;
     };
     let start = start_rect.center();
     let end = target
         .and_then(|target| target.target)
-        .and_then(|target| visual_handle_screen_rect(state, target.handle))
+        .and_then(|target| visual_handle_screen_rect(bridge, state, target.handle))
         .map(|rect| rect.center())
         .unwrap_or_else(|| {
             state
@@ -676,7 +676,7 @@ fn handle_pointer(
                     y: pointer.y,
                 },
             });
-        } else if let Some(handle) = hit_handle(state, pointer)
+        } else if let Some(handle) = hit_handle(bridge, state, pointer)
             && matches!(state.canvas_tool, CanvasTool::Connect | CanvasTool::Select)
         {
             state.canvas.set_active(ActiveCanvasInteraction::Connect {
@@ -867,16 +867,25 @@ fn hit_target(
     bridge: &JellyflowEguiBridge,
     pointer: Pos2,
 ) -> Option<HoverTarget> {
-    if let Some(handle) = hit_handle(state, pointer) {
-        return Some(HoverTarget::Handle(handle));
+    match state.canvas_tool {
+        CanvasTool::Select => {
+            if let Some(handle) = hit_handle(bridge, state, pointer) {
+                return Some(HoverTarget::Handle(handle));
+            }
+            if let Some((node, direction)) = hit_resize_handle(state, bridge, pointer) {
+                return Some(HoverTarget::ResizeHandle { node, direction });
+            }
+            if let Some(node) = hit_node(state, pointer) {
+                return Some(HoverTarget::Node(node));
+            }
+            hit_edge(state, bridge, pointer).map(HoverTarget::Edge)
+        }
+        CanvasTool::Connect => hit_handle(bridge, state, pointer).map(HoverTarget::Handle),
+        CanvasTool::Resize => hit_resize_handle(state, bridge, pointer)
+            .map(|(node, direction)| HoverTarget::ResizeHandle { node, direction }),
+        CanvasTool::Drag => hit_node(state, pointer).map(HoverTarget::Node),
+        CanvasTool::CreateNode | CanvasTool::Pan => None,
     }
-    if let Some((node, direction)) = hit_resize_handle(state, bridge, pointer) {
-        return Some(HoverTarget::ResizeHandle { node, direction });
-    }
-    if let Some(node) = hit_node(state, pointer) {
-        return Some(HoverTarget::Node(node));
-    }
-    hit_edge(state, bridge, pointer).map(HoverTarget::Edge)
 }
 
 fn hit_edge(
@@ -917,7 +926,11 @@ fn edge_hit_test_options(
         .unwrap_or(base_options)
 }
 
-fn hit_handle(state: &JellyflowEguiState, pointer: Pos2) -> Option<ConnectionHandleRef> {
+fn hit_handle(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    pointer: Pos2,
+) -> Option<ConnectionHandleRef> {
     state
         .canvas
         .snapshot
@@ -925,7 +938,7 @@ fn hit_handle(state: &JellyflowEguiState, pointer: Pos2) -> Option<ConnectionHan
         .keys()
         .copied()
         .find(|handle| {
-            visual_handle_screen_rect(state, *handle)
+            visual_handle_screen_rect(bridge, state, *handle)
                 .is_some_and(|rect| rect.expand(3.0).contains(pointer))
         })
 }
@@ -1011,22 +1024,12 @@ fn preview_edge_path(
     let position = edge_position(
         EdgeEndpointInput {
             node_rect: visual_node_canvas_rect(state, source_port.node)?,
-            handle: state
-                .canvas
-                .snapshot
-                .handle_bounds
-                .get(&source_handle)
-                .copied(),
+            handle: visual_handle_bounds(bridge, state, source_handle),
             fallback_position: handle_fallback_position(source_port.dir),
         },
         EdgeEndpointInput {
             node_rect: visual_node_canvas_rect(state, target_port.node)?,
-            handle: state
-                .canvas
-                .snapshot
-                .handle_bounds
-                .get(&target_handle)
-                .copied(),
+            handle: visual_handle_bounds(bridge, state, target_handle),
             fallback_position: handle_fallback_position(target_port.dir),
         },
     )?;
@@ -1062,12 +1065,64 @@ fn canvas_rect_to_screen(state: &JellyflowEguiState, rect: CanvasRect) -> Rect {
 }
 
 fn visual_handle_screen_rect(
+    bridge: &JellyflowEguiBridge,
     state: &JellyflowEguiState,
     handle: ConnectionHandleRef,
 ) -> Option<Rect> {
     let node_rect = visual_node_screen_rect(state, handle.node)?;
-    let bounds = state.canvas.snapshot.handle_bounds.get(&handle)?;
+    let bounds = visual_handle_bounds(bridge, state, handle)?;
     Some(handle_screen_rect_for_node(state, node_rect, bounds.rect))
+}
+
+fn visual_handle_bounds(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    handle: ConnectionHandleRef,
+) -> Option<HandleBounds> {
+    visual_handle_bounds_for_node(bridge, state, handle.node)
+        .into_iter()
+        .find_map(|(found, bounds)| (found == handle).then_some(bounds))
+}
+
+fn visual_handle_bounds_for_node(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+) -> Vec<(ConnectionHandleRef, HandleBounds)> {
+    if needs_preview_handle_bounds(state, node) {
+        let Some(canvas_rect) = visual_node_canvas_rect(state, node) else {
+            return Vec::new();
+        };
+        let Some(layout) = visual_node_render_layout(
+            bridge,
+            state,
+            node,
+            canvas_rect,
+            node_renderer_state(bridge, state, node),
+        ) else {
+            return Vec::new();
+        };
+        return bridge.handle_bounds_for_size(node, canvas_rect.size, &layout.interactive_regions);
+    }
+
+    state
+        .canvas
+        .snapshot
+        .handle_bounds
+        .iter()
+        .filter_map(|(handle, bounds)| (handle.node == node).then_some((*handle, *bounds)))
+        .collect()
+}
+
+fn needs_preview_handle_bounds(state: &JellyflowEguiState, node: NodeId) -> bool {
+    matches!(
+        &state.canvas.active,
+        ActiveCanvasInteraction::NodeResize {
+            node: resizing_node,
+            preview: Some(_),
+            ..
+        } if *resizing_node == node
+    )
 }
 
 fn handle_screen_rect_for_node(
@@ -1132,7 +1187,12 @@ fn update_cursor(ui: &mut Ui, response: &Response, state: &JellyflowEguiState) {
             Some(HoverTarget::ResizeHandle { direction, .. }) => resize_cursor(direction),
             Some(HoverTarget::Node(_)) => CursorIcon::Grab,
             Some(HoverTarget::Edge(_)) => CursorIcon::PointingHand,
-            None => CursorIcon::Default,
+            None => match state.canvas_tool {
+                CanvasTool::Pan => CursorIcon::Grab,
+                CanvasTool::Connect | CanvasTool::CreateNode => CursorIcon::Crosshair,
+                CanvasTool::Resize => CursorIcon::Default,
+                CanvasTool::Select | CanvasTool::Drag => CursorIcon::Default,
+            },
         },
     };
     ui.ctx().set_cursor_icon(cursor);
@@ -1150,15 +1210,21 @@ fn resize_cursor(direction: NodeResizeDirection) -> CursorIcon {
 #[cfg(test)]
 mod tests {
     use eframe::egui::{Pos2, Rect, Vec2};
-    use jellyflow::core::{CanvasPoint, EdgeLabelAnchor, NodeId};
+    use jellyflow::core::{CanvasPoint, EdgeId, EdgeLabelAnchor, NodeId};
+    use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
     use jellyflow::runtime::runtime::geometry::{EdgeHitTestOptions, PathCommand};
+    use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
     use super::{
-        edge_hit_test_options, edge_label, edge_label_point, preview_edge_path,
-        visual_node_canvas_rect,
+        edge_hit_test_options, edge_label, edge_label_point, hit_target, node_local_rect_to_screen,
+        preview_edge_path, resize_handle_rect, visual_handle_screen_rect, visual_node_canvas_rect,
+        visual_node_screen_rect,
     };
     use crate::bridge::JellyflowEguiBridge;
-    use crate::state::{ActiveCanvasInteraction, CanvasSnapshot, JellyflowEguiState};
+    use crate::samples::SampleGraphKind;
+    use crate::state::{
+        ActiveCanvasInteraction, CanvasSnapshot, CanvasTool, HoverTarget, JellyflowEguiState,
+    };
 
     #[test]
     fn node_drag_preview_moves_the_visual_node_rect() {
@@ -1215,6 +1281,130 @@ mod tests {
             first_path_point(&preview_path),
             first_path_point(&original_path),
             "edge source endpoint should follow the dragged node preview"
+        );
+    }
+
+    #[test]
+    fn edge_preview_follows_resized_source_handle_geometry() {
+        let (mut bridge, _layout) =
+            JellyflowEguiBridge::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let mut state = state_with_snapshot(&mut bridge);
+        let (edge, source_node, source_handle) = first_edge_with_table_source(&bridge);
+        let original_path = preview_or_snapshot_edge_path(&state, &bridge, edge);
+        let original_handle_rect =
+            visual_handle_screen_rect(&bridge, &state, source_handle).expect("handle is visible");
+        let source_rect =
+            visual_node_canvas_rect(&state, source_node).expect("source node rect exists");
+        let start = CanvasPoint {
+            x: source_rect.origin.x + source_rect.size.width,
+            y: source_rect.origin.y + source_rect.size.height,
+        };
+        let current = CanvasPoint {
+            x: start.x + 96.0,
+            y: start.y,
+        };
+        state.canvas.active = ActiveCanvasInteraction::NodeResize {
+            node: source_node,
+            direction: NodeResizeDirection::BottomRight,
+            start_pointer: start,
+            current_pointer: current,
+            preview: bridge.plan_pointer_resize(
+                source_node,
+                start,
+                current,
+                NodeResizeDirection::BottomRight,
+            ),
+        };
+
+        let preview_handle_rect =
+            visual_handle_screen_rect(&bridge, &state, source_handle).expect("preview handle");
+        let preview_path = preview_edge_path(&state, &bridge, edge).expect("preview path");
+
+        assert!(
+            preview_handle_rect.center().x > original_handle_rect.center().x + 40.0,
+            "source handle should follow the resized visual width"
+        );
+        assert!(
+            first_path_point(&preview_path).x > first_path_point(&original_path).x + 40.0,
+            "edge source endpoint should follow the resized source handle"
+        );
+    }
+
+    #[test]
+    fn field_hover_does_not_promote_to_resize_target() {
+        let (mut bridge, _layout) =
+            JellyflowEguiBridge::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let state = state_with_snapshot(&mut bridge);
+        let table = first_table_node(&bridge);
+        bridge.select_node(table, false);
+        let node_rect = visual_node_screen_rect(&state, table).expect("table is visible");
+        let layout = state
+            .canvas
+            .snapshot
+            .node_render_layouts
+            .get(&table)
+            .expect("table layout exists");
+        let field = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "field.primary_key")
+            .expect("primary key field exists");
+        let pointer =
+            node_local_rect_to_screen(node_rect, field.rect, state.canvas.snapshot.transform.zoom)
+                .center();
+
+        assert_eq!(
+            hit_target(&state, &bridge, pointer),
+            Some(HoverTarget::Node(table))
+        );
+    }
+
+    #[test]
+    fn hover_target_respects_active_canvas_tool() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let mut state = state_with_snapshot(&mut bridge);
+        let node = first_visible_node(&state);
+        let node_rect = visual_node_screen_rect(&state, node).expect("node is visible");
+        let node_center = node_rect.center();
+
+        state.canvas_tool = CanvasTool::Select;
+        assert_eq!(
+            hit_target(&state, &bridge, node_center),
+            Some(HoverTarget::Node(node))
+        );
+
+        state.canvas_tool = CanvasTool::Pan;
+        assert_eq!(hit_target(&state, &bridge, node_center), None);
+
+        state.canvas_tool = CanvasTool::Connect;
+        assert_eq!(hit_target(&state, &bridge, node_center), None);
+
+        state.canvas_tool = CanvasTool::Drag;
+        assert_eq!(
+            hit_target(&state, &bridge, node_center),
+            Some(HoverTarget::Node(node))
+        );
+
+        bridge.select_node(node, false);
+        let resize_pointer =
+            resize_handle_rect(node_rect, NodeResizeDirection::BottomRight).center();
+        state.canvas_tool = CanvasTool::Select;
+        assert_eq!(
+            hit_target(&state, &bridge, resize_pointer),
+            Some(HoverTarget::ResizeHandle {
+                node,
+                direction: NodeResizeDirection::BottomRight
+            })
+        );
+        state.canvas_tool = CanvasTool::Pan;
+        assert_eq!(hit_target(&state, &bridge, resize_pointer), None);
+        state.canvas_tool = CanvasTool::Resize;
+        assert_eq!(
+            hit_target(&state, &bridge, resize_pointer),
+            Some(HoverTarget::ResizeHandle {
+                node,
+                direction: NodeResizeDirection::BottomRight
+            })
         );
     }
 
@@ -1316,6 +1506,35 @@ mod tests {
             .visible_node_render_order
             .first()
             .expect("demo node exists")
+    }
+
+    fn first_table_node(bridge: &JellyflowEguiBridge) -> NodeId {
+        bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
+            .expect("table node exists")
+    }
+
+    fn first_edge_with_table_source(
+        bridge: &JellyflowEguiBridge,
+    ) -> (EdgeId, NodeId, ConnectionHandleRef) {
+        let graph = bridge.store().graph();
+        graph
+            .edges()
+            .iter()
+            .find_map(|(edge, record)| {
+                let source_port = graph.ports().get(&record.from)?;
+                let source_node = graph.nodes().get(&source_port.node)?;
+                (source_node.kind.0 == "demo.table").then_some((
+                    *edge,
+                    source_port.node,
+                    ConnectionHandleRef::new(source_port.node, record.from, source_port.dir),
+                ))
+            })
+            .expect("table source edge exists")
     }
 
     fn preview_or_snapshot_edge_path(
