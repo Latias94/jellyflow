@@ -585,17 +585,7 @@ impl JellyflowEguiBridge {
                 self.apply_selection_box(start_pointer, current_pointer, additive);
                 Ok(None)
             }
-            ActiveCanvasInteraction::Pan {
-                start_pointer,
-                current_pointer,
-                ..
-            } => {
-                self.pan_by_screen_delta(CanvasPoint {
-                    x: current_pointer.x - start_pointer.x,
-                    y: current_pointer.y - start_pointer.y,
-                });
-                Ok(None)
-            }
+            ActiveCanvasInteraction::Pan { .. } => Ok(None),
             ActiveCanvasInteraction::None => Ok(None),
         }
     }

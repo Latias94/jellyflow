@@ -22,7 +22,10 @@ pub use state::{
 
 #[cfg(test)]
 mod tests {
-    use super::{JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog};
+    use super::{
+        ActiveCanvasInteraction, JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle,
+        RendererCatalog,
+    };
     use jellyflow::core::{CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection};
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
 
@@ -163,5 +166,20 @@ mod tests {
             .expect("nudge no-selection path succeeds");
 
         assert!(outcome.is_none());
+    }
+
+    #[test]
+    fn bridge_pan_interaction_commit_does_not_apply_delta_twice() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        bridge.pan_by_screen_delta(CanvasPoint { x: 40.0, y: -20.0 });
+        let after_live_pan = bridge.store().view_state().pan;
+
+        bridge
+            .commit_interaction(ActiveCanvasInteraction::Pan {
+                current_pointer: CanvasPoint { x: 40.0, y: -20.0 },
+            })
+            .expect("pan commit ends interaction");
+
+        assert_eq!(bridge.store().view_state().pan, after_live_pan);
     }
 }

@@ -97,7 +97,6 @@ pub enum ActiveCanvasInteraction {
         additive: bool,
     },
     Pan {
-        start_pointer: CanvasPoint,
         current_pointer: CanvasPoint,
     },
 }
