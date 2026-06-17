@@ -16,6 +16,7 @@ cargo run -p jellyflow-egui --example tree
 cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
 cargo run -p jellyflow-egui --example erd
+cargo run -p jellyflow-egui --example custom_widget
 ```
 
 The demo ships with a sample gallery for workflow, automation builder, mind map, tree, org chart,
@@ -38,8 +39,50 @@ Use `JellyflowEguiBridge` when embedding the adapter into your own app. Register
 egui canvas call Jellyflow runtime APIs instead of mutating graph storage directly.
 
 Rich renderers return `NodeRenderLayout` plus node-local `NodeInteractiveRegion` values. The egui
-adapter consumes those regions for field-row painting and anchor-aware handle placement, so complex
+adapter consumes those regions for widget placement and anchor-aware handle placement, so complex
 nodes can align ports to internal rows without changing the headless graph model.
+
+## Custom node widgets
+
+Use two adapter-owned renderer traits for complex nodes:
+
+- `RichNodeRenderer` measures the node and emits node-local interactive regions.
+- `EguiNodeWidgetRenderer` draws egui child UI into those regions.
+
+Register both implementations under the descriptor `renderer_key`:
+
+```rust
+let mut renderers = RendererCatalog::default();
+renderers
+    .register("review-card", NodeRendererStyle::task())
+    .register_rich("review-card", ReviewCardRenderer)
+    .register_widgets("review-card", ReviewCardRenderer);
+```
+
+Then point a schema at that key and anchor ports to the regions produced by the renderer:
+
+```rust
+let schema = NodeSchema::builder("demo.review_card", "Review card")
+    .renderer_key("review-card")
+    .default_size(CanvasSize {
+        width: 246.0,
+        height: 136.0,
+    })
+    .port(
+        PortDecl::data_input("source")
+            .on_left()
+            .with_view_anchor("field.assignee"),
+    )
+    .port(
+        PortDecl::data_output("approved")
+            .on_right()
+            .with_view_anchor("field.status"),
+    )
+    .build();
+```
+
+The complete example lives in `examples/custom_widget.rs`. It builds a custom review-card node with
+embedded egui rows, zoom-aware content levels, and ports anchored to row regions.
 
 The crate intentionally depends on `eframe`; the core `jellyflow`, `jellyflow-core`,
 `jellyflow-layout`, and `jellyflow-runtime` crates remain renderer-free.
