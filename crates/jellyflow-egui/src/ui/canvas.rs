@@ -12,7 +12,7 @@ use jellyflow::runtime::runtime::geometry::{
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
 use crate::bridge::JellyflowEguiBridge;
-use crate::renderer::{NodeRenderInput, NodeRendererState, NodeRendererStyle};
+use crate::renderer::{NodeRendererState, NodeRendererStyle};
 use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
 
 const NODE_ROUNDING: f32 = 8.0;
@@ -104,21 +104,11 @@ fn draw_nodes(
         let Some(descriptor) = bridge.descriptor_for_node(*node_id) else {
             continue;
         };
-        let Some(node_record) = bridge.store().graph().nodes().get(node_id) else {
-            continue;
-        };
         let style = bridge.renderers().style_for_descriptor(&descriptor);
         let renderer_state = node_renderer_state(bridge, state, *node_id);
-        let layout = bridge.renderers().render_node(
-            &NodeRenderInput {
-                id: *node_id,
-                node: node_record,
-                descriptor: &descriptor,
-                state: renderer_state,
-                style,
-            },
-            canvas_rect,
-        );
+        let Some(layout) = bridge.node_render_layout(*node_id, canvas_rect, renderer_state) else {
+            continue;
+        };
         let rect = canvas_rect_to_screen(state, layout.body_rect);
         painter.rect_filled(rect, CornerRadius::same(NODE_ROUNDING as u8), style.fill);
         painter.rect_stroke(
@@ -147,11 +137,54 @@ fn draw_nodes(
                 style.text.gamma_multiply(0.85),
             );
         }
-        draw_port_summary(painter, &descriptor, rect, style);
+        let has_field_regions = layout
+            .interactive_regions
+            .iter()
+            .any(|region| region.key.starts_with("field."));
+        draw_interactive_regions(painter, state, &layout.interactive_regions, rect, style);
+        if !has_field_regions {
+            draw_port_summary(painter, &descriptor, rect, style);
+        }
 
         draw_handles(painter, state, *node_id, rect, style);
         if renderer_state.selected {
             draw_resize_handles(painter, rect, style);
+        }
+    }
+}
+
+fn draw_interactive_regions(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    regions: &[crate::renderer::NodeInteractiveRegion],
+    node_rect: Rect,
+    style: NodeRendererStyle,
+) {
+    let zoom = state.canvas.snapshot.transform.zoom;
+    for region in regions
+        .iter()
+        .filter(|region| region.key.starts_with("field."))
+    {
+        let rect = node_local_rect_to_screen(node_rect, region.rect, zoom);
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(4),
+            Color32::WHITE.gamma_multiply(0.72),
+        );
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(4),
+            Stroke::new(0.75, style.stroke.gamma_multiply(0.45)),
+            StrokeKind::Outside,
+        );
+        if let Some(label) = region.label.as_deref().filter(|label| !label.is_empty()) {
+            painter.text(
+                rect.left_center() + Vec2::new(8.0, 0.0),
+                Align2::LEFT_CENTER,
+                label,
+                TextStyle::Small.resolve(&painter.ctx().global_style()),
+                style.text.gamma_multiply(0.86),
+            );
         }
     }
 }
@@ -915,15 +948,16 @@ fn handle_screen_rect_for_node(
     handle_rect: CanvasRect,
 ) -> Rect {
     let zoom = state.canvas.snapshot.transform.zoom;
+    node_local_rect_to_screen(node_rect, handle_rect, zoom)
+}
+
+fn node_local_rect_to_screen(node_rect: Rect, local_rect: CanvasRect, zoom: f32) -> Rect {
     Rect::from_min_size(
         Pos2::new(
-            node_rect.min.x + handle_rect.origin.x * zoom,
-            node_rect.min.y + handle_rect.origin.y * zoom,
+            node_rect.min.x + local_rect.origin.x * zoom,
+            node_rect.min.y + local_rect.origin.y * zoom,
         ),
-        Vec2::new(
-            handle_rect.size.width * zoom,
-            handle_rect.size.height * zoom,
-        ),
+        Vec2::new(local_rect.size.width * zoom, local_rect.size.height * zoom),
     )
 }
 

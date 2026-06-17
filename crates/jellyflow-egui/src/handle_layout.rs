@@ -14,6 +14,12 @@ pub(crate) struct HandleLayoutPort<'a> {
     pub(crate) decl: Option<&'a PortDecl>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HandleAnchorRegion<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) rect: CanvasRect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SideOrderKey<'a> {
     group: Option<&'a str>,
@@ -25,9 +31,17 @@ pub(crate) fn handle_bounds_for_node<'a>(
     node: NodeId,
     ports: impl IntoIterator<Item = HandleLayoutPort<'a>>,
     node_size: CanvasSize,
+    anchor_regions: &[HandleAnchorRegion<'_>],
 ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
-    let mut by_side: BTreeMap<PortViewSide, Vec<(SideOrderKey<'a>, ConnectionHandleRef)>> =
-        BTreeMap::new();
+    let anchor_regions = anchor_regions
+        .iter()
+        .filter(|region| region.rect.is_positive_finite())
+        .map(|region| (region.key, region.rect))
+        .collect::<BTreeMap<_, _>>();
+    let mut by_side: BTreeMap<
+        PortViewSide,
+        Vec<(SideOrderKey<'a>, ConnectionHandleRef, Option<CanvasRect>)>,
+    > = BTreeMap::new();
 
     for (port_index, port) in ports.into_iter().enumerate() {
         let view = port.decl.map(|decl| &decl.view);
@@ -41,6 +55,9 @@ pub(crate) fn handle_bounds_for_node<'a>(
             .and_then(|view| view.side)
             .unwrap_or_else(|| PortViewSide::fallback_for_direction(port.direction));
         let handle = ConnectionHandleRef::new(node, port.id, port.direction);
+        let anchor = view
+            .and_then(|view| view.anchor.as_deref())
+            .and_then(|key| anchor_regions.get(key).copied());
         by_side.entry(side).or_default().push((
             SideOrderKey {
                 group: view.and_then(|view| view.group.as_deref()),
@@ -48,20 +65,24 @@ pub(crate) fn handle_bounds_for_node<'a>(
                 port_index,
             },
             handle,
+            anchor,
         ));
     }
 
     let mut handles = Vec::new();
     for (side, mut side_ports) in by_side {
-        side_ports.sort_by(|(a_key, a_handle), (b_key, b_handle)| {
+        side_ports.sort_by(|(a_key, a_handle, _), (b_key, b_handle, _)| {
             (a_key, a_handle.port).cmp(&(b_key, b_handle.port))
         });
         let count = side_ports.len().max(1) as f32;
-        for (index, (_key, handle)) in side_ports.into_iter().enumerate() {
+        for (index, (_key, handle, anchor)) in side_ports.into_iter().enumerate() {
+            let rect = anchor
+                .map(|anchor| anchored_handle_rect_for_side(side, anchor, node_size))
+                .unwrap_or_else(|| handle_rect_for_side(side, index, count, node_size));
             handles.push((
                 handle,
                 HandleBounds {
-                    rect: handle_rect_for_side(side, index, count, node_size),
+                    rect,
                     position: handle_position(side),
                 },
             ));
@@ -92,6 +113,41 @@ fn handle_rect_for_side(
             height: DEFAULT_HANDLE_SIZE,
         },
     }
+}
+
+fn anchored_handle_rect_for_side(
+    side: PortViewSide,
+    anchor: CanvasRect,
+    node_size: CanvasSize,
+) -> CanvasRect {
+    let half = DEFAULT_HANDLE_SIZE * 0.5;
+    let center_x = anchor.origin.x + anchor.size.width * 0.5;
+    let center_y = anchor.origin.y + anchor.size.height * 0.5;
+    let (x, y) = match side {
+        PortViewSide::Top => (clamp_handle_axis(center_x, node_size.width), -half),
+        PortViewSide::Right => (
+            node_size.width - half,
+            clamp_handle_axis(center_y, node_size.height),
+        ),
+        PortViewSide::Bottom => (
+            clamp_handle_axis(center_x, node_size.width),
+            node_size.height - half,
+        ),
+        PortViewSide::Left => (-half, clamp_handle_axis(center_y, node_size.height)),
+    };
+
+    CanvasRect {
+        origin: CanvasPoint { x, y },
+        size: CanvasSize {
+            width: DEFAULT_HANDLE_SIZE,
+            height: DEFAULT_HANDLE_SIZE,
+        },
+    }
+}
+
+fn clamp_handle_axis(center: f32, limit: f32) -> f32 {
+    let half = DEFAULT_HANDLE_SIZE * 0.5;
+    (center - half).clamp(-half, limit - half)
 }
 
 fn handle_position(side: PortViewSide) -> HandlePosition {
@@ -143,6 +199,7 @@ mod tests {
                 width: 160.0,
                 height: 80.0,
             },
+            &[],
         );
 
         assert_eq!(handles.len(), 1);
@@ -172,8 +229,77 @@ mod tests {
                 width: 160.0,
                 height: 80.0,
             },
+            &[],
         );
 
         assert_eq!(handles[0].1.position, HandlePosition::Left);
+    }
+
+    #[test]
+    fn handle_bounds_aligns_anchor_regions_on_declared_side() {
+        let node = NodeId::from_u128(20);
+        let input = PortId::from_u128(21);
+        let output = PortId::from_u128(22);
+        let anchored_input = PortDecl::data_input("fk")
+            .on_left()
+            .with_view_anchor("field.foreign_key");
+        let anchored_output = PortDecl::data_output("pk")
+            .on_right()
+            .with_view_anchor("field.primary_key");
+
+        let handles = handle_bounds_for_node(
+            node,
+            [
+                HandleLayoutPort {
+                    id: input,
+                    direction: PortDirection::In,
+                    decl: Some(&anchored_input),
+                },
+                HandleLayoutPort {
+                    id: output,
+                    direction: PortDirection::Out,
+                    decl: Some(&anchored_output),
+                },
+            ],
+            CanvasSize {
+                width: 200.0,
+                height: 120.0,
+            },
+            &[
+                HandleAnchorRegion {
+                    key: "field.primary_key",
+                    rect: CanvasRect {
+                        origin: CanvasPoint { x: 16.0, y: 44.0 },
+                        size: CanvasSize {
+                            width: 168.0,
+                            height: 18.0,
+                        },
+                    },
+                },
+                HandleAnchorRegion {
+                    key: "field.foreign_key",
+                    rect: CanvasRect {
+                        origin: CanvasPoint { x: 16.0, y: 72.0 },
+                        size: CanvasSize {
+                            width: 168.0,
+                            height: 18.0,
+                        },
+                    },
+                },
+            ],
+        );
+        let input_bounds = handles
+            .iter()
+            .find(|(handle, _)| handle.port == input)
+            .expect("input handle exists");
+        let output_bounds = handles
+            .iter()
+            .find(|(handle, _)| handle.port == output)
+            .expect("output handle exists");
+
+        assert_eq!(input_bounds.1.rect.origin.x, -5.0);
+        assert_eq!(input_bounds.1.rect.origin.y, 76.0);
+        assert_eq!(output_bounds.1.rect.origin.x, 195.0);
+        assert_eq!(output_bounds.1.rect.origin.y, 48.0);
     }
 }

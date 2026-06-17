@@ -25,8 +25,10 @@ use jellyflow::runtime::runtime::viewport::{
 use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeRegistry};
 use jellyflow::runtime::{DispatchError, DispatchOutcome, NodeGraphStore};
 
-use crate::handle_layout::{HandleLayoutPort, handle_bounds_for_node};
-use crate::renderer::RendererCatalog;
+use crate::handle_layout::{HandleAnchorRegion, HandleLayoutPort, handle_bounds_for_node};
+use crate::renderer::{
+    NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeRendererState, RendererCatalog,
+};
 use crate::samples::{SampleGraphError, SampleGraphKind, sample_graph};
 use crate::state::{
     ActiveCanvasInteraction, CanvasSnapshot, LayoutPresetChoice, layout_scope_for_selection,
@@ -139,7 +141,14 @@ impl JellyflowEguiBridge {
 
         let mut handle_bounds = HashMap::new();
         for node in &visible_node_ids {
-            for (handle, bounds) in self.default_handle_bounds(*node) {
+            let regions = node_rects
+                .get(node)
+                .and_then(|rect| {
+                    self.node_render_layout(*node, *rect, NodeRendererState::default())
+                        .map(|layout| layout.interactive_regions)
+                })
+                .unwrap_or_default();
+            for (handle, bounds) in self.handle_bounds_with_regions(*node, &regions) {
                 handle_bounds.insert(handle, bounds);
             }
         }
@@ -196,6 +205,35 @@ impl JellyflowEguiBridge {
     }
 
     pub fn default_handle_bounds(&self, node: NodeId) -> Vec<(ConnectionHandleRef, HandleBounds)> {
+        self.handle_bounds_with_regions(node, &[])
+    }
+
+    pub fn node_render_layout(
+        &self,
+        node: NodeId,
+        canvas_rect: CanvasRect,
+        state: NodeRendererState,
+    ) -> Option<NodeRenderLayout> {
+        let node_record = self.store.graph().nodes().get(&node)?;
+        let descriptor = self.node_registry.view_descriptor(&node_record.kind)?;
+        let style = self.renderers.style_for_descriptor(&descriptor);
+        Some(self.renderers.render_node(
+            &NodeRenderInput {
+                id: node,
+                node: node_record,
+                descriptor: &descriptor,
+                state,
+                style,
+            },
+            canvas_rect,
+        ))
+    }
+
+    fn handle_bounds_with_regions(
+        &self,
+        node: NodeId,
+        regions: &[NodeInteractiveRegion],
+    ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
         let Some(node_record) = self.store.graph().nodes().get(&node) else {
             return Vec::new();
         };
@@ -217,8 +255,15 @@ impl JellyflowEguiBridge {
                 decl,
             })
         });
+        let anchor_regions = regions
+            .iter()
+            .map(|region| HandleAnchorRegion {
+                key: region.key.as_str(),
+                rect: region.rect,
+            })
+            .collect::<Vec<_>>();
 
-        handle_bounds_for_node(node, ports, size)
+        handle_bounds_for_node(node, ports, size, &anchor_regions)
     }
 
     pub fn create_node(
@@ -506,8 +551,7 @@ impl JellyflowEguiBridge {
     fn report_snapshot_measurements(&mut self, snapshot: &CanvasSnapshot) {
         for (node, rect) in &snapshot.node_rects {
             let handles = self
-                .default_handle_bounds(*node)
-                .into_iter()
+                .snapshot_handle_bounds(snapshot, *node)
                 .map(|(handle, bounds)| MeasuredHandle::new(handle, bounds));
             let _ = self.store.report_node_measurement(
                 NodeMeasurement::new(*node)
@@ -515,6 +559,17 @@ impl JellyflowEguiBridge {
                     .with_handles(handles),
             );
         }
+    }
+
+    fn snapshot_handle_bounds<'a>(
+        &self,
+        snapshot: &'a CanvasSnapshot,
+        node: NodeId,
+    ) -> impl Iterator<Item = (ConnectionHandleRef, HandleBounds)> + 'a {
+        snapshot
+            .handle_bounds
+            .iter()
+            .filter_map(move |(handle, bounds)| (handle.node == node).then_some((*handle, *bounds)))
     }
 }
 

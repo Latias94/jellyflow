@@ -19,8 +19,8 @@ pub mod ui;
 pub use app::JellyflowEguiApp;
 pub use bridge::JellyflowEguiBridge;
 pub use renderer::{
-    NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeRendererState, NodeRendererStyle,
-    RendererCatalog, RichNodeRenderer,
+    FieldListNodeRenderer, NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout,
+    NodeRendererState, NodeRendererStyle, RendererCatalog, RichNodeRenderer,
 };
 pub use samples::{SampleGraphError, SampleGraphKind};
 pub use state::{
@@ -31,12 +31,14 @@ pub use state::{
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveCanvasInteraction, JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle,
-        RendererCatalog, SampleGraphKind,
+        ActiveCanvasInteraction, CanvasSnapshot, JellyflowEguiApp, JellyflowEguiBridge,
+        NodeRendererStyle, RendererCatalog, SampleGraphKind,
     };
+    use eframe::egui::{Pos2, Rect, Vec2};
     use jellyflow::core::{
         CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection, PortKind,
     };
+    use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
     use jellyflow::runtime::runtime::geometry::HandlePosition;
 
@@ -190,6 +192,46 @@ mod tests {
             bridge.store().graph().ports()[&handle.port].key.0 == "no"
                 && bounds.position == HandlePosition::Bottom
         }));
+    }
+
+    #[test]
+    fn erd_snapshot_places_table_handles_on_field_anchor_regions() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let graph = app.bridge.store().graph();
+        let table = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
+            .expect("table node exists");
+        let mut pk = None;
+        let mut fk = None;
+        for port in &graph.nodes()[&table].ports {
+            let record = &graph.ports()[port];
+            let handle = ConnectionHandleRef::new(table, *port, record.dir);
+            let bounds = snapshot
+                .handle_bounds
+                .get(&handle)
+                .copied()
+                .expect("handle bounds exist");
+            match record.key.0.as_str() {
+                "pk" => pk = Some(bounds),
+                "fk" => fk = Some(bounds),
+                _ => {}
+            }
+        }
+        let pk = pk.expect("primary key handle exists");
+        let fk = fk.expect("foreign key handle exists");
+
+        assert_eq!(pk.position, HandlePosition::Right);
+        assert_eq!(fk.position, HandlePosition::Left);
+        assert!(
+            pk.rect.origin.y < fk.rect.origin.y,
+            "pk should align to the first table field and fk to a later field"
+        );
     }
 
     #[test]

@@ -494,11 +494,11 @@ fn populate_knowledge_board(builder: &mut SampleGraphBuilder) -> Result<(), Samp
 }
 
 fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
-    for (alias, title, summary, pos) in [
+    for (alias, title, fields, pos) in [
         (
             "customers",
             "customers",
-            "id · email · plan_id",
+            ["id", "email", "plan_id"].as_slice(),
             CanvasPoint {
                 x: -460.0,
                 y: -100.0,
@@ -507,7 +507,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
         (
             "orders",
             "orders",
-            "id · customer_id · total",
+            ["id", "customer_id", "total"].as_slice(),
             CanvasPoint {
                 x: -70.0,
                 y: -120.0,
@@ -516,7 +516,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
         (
             "order_items",
             "order_items",
-            "id · order_id · sku_id · qty",
+            ["id", "order_id", "sku_id", "qty"].as_slice(),
             CanvasPoint {
                 x: 330.0,
                 y: -120.0,
@@ -525,7 +525,7 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
         (
             "skus",
             "skus",
-            "id · title · price",
+            ["id", "title", "price"].as_slice(),
             CanvasPoint {
                 x: 720.0,
                 y: -120.0,
@@ -534,14 +534,14 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
         (
             "plans",
             "plans",
-            "id · name · limits",
+            ["id", "name", "limits"].as_slice(),
             CanvasPoint {
                 x: -460.0,
                 y: 130.0,
             },
         ),
     ] {
-        builder.node(alias, "demo.table", title, summary, pos)?;
+        builder.table_node(alias, title, fields, pos)?;
     }
 
     builder.connect_ports("customers", "pk", "orders", "fk")?;
@@ -590,6 +590,20 @@ impl SampleGraphBuilder {
         self.set_node_payload(node, title, summary)
             .map_err(SampleGraphError::Create)?;
         self.aliases.insert(alias.to_owned(), node);
+        Ok(node)
+    }
+
+    fn table_node(
+        &mut self,
+        alias: &str,
+        title: &str,
+        fields: &[&str],
+        pos: CanvasPoint,
+    ) -> Result<NodeId, SampleGraphError> {
+        let summary = fields.join(" · ");
+        let node = self.node(alias, "demo.table", title, &summary, pos)?;
+        self.set_table_fields(node, fields)
+            .map_err(SampleGraphError::Create)?;
         Ok(node)
     }
 
@@ -714,16 +728,51 @@ impl SampleGraphBuilder {
             .get(&node)
             .map(|node| node.data.clone())
             .ok_or_else(|| format!("missing node `{node:?}`"))?;
-        let to = json!({
-            "title": title,
-            "summary": summary,
-        });
+        let mut to = from.clone();
+        if !to.is_object() {
+            to = json!({});
+        }
+        if let Some(object) = to.as_object_mut() {
+            object.insert("title".to_owned(), json!(title));
+            object.insert("summary".to_owned(), json!(summary));
+        }
         self.store
             .dispatch_transaction(
                 &jellyflow::core::GraphTransaction::from_ops([
                     jellyflow::core::GraphOp::SetNodeData { id: node, from, to },
                 ])
                 .with_label("Set sample node data"),
+            )
+            .map_err(|err| err.to_string())
+    }
+
+    fn set_table_fields(
+        &mut self,
+        node: NodeId,
+        fields: &[&str],
+    ) -> Result<DispatchOutcome, String> {
+        let from = self
+            .store
+            .graph()
+            .nodes()
+            .get(&node)
+            .map(|node| node.data.clone())
+            .ok_or_else(|| format!("missing node `{node:?}`"))?;
+        let mut to = from.clone();
+        if !to.is_object() {
+            to = json!({});
+        }
+        let (field_order, field_map) = table_field_payload(fields);
+        if let Some(object) = to.as_object_mut() {
+            object.insert("field_order".to_owned(), json!(field_order));
+            object.insert("fields".to_owned(), json!(field_map));
+        }
+        self.store
+            .dispatch_transaction(
+                &jellyflow::core::GraphTransaction::from_ops([
+                    jellyflow::core::GraphOp::SetNodeData { id: node, from, to },
+                ])
+                .with_label("Set table sample fields"),
             )
             .map_err(|err| err.to_string())
     }
@@ -762,6 +811,25 @@ impl SampleGraphBuilder {
             .map(|_| ())
             .map_err(|err| SampleGraphError::Connect(err.to_string()))
     }
+}
+
+fn table_field_payload(fields: &[&str]) -> (Vec<String>, BTreeMap<String, String>) {
+    let mut order = Vec::new();
+    let mut data = BTreeMap::new();
+    let mut has_foreign_key = false;
+    for field in fields {
+        let key = if *field == "id" {
+            "primary_key".to_owned()
+        } else if field.ends_with("_id") && !has_foreign_key {
+            has_foreign_key = true;
+            "foreign_key".to_owned()
+        } else {
+            (*field).to_owned()
+        };
+        order.push(key.clone());
+        data.insert(key, (*field).to_owned());
+    }
+    (order, data)
 }
 
 fn edge_from_outcome(outcome: &DispatchOutcome) -> Option<EdgeId> {
@@ -1068,7 +1136,7 @@ fn sample_node_registry() -> NodeRegistry {
         NodeSchema::builder("demo.table", "Table")
             .category(["ERD"])
             .keywords(["database", "schema", "relation"])
-            .renderer_key("section-card")
+            .renderer_key("table-card")
             .default_size(CanvasSize {
                 width: 226.0,
                 height: 126.0,
@@ -1089,7 +1157,16 @@ fn sample_node_registry() -> NodeRegistry {
                     .with_view_group("fields")
                     .with_view_order(0),
             )
-            .default_data(json!({ "title": "Table", "summary": "id · field · field" }))
+            .default_data(json!({
+                "title": "Table",
+                "summary": "id · field · field",
+                "field_order": ["primary_key", "field", "foreign_key"],
+                "fields": {
+                    "primary_key": "id",
+                    "field": "field",
+                    "foreign_key": "field_id"
+                }
+            }))
             .build(),
     );
     registry

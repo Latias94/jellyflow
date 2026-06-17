@@ -161,10 +161,13 @@ impl NodeRenderLayout {
 }
 
 /// Named hit-test or event region produced by a rich renderer.
+///
+/// The rect is node-local and relative to the node's top-left corner.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeInteractiveRegion {
     pub key: String,
     pub rect: CanvasRect,
+    pub label: Option<String>,
     pub z_index: i32,
 }
 
@@ -205,6 +208,9 @@ impl Default for RendererCatalog {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FieldListNodeRenderer;
+
 impl RendererCatalog {
     pub fn new() -> Self {
         Self {
@@ -224,7 +230,9 @@ impl RendererCatalog {
             .register("topic-card", NodeRendererStyle::topic())
             .register("idea-card", NodeRendererStyle::idea())
             .register("section-card", NodeRendererStyle::section())
-            .register("source-card", NodeRendererStyle::source());
+            .register("source-card", NodeRendererStyle::source())
+            .register("table-card", NodeRendererStyle::section())
+            .register_rich("table-card", FieldListNodeRenderer);
         catalog
     }
 
@@ -287,6 +295,71 @@ fn node_title(input: &NodeRenderInput<'_>) -> Option<String> {
     (!title.is_empty()).then(|| title.to_owned())
 }
 
+impl RichNodeRenderer for FieldListNodeRenderer {
+    fn render(&self, input: &NodeRenderInput<'_>, rect: CanvasRect) -> NodeRenderLayout {
+        let mut layout = NodeRenderLayout::fallback(input, rect);
+        let Some(fields) = input
+            .node
+            .data
+            .get("fields")
+            .and_then(|value| value.as_object())
+        else {
+            return layout;
+        };
+        let field_order = input
+            .node
+            .data
+            .get("field_order")
+            .and_then(|value| value.as_array())
+            .map(|order| {
+                order
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut keys = field_order;
+        for key in fields.keys() {
+            if !keys.iter().any(|existing| existing == key) {
+                keys.push(key.clone());
+            }
+        }
+        let base_top = 40.0;
+        let row_height = 20.0;
+        let row_width = (rect.size.width - 24.0).max(80.0);
+        let field_count = keys.len();
+        for (index, key) in keys.into_iter().enumerate() {
+            let row_top = base_top + index as f32 * row_height;
+            layout.interactive_regions.push(NodeInteractiveRegion {
+                key: format!("field.{key}"),
+                rect: CanvasRect {
+                    origin: jellyflow::core::CanvasPoint {
+                        x: 12.0,
+                        y: row_top,
+                    },
+                    size: CanvasSize {
+                        width: row_width,
+                        height: row_height - 2.0,
+                    },
+                },
+                label: fields.get(&key).map(field_value_label),
+                z_index: 1,
+            });
+        }
+        let desired_height = base_top + field_count as f32 * row_height + 10.0;
+        layout.min_size.height = layout.min_size.height.max(desired_height);
+        layout
+    }
+}
+
+fn field_value_label(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,7 +374,11 @@ mod tests {
             layout.title = format!("rich:{}", layout.title);
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: "body".to_owned(),
-                rect,
+                rect: CanvasRect {
+                    origin: CanvasPoint::default(),
+                    size: rect.size,
+                },
+                label: None,
                 z_index: 1,
             });
             layout
@@ -360,5 +437,78 @@ mod tests {
         let layout = catalog.render_node(&input, rect);
         assert_eq!(layout.title, "rich:Node");
         assert_eq!(layout.interactive_regions[0].key, "body");
+    }
+
+    #[test]
+    fn builtin_table_renderer_emits_field_regions_in_node_local_coordinates() {
+        let descriptor = NodeKindViewDescriptor {
+            kind: NodeKindKey::new("demo.table"),
+            renderer_key: "table-card".to_owned(),
+            title: "Table".to_owned(),
+            category: Vec::new(),
+            keywords: Vec::new(),
+            default_size: None,
+            ports: Vec::new(),
+            default_data: serde_json::Value::Null,
+        };
+        let node = Node {
+            kind: NodeKindKey::new("demo.table"),
+            kind_version: 1,
+            pos: CanvasPoint::default(),
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({
+                "title": "orders",
+                "field_order": ["primary_key", "foreign_key"],
+                "fields": {
+                    "primary_key": "id",
+                    "foreign_key": "customer_id"
+                }
+            }),
+        };
+        let input = NodeRenderInput {
+            id: NodeId::from_u128(2),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::section(),
+        };
+        let layout = RendererCatalog::default().render_node(
+            &input,
+            CanvasRect {
+                origin: CanvasPoint { x: 200.0, y: 100.0 },
+                size: CanvasSize {
+                    width: 226.0,
+                    height: 150.0,
+                },
+            },
+        );
+
+        let primary = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "field.primary_key")
+            .expect("primary key region exists");
+        let foreign = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "field.foreign_key")
+            .expect("foreign key region exists");
+        assert_eq!(primary.rect.origin.x, 12.0);
+        assert_eq!(primary.rect.origin.y, 40.0);
+        assert_eq!(primary.label.as_deref(), Some("id"));
+        assert!(foreign.rect.origin.y > primary.rect.origin.y);
+        assert_eq!(foreign.label.as_deref(), Some("customer_id"));
     }
 }
