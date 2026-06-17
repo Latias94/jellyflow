@@ -1,10 +1,20 @@
 use eframe::egui::{ComboBox, Ui};
 
 use crate::bridge::JellyflowEguiBridge;
-use crate::state::{JellyflowEguiState, LayoutPresetChoice};
+use crate::state::{CanvasTool, JellyflowEguiState, LayoutPresetChoice};
 
 pub fn show_toolbar(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut JellyflowEguiState) {
     ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.canvas_tool, CanvasTool::Select, "Select")
+            .on_hover_text("Select, drag, and marquee nodes");
+        ui.selectable_value(&mut state.canvas_tool, CanvasTool::Pan, "Pan")
+            .on_hover_text("Drag the canvas viewport");
+        ui.selectable_value(&mut state.canvas_tool, CanvasTool::Connect, "Connect")
+            .on_hover_text("Drag from one handle to another");
+        ui.selectable_value(&mut state.canvas_tool, CanvasTool::Resize, "Resize")
+            .on_hover_text("Drag selected node corners and edges");
+        ui.separator();
+
         if ui
             .button("Fit")
             .on_hover_text("Fit graph to view")

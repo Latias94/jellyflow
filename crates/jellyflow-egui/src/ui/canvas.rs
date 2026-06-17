@@ -1,11 +1,13 @@
 use eframe::egui::{
-    Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextStyle, Ui,
-    Vec2,
+    Align2, Color32, CornerRadius, Key, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextStyle,
+    Ui, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, NodeId, PortDirection};
+use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
 use jellyflow::runtime::runtime::geometry::EdgePath;
 use jellyflow::runtime::runtime::geometry::{EdgeHitTestOptions, edge_path_contains_point};
+use jellyflow::runtime::runtime::resize::{NodeResizeDirection, NodeResizePlan};
 
 use crate::bridge::{JellyflowEguiBridge, NodeRendererStyle};
 use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
@@ -16,7 +18,9 @@ const GRID_MINOR: Color32 = Color32::from_rgb(229, 233, 238);
 const GRID_MAJOR: Color32 = Color32::from_rgb(210, 216, 223);
 const EDGE_COLOR: Color32 = Color32::from_rgb(107, 114, 128);
 const EDGE_HOVER_COLOR: Color32 = Color32::from_rgb(59, 130, 246);
+const EDGE_INVALID_COLOR: Color32 = Color32::from_rgb(220, 76, 76);
 const HANDLE_COLOR: Color32 = Color32::from_rgb(255, 255, 255);
+const RESIZE_HANDLE_SIZE: f32 = 8.0;
 
 pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut JellyflowEguiState) {
     let available = ui.available_size();
@@ -27,6 +31,7 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
     draw_background(&painter, rect);
     draw_edges(&painter, bridge, state);
     draw_nodes(&painter, bridge, state);
+    draw_interaction_preview(&painter, state);
     draw_selection(&painter, state);
 
     handle_pointer(ui, &response, bridge, state);
@@ -106,7 +111,10 @@ fn draw_nodes(
             );
         }
 
-        draw_handles(painter, bridge, *node_id, rect, style);
+        draw_handles(painter, state, *node_id, style);
+        if is_selected {
+            draw_resize_handles(painter, rect, style);
+        }
     }
 }
 
@@ -122,13 +130,20 @@ fn node_summary(bridge: &JellyflowEguiBridge, node_id: NodeId) -> Option<String>
 
 fn draw_handles(
     painter: &eframe::egui::Painter,
-    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
     node_id: NodeId,
-    rect: Rect,
     style: NodeRendererStyle,
 ) {
-    for (handle, bounds) in bridge.default_handle_bounds(node_id) {
-        let handle_rect = handle_rect(rect, bounds.rect);
+    let handles = state
+        .canvas
+        .snapshot
+        .handle_bounds
+        .iter()
+        .filter(|(handle, _)| handle.node == node_id);
+    for (handle, _) in handles {
+        let Some(handle_rect) = state.canvas.snapshot.handle_screen_rect(*handle) else {
+            continue;
+        };
         painter.rect_filled(handle_rect, CornerRadius::same(5), HANDLE_COLOR);
         painter.rect_stroke(
             handle_rect,
@@ -146,6 +161,19 @@ fn draw_handles(
             label,
             TextStyle::Body.resolve(&painter.ctx().global_style()),
             style.accent,
+        );
+    }
+}
+
+fn draw_resize_handles(painter: &eframe::egui::Painter, rect: Rect, style: NodeRendererStyle) {
+    for direction in resize_directions() {
+        let handle = resize_handle_rect(rect, direction);
+        painter.rect_filled(handle, CornerRadius::same(2), style.accent);
+        painter.rect_stroke(
+            handle,
+            CornerRadius::same(2),
+            Stroke::new(1.0, Color32::WHITE),
+            StrokeKind::Outside,
         );
     }
 }
@@ -259,6 +287,114 @@ fn draw_selection(painter: &eframe::egui::Painter, state: &JellyflowEguiState) {
     }
 }
 
+fn draw_interaction_preview(painter: &eframe::egui::Painter, state: &JellyflowEguiState) {
+    match &state.canvas.active {
+        ActiveCanvasInteraction::NodeDrag { preview, .. } => {
+            let Some(preview) = preview else {
+                return;
+            };
+            for item in preview.items() {
+                let Some(rect) = state.canvas.snapshot.node_rects.get(&item.node) else {
+                    continue;
+                };
+                draw_preview_rect(
+                    painter,
+                    state,
+                    CanvasRect {
+                        origin: item.to,
+                        size: rect.size,
+                    },
+                );
+            }
+        }
+        ActiveCanvasInteraction::NodeResize { preview, .. } => {
+            let Some(preview) = preview else {
+                return;
+            };
+            draw_resize_preview(painter, state, preview);
+        }
+        ActiveCanvasInteraction::Connect {
+            from,
+            current_pointer,
+            target,
+            ..
+        } => {
+            draw_connection_preview(painter, state, *from, *current_pointer, *target);
+        }
+        ActiveCanvasInteraction::SelectionBox { .. }
+        | ActiveCanvasInteraction::Pan { .. }
+        | ActiveCanvasInteraction::None => {}
+    }
+}
+
+fn draw_resize_preview(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    preview: &NodeResizePlan,
+) {
+    draw_preview_rect(
+        painter,
+        state,
+        CanvasRect {
+            origin: preview.to_pos,
+            size: preview.to,
+        },
+    );
+}
+
+fn draw_preview_rect(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    rect: CanvasRect,
+) {
+    let min = state.canvas.snapshot.canvas_point_to_screen(rect.origin);
+    let max = state.canvas.snapshot.canvas_point_to_screen(CanvasPoint {
+        x: rect.origin.x + rect.size.width,
+        y: rect.origin.y + rect.size.height,
+    });
+    painter.rect_stroke(
+        Rect::from_min_max(min, max),
+        CornerRadius::same(NODE_ROUNDING as u8),
+        Stroke::new(1.5, EDGE_HOVER_COLOR),
+        StrokeKind::Outside,
+    );
+}
+
+fn draw_connection_preview(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    from: ConnectionHandleRef,
+    current_pointer: CanvasPoint,
+    target: Option<jellyflow::runtime::runtime::connection::ResolvedConnectionTarget>,
+) {
+    let Some(start_rect) = state.canvas.snapshot.handle_screen_rect(from) else {
+        return;
+    };
+    let start = start_rect.center();
+    let end = target
+        .and_then(|target| target.target)
+        .and_then(|target| state.canvas.snapshot.handle_screen_rect(target.handle))
+        .map(|rect| rect.center())
+        .unwrap_or_else(|| {
+            state
+                .canvas
+                .snapshot
+                .canvas_point_to_screen(current_pointer)
+        });
+    let valid = target.is_some_and(|target| target.is_handle_valid);
+    painter.line_segment(
+        [start, end],
+        Stroke::new(
+            2.0,
+            if valid {
+                EDGE_HOVER_COLOR
+            } else {
+                EDGE_INVALID_COLOR
+            },
+        ),
+    );
+}
+
 fn handle_pointer(
     ui: &mut Ui,
     response: &Response,
@@ -269,21 +405,51 @@ fn handle_pointer(
         && let Some(pointer) = response.interact_pointer_pos()
     {
         let canvas = state.canvas.snapshot.screen_point_to_canvas(pointer);
-        if let Some(node) = hit_node(state, pointer) {
+        if matches!(state.canvas_tool, CanvasTool::Pan) || ui.input(|i| i.key_down(Key::Space)) {
+            state.canvas.set_active(ActiveCanvasInteraction::Pan {
+                start_pointer: CanvasPoint {
+                    x: pointer.x,
+                    y: pointer.y,
+                },
+                current_pointer: CanvasPoint {
+                    x: pointer.x,
+                    y: pointer.y,
+                },
+            });
+        } else if let Some(handle) = hit_handle(state, pointer)
+            && matches!(state.canvas_tool, CanvasTool::Connect | CanvasTool::Select)
+        {
+            state.canvas.set_active(ActiveCanvasInteraction::Connect {
+                from: handle,
+                start_pointer: canvas,
+                current_pointer: canvas,
+                target: Some(bridge.resolve_connection_target(canvas, handle)),
+            });
+            state.canvas.hovered = Some(HoverTarget::Handle(handle));
+        } else if let Some((node, direction)) = hit_resize_handle(state, bridge, pointer)
+            && matches!(state.canvas_tool, CanvasTool::Resize | CanvasTool::Select)
+        {
+            state
+                .canvas
+                .set_active(ActiveCanvasInteraction::NodeResize {
+                    node,
+                    direction,
+                    start_pointer: canvas,
+                    current_pointer: canvas,
+                    preview: bridge.plan_pointer_resize(node, canvas, canvas, direction),
+                });
+            state.canvas.hovered = Some(HoverTarget::ResizeHandle { node, direction });
+        } else if let Some(node) = hit_node(state, pointer)
+            && matches!(state.canvas_tool, CanvasTool::Select | CanvasTool::Drag)
+        {
+            bridge.start_node_drag(node, ui.input(|i| i.modifiers.shift));
             state.canvas.set_active(ActiveCanvasInteraction::NodeDrag {
                 primary: node,
                 start_pointer: canvas,
-                start_node_pos: bridge
-                    .store()
-                    .graph()
-                    .nodes()
-                    .get(&node)
-                    .map(|node| node.pos)
-                    .unwrap_or_default(),
                 preview: bridge.plan_node_drag(node, CanvasPoint::default()),
             });
             state.canvas.hovered = Some(HoverTarget::Node(node));
-        } else {
+        } else if matches!(state.canvas_tool, CanvasTool::Select) {
             state
                 .canvas
                 .set_active(ActiveCanvasInteraction::SelectionBox {
@@ -302,16 +468,13 @@ fn handle_pointer(
             ActiveCanvasInteraction::NodeDrag {
                 primary,
                 start_pointer,
-                start_node_pos,
                 preview,
             } => {
                 let delta = CanvasPoint {
                     x: canvas.x - start_pointer.x,
                     y: canvas.y - start_pointer.y,
                 };
-                let _ = start_node_pos;
                 *preview = bridge.plan_node_drag(*primary, delta);
-                bridge.select_node(*primary, false);
             }
             ActiveCanvasInteraction::SelectionBox {
                 current_pointer, ..
@@ -321,7 +484,10 @@ fn handle_pointer(
             ActiveCanvasInteraction::Pan {
                 current_pointer, ..
             } => {
-                *current_pointer = canvas;
+                *current_pointer = CanvasPoint {
+                    x: pointer.x,
+                    y: pointer.y,
+                };
             }
             ActiveCanvasInteraction::NodeResize {
                 current_pointer,
@@ -370,6 +536,8 @@ fn handle_pointer(
             }
         } else if let Some(node) = hit_node(state, pointer) {
             bridge.select_node(node, ui.input(|i| i.modifiers.shift));
+        } else if let Some(edge) = hit_edge(state, pointer) {
+            bridge.select_edge(edge, ui.input(|i| i.modifiers.shift));
         } else {
             bridge.clear_selection();
         }
@@ -378,7 +546,7 @@ fn handle_pointer(
     if response.hovered()
         && let Some(pointer) = response.interact_pointer_pos()
     {
-        state.canvas.hovered = hit_target(state, pointer);
+        state.canvas.hovered = hit_target(state, bridge, pointer);
     }
 
     if response.hovered() {
@@ -424,32 +592,107 @@ fn hit_node(state: &JellyflowEguiState, pointer: Pos2) -> Option<NodeId> {
         })
 }
 
-fn hit_target(state: &JellyflowEguiState, pointer: Pos2) -> Option<HoverTarget> {
+fn hit_target(
+    state: &JellyflowEguiState,
+    bridge: &JellyflowEguiBridge,
+    pointer: Pos2,
+) -> Option<HoverTarget> {
+    if let Some(handle) = hit_handle(state, pointer) {
+        return Some(HoverTarget::Handle(handle));
+    }
+    if let Some((node, direction)) = hit_resize_handle(state, bridge, pointer) {
+        return Some(HoverTarget::ResizeHandle { node, direction });
+    }
     if let Some(node) = hit_node(state, pointer) {
         return Some(HoverTarget::Node(node));
     }
+    hit_edge(state, pointer).map(HoverTarget::Edge)
+}
+
+fn hit_edge(state: &JellyflowEguiState, pointer: Pos2) -> Option<jellyflow::core::EdgeId> {
     for (edge_id, path) in state.canvas.snapshot.edge_paths() {
         if edge_path_contains_point(
             path,
             state.canvas.snapshot.screen_point_to_canvas(pointer),
             EdgeHitTestOptions::default(),
         ) {
-            return Some(HoverTarget::Edge(*edge_id));
+            return Some(*edge_id);
         }
     }
     None
 }
 
-fn handle_rect(node_rect: Rect, bounds: CanvasRect) -> Rect {
-    Rect::from_min_size(
-        Pos2::new(
-            node_rect.min.x + bounds.origin.x,
-            node_rect.min.y + bounds.origin.y,
-        ),
-        Vec2::new(bounds.size.width, bounds.size.height),
-    )
+fn hit_handle(state: &JellyflowEguiState, pointer: Pos2) -> Option<ConnectionHandleRef> {
+    state
+        .canvas
+        .snapshot
+        .handle_bounds
+        .keys()
+        .copied()
+        .find(|handle| {
+            state
+                .canvas
+                .snapshot
+                .handle_screen_rect(*handle)
+                .is_some_and(|rect| rect.expand(3.0).contains(pointer))
+        })
+}
+
+fn hit_resize_handle(
+    state: &JellyflowEguiState,
+    bridge: &JellyflowEguiBridge,
+    pointer: Pos2,
+) -> Option<(NodeId, NodeResizeDirection)> {
+    let selected_nodes = &bridge.store().view_state().selected_nodes;
+    state
+        .canvas
+        .snapshot
+        .visible_node_render_order
+        .iter()
+        .rev()
+        .copied()
+        .filter(|node| selected_nodes.contains(node))
+        .filter(|node| state.canvas.snapshot.node_screen_rect(*node).is_some())
+        .find_map(|node| {
+            let rect = state.canvas.snapshot.node_screen_rect(node)?;
+            resize_directions()
+                .into_iter()
+                .find(|direction| {
+                    resize_handle_rect(rect, *direction)
+                        .expand(3.0)
+                        .contains(pointer)
+                })
+                .map(|direction| (node, direction))
+        })
 }
 
 fn to_screen(state: &JellyflowEguiState, point: CanvasPoint) -> Pos2 {
     state.canvas.snapshot.canvas_point_to_screen(point)
+}
+
+fn resize_directions() -> [NodeResizeDirection; 8] {
+    [
+        NodeResizeDirection::Top,
+        NodeResizeDirection::TopRight,
+        NodeResizeDirection::Right,
+        NodeResizeDirection::BottomRight,
+        NodeResizeDirection::Bottom,
+        NodeResizeDirection::BottomLeft,
+        NodeResizeDirection::Left,
+        NodeResizeDirection::TopLeft,
+    ]
+}
+
+fn resize_handle_rect(node_rect: Rect, direction: NodeResizeDirection) -> Rect {
+    let center = match direction {
+        NodeResizeDirection::Top => Pos2::new(node_rect.center().x, node_rect.top()),
+        NodeResizeDirection::TopRight => node_rect.right_top(),
+        NodeResizeDirection::Right => Pos2::new(node_rect.right(), node_rect.center().y),
+        NodeResizeDirection::BottomRight => node_rect.right_bottom(),
+        NodeResizeDirection::Bottom => Pos2::new(node_rect.center().x, node_rect.bottom()),
+        NodeResizeDirection::BottomLeft => node_rect.left_bottom(),
+        NodeResizeDirection::Left => Pos2::new(node_rect.left(), node_rect.center().y),
+        NodeResizeDirection::TopLeft => node_rect.left_top(),
+    };
+    Rect::from_center_size(center, Vec2::new(RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE))
 }

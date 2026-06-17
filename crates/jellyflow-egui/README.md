@@ -11,6 +11,10 @@ resize, connect, delete, undo/redo, viewport math, layout, and rendering queries
 cargo run -p jellyflow-egui --example demo
 ```
 
+The demo includes selection, marquee selection, node dragging, handle-to-handle connections, selected
+node resize handles, viewport panning and zooming, layout presets, undo/redo, delete, a schema-driven
+palette, and a read-only inspector.
+
 Use `JellyflowEguiBridge` when embedding the adapter into your own app. Register node schemas in a
 `NodeRegistry`, map each descriptor `renderer_key` to your own `RendererCatalog` style, then let the
 egui canvas call Jellyflow runtime APIs instead of mutating graph storage directly.

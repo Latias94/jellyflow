@@ -76,7 +76,6 @@ pub enum ActiveCanvasInteraction {
     NodeDrag {
         primary: NodeId,
         start_pointer: CanvasPoint,
-        start_node_pos: CanvasPoint,
         preview: Option<NodeDragPlan>,
     },
     NodeResize {
@@ -100,7 +99,6 @@ pub enum ActiveCanvasInteraction {
     Pan {
         start_pointer: CanvasPoint,
         current_pointer: CanvasPoint,
-        start_pan: CanvasPoint,
     },
 }
 

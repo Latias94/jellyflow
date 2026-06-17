@@ -21,6 +21,7 @@ use jellyflow::runtime::runtime::resize::{
     NodePointerResizeRequest, NodeResizeDirection, NodeResizeSession,
     NodeResizeSessionUpdateRequest,
 };
+use jellyflow::runtime::runtime::selection::NodePointerDownInput;
 use jellyflow::runtime::runtime::selection::SelectionBoxInput;
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
@@ -354,19 +355,17 @@ impl JellyflowEguiBridge {
                     .is_some_and(|record| record.dir == PortDirection::Out)
             })
             .collect();
-        let height = self
+        let size = self
             .node_rect(node)
-            .map(|rect| rect.size.height)
-            .unwrap_or(DEFAULT_NODE_HEIGHT);
+            .map(|rect| rect.size)
+            .unwrap_or(CanvasSize {
+                width: DEFAULT_NODE_WIDTH,
+                height: DEFAULT_NODE_HEIGHT,
+            });
 
         let mut handles = Vec::with_capacity(inputs.len() + outputs.len());
-        handles.extend(side_handle_bounds(node, &inputs, PortDirection::In, height));
-        handles.extend(side_handle_bounds(
-            node,
-            &outputs,
-            PortDirection::Out,
-            height,
-        ));
+        handles.extend(side_handle_bounds(node, &inputs, PortDirection::In, size));
+        handles.extend(side_handle_bounds(node, &outputs, PortDirection::Out, size));
         handles
     }
 
@@ -512,6 +511,15 @@ impl JellyflowEguiBridge {
 
     pub fn clear_selection(&mut self) {
         self.store.set_selection(Vec::new(), Vec::new(), Vec::new());
+    }
+
+    pub fn start_node_drag(&mut self, node: NodeId, additive: bool) {
+        self.store
+            .apply_node_pointer_down(NodePointerDownInput::new(
+                node,
+                additive,
+                CanvasPoint::default(),
+            ));
     }
 
     pub fn apply_selection_box(
@@ -746,17 +754,18 @@ fn side_handle_bounds(
     node: NodeId,
     ports: &[PortId],
     direction: PortDirection,
-    node_height: f32,
+    node_size: CanvasSize,
 ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
     let count = ports.len().max(1) as f32;
     ports
         .iter()
         .enumerate()
         .map(|(index, port)| {
-            let y = ((index + 1) as f32 / (count + 1.0)) * node_height - DEFAULT_HANDLE_SIZE * 0.5;
+            let y =
+                ((index + 1) as f32 / (count + 1.0)) * node_size.height - DEFAULT_HANDLE_SIZE * 0.5;
             let x = match direction {
                 PortDirection::In => -DEFAULT_HANDLE_SIZE * 0.5,
-                PortDirection::Out => DEFAULT_NODE_WIDTH - DEFAULT_HANDLE_SIZE * 0.5,
+                PortDirection::Out => node_size.width - DEFAULT_HANDLE_SIZE * 0.5,
             };
             (
                 ConnectionHandleRef::new(node, *port, direction),

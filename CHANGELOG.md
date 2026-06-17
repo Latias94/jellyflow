@@ -33,6 +33,9 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added runtime layout-pipeline benchmark smoke coverage for footprint-derived dirty scopes.
 - Added the `jellyflow-egui` immediate-mode adapter crate with a demo app, palette, toolbar,
   inspector, canvas rendering, and pointer input.
+- Added `jellyflow-egui` canvas interactions for toolbar modes, handle-to-handle connections,
+  selected-node resize handles, edge selection, pan mode, drag previews, and connection/resize
+  feedback.
 - Added release, CI package-list, dependency-boundary, and external-consumer smoke coverage for
   `jellyflow-egui`.
 - Added public-surface and external-consumer smoke coverage for read-only graph views, dispatch
