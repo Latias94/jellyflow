@@ -1,0 +1,17 @@
+[package]
+name = "jellyflow-proof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Proof crate for a second Jellyflow adapter boundary."
+keywords = ["graph", "node-graph", "adapter", "proof"]
+categories = ["data-structures", "gui"]
+
+[dependencies]
+jellyflow.workspace = true
+serde_json.workspace = true

@@ -1841,6 +1841,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyflow-proof"
+version = "0.3.0"
+dependencies = [
+ "jellyflow",
+ "serde_json",
+]
+
+[[package]]
 name = "jellyflow-runtime"
 version = "0.3.0"
 dependencies = [

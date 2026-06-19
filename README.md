@@ -28,6 +28,7 @@ adapter crates such as `jellyflow-egui`.
 | Drive headless graph interaction behavior | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Store dispatch, policy, schema/profile hooks, selection, delete, drag, resize, viewport, geometry, XyFlow-style projections, and conformance fixtures. |
 | Add automatic layout without renderer dependencies | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Built-in `dugong`, tidy tree, radial mind-map, and freeform mind-map engines, plus custom engine registration. |
 | Embed an immediate-mode native graph editor | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | `eframe` adapter with a palette, toolbar, inspector, canvas rendering, pointer input, and demo app. |
+| Prove a second adapter boundary | [`jellyflow-proof`](crates/jellyflow-proof) | Workspace proof crate that reuses the semantic surface and headless store without depending on egui. |
 | Start a renderer integration | [`templates/headless-adapter`](templates/headless-adapter) | Copyable external adapter skeleton with conformance checks before renderer smoke tests. |
 
 ## What Jellyflow Provides
@@ -430,6 +431,7 @@ filter command is recorded in
 | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Optional headless layout engines and custom layout registry. |
 | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Headless store, rules, schema/profile pipeline, interaction planners, geometry, rendering reads, XyFlow projections, and conformance fixtures. |
 | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | Immediate-mode egui adapter with a demo app, canvas, palette, toolbar, and inspector. |
+| [`jellyflow-proof`](crates/jellyflow-proof) | Workspace proof crate for a second adapter boundary and semantic-surface reuse. |
 
 ## Links
 
