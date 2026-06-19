@@ -45,6 +45,7 @@ nodes can align ports to internal rows without changing the headless graph model
 Schemas can declare matching renderer-neutral `NodeSurfaceSlotDescriptor` values so field rows,
 badges, actions, previews, and nested regions are described as semantic data rather than egui
 widgets.
+Use `slot` for the semantic data path and `anchor` for adapter-local placement or port binding.
 Use `NodeWidgetRenderInput::region_screen_rect` when placing child widgets so clipping stays
 consistent with the canvas viewport.
 

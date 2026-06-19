@@ -739,16 +739,13 @@ fn semantic_slots<'a>(
 }
 
 fn semantic_slot_data_key(slot: &NodeSurfaceSlotDescriptor) -> Option<&str> {
-    slot.slot
-        .as_deref()
-        .or_else(|| slot.anchor.as_deref())
-        .or_else(|| {
-            if slot.kind == NodeSurfaceSlotKind::FieldRow {
-                semantic_slot_tail(&slot.key)
-            } else {
-                semantic_slot_tail(&slot.key)
-            }
-        })
+    // Slot keys are the data lookup path. Anchors stay adapter-local.
+    // Legacy field rows still fall back to their `field.*` key tail.
+    slot.slot.as_deref().or_else(|| {
+        (slot.kind == NodeSurfaceSlotKind::FieldRow)
+            .then(|| semantic_slot_tail(&slot.key))
+            .flatten()
+    })
 }
 
 fn semantic_slot_title(slot: &NodeSurfaceSlotDescriptor) -> Option<String> {
@@ -1194,10 +1191,12 @@ mod tests {
                     .with_order(2),
                 NodeSurfaceSlotDescriptor::nested_region("nested.policy")
                     .with_label("Policy")
+                    .with_slot("nested.policy")
                     .with_anchor("nested.policy")
                     .with_order(0),
                 NodeSurfaceSlotDescriptor::action_row("actions.primary")
                     .with_label("Actions")
+                    .with_slot("actions.primary")
                     .with_anchor("actions.primary")
                     .with_order(1),
             ],
@@ -1221,6 +1220,21 @@ mod tests {
             semantic_slot_chip_text(&input.node.data, &descriptor.surface_slots[2], None),
             "Test prompt · Open trace"
         );
+    }
+
+    #[test]
+    fn semantic_slot_data_key_prefers_explicit_slot_and_keeps_field_compatibility() {
+        let field =
+            NodeSurfaceSlotDescriptor::field_row("field.source").with_anchor("field.source");
+        assert_eq!(semantic_slot_data_key(&field), Some("source"));
+
+        let badge = NodeSurfaceSlotDescriptor::badge("badge.model").with_anchor("meta.model");
+        assert_eq!(semantic_slot_data_key(&badge), None);
+
+        let nested = NodeSurfaceSlotDescriptor::nested_region("nested.policy")
+            .with_slot("nested.policy")
+            .with_anchor("nested.policy");
+        assert_eq!(semantic_slot_data_key(&nested), Some("nested.policy"));
     }
 
     #[test]
