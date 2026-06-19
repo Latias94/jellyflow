@@ -175,6 +175,164 @@ impl PortViewDescriptor {
     }
 }
 
+/// Renderer-neutral semantic role for a node-local surface slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeSurfaceSlotKind {
+    Header,
+    Body,
+    Footer,
+    Badge,
+    Icon,
+    FieldRow,
+    ActionRow,
+    Preview,
+    NestedRegion,
+}
+
+/// Adapter-facing visibility hint for a node-local surface slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeSurfaceSlotVisibility {
+    Visible,
+    Hidden,
+    Collapsed,
+}
+
+/// Renderer-neutral node-local slot metadata for rich adapter surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSurfaceSlotDescriptor {
+    /// Stable slot key within the node kind, such as `header.main` or `field.primary_key`.
+    pub key: String,
+    /// Semantic role that adapters map to toolkit-specific widgets.
+    pub kind: NodeSurfaceSlotKind,
+    /// Optional UI-facing label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Deterministic order within the slot kind/lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
+    /// Optional adapter anchor id used by ports or nested regions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// Optional lane key for adapters that group slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// Optional sub-slot key inside a lane or anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    /// Optional adapter renderer key for this slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer_key: Option<String>,
+    /// Optional adapter icon key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_key: Option<String>,
+    /// Optional visibility hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<NodeSurfaceSlotVisibility>,
+}
+
+impl NodeSurfaceSlotDescriptor {
+    pub fn new(key: impl Into<String>, kind: NodeSurfaceSlotKind) -> Self {
+        Self {
+            key: key.into(),
+            kind,
+            label: None,
+            order: None,
+            anchor: None,
+            lane: None,
+            slot: None,
+            renderer_key: None,
+            icon_key: None,
+            visibility: None,
+        }
+    }
+
+    pub fn header(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Header)
+    }
+
+    pub fn body(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Body)
+    }
+
+    pub fn footer(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Footer)
+    }
+
+    pub fn badge(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Badge)
+    }
+
+    pub fn icon(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Icon)
+    }
+
+    pub fn field_row(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::FieldRow)
+    }
+
+    pub fn action_row(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::ActionRow)
+    }
+
+    pub fn preview(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::Preview)
+    }
+
+    pub fn nested_region(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::NestedRegion)
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    pub fn with_anchor(mut self, anchor: impl Into<String>) -> Self {
+        self.anchor = Some(anchor.into());
+        self
+    }
+
+    pub fn with_lane(mut self, lane: impl Into<String>) -> Self {
+        self.lane = Some(lane.into());
+        self
+    }
+
+    pub fn with_slot(mut self, slot: impl Into<String>) -> Self {
+        self.slot = Some(slot.into());
+        self
+    }
+
+    pub fn with_renderer_key(mut self, renderer_key: impl Into<String>) -> Self {
+        self.renderer_key = Some(renderer_key.into());
+        self
+    }
+
+    pub fn with_icon_key(mut self, icon_key: impl Into<String>) -> Self {
+        self.icon_key = Some(icon_key.into());
+        self
+    }
+
+    pub fn with_visibility(mut self, visibility: NodeSurfaceSlotVisibility) -> Self {
+        self.visibility = Some(visibility);
+        self
+    }
+
+    pub fn hidden(self) -> Self {
+        self.with_visibility(NodeSurfaceSlotVisibility::Hidden)
+    }
+
+    pub fn collapsed(self) -> Self {
+        self.with_visibility(NodeSurfaceSlotVisibility::Collapsed)
+    }
+}
+
 /// Schema for a node kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeSchema {
@@ -207,6 +365,10 @@ pub struct NodeSchema {
     /// Declared ports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortDecl>,
+
+    /// Renderer-neutral semantic slots for rich adapter node surfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surface_slots: Vec<NodeSurfaceSlotDescriptor>,
 
     /// Default node payload.
     #[serde(default)]
@@ -299,6 +461,7 @@ impl NodeSchema {
                 renderer_key: None,
                 default_size: None,
                 ports: Vec::new(),
+                surface_slots: Vec::new(),
                 default_data: Value::Null,
             },
         }
@@ -432,6 +595,21 @@ impl NodeSchemaBuilder {
     /// Adds declared ports.
     pub fn ports(mut self, ports: impl IntoIterator<Item = PortDecl>) -> Self {
         self.schema.ports.extend(ports);
+        self
+    }
+
+    /// Adds one renderer-neutral node surface slot.
+    pub fn surface_slot(mut self, slot: NodeSurfaceSlotDescriptor) -> Self {
+        self.schema.surface_slots.push(slot);
+        self
+    }
+
+    /// Adds renderer-neutral node surface slots.
+    pub fn surface_slots(
+        mut self,
+        slots: impl IntoIterator<Item = NodeSurfaceSlotDescriptor>,
+    ) -> Self {
+        self.schema.surface_slots.extend(slots);
         self
     }
 
@@ -587,6 +765,9 @@ pub struct NodeKindViewDescriptor {
     /// Declared ports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortDecl>,
+    /// Renderer-neutral semantic slots for rich adapter node surfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surface_slots: Vec<NodeSurfaceSlotDescriptor>,
     /// Default node payload.
     #[serde(default)]
     pub default_data: Value,
@@ -605,6 +786,7 @@ impl NodeKindViewDescriptor {
             keywords: schema.keywords.clone(),
             default_size: schema.default_size,
             ports: schema.ports.clone(),
+            surface_slots: schema.surface_slots.clone(),
             default_data: schema.default_data.clone(),
         }
     }

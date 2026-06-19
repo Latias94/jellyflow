@@ -7,7 +7,8 @@ use crate::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use crate::runtime::create_node::CreateNodeRequest;
 use crate::runtime::store::NodeGraphStore;
 use crate::schema::{
-    NodeRegistry, NodeSchema, NodeSchemaBuilder, PortDecl, PortHandleVisibility, PortViewSide,
+    NodeRegistry, NodeSchema, NodeSchemaBuilder, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    PortDecl, PortHandleVisibility, PortViewSide,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Graph, GraphId, NodeKindKey, PortCapacity, PortKey,
@@ -46,6 +47,16 @@ fn node_schema_builder_creates_adapter_facing_schema() {
         schema.ports[1].view.visibility,
         Some(PortHandleVisibility::Hidden)
     );
+    assert_eq!(schema.surface_slots.len(), 2);
+    assert_eq!(schema.surface_slots[0].kind, NodeSurfaceSlotKind::Header);
+    assert_eq!(
+        schema.surface_slots[1],
+        NodeSurfaceSlotDescriptor::field_row("field.source")
+            .with_label("Source")
+            .with_anchor("field.source")
+            .with_lane("fields")
+            .with_order(0)
+    );
     assert_eq!(schema.default_data, json!({ "title": "", "done": false }));
 }
 
@@ -61,6 +72,7 @@ fn builder_created_schema_feeds_descriptors_aliases_migrators_and_dispatch() {
     assert_eq!(descriptor.kind, NodeKindKey::new("task.card"));
     assert_eq!(descriptor.renderer_key, "task-card");
     assert_eq!(descriptor.ports.len(), 2);
+    assert_eq!(descriptor.surface_slots.len(), 2);
 
     let mut store = NodeGraphStore::new(
         Graph::new(GraphId::from_u128(1)),
@@ -136,6 +148,14 @@ fn task_card_schema() -> NodeSchema {
                 .with_label("Result")
                 .on_right()
                 .hidden_handle(),
+        )
+        .surface_slot(NodeSurfaceSlotDescriptor::header("header.main").with_order(0))
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.source")
+                .with_label("Source")
+                .with_anchor("field.source")
+                .with_lane("fields")
+                .with_order(0),
         )
         .default_data(json!({ "title": "", "done": false }))
         .build()

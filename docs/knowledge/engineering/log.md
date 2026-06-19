@@ -1,0 +1,9 @@
+# Engineering Memory Update Log
+
+## 2026-06-19
+* **Initialization**: Created engineering wiki memory bundle.
+* **Decision capture**: Recorded the semantic-surface vs framework-adapter direction for Jellyflow UI.
+* **ADR capture**: Added ADR 0008 to formalize the semantic surface boundary.
+* **Plan capture**: Added a follow-up plan for semantic slots, rich node rendering, and selection UX.
+* **Implementation slice**: Added runtime node surface slot descriptors, egui field-row slot rendering, decision-card rich rows, and partial-intersection box selection defaults.
+* **Verification capture**: Recorded focused runtime/egui nextest checks, workspace check, public-surface checks, and gallery snapshot generation for automation-builder and ERD.

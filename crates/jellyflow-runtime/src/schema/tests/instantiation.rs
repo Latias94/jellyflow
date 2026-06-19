@@ -46,6 +46,7 @@ fn note_schema() -> NodeSchema {
                 view: PortViewDescriptor::default(),
             },
         ],
+        surface_slots: Vec::new(),
         default_data: json!({ "body": "" }),
     }
 }

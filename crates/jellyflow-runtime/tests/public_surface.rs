@@ -21,7 +21,8 @@ use jellyflow_runtime::runtime::{
 };
 use jellyflow_runtime::schema::{
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
-    NodeSchemaBuilder, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeSchemaBuilder, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility,
+    PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -147,11 +148,22 @@ fn explicit_modules_expose_their_owned_surfaces() {
                             .with_visibility(PortHandleVisibility::Visible),
                     ),
             )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.source")
+                    .with_label("Source")
+                    .with_anchor("field.source")
+                    .with_lane("fields")
+                    .with_visibility(NodeSurfaceSlotVisibility::Visible),
+            )
             .build(),
     );
     let view_descriptors = node_registry.view_descriptors();
     let _: &NodeKindViewDescriptor = &view_descriptors[0];
     assert_eq!(view_descriptors[0].renderer_key, "public.note");
+    assert_eq!(
+        view_descriptors[0].surface_slots[0].kind,
+        NodeSurfaceSlotKind::FieldRow
+    );
     assert_eq!(
         view_descriptors[0].ports[0].label.as_deref(),
         Some("Source")

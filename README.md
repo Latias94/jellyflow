@@ -163,9 +163,11 @@ different renderer implementations while preserving graph semantics, ports, defa
 size, category, and search metadata.
 
 Ports can carry `PortViewDescriptor` metadata for side, order, group, anchor, lane, slot, label,
-icon key, and handle visibility. Edges can carry opaque domain data plus `EdgeViewDescriptor`
-metadata for labels, renderer keys, markers, style tokens, and hit-target width. These are normal
-graph fields, so they serialize, diff, undo/redo, and flow through transaction footprints.
+icon key, and handle visibility. Node schemas can also carry `NodeSurfaceSlotDescriptor` metadata
+for semantic node-local slots such as headers, field rows, action rows, badges, previews, and nested
+regions. Edges can carry opaque domain data plus `EdgeViewDescriptor` metadata for labels, renderer
+keys, markers, style tokens, and hit-target width. These are normal graph fields, so they serialize,
+diff, undo/redo, and flow through transaction footprints.
 Adapter-only state such as hover, focused inputs, open menus, and transient connection previews
 stays outside the graph.
 
@@ -175,7 +177,9 @@ store uses the same dispatch, history, middleware, profile, and patch path as or
 
 ```rust
 use jellyflow::prelude::*;
-use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl};
+use jellyflow::runtime::schema::{
+    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
+};
 
 let mut registry = NodeRegistry::new();
 registry.register(
@@ -183,6 +187,8 @@ registry.register(
         .category(["Workflow", "Tasks"])
         .keywords(["todo", "kanban"])
         .renderer_key("task-card")
+        .surface_slot(NodeSurfaceSlotDescriptor::header("header.main"))
+        .surface_slot(NodeSurfaceSlotDescriptor::field_row("field.source"))
         .default_size(CanvasSize {
             width: 180.0,
             height: 104.0,

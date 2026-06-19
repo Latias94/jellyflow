@@ -42,6 +42,9 @@ egui canvas call Jellyflow runtime APIs instead of mutating graph storage direct
 Rich renderers return `NodeRenderLayout` plus node-local `NodeInteractiveRegion` values. The egui
 adapter consumes those regions for widget placement and anchor-aware handle placement, so complex
 nodes can align ports to internal rows without changing the headless graph model.
+Schemas can declare matching renderer-neutral `NodeSurfaceSlotDescriptor` values so field rows,
+badges, actions, previews, and nested regions are described as semantic data rather than egui
+widgets.
 Use `NodeWidgetRenderInput::region_screen_rect` when placing child widgets so clipping stays
 consistent with the canvas viewport.
 
@@ -80,6 +83,16 @@ let schema = NodeSchema::builder("demo.review_card", "Review card")
         PortDecl::data_output("approved")
             .on_right()
             .with_view_anchor("field.status"),
+    )
+    .surface_slot(
+        NodeSurfaceSlotDescriptor::field_row("field.assignee")
+            .with_label("Assignee")
+            .with_anchor("field.assignee"),
+    )
+    .surface_slot(
+        NodeSurfaceSlotDescriptor::field_row("field.status")
+            .with_label("Status")
+            .with_anchor("field.status"),
     )
     .build();
 ```

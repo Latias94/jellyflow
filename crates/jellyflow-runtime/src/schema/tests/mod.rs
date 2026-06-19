@@ -52,6 +52,7 @@ fn demo_add_schema(latest_kind_version: u32, kind_aliases: Vec<&str>) -> NodeSch
         renderer_key: None,
         default_size: None,
         ports: Vec::new(),
+        surface_slots: Vec::new(),
         default_data: serde_json::Value::Null,
     }
 }

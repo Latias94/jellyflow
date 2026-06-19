@@ -54,7 +54,8 @@ Renderer adapters should translate pointer and keyboard input into Jellyflow run
 validate behavior before rendering. The runtime crate supports that split with:
 
 - `NodeGraphStore::apply_selection_box` and `runtime::selection::compute_selection_box` for
-  deterministic canvas-space selection;
+  deterministic canvas-space selection. The default selection mode selects nodes that intersect the
+  marquee; configure `NodeGraphSelectionMode::Full` for strict containment selection;
 - `NodeGraphStore::plan_delete_selection`, `NodeGraphStore::apply_delete_selection`,
   `NodeGraphStore::apply_delete_selection_for_key`, and `runtime::keyboard::KeyboardIntent` for
   deterministic selected node/edge deletion through effective policy, configured delete keys,

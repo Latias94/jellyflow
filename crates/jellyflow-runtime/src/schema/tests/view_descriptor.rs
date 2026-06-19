@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use crate::schema::{
-    NodeRegistry, NodeSchema, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 use jellyflow_core::core::{
     CanvasSize, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind,
@@ -39,6 +40,17 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
                 .with_anchor("field.source")
                 .with_icon_key("file-text"),
         }],
+        surface_slots: vec![
+            NodeSurfaceSlotDescriptor::header("header.main")
+                .with_label("Title")
+                .with_order(0),
+            NodeSurfaceSlotDescriptor::field_row("field.source")
+                .with_label("Source")
+                .with_anchor("field.source")
+                .with_lane("fields")
+                .with_slot("source")
+                .with_icon_key("file-text"),
+        ],
         default_data: json!({ "body": "" }),
     });
     registry.register(NodeSchema {
@@ -51,6 +63,7 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         renderer_key: None,
         default_size: None,
         ports: Vec::new(),
+        surface_slots: Vec::new(),
         default_data: serde_json::Value::Null,
     });
 
@@ -86,6 +99,16 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         descriptors[1].ports[0].view.icon_key.as_deref(),
         Some("file-text")
     );
+    assert_eq!(descriptors[1].surface_slots.len(), 2);
+    assert_eq!(
+        descriptors[1].surface_slots[0].kind,
+        NodeSurfaceSlotKind::Header
+    );
+    assert_eq!(descriptors[1].surface_slots[1].key.as_str(), "field.source");
+    assert_eq!(
+        descriptors[1].surface_slots[1].lane.as_deref(),
+        Some("fields")
+    );
     assert_eq!(descriptors[1].default_data, json!({ "body": "" }));
 
     let alias_descriptor = registry
@@ -93,6 +116,7 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         .expect("descriptor by alias");
     assert_eq!(alias_descriptor.kind, NodeKindKey::new("demo.note"));
     assert_eq!(alias_descriptor.renderer_key, "note-card");
+    assert_eq!(alias_descriptor.surface_slots.len(), 2);
 }
 
 #[test]
@@ -194,4 +218,43 @@ fn builder_helpers_match_explicit_port_view_descriptor_construction() {
         .with_view_anchor("row.result");
 
     assert_eq!(helper, explicit);
+}
+
+#[test]
+fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets() {
+    let schema = NodeSchema::builder("demo.workflow_card", "Workflow Card")
+        .surface_slot(NodeSurfaceSlotDescriptor::header("header.main").with_order(0))
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::badge("badge.status")
+                .with_label("Status")
+                .with_renderer_key("status-badge")
+                .with_visibility(NodeSurfaceSlotVisibility::Visible),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::action_row("actions.primary")
+                .with_label("Actions")
+                .collapsed(),
+        )
+        .build();
+
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.workflow_card"))
+        .expect("descriptor");
+
+    assert_eq!(descriptor.surface_slots.len(), 3);
+    assert_eq!(
+        descriptor.surface_slots[0],
+        NodeSurfaceSlotDescriptor::header("header.main").with_order(0)
+    );
+    assert_eq!(descriptor.surface_slots[1].kind, NodeSurfaceSlotKind::Badge);
+    assert_eq!(
+        descriptor.surface_slots[1].renderer_key.as_deref(),
+        Some("status-badge")
+    );
+    assert_eq!(
+        descriptor.surface_slots[2].visibility,
+        Some(NodeSurfaceSlotVisibility::Collapsed)
+    );
 }

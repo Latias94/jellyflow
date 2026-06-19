@@ -3,7 +3,9 @@ use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId
 use jellyflow::layout::builtin_layout_engine_registry;
 use jellyflow::runtime::NodeGraphStore;
 use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
-use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl};
+use jellyflow::runtime::schema::{
+    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, PortDecl,
+};
 use jellyflow_egui::{
     EguiNodeWidgetRenderer, JellyflowEguiApp, JellyflowEguiBridge, NodeContentLevel,
     NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeWidgetRenderInput,
@@ -20,6 +22,7 @@ impl RichNodeRenderer for ReviewCardRenderer {
         for (index, key) in ["assignee", "status", "risk"].into_iter().enumerate() {
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: format!("field.{key}"),
+                slot_kind: Some(NodeSurfaceSlotKind::FieldRow),
                 rect: CanvasRect {
                     origin: CanvasPoint {
                         x: 16.0,
@@ -45,12 +48,10 @@ impl EguiNodeWidgetRenderer for ReviewCardRenderer {
             return false;
         }
 
-        for region in input
-            .layout
-            .interactive_regions
-            .iter()
-            .filter(|region| region.key.starts_with("field."))
-        {
+        for region in input.layout.interactive_regions.iter().filter(|region| {
+            region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
+                || region.key.starts_with("field.")
+        }) {
             let key = region
                 .key
                 .strip_prefix("field.")
@@ -135,6 +136,24 @@ fn custom_widget_app() -> Result<JellyflowEguiApp, Box<dyn std::error::Error>> {
                 .with_label("approved")
                 .on_right()
                 .with_view_anchor("field.status"),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.assignee")
+                .with_label("Assignee")
+                .with_anchor("field.assignee")
+                .with_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.status")
+                .with_label("Status")
+                .with_anchor("field.status")
+                .with_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.risk")
+                .with_label("Risk")
+                .with_anchor("field.risk")
+                .with_order(2),
         )
         .default_data(json!({
             "title": "Review request",

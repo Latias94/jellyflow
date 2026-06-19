@@ -57,16 +57,16 @@ impl<'de> Deserialize<'de> for NodeGraphBoxSelectEdges {
 /// Behavior for selecting nodes during marquee (box) selection.
 ///
 /// This matches XyFlow's `selectionMode`:
+/// - `partial`: select nodes when they intersect the marquee (Jellyflow default).
 /// - `full`: select nodes only when their rect is fully contained in the marquee.
-/// - `partial`: select nodes when they intersect the marquee.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeGraphSelectionMode {
-    /// Select nodes only when fully contained by the marquee (XyFlow default).
-    #[default]
-    Full,
     /// Select nodes when partially intersecting the marquee.
+    #[default]
     Partial,
+    /// Select nodes only when fully contained by the marquee.
+    Full,
 }
 
 pub(super) fn default_box_select_edges() -> NodeGraphBoxSelectEdges {

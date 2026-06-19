@@ -4,7 +4,7 @@ use eframe::egui::{
     Align, Color32, CornerRadius, Id, Label, Layout, Rect, Stroke, Ui, UiBuilder, Vec2,
 };
 use jellyflow::core::{CanvasRect, CanvasSize, Node, NodeId};
-use jellyflow::runtime::schema::NodeKindViewDescriptor;
+use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeSurfaceSlotKind};
 
 /// Visual style mapped from an adapter-owned renderer key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +227,7 @@ impl NodeRenderLayout {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeInteractiveRegion {
     pub key: String,
+    pub slot_kind: Option<NodeSurfaceSlotKind>,
     pub rect: CanvasRect,
     pub label: Option<String>,
     pub z_index: i32,
@@ -301,6 +302,8 @@ impl RendererCatalog {
             .register("section-card", NodeRendererStyle::section())
             .register("source-card", NodeRendererStyle::source())
             .register("table-card", NodeRendererStyle::section())
+            .register_rich("decision-card", FieldListNodeRenderer)
+            .register_widgets("decision-card", FieldListNodeRenderer)
             .register_rich("table-card", FieldListNodeRenderer)
             .register_widgets("table-card", FieldListNodeRenderer);
         catalog
@@ -396,31 +399,14 @@ impl RichNodeRenderer for FieldListNodeRenderer {
         else {
             return layout;
         };
-        let field_order = input
-            .node
-            .data
-            .get("field_order")
-            .and_then(|value| value.as_array())
-            .map(|order| {
-                order
-                    .iter()
-                    .filter_map(|value| value.as_str())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let mut keys = field_order;
-        for key in fields.keys() {
-            if !keys.iter().any(|existing| existing == key) {
-                keys.push(key.clone());
-            }
-        }
+        let keys = field_keys(input, fields);
         let metrics = FieldListMetrics::new(rect.size);
         let field_count = keys.len();
         for (index, key) in keys.into_iter().enumerate() {
             let row_rect = metrics.row_rect(index);
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: format!("field.{key}"),
+                slot_kind: Some(NodeSurfaceSlotKind::FieldRow),
                 rect: row_rect,
                 label: fields.get(&key).map(field_value_label),
                 z_index: 1,
@@ -448,12 +434,10 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
 
         let show_detail = input.content_level.shows_detail();
 
-        for region in input
-            .layout
-            .interactive_regions
-            .iter()
-            .filter(|region| region.key.starts_with("field."))
-        {
+        for region in input.layout.interactive_regions.iter().filter(|region| {
+            region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
+                || region.key.starts_with("field.")
+        }) {
             let key = region
                 .key
                 .strip_prefix("field.")
@@ -523,6 +507,51 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
 
         true
     }
+}
+
+fn field_keys(
+    input: &NodeRenderInput<'_>,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut keys = Vec::new();
+    for slot in input
+        .descriptor
+        .surface_slots
+        .iter()
+        .filter(|slot| slot.kind == NodeSurfaceSlotKind::FieldRow)
+    {
+        if let Some(key) = field_key_from_slot(&slot.key)
+            .or_else(|| slot.anchor.as_deref().and_then(field_key_from_slot))
+            && fields.contains_key(key)
+            && !keys.iter().any(|existing| existing == key)
+        {
+            keys.push(key.to_owned());
+        }
+    }
+
+    if let Some(order) = input
+        .node
+        .data
+        .get("field_order")
+        .and_then(|value| value.as_array())
+    {
+        for key in order.iter().filter_map(|value| value.as_str()) {
+            if fields.contains_key(key) && !keys.iter().any(|existing| existing == key) {
+                keys.push(key.to_owned());
+            }
+        }
+    }
+
+    for key in fields.keys() {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.clone());
+        }
+    }
+    keys
+}
+
+fn field_key_from_slot(slot: &str) -> Option<&str> {
+    slot.strip_prefix("field.")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -621,6 +650,7 @@ mod tests {
             layout.title = format!("rich:{}", layout.title);
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: "body".to_owned(),
+                slot_kind: Some(NodeSurfaceSlotKind::Body),
                 rect: CanvasRect {
                     origin: CanvasPoint::default(),
                     size: rect.size,
@@ -641,6 +671,7 @@ mod tests {
             keywords: Vec::new(),
             default_size: None,
             ports: Vec::new(),
+            surface_slots: Vec::new(),
             default_data: serde_json::Value::Null,
         }
     }
@@ -854,6 +885,7 @@ mod tests {
             keywords: Vec::new(),
             default_size: None,
             ports: Vec::new(),
+            surface_slots: Vec::new(),
             default_data: serde_json::Value::Null,
         };
         let node = Node {

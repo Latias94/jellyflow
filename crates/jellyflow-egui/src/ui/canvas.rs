@@ -122,17 +122,8 @@ fn draw_nodes(
         };
         let rect = canvas_rect_to_screen(state, layout.body_rect);
         let content_level = NodeContentLevel::from_zoom(state.canvas.snapshot.transform.zoom);
-        let has_widget_renderer = bridge
-            .renderers()
-            .has_widget_renderer(&descriptor.renderer_key);
         draw_node_shell(painter, rect, style, renderer_state);
         draw_node_title(painter, rect, &layout.title, style, content_level);
-        if content_level.shows_detail()
-            && !has_widget_renderer
-            && let Some(summary) = &layout.summary
-        {
-            draw_node_summary(painter, rect, summary, style);
-        }
         let widgets_rendered = draw_node_widgets(
             ui,
             bridge,
@@ -149,6 +140,9 @@ fn draw_nodes(
             },
         );
         if content_level.shows_detail() && !widgets_rendered {
+            if let Some(summary) = &layout.summary {
+                draw_node_summary(painter, rect, summary, style);
+            }
             draw_port_summary(painter, &descriptor, rect, style);
         }
 

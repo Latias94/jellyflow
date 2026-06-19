@@ -8,6 +8,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ### Changed
 
+- Changed the default marquee selection mode to select nodes that intersect the selection box while
+  keeping strict full-containment selection available through `NodeGraphSelectionMode::Full`.
 - Changed `Graph` collection accessors to return read-only `GraphElements` views instead of direct
   `BTreeMap` references, keeping public graph reads stable while leaving internal storage free to
   evolve.
@@ -44,6 +46,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
   transactions, diffing, undo/redo, XyFlow compatibility, and external smoke coverage.
 - Added `PortViewDescriptor` metadata on schema `PortDecl` values for adapter-facing handle side,
   order, group, anchor, lane, slot, label, icon, and visibility hints.
+- Added renderer-neutral `NodeSurfaceSlotDescriptor` metadata on node schemas for semantic slots
+  such as headers, field rows, action rows, badges, previews, and nested regions.
 - Added graph profile metadata for product-facing node field schemas, variable surfaces,
   validation hints, and connection-rule labels without introducing a workflow domain crate.
 - Added `jellyflow-egui` automation-builder, ERD, and org-chart sample entrypoints, plus runtime

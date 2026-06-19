@@ -7,7 +7,9 @@ use jellyflow::core::{
 use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::ConnectEdgeRequest;
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
-use jellyflow::runtime::schema::{NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor};
+use jellyflow::runtime::schema::{
+    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl, PortViewDescriptor,
+};
 use jellyflow::runtime::{DispatchOutcome, NodeGraphStore};
 use serde_json::json;
 use thiserror::Error;
@@ -963,12 +965,26 @@ fn sample_node_registry() -> NodeRegistry {
                     .with_view_group("outputs")
                     .with_view_order(0),
             )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.prompt")
+                    .with_label("Prompt")
+                    .with_anchor("field.prompt")
+                    .with_lane("parameters")
+                    .with_order(0),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.completion")
+                    .with_label("Completion")
+                    .with_anchor("field.completion")
+                    .with_lane("outputs")
+                    .with_order(1),
+            )
             .default_data(json!({
                 "title": "LLM",
                 "summary": "Prompt, model, tools, and variables",
                 "fields": {
-                    "model": "gpt-4.1-mini",
-                    "temperature": 0.2
+                    "prompt": "Customer intake + policy",
+                    "completion": "Priority and route"
                 }
             }))
             .build(),
@@ -1156,6 +1172,27 @@ fn sample_node_registry() -> NodeRegistry {
                     .with_view_anchor("field.primary_key")
                     .with_view_group("fields")
                     .with_view_order(0),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.primary_key")
+                    .with_label("Primary key")
+                    .with_anchor("field.primary_key")
+                    .with_lane("fields")
+                    .with_order(0),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.field")
+                    .with_label("Field")
+                    .with_anchor("field.field")
+                    .with_lane("fields")
+                    .with_order(1),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::field_row("field.foreign_key")
+                    .with_label("Foreign key")
+                    .with_anchor("field.foreign_key")
+                    .with_lane("fields")
+                    .with_order(2),
             )
             .default_data(json!({
                 "title": "Table",
