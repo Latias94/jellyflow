@@ -947,7 +947,7 @@ fn sample_node_registry() -> NodeRegistry {
             .renderer_key("decision-card")
             .default_size(CanvasSize {
                 width: 228.0,
-                height: 118.0,
+                height: 196.0,
             })
             .port(exec_input("in").on_left().with_view_group("exec"))
             .port(exec_output("out").on_right().with_view_group("exec"))
@@ -968,6 +968,7 @@ fn sample_node_registry() -> NodeRegistry {
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.prompt")
                     .with_label("Prompt")
+                    .with_slot("prompt")
                     .with_anchor("field.prompt")
                     .with_lane("parameters")
                     .with_order(0),
@@ -975,13 +976,47 @@ fn sample_node_registry() -> NodeRegistry {
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.completion")
                     .with_label("Completion")
+                    .with_slot("completion")
                     .with_anchor("field.completion")
                     .with_lane("outputs")
                     .with_order(1),
             )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::badge("badge.model")
+                    .with_label("Model")
+                    .with_slot("meta.model")
+                    .with_anchor("meta.model")
+                    .with_order(0),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::nested_region("nested.policy")
+                    .with_label("Policy")
+                    .with_slot("nested.policy")
+                    .with_anchor("nested.policy")
+                    .with_order(1),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::action_row("actions.primary")
+                    .with_label("Actions")
+                    .with_slot("actions.primary")
+                    .with_anchor("actions.primary")
+                    .with_order(2),
+            )
             .default_data(json!({
                 "title": "LLM",
                 "summary": "Prompt, model, tools, and variables",
+                "meta": {
+                    "model": "gpt-4.1-mini"
+                },
+                "nested": {
+                    "policy": {
+                        "guardrails": "Block PII",
+                        "response": "Return structured route"
+                    }
+                },
+                "actions": {
+                    "primary": ["Test prompt", "Open trace", "Copy config"]
+                },
                 "fields": {
                     "prompt": "Customer intake + policy",
                     "completion": "Priority and route"
@@ -1155,7 +1190,7 @@ fn sample_node_registry() -> NodeRegistry {
             .renderer_key("table-card")
             .default_size(CanvasSize {
                 width: 226.0,
-                height: 126.0,
+                height: 186.0,
             })
             .port(
                 data_input("fk")
@@ -1176,6 +1211,7 @@ fn sample_node_registry() -> NodeRegistry {
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.primary_key")
                     .with_label("Primary key")
+                    .with_slot("primary_key")
                     .with_anchor("field.primary_key")
                     .with_lane("fields")
                     .with_order(0),
@@ -1183,6 +1219,7 @@ fn sample_node_registry() -> NodeRegistry {
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.field")
                     .with_label("Field")
+                    .with_slot("field")
                     .with_anchor("field.field")
                     .with_lane("fields")
                     .with_order(1),
@@ -1190,13 +1227,34 @@ fn sample_node_registry() -> NodeRegistry {
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.foreign_key")
                     .with_label("Foreign key")
+                    .with_slot("foreign_key")
                     .with_anchor("field.foreign_key")
                     .with_lane("fields")
                     .with_order(2),
             )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::badge("badge.cardinality")
+                    .with_label("1:N")
+                    .with_slot("meta.cardinality")
+                    .with_anchor("meta.cardinality")
+                    .with_order(0),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::action_row("actions.table")
+                    .with_label("Actions")
+                    .with_slot("actions.table")
+                    .with_anchor("actions.table")
+                    .with_order(1),
+            )
             .default_data(json!({
                 "title": "Table",
                 "summary": "id · field · field",
+                "meta": {
+                    "cardinality": "1:N"
+                },
+                "actions": {
+                    "table": ["Add column", "Inspect relation"]
+                },
                 "field_order": ["primary_key", "field", "foreign_key"],
                 "fields": {
                     "primary_key": "id",

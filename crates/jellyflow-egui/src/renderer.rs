@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{
-    Align, Color32, CornerRadius, Id, Label, Layout, Rect, Stroke, Ui, UiBuilder, Vec2,
+    Align, Color32, CornerRadius, Id, Label, Layout, Pos2, Rect, Stroke, Ui, UiBuilder, Vec2,
 };
-use jellyflow::core::{CanvasRect, CanvasSize, Node, NodeId};
-use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeSurfaceSlotKind};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, Node, NodeId};
+use jellyflow::runtime::schema::{
+    NodeKindViewDescriptor, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+};
 
 /// Visual style mapped from an adapter-owned renderer key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,9 +401,62 @@ impl RichNodeRenderer for FieldListNodeRenderer {
         else {
             return layout;
         };
-        let keys = field_keys(input, fields);
-        let metrics = FieldListMetrics::new(rect.size);
+        let field_slots = semantic_slots(input, NodeSurfaceSlotKind::FieldRow);
+        let badge_slots = semantic_slots(input, NodeSurfaceSlotKind::Badge);
+        let nested_slots = semantic_slots(input, NodeSurfaceSlotKind::NestedRegion);
+        let action_slots = semantic_slots(input, NodeSurfaceSlotKind::ActionRow);
+        let keys = field_keys(input, fields, &field_slots);
+        let mut metrics = FieldListMetrics::new(rect.size);
+        let mut cursor_y = metrics.top;
         let field_count = keys.len();
+
+        for slot in badge_slots {
+            let text = semantic_slot_chip_text(&input.node.data, slot, Some(fields));
+            let width = semantic_chip_width(&text, 32.0, rect.size.width * 0.42);
+            let chip_rect = CanvasRect {
+                origin: CanvasPoint {
+                    x: (rect.size.width - 14.0 - width).max(14.0),
+                    y: 12.0,
+                },
+                size: CanvasSize {
+                    width,
+                    height: 18.0,
+                },
+            };
+            layout.interactive_regions.push(NodeInteractiveRegion {
+                key: slot.key.clone(),
+                slot_kind: Some(NodeSurfaceSlotKind::Badge),
+                rect: chip_rect,
+                label: Some(text),
+                z_index: 2,
+            });
+        }
+
+        for slot in nested_slots {
+            let title = semantic_slot_title(slot);
+            let lines = semantic_slot_lines(&input.node.data, slot, Some(fields));
+            let height = semantic_nested_region_height(title.as_deref(), &lines);
+            let block_rect = CanvasRect {
+                origin: CanvasPoint {
+                    x: 14.0,
+                    y: cursor_y,
+                },
+                size: CanvasSize {
+                    width: (rect.size.width - 28.0).max(96.0),
+                    height,
+                },
+            };
+            layout.interactive_regions.push(NodeInteractiveRegion {
+                key: slot.key.clone(),
+                slot_kind: Some(NodeSurfaceSlotKind::NestedRegion),
+                rect: block_rect,
+                label: title,
+                z_index: 1,
+            });
+            cursor_y = block_rect.origin.y + block_rect.size.height + 8.0;
+        }
+
+        metrics = metrics.with_top(cursor_y);
         for (index, key) in keys.into_iter().enumerate() {
             let row_rect = metrics.row_rect(index);
             layout.interactive_regions.push(NodeInteractiveRegion {
@@ -412,7 +467,57 @@ impl RichNodeRenderer for FieldListNodeRenderer {
                 z_index: 1,
             });
         }
+        cursor_y = metrics.bottom_after(field_count);
+
+        for slot in action_slots {
+            let items = semantic_slot_lines(&input.node.data, slot, Some(fields));
+            let height = semantic_action_region_height(&items);
+            let block_rect = CanvasRect {
+                origin: CanvasPoint {
+                    x: 14.0,
+                    y: cursor_y,
+                },
+                size: CanvasSize {
+                    width: (rect.size.width - 28.0).max(96.0),
+                    height,
+                },
+            };
+            if items.is_empty() {
+                layout.interactive_regions.push(NodeInteractiveRegion {
+                    key: slot.key.clone(),
+                    slot_kind: Some(NodeSurfaceSlotKind::ActionRow),
+                    rect: block_rect,
+                    label: semantic_slot_title(slot),
+                    z_index: 1,
+                });
+            } else {
+                let mut chip_y = block_rect.origin.y;
+                for (index, item) in items.into_iter().enumerate() {
+                    let chip_rect = CanvasRect {
+                        origin: CanvasPoint {
+                            x: block_rect.origin.x,
+                            y: chip_y,
+                        },
+                        size: CanvasSize {
+                            width: block_rect.size.width,
+                            height: 18.0,
+                        },
+                    };
+                    layout.interactive_regions.push(NodeInteractiveRegion {
+                        key: format!("{}.{index}", slot.key),
+                        slot_kind: Some(NodeSurfaceSlotKind::ActionRow),
+                        rect: chip_rect,
+                        label: Some(item),
+                        z_index: 1,
+                    });
+                    chip_y += 20.0;
+                }
+            }
+            cursor_y = block_rect.origin.y + block_rect.size.height + 8.0;
+        }
+
         layout.min_size = metrics.min_size(layout.min_size, field_count);
+        layout.min_size.height = layout.min_size.height.max(cursor_y + 8.0);
         layout
     }
 }
@@ -432,7 +537,9 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             return false;
         };
 
+        let show_text = input.content_level.shows_text();
         let show_detail = input.content_level.shows_detail();
+        let mut rendered_any = false;
 
         for region in input.layout.interactive_regions.iter().filter(|region| {
             region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
@@ -452,6 +559,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
             };
+            rendered_any = true;
             let mut child_ui = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("field-region", input.id, &region.key)))
@@ -505,23 +613,84 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             });
         }
 
-        true
+        for region in input.layout.interactive_regions.iter().filter(|region| {
+            region.slot_kind == Some(NodeSurfaceSlotKind::Badge) || region.key.starts_with("badge.")
+        }) {
+            let Some(rect) = input.region_screen_rect(region) else {
+                continue;
+            };
+            rendered_any = true;
+            draw_semantic_chip(
+                ui,
+                rect,
+                region.label.as_deref().unwrap_or(region.key.as_str()),
+                input.style.accent.gamma_multiply(0.16),
+                input.style.accent.gamma_multiply(0.52),
+                input.style.text,
+            );
+        }
+
+        if show_text {
+            for region in input.layout.interactive_regions.iter().filter(|region| {
+                region.slot_kind == Some(NodeSurfaceSlotKind::NestedRegion)
+                    || region.key.starts_with("nested.")
+            }) {
+                let Some(rect) = input.region_screen_rect(region) else {
+                    continue;
+                };
+                rendered_any = true;
+                let slot = input
+                    .descriptor
+                    .surface_slots
+                    .iter()
+                    .find(|slot| slot.key == region.key);
+                let title = region
+                    .label
+                    .as_deref()
+                    .or_else(|| slot.and_then(|slot| slot.label.as_deref()))
+                    .or_else(|| slot.and_then(|slot| semantic_slot_tail(&slot.key)));
+                let lines = slot
+                    .filter(|_| show_detail)
+                    .map(|slot| semantic_slot_lines(&input.node.data, slot, Some(fields)))
+                    .unwrap_or_default();
+                draw_semantic_nested_region(ui, rect, title, &lines, input.style);
+            }
+        }
+
+        for region in input.layout.interactive_regions.iter().filter(|region| {
+            region.slot_kind == Some(NodeSurfaceSlotKind::ActionRow)
+                || region.key.starts_with("actions.")
+        }) {
+            let Some(rect) = input.region_screen_rect(region) else {
+                continue;
+            };
+            rendered_any = true;
+            let text = region
+                .label
+                .as_deref()
+                .unwrap_or_else(|| region.key.as_str());
+            draw_semantic_chip(
+                ui,
+                rect,
+                text,
+                input.style.accent.gamma_multiply(0.12),
+                input.style.stroke.gamma_multiply(0.62),
+                input.style.text,
+            );
+        }
+
+        rendered_any
     }
 }
 
 fn field_keys(
     input: &NodeRenderInput<'_>,
     fields: &serde_json::Map<String, serde_json::Value>,
+    field_slots: &[&NodeSurfaceSlotDescriptor],
 ) -> Vec<String> {
     let mut keys = Vec::new();
-    for slot in input
-        .descriptor
-        .surface_slots
-        .iter()
-        .filter(|slot| slot.kind == NodeSurfaceSlotKind::FieldRow)
-    {
-        if let Some(key) = field_key_from_slot(&slot.key)
-            .or_else(|| slot.anchor.as_deref().and_then(field_key_from_slot))
+    for slot in field_slots {
+        if let Some(key) = semantic_slot_data_key(slot)
             && fields.contains_key(key)
             && !keys.iter().any(|existing| existing == key)
         {
@@ -550,8 +719,185 @@ fn field_keys(
     keys
 }
 
-fn field_key_from_slot(slot: &str) -> Option<&str> {
+fn semantic_slots<'a>(
+    input: &'a NodeRenderInput<'_>,
+    kind: NodeSurfaceSlotKind,
+) -> Vec<&'a NodeSurfaceSlotDescriptor> {
+    let mut slots: Vec<_> = input
+        .descriptor
+        .surface_slots
+        .iter()
+        .filter(|slot| slot.kind == kind)
+        .collect();
+    slots.sort_by(|a, b| {
+        a.order
+            .unwrap_or(i32::MAX)
+            .cmp(&b.order.unwrap_or(i32::MAX))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    slots
+}
+
+fn semantic_slot_data_key(slot: &NodeSurfaceSlotDescriptor) -> Option<&str> {
+    slot.slot
+        .as_deref()
+        .or_else(|| slot.anchor.as_deref())
+        .or_else(|| {
+            if slot.kind == NodeSurfaceSlotKind::FieldRow {
+                semantic_slot_tail(&slot.key)
+            } else {
+                semantic_slot_tail(&slot.key)
+            }
+        })
+}
+
+fn semantic_slot_title(slot: &NodeSurfaceSlotDescriptor) -> Option<String> {
+    slot.label
+        .clone()
+        .or_else(|| semantic_slot_tail(&slot.key).map(ToOwned::to_owned))
+}
+
+fn semantic_slot_chip_text(
+    node_data: &serde_json::Value,
+    slot: &NodeSurfaceSlotDescriptor,
+    fields: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> String {
+    semantic_slot_value(node_data, slot, fields)
+        .map(semantic_value_preview)
+        .filter(|text| !text.is_empty())
+        .or_else(|| semantic_slot_title(slot))
+        .unwrap_or_else(|| slot.key.clone())
+}
+
+fn semantic_slot_lines(
+    node_data: &serde_json::Value,
+    slot: &NodeSurfaceSlotDescriptor,
+    fields: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<String> {
+    let Some(value) = semantic_slot_value(node_data, slot, fields) else {
+        return semantic_slot_title(slot).into_iter().collect();
+    };
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(semantic_value_preview)
+            .filter(|text| !text.is_empty())
+            .collect(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, value)| format!("{key}: {}", semantic_value_preview(value)))
+            .collect(),
+        other => {
+            let text = semantic_value_preview(other);
+            if text.is_empty() {
+                semantic_slot_title(slot).into_iter().collect()
+            } else {
+                text.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect()
+            }
+        }
+    }
+}
+
+fn semantic_slot_value<'a>(
+    node_data: &'a serde_json::Value,
+    slot: &NodeSurfaceSlotDescriptor,
+    fields: Option<&'a serde_json::Map<String, serde_json::Value>>,
+) -> Option<&'a serde_json::Value> {
+    let key = semantic_slot_data_key(slot)?;
+    if slot.kind == NodeSurfaceSlotKind::FieldRow
+        && let Some(fields) = fields
+        && let Some(value) = fields.get(key)
+    {
+        return Some(value);
+    }
+    semantic_json_lookup(node_data, key)
+}
+
+fn semantic_slot_tail(slot: &str) -> Option<&str> {
     slot.strip_prefix("field.")
+        .or_else(|| slot.strip_prefix("badge."))
+        .or_else(|| slot.strip_prefix("actions."))
+        .or_else(|| slot.strip_prefix("nested."))
+        .or_else(|| slot.split_once('.').map(|(_, tail)| tail))
+}
+
+fn semantic_json_lookup<'a>(
+    value: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+fn semantic_value_preview(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Array(items) => {
+            let preview = items
+                .iter()
+                .take(2)
+                .map(semantic_value_preview)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if preview.is_empty() {
+                format!("{} items", items.len())
+            } else if items.len() > 2 {
+                format!("{preview} …")
+            } else {
+                preview
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("label").and_then(serde_json::Value::as_str) {
+                return text.to_owned();
+            }
+            if let Some(text) = map.get("title").and_then(serde_json::Value::as_str) {
+                return text.to_owned();
+            }
+            let preview = map
+                .iter()
+                .take(2)
+                .map(|(key, value)| format!("{key}: {}", semantic_value_preview(value)))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if preview.is_empty() {
+                "{}".to_owned()
+            } else {
+                preview
+            }
+        }
+        serde_json::Value::Null => String::new(),
+    }
+}
+
+fn semantic_nested_region_height(title: Option<&str>, lines: &[String]) -> f32 {
+    let mut height = 18.0;
+    if title.is_some() {
+        height += 14.0;
+    }
+    if !lines.is_empty() {
+        height += (lines.len() as f32 * 13.0).min(39.0);
+    }
+    height.max(34.0)
+}
+
+fn semantic_action_region_height(items: &[String]) -> f32 {
+    18.0 + items.len().max(1) as f32 * 20.0
+}
+
+fn semantic_chip_width(text: &str, min_width: f32, max_width: f32) -> f32 {
+    let estimated = text.chars().count() as f32 * 6.5 + 16.0;
+    estimated.clamp(min_width, max_width)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -576,6 +922,11 @@ impl FieldListMetrics {
         }
     }
 
+    fn with_top(mut self, top: f32) -> Self {
+        self.top = top;
+        self
+    }
+
     fn row_rect(self, index: usize) -> CanvasRect {
         CanvasRect {
             origin: jellyflow::core::CanvasPoint {
@@ -589,15 +940,17 @@ impl FieldListMetrics {
         }
     }
 
+    fn bottom_after(self, row_count: usize) -> f32 {
+        self.top
+            + row_count as f32 * self.row_height
+            + row_count.saturating_sub(1) as f32 * self.row_gap
+            + self.bottom_padding
+    }
+
     fn min_size(self, current: CanvasSize, row_count: usize) -> CanvasSize {
         CanvasSize {
             width: current.width.max(self.row_width + self.left * 2.0),
-            height: current.height.max(
-                self.top
-                    + row_count as f32 * self.row_height
-                    + row_count.saturating_sub(1) as f32 * self.row_gap
-                    + self.bottom_padding,
-            ),
+            height: current.height.max(self.bottom_after(row_count)),
         }
     }
 }
@@ -612,6 +965,71 @@ fn draw_field_badge(ui: &mut Ui, rect: Rect, badge: &str, color: Color32) {
         eframe::egui::TextStyle::Small.resolve(ui.style()),
         color,
     );
+}
+
+fn draw_semantic_chip(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &str,
+    fill: Color32,
+    stroke: Color32,
+    text_color: Color32,
+) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, CornerRadius::same(4), fill);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(0.8, stroke),
+        eframe::egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        eframe::egui::Align2::CENTER_CENTER,
+        text,
+        eframe::egui::TextStyle::Small.resolve(ui.style()),
+        text_color,
+    );
+}
+
+fn draw_semantic_nested_region(
+    ui: &mut Ui,
+    rect: Rect,
+    title: Option<&str>,
+    lines: &[String],
+    style: NodeRendererStyle,
+) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, CornerRadius::same(4), style.fill.gamma_multiply(0.9));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(0.8, style.stroke.gamma_multiply(0.72)),
+        eframe::egui::StrokeKind::Inside,
+    );
+
+    let mut y = rect.top() + 5.0;
+    if let Some(title) = title {
+        painter.text(
+            Pos2::new(rect.left() + 7.0, y),
+            eframe::egui::Align2::LEFT_TOP,
+            title,
+            eframe::egui::TextStyle::Small.resolve(ui.style()),
+            style.text,
+        );
+        y += 13.0;
+    }
+
+    for line in lines.iter().take(3) {
+        painter.text(
+            Pos2::new(rect.left() + 7.0, y),
+            eframe::egui::Align2::LEFT_TOP,
+            line,
+            eframe::egui::TextStyle::Small.resolve(ui.style()),
+            style.text.gamma_multiply(0.82),
+        );
+        y += 12.0;
+    }
 }
 
 fn field_value_label(value: &serde_json::Value) -> String {
@@ -734,6 +1152,75 @@ mod tests {
 
         assert!(catalog.has_widget_renderer("table-card"));
         assert!(!catalog.has_widget_renderer("unknown"));
+    }
+
+    #[test]
+    fn semantic_slots_sort_and_resolve_renderer_neutral_paths() {
+        let node = Node {
+            kind: NodeKindKey::new("demo.rich"),
+            kind_version: 1,
+            pos: CanvasPoint::default(),
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({
+                "meta": { "model": "gpt-4.1-mini" },
+                "nested": { "policy": { "guardrails": "Block PII" } },
+                "actions": { "primary": ["Test prompt", "Open trace"] }
+            }),
+        };
+        let descriptor = NodeKindViewDescriptor {
+            kind: NodeKindKey::new("demo.rich"),
+            renderer_key: "demo.rich".to_owned(),
+            title: "Rich".to_owned(),
+            category: Vec::new(),
+            keywords: Vec::new(),
+            default_size: None,
+            ports: Vec::new(),
+            surface_slots: vec![
+                NodeSurfaceSlotDescriptor::badge("badge.model")
+                    .with_label("Model")
+                    .with_anchor("meta.model")
+                    .with_order(2),
+                NodeSurfaceSlotDescriptor::nested_region("nested.policy")
+                    .with_label("Policy")
+                    .with_anchor("nested.policy")
+                    .with_order(0),
+                NodeSurfaceSlotDescriptor::action_row("actions.primary")
+                    .with_label("Actions")
+                    .with_anchor("actions.primary")
+                    .with_order(1),
+            ],
+            default_data: serde_json::Value::Null,
+        };
+        let input = NodeRenderInput {
+            id: NodeId::from_u128(9),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::fallback(),
+        };
+
+        let slots = semantic_slots(&input, NodeSurfaceSlotKind::NestedRegion);
+        assert_eq!(slots[0].key, "nested.policy");
+        assert_eq!(
+            semantic_slot_lines(&input.node.data, slots[0], None),
+            vec!["guardrails: Block PII".to_owned()]
+        );
+        assert_eq!(
+            semantic_slot_chip_text(&input.node.data, &descriptor.surface_slots[2], None),
+            "Test prompt · Open trace"
+        );
     }
 
     #[test]
