@@ -13,3 +13,13 @@
 * [Subagents](subagents/) - Distilled findings from spawned agents.
 * [Verification](verification/) - Test, build, lint, benchmark, and manual evidence.
 * [Conventions](conventions/) - Local repo rules and reusable agent contracts.
+
+## Latest
+
+* [Current State](current-state.md)
+* [Update Log](log.md)
+* [Semantic surface and node-kit gap](sessions/2026-06-19-semantic-surface-node-kit-gap.md)
+* [Node kit plan and goal setup](sessions/2026-06-19-node-kit-plan-and-goal.md)
+* [Node kit implementation slice](sessions/2026-06-19-node-kit-implementation-slice.md)
+* [open-gpui pull blocked by existing local changes](sessions/2026-06-23-open-gpui-pull-blocked-by-existing-local-changes.md)
+* [Node kit boundary plan](../../plans/2026-06-19-003-feat-adapter-node-kit-boundary-plan.md)

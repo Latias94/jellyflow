@@ -7,6 +7,7 @@ mod builder;
 mod canonicalize;
 mod facades;
 mod instantiation;
+mod kit;
 mod migration;
 mod view_descriptor;
 

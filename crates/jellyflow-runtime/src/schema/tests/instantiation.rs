@@ -127,6 +127,35 @@ fn registry_instantiates_alias_as_canonical_kind() {
 }
 
 #[test]
+fn registry_prefers_registered_canonical_kind_over_matching_alias() {
+    let mut registry = NodeRegistry::new();
+    registry.register(
+        NodeSchema::builder("demo.output", "Output")
+            .alias("demo.workflow_output")
+            .default_data(json!({ "title": "Alias output" }))
+            .build(),
+    );
+    registry.register(
+        NodeSchema::builder("demo.workflow_output", "Workflow output")
+            .default_data(json!({ "title": "Canonical output" }))
+            .build(),
+    );
+
+    let instantiation = registry
+        .instantiate_node(
+            &NodeKindKey::new("demo.workflow_output"),
+            CanvasPoint::default(),
+        )
+        .expect("node instantiation by canonical kind");
+
+    assert_eq!(
+        instantiation.node.kind,
+        NodeKindKey::new("demo.workflow_output")
+    );
+    assert_eq!(instantiation.node.data["title"], "Canonical output");
+}
+
+#[test]
 fn registry_reports_missing_schema_for_unknown_kind() {
     let registry = NodeRegistry::new();
 

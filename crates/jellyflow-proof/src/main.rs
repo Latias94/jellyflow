@@ -1,8 +1,4 @@
 fn main() {
-    let graph = jellyflow_proof::proof_graph();
-    println!(
-        "proof graph: {} node(s), {} port(s)",
-        graph.nodes().len(),
-        graph.ports().len()
-    );
+    let trace = jellyflow_proof::proof_adapter_trace();
+    println!("{}", jellyflow_proof::render_proof_trace(&trace));
 }

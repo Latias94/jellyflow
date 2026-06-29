@@ -56,7 +56,11 @@ impl NodeRegistry {
 
     /// Resolves an input kind to a canonical kind (via aliases).
     pub fn resolve_kind<'a>(&'a self, kind: &'a NodeKindKey) -> &'a NodeKindKey {
-        self.by_alias.get(kind).unwrap_or(kind)
+        if self.by_kind.contains_key(kind) {
+            kind
+        } else {
+            self.by_alias.get(kind).unwrap_or(kind)
+        }
     }
 
     /// Looks up a schema by canonical kind key.

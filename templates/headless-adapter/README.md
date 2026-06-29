@@ -23,6 +23,10 @@ Custom node renderers remain adapter-owned. The template demonstrates the extens
 ports, default data, and default size; the adapter maps that key to its own React, Svelte, native,
 or immediate-mode renderer before calling `NodeGraphStore::apply_create_node_from_schema`.
 
+The template starts from the same built-in node kits as Jellyflow's internal proof and sample
+surfaces, then adds its own `template.note` schema on top. That keeps kit reuse visible in external
+consumer tests without turning the template into a parallel schema source.
+
 Use store subscriptions as invalidation signals, not as renderer state containers. Subscribe to
 small projections such as graph and layout-facts revisions, then call
 `NodeGraphStore::rendering_query` for the current viewport to get visible IDs and render order.

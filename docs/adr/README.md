@@ -12,5 +12,6 @@ This directory uses standalone Jellyflow ADR numbering.
 | [ADR 0006](0006-mind-map-layout-strategy.md) | Accepted | Mind Map Layout Strategy |
 | [ADR 0007](0007-knowledge-canvas-foundations.md) | Accepted | Knowledge Canvas Foundations |
 | [ADR 0008](0008-semantic-surface-and-framework-adapter-boundary.md) | Accepted | Semantic Surface and Framework Adapter Boundary |
+| [ADR 0009](0009-node-kit-and-adapter-local-mapping-boundary.md) | Accepted | Node Kit and Adapter-Local Mapping Boundary |
 
 Future records should use the next zero-padded number.

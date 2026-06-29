@@ -1,8 +1,9 @@
 use serde_json::json;
 
 use crate::schema::{
-    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
-    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeKitContentDensity, NodeRegistry, NodeSchema, NodeSurfaceProjection,
+    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl,
+    PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 use jellyflow_core::core::{
     CanvasSize, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind,
@@ -257,4 +258,157 @@ fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets(
         descriptor.surface_slots[2].visibility,
         Some(NodeSurfaceSlotVisibility::Collapsed)
     );
+}
+
+#[test]
+fn node_surface_projection_uses_layout_hints_for_density_and_slot_limits() {
+    let schema = NodeSchema::builder("demo.surface", "Surface")
+        .surface_slot(NodeSurfaceSlotDescriptor::header("header.main").with_order(0))
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.tags")
+                .with_label("Tags")
+                .with_order(1),
+        )
+        .surface_slot(NodeSurfaceSlotDescriptor::action_row("actions.primary").with_order(2))
+        .build();
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.surface"))
+        .expect("descriptor");
+    let node_data = json!({
+        "tags": ["root", "fallback"],
+        "fields": {
+            "tags": ["alpha", "beta", "gamma"]
+        }
+    });
+
+    let compact = descriptor.surface_slots_projection(
+        &node_data,
+        Some(&crate::schema::kit::NodeKitLayoutHints::default().with_zoom_range(0.3, 0.9)),
+        0.1,
+    );
+    let regular = descriptor.surface_slots_projection(
+        &node_data,
+        Some(&crate::schema::kit::NodeKitLayoutHints::default().with_zoom_range(0.3, 0.9)),
+        0.5,
+    );
+    let full = descriptor.surface_slots_projection(
+        &node_data,
+        Some(&crate::schema::kit::NodeKitLayoutHints::default().with_zoom_range(0.3, 0.9)),
+        1.0,
+    );
+
+    assert_eq!(compact.len(), 2);
+    assert_eq!(regular.len(), 3);
+    assert_eq!(full.len(), 3);
+    assert_eq!(full[0].kind, NodeSurfaceSlotKind::Header);
+    assert_eq!(compact[0].label, "main");
+    assert_eq!(compact[1].label, "Tags");
+    assert_eq!(compact[1].value, "alpha");
+    assert_eq!(regular[1].value, "alpha");
+    assert_eq!(full[1].value, "alpha · beta …");
+
+    let projection = NodeSurfaceProjection::from_layout_hints(
+        &crate::schema::kit::NodeKitLayoutHints::default().with_zoom_range(0.3, 0.9),
+        1.0,
+    );
+    assert_eq!(projection.density, NodeKitContentDensity::Full);
+}
+
+#[test]
+fn node_kind_view_descriptor_resolves_ports_and_slots_by_anchor() {
+    let schema = NodeSchema::builder("demo.review_card", "Review Card")
+        .port(
+            PortDecl::data_input("assignee")
+                .with_label("Assignee")
+                .on_left()
+                .with_view_anchor("field.assignee")
+                .with_view_order(1),
+        )
+        .port(
+            PortDecl::data_output("result")
+                .with_label("Result")
+                .on_right()
+                .with_view_anchor("actions.primary")
+                .with_view_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.status")
+                .with_label("Status")
+                .with_anchor("field.status")
+                .with_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.assignee")
+                .with_label("Assignee")
+                .with_anchor("field.assignee")
+                .with_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::action_row("actions.primary")
+                .with_label("Actions")
+                .with_anchor("actions.primary")
+                .with_order(2),
+        )
+        .build();
+
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.review_card"))
+        .expect("descriptor");
+
+    assert_eq!(
+        descriptor
+            .port_decl("assignee")
+            .map(|decl| decl.key.0.as_str()),
+        Some("assignee")
+    );
+    assert_eq!(
+        descriptor
+            .port_decl_by_anchor("field.assignee")
+            .map(|decl| decl.key.0.as_str()),
+        Some("assignee")
+    );
+    assert_eq!(
+        descriptor
+            .surface_slot("field.assignee")
+            .map(|slot| slot.display_label()),
+        Some(Some("Assignee"))
+    );
+
+    let slots = descriptor.surface_slots_of_kind(NodeSurfaceSlotKind::FieldRow);
+    assert_eq!(slots[0].key, "field.assignee");
+    assert_eq!(slots[1].key, "field.status");
+    assert_eq!(
+        descriptor
+            .surface_slot_by_anchor("actions.primary")
+            .map(|slot| slot.key.as_str()),
+        Some("actions.primary")
+    );
+}
+
+#[test]
+fn slot_and_port_visibility_helpers_follow_adapter_contract() {
+    let hidden_port = PortViewDescriptor::left().hidden();
+    let collapsed_port = PortViewDescriptor::right().collapsed();
+    let hidden_slot = NodeSurfaceSlotDescriptor::badge("badge.priority").hidden();
+    let collapsed_slot = NodeSurfaceSlotDescriptor::action_row("actions.primary").collapsed();
+
+    assert!(hidden_port.is_hidden());
+    assert!(collapsed_port.is_collapsed());
+    assert!(hidden_port.is_hidden_or_collapsed());
+    assert_eq!(
+        hidden_port.resolved_side(PortDirection::Out),
+        PortViewSide::Left
+    );
+    assert!(hidden_slot.is_hidden());
+    assert!(collapsed_slot.is_collapsed());
+    assert!(hidden_slot.is_hidden_or_collapsed());
+    assert_eq!(hidden_slot.order_key(), i32::MAX);
+    assert_eq!(hidden_slot.key_tail(), Some("priority"));
+    assert_eq!(collapsed_slot.display_label(), Some("primary"));
+    assert!(hidden_slot.is_hidden());
+    assert!(collapsed_slot.is_collapsed());
 }

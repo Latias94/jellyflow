@@ -8,13 +8,13 @@ use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::ConnectEdgeRequest;
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
 use jellyflow::runtime::schema::{
-    NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl, PortViewDescriptor,
+    NodeKitRegistry, NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
+    PortViewDescriptor,
 };
 use jellyflow::runtime::{DispatchOutcome, NodeGraphStore};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::bridge::{DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH};
 use crate::state::LayoutPresetChoice;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -638,7 +638,11 @@ impl SampleGraphBuilder {
         let outcome = self
             .store
             .apply_connect_edge(ConnectEdgeRequest::new(source, target, mode))
-            .map_err(|err| SampleGraphError::Connect(err.to_string()))?;
+            .map_err(|err| {
+                SampleGraphError::Connect(format!(
+                    "{from_alias}({from_port_key:?}) -> {to_alias}({to_port_key:?}): {err}"
+                ))
+            })?;
         if let Some(edge) = outcome.as_ref().and_then(edge_from_outcome) {
             self.decorate_edge(edge, from_alias, to_alias)?;
         }
@@ -869,265 +873,7 @@ fn edge_label_for_aliases(from_alias: &str, to_alias: &str) -> &'static str {
 }
 
 fn sample_node_registry() -> NodeRegistry {
-    let mut registry = NodeRegistry::new();
-    registry.register(
-        NodeSchema::builder("demo.start", "Start")
-            .category(["Workflow"])
-            .renderer_key("data-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_output("out").with_label("out").on_right())
-            .default_data(json!({ "title": "Start", "summary": "Entry point" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.trigger", "Trigger")
-            .category(["Automation", "Workflow"])
-            .keywords(["webhook", "schedule", "event"])
-            .renderer_key("data-card")
-            .default_size(CanvasSize {
-                width: 208.0,
-                height: 96.0,
-            })
-            .port(exec_output("event").on_right().with_view_group("exec"))
-            .port(
-                data_output("payload")
-                    .on_bottom()
-                    .with_view_group("data")
-                    .with_view_order(1),
-            )
-            .default_data(json!({ "title": "Trigger", "summary": "Starts an automation" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.task", "Task")
-            .category(["Workflow"])
-            .renderer_key("task-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_input("in").with_label("in").on_left())
-            .port(PortDecl::data_output("out").with_label("out").on_right())
-            .default_data(json!({ "title": "Task", "summary": "Run a unit of work" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.tool", "Tool")
-            .category(["Automation", "Workflow"])
-            .keywords(["api", "function", "action"])
-            .renderer_key("task-card")
-            .default_size(CanvasSize {
-                width: 208.0,
-                height: 104.0,
-            })
-            .port(exec_input("in").on_left().with_view_group("exec"))
-            .port(exec_output("out").on_right().with_view_group("exec"))
-            .port(
-                data_input("args")
-                    .on_top()
-                    .with_view_group("data")
-                    .with_view_order(0),
-            )
-            .port(
-                data_output("result")
-                    .on_bottom()
-                    .with_view_group("data")
-                    .with_view_order(0),
-            )
-            .default_data(json!({ "title": "Tool", "summary": "Runs an external action" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.llm", "LLM")
-            .category(["Automation", "AI"])
-            .keywords(["prompt", "model", "dify"])
-            .renderer_key("decision-card")
-            .default_size(CanvasSize {
-                width: 228.0,
-                height: 196.0,
-            })
-            .port(exec_input("in").on_left().with_view_group("exec"))
-            .port(exec_output("out").on_right().with_view_group("exec"))
-            .port(
-                data_input("prompt")
-                    .on_top()
-                    .with_view_anchor("field.prompt")
-                    .with_view_group("parameters")
-                    .with_view_order(0),
-            )
-            .port(
-                data_output("completion")
-                    .on_bottom()
-                    .with_view_anchor("field.completion")
-                    .with_view_group("outputs")
-                    .with_view_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.prompt")
-                    .with_label("Prompt")
-                    .with_slot("prompt")
-                    .with_anchor("field.prompt")
-                    .with_lane("parameters")
-                    .with_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.completion")
-                    .with_label("Completion")
-                    .with_slot("completion")
-                    .with_anchor("field.completion")
-                    .with_lane("outputs")
-                    .with_order(1),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::badge("badge.model")
-                    .with_label("Model")
-                    .with_slot("meta.model")
-                    .with_anchor("meta.model")
-                    .with_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::nested_region("nested.policy")
-                    .with_label("Policy")
-                    .with_slot("nested.policy")
-                    .with_anchor("nested.policy")
-                    .with_order(1),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::action_row("actions.primary")
-                    .with_label("Actions")
-                    .with_slot("actions.primary")
-                    .with_anchor("actions.primary")
-                    .with_order(2),
-            )
-            .default_data(json!({
-                "title": "LLM",
-                "summary": "Prompt, model, tools, and variables",
-                "meta": {
-                    "model": "gpt-4.1-mini"
-                },
-                "nested": {
-                    "policy": {
-                        "guardrails": "Block PII",
-                        "response": "Return structured route"
-                    }
-                },
-                "actions": {
-                    "primary": ["Test prompt", "Open trace", "Copy config"]
-                },
-                "fields": {
-                    "prompt": "Customer intake + policy",
-                    "completion": "Priority and route"
-                }
-            }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.decision", "Decision")
-            .category(["Workflow"])
-            .renderer_key("decision-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(input_port("in"))
-            .port(output_port("yes").on_top().with_view_order(0))
-            .port(output_port("no").on_bottom().with_view_order(1))
-            .default_data(json!({ "title": "Decision", "summary": "Branch the flow" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.switch", "Switch")
-            .category(["Automation", "Workflow"])
-            .keywords(["branch", "condition", "router"])
-            .renderer_key("decision-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(exec_input("in").on_left().with_view_group("exec"))
-            .port(exec_output("yes").on_top().with_view_order(0))
-            .port(exec_output("no").on_bottom().with_view_order(1))
-            .default_data(json!({ "title": "Switch", "summary": "Branch execution" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.output", "Output")
-            .category(["Workflow"])
-            .renderer_key("output-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(PortDecl::data_input("in").with_label("in").on_left())
-            .default_data(json!({ "title": "Output", "summary": "Publish the result" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.workflow_output", "Workflow output")
-            .category(["Automation", "Workflow"])
-            .keywords(["return", "response", "result"])
-            .renderer_key("output-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(exec_input("in").on_left().with_view_group("exec"))
-            .port(
-                data_input("result")
-                    .on_top()
-                    .with_view_group("data")
-                    .with_view_order(0),
-            )
-            .default_data(
-                json!({ "title": "Workflow output", "summary": "Returns data to caller" }),
-            )
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.error", "Error")
-            .category(["Automation", "Workflow"])
-            .keywords(["failure", "retry", "fallback"])
-            .renderer_key("output-card")
-            .default_size(CanvasSize {
-                width: DEFAULT_NODE_WIDTH,
-                height: DEFAULT_NODE_HEIGHT,
-            })
-            .port(exec_input("error").on_left().with_view_group("exec"))
-            .port(exec_output("out").on_right().with_view_group("exec"))
-            .default_data(json!({ "title": "Error path", "summary": "Retry or recover" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.topic", "Topic")
-            .category(["Mind map"])
-            .keywords(["mindnode", "margin-note", "knowledge"])
-            .renderer_key("topic-card")
-            .default_size(CanvasSize {
-                width: 210.0,
-                height: 96.0,
-            })
-            .port(input_port("in"))
-            .port(output_port("out"))
-            .default_data(json!({ "title": "Topic", "summary": "Central idea" }))
-            .build(),
-    );
-    registry.register(
-        NodeSchema::builder("demo.idea", "Idea")
-            .category(["Mind map"])
-            .keywords(["branch", "note", "thought"])
-            .renderer_key("idea-card")
-            .default_size(CanvasSize {
-                width: 176.0,
-                height: 76.0,
-            })
-            .port(input_port("in"))
-            .port(output_port("out"))
-            .default_data(json!({ "title": "Idea", "summary": "Branch note" }))
-            .build(),
-    );
+    let mut registry = NodeKitRegistry::builtin().node_registry();
     registry.register(
         NodeSchema::builder("demo.section", "Section")
             .category(["Tree"])
@@ -1285,12 +1031,4 @@ fn data_input(key: &str) -> PortDecl {
 
 fn data_output(key: &str) -> PortDecl {
     PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi).with_label(key)
-}
-
-fn exec_input(key: &str) -> PortDecl {
-    PortDecl::new(key, PortDirection::In, PortKind::Exec, PortCapacity::Single).with_label(key)
-}
-
-fn exec_output(key: &str) -> PortDecl {
-    PortDecl::new(key, PortDirection::Out, PortKind::Exec, PortCapacity::Multi).with_label(key)
 }

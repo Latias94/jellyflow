@@ -42,7 +42,9 @@ use jellyflow_runtime::runtime::viewport::{
 };
 use jellyflow_runtime::runtime::xyflow::callbacks::EdgeConnection;
 use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
-use jellyflow_runtime::schema::{NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl};
+use jellyflow_runtime::schema::{
+    NodeKitRegistry, NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl,
+};
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
     ConformanceSuite::new("headless adapter template").with_scenarios([
@@ -243,7 +245,7 @@ impl AdapterRendererRegistry {
 }
 
 pub fn template_node_registry() -> NodeRegistry {
-    let mut registry = NodeRegistry::new();
+    let mut registry = NodeKitRegistry::builtin().node_registry();
     registry.register(template_note_schema());
     registry
 }
@@ -266,23 +268,20 @@ pub fn template_note_schema() -> NodeSchema {
 
 pub fn run_custom_node_renderer_registry_smoke() -> Result<(), String> {
     let registry = template_node_registry();
-    let descriptors = registry.view_descriptors();
-    let descriptor = descriptors
-        .first()
-        .ok_or_else(|| "expected at least one node descriptor".to_owned())?;
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("template.note"))
+        .ok_or_else(|| "expected template.note descriptor".to_owned())?;
 
     let renderers = AdapterRendererRegistry::with_builtin_nodes();
     let renderer = renderers
-        .renderer_for_descriptor(descriptor)
+        .renderer_for_descriptor(&descriptor)
         .ok_or_else(|| format!("missing renderer for key {}", descriptor.renderer_key))?;
     if *renderer != AdapterNodeRenderer::note_card() {
         return Err(format!("expected NoteCard renderer, got {renderer:?}"));
     }
 
     let mut dynamic_renderers = AdapterRendererRegistry::new();
-    if dynamic_renderers
-        .renderer_for_descriptor(descriptor)
-        .is_some()
+    if dynamic_renderers.renderer_for_descriptor(&descriptor).is_some()
     {
         return Err("empty adapter renderer registry unexpectedly resolved descriptor".to_owned());
     }
@@ -290,7 +289,7 @@ pub fn run_custom_node_renderer_registry_smoke() -> Result<(), String> {
         descriptor.renderer_key.clone(),
         AdapterNodeRenderer::note_card(),
     );
-    if dynamic_renderers.renderer_for_descriptor(descriptor)
+    if dynamic_renderers.renderer_for_descriptor(&descriptor)
         != Some(&AdapterNodeRenderer::note_card())
     {
         return Err("dynamic renderer registration did not resolve descriptor key".to_owned());
@@ -302,10 +301,17 @@ pub fn run_custom_node_renderer_registry_smoke() -> Result<(), String> {
 pub fn run_create_node_palette_smoke() -> Result<(), String> {
     let registry = template_node_registry();
 
-    let descriptors = registry.view_descriptors();
-    if descriptors.len() != 1 || descriptors[0].renderer_key != "note-card" {
+    if registry.view_descriptor(&NodeKindKey::new("demo.table")).is_none() {
+        return Err("expected builtin kit descriptors to be available".to_owned());
+    }
+
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("template.note"))
+        .ok_or_else(|| "expected template.note descriptor".to_owned())?;
+    if descriptor.renderer_key != "note-card" {
         return Err(format!(
-            "expected one note-card descriptor, got {descriptors:?}"
+            "expected note-card descriptor, got {:?}",
+            descriptor.renderer_key
         ));
     }
 

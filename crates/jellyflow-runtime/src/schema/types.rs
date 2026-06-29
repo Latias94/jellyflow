@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::kit::{NodeKitContentDensity, NodeKitLayoutHints};
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
@@ -170,6 +171,27 @@ impl PortViewDescriptor {
         self.with_visibility(PortHandleVisibility::Collapsed)
     }
 
+    pub fn is_visible(&self) -> bool {
+        matches!(self.visibility, None | Some(PortHandleVisibility::Visible))
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        matches!(self.visibility, Some(PortHandleVisibility::Hidden))
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        matches!(self.visibility, Some(PortHandleVisibility::Collapsed))
+    }
+
+    pub fn is_hidden_or_collapsed(&self) -> bool {
+        !self.is_visible()
+    }
+
+    pub fn resolved_side(&self, dir: PortDirection) -> PortViewSide {
+        self.side
+            .unwrap_or_else(|| PortViewSide::fallback_for_direction(dir))
+    }
+
     pub fn is_default(&self) -> bool {
         self == &Self::default()
     }
@@ -197,6 +219,37 @@ pub enum NodeSurfaceSlotVisibility {
     Visible,
     Hidden,
     Collapsed,
+}
+
+/// Adapter-facing, toolkit-neutral semantic surface projection for one node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSurfaceProjection {
+    /// Current density tier used by the adapter.
+    pub density: NodeKitContentDensity,
+    /// Maximum slots the adapter should show at this density.
+    pub slot_limit: usize,
+    /// Whether the adapter should prioritize compact value previews.
+    pub compact_values: bool,
+    /// Whether all visible slots should be shown without truncation.
+    pub expand_all_slots: bool,
+}
+
+impl NodeSurfaceProjection {
+    pub fn from_layout_hints(layout_hints: &NodeKitLayoutHints, zoom: f32) -> Self {
+        let density = layout_hints.content_density_for_zoom(zoom);
+        let (slot_limit, compact_values, expand_all_slots) = match density {
+            NodeKitContentDensity::Compact => (2, true, false),
+            NodeKitContentDensity::Regular => (3, true, false),
+            NodeKitContentDensity::Full => (usize::MAX, false, true),
+        };
+
+        Self {
+            density,
+            slot_limit,
+            compact_values,
+            expand_all_slots,
+        }
+    }
 }
 
 /// Renderer-neutral node-local slot metadata for rich adapter surfaces.
@@ -331,10 +384,77 @@ impl NodeSurfaceSlotDescriptor {
     pub fn collapsed(self) -> Self {
         self.with_visibility(NodeSurfaceSlotVisibility::Collapsed)
     }
+
+    pub fn key_tail(&self) -> Option<&str> {
+        self.key.split_once('.').map(|(_, tail)| tail)
+    }
+
+    pub fn data_key(&self) -> Option<&str> {
+        self.slot.as_deref().or_else(|| {
+            (self.kind == NodeSurfaceSlotKind::FieldRow)
+                .then(|| self.key_tail())
+                .flatten()
+        })
+    }
+
+    pub fn display_label(&self) -> Option<&str> {
+        self.label.as_deref().or_else(|| self.key_tail())
+    }
+
+    pub fn order_key(&self) -> i32 {
+        self.order.unwrap_or(i32::MAX)
+    }
+
+    pub fn is_visible(&self) -> bool {
+        matches!(
+            self.visibility,
+            None | Some(NodeSurfaceSlotVisibility::Visible)
+        )
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        matches!(self.visibility, Some(NodeSurfaceSlotVisibility::Hidden))
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        matches!(self.visibility, Some(NodeSurfaceSlotVisibility::Collapsed))
+    }
+
+    pub fn is_hidden_or_collapsed(&self) -> bool {
+        !self.is_visible()
+    }
+}
+
+/// Minimal adapter-facing slot projection derived from a semantic slot descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSurfaceSlotProjection {
+    pub key: String,
+    pub kind: NodeSurfaceSlotKind,
+    pub label: String,
+    pub value: String,
+    pub visible: bool,
+}
+
+impl NodeSurfaceSlotProjection {
+    pub fn from_descriptor(
+        node_data: &Value,
+        slot: &NodeSurfaceSlotDescriptor,
+        compact_values: bool,
+    ) -> Self {
+        let label = slot.display_label().unwrap_or(slot.key.as_str()).to_owned();
+        let value = slot_value_preview(node_data, slot, compact_values).unwrap_or_default();
+        Self {
+            key: slot.key.clone(),
+            kind: slot.kind,
+            label,
+            value,
+            visible: slot.is_visible(),
+        }
+    }
 }
 
 /// Schema for a node kind.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeSchema {
     /// Canonical kind key.
     pub kind: NodeKindKey,
@@ -789,5 +909,186 @@ impl NodeKindViewDescriptor {
             surface_slots: schema.surface_slots.clone(),
             default_data: schema.default_data.clone(),
         }
+    }
+
+    pub fn port_decl(&self, key: impl AsRef<str>) -> Option<&PortDecl> {
+        let key = key.as_ref();
+        self.ports.iter().find(|decl| decl.key.0 == key)
+    }
+
+    pub fn ports_by_anchor(&self, anchor: impl AsRef<str>) -> Vec<&PortDecl> {
+        let anchor = anchor.as_ref();
+        let mut ports: Vec<_> = self
+            .ports
+            .iter()
+            .filter(|decl| decl.view.anchor.as_deref() == Some(anchor))
+            .collect();
+        ports.sort_by(|a, b| {
+            a.view
+                .order
+                .unwrap_or(i32::MAX)
+                .cmp(&b.view.order.unwrap_or(i32::MAX))
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        ports
+    }
+
+    pub fn port_decl_by_anchor(&self, anchor: impl AsRef<str>) -> Option<&PortDecl> {
+        self.ports_by_anchor(anchor).into_iter().next()
+    }
+
+    pub fn surface_slot(&self, key: impl AsRef<str>) -> Option<&NodeSurfaceSlotDescriptor> {
+        let key = key.as_ref();
+        self.surface_slots.iter().find(|slot| slot.key == key)
+    }
+
+    pub fn surface_slots_of_kind(
+        &self,
+        kind: NodeSurfaceSlotKind,
+    ) -> Vec<&NodeSurfaceSlotDescriptor> {
+        let mut slots: Vec<_> = self
+            .surface_slots
+            .iter()
+            .filter(|slot| slot.kind == kind)
+            .collect();
+        slots.sort_by(|a, b| {
+            a.order_key()
+                .cmp(&b.order_key())
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        slots
+    }
+
+    pub fn surface_slots_by_anchor(
+        &self,
+        anchor: impl AsRef<str>,
+    ) -> Vec<&NodeSurfaceSlotDescriptor> {
+        let anchor = anchor.as_ref();
+        let mut slots: Vec<_> = self
+            .surface_slots
+            .iter()
+            .filter(|slot| slot.anchor.as_deref() == Some(anchor))
+            .collect();
+        slots.sort_by(|a, b| {
+            a.order_key()
+                .cmp(&b.order_key())
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        slots
+    }
+
+    pub fn surface_slot_by_anchor(
+        &self,
+        anchor: impl AsRef<str>,
+    ) -> Option<&NodeSurfaceSlotDescriptor> {
+        self.surface_slots_by_anchor(anchor).into_iter().next()
+    }
+
+    pub fn surface_slots_projection(
+        &self,
+        node_data: &Value,
+        layout_hints: Option<&NodeKitLayoutHints>,
+        zoom: f32,
+    ) -> Vec<NodeSurfaceSlotProjection> {
+        let projection = layout_hints
+            .map(|layout_hints| NodeSurfaceProjection::from_layout_hints(layout_hints, zoom))
+            .unwrap_or_else(|| {
+                NodeSurfaceProjection::from_layout_hints(&NodeKitLayoutHints::default(), zoom)
+            });
+
+        let mut slots = self
+            .surface_slots
+            .iter()
+            .filter(|slot| slot.is_visible())
+            .map(|slot| {
+                NodeSurfaceSlotProjection::from_descriptor(
+                    node_data,
+                    slot,
+                    projection.compact_values,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        if !projection.expand_all_slots && slots.len() > projection.slot_limit {
+            slots.truncate(projection.slot_limit);
+        }
+
+        slots
+    }
+}
+
+fn slot_value_preview(
+    node_data: &Value,
+    slot: &NodeSurfaceSlotDescriptor,
+    compact_values: bool,
+) -> Option<String> {
+    let value = semantic_slot_value(node_data, slot)?;
+    let preview = json_value_preview(value, compact_values);
+    (!preview.is_empty()).then_some(preview)
+}
+
+fn semantic_slot_value<'a>(
+    node_data: &'a Value,
+    slot: &NodeSurfaceSlotDescriptor,
+) -> Option<&'a Value> {
+    let key = slot.data_key()?;
+    if slot.kind == NodeSurfaceSlotKind::FieldRow
+        && let Some(fields) = node_data.get("fields").and_then(Value::as_object)
+        && let Some(value) = fields.get(key)
+    {
+        return Some(value);
+    }
+    semantic_json_lookup(node_data, key)
+}
+
+fn semantic_json_lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+fn json_value_preview(value: &Value, compact_values: bool) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Array(items) => {
+            let preview = items
+                .iter()
+                .take(if compact_values { 1 } else { 2 })
+                .map(|value| json_value_preview(value, compact_values))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if preview.is_empty() {
+                format!("{} items", items.len())
+            } else if !compact_values && items.len() > 2 {
+                format!("{preview} …")
+            } else {
+                preview
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("label").and_then(Value::as_str) {
+                return text.to_owned();
+            }
+            if let Some(text) = map.get("title").and_then(Value::as_str) {
+                return text.to_owned();
+            }
+            let preview = map
+                .iter()
+                .take(if compact_values { 1 } else { 2 })
+                .map(|(key, value)| format!("{key}: {}", json_value_preview(value, compact_values)))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if preview.is_empty() {
+                "{}".to_owned()
+            } else {
+                preview
+            }
+        }
+        Value::Null => String::new(),
     }
 }

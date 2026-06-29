@@ -647,8 +647,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
                 let title = region
                     .label
                     .as_deref()
-                    .or_else(|| slot.and_then(|slot| slot.label.as_deref()))
-                    .or_else(|| slot.and_then(|slot| semantic_slot_tail(&slot.key)));
+                    .or_else(|| slot.and_then(|slot| slot.display_label()));
                 let lines = slot
                     .filter(|_| show_detail)
                     .map(|slot| semantic_slot_lines(&input.node.data, slot, Some(fields)))
@@ -690,7 +689,7 @@ fn field_keys(
 ) -> Vec<String> {
     let mut keys = Vec::new();
     for slot in field_slots {
-        if let Some(key) = semantic_slot_data_key(slot)
+        if let Some(key) = slot.data_key()
             && fields.contains_key(key)
             && !keys.iter().any(|existing| existing == key)
         {
@@ -723,35 +722,11 @@ fn semantic_slots<'a>(
     input: &'a NodeRenderInput<'_>,
     kind: NodeSurfaceSlotKind,
 ) -> Vec<&'a NodeSurfaceSlotDescriptor> {
-    let mut slots: Vec<_> = input
-        .descriptor
-        .surface_slots
-        .iter()
-        .filter(|slot| slot.kind == kind)
-        .collect();
-    slots.sort_by(|a, b| {
-        a.order
-            .unwrap_or(i32::MAX)
-            .cmp(&b.order.unwrap_or(i32::MAX))
-            .then_with(|| a.key.cmp(&b.key))
-    });
-    slots
-}
-
-fn semantic_slot_data_key(slot: &NodeSurfaceSlotDescriptor) -> Option<&str> {
-    // Slot keys are the data lookup path. Anchors stay adapter-local.
-    // Legacy field rows still fall back to their `field.*` key tail.
-    slot.slot.as_deref().or_else(|| {
-        (slot.kind == NodeSurfaceSlotKind::FieldRow)
-            .then(|| semantic_slot_tail(&slot.key))
-            .flatten()
-    })
+    input.descriptor.surface_slots_of_kind(kind)
 }
 
 fn semantic_slot_title(slot: &NodeSurfaceSlotDescriptor) -> Option<String> {
-    slot.label
-        .clone()
-        .or_else(|| semantic_slot_tail(&slot.key).map(ToOwned::to_owned))
+    slot.display_label().map(ToOwned::to_owned)
 }
 
 fn semantic_slot_chip_text(
@@ -804,7 +779,7 @@ fn semantic_slot_value<'a>(
     slot: &NodeSurfaceSlotDescriptor,
     fields: Option<&'a serde_json::Map<String, serde_json::Value>>,
 ) -> Option<&'a serde_json::Value> {
-    let key = semantic_slot_data_key(slot)?;
+    let key = slot.data_key()?;
     if slot.kind == NodeSurfaceSlotKind::FieldRow
         && let Some(fields) = fields
         && let Some(value) = fields.get(key)
@@ -812,14 +787,6 @@ fn semantic_slot_value<'a>(
         return Some(value);
     }
     semantic_json_lookup(node_data, key)
-}
-
-fn semantic_slot_tail(slot: &str) -> Option<&str> {
-    slot.strip_prefix("field.")
-        .or_else(|| slot.strip_prefix("badge."))
-        .or_else(|| slot.strip_prefix("actions."))
-        .or_else(|| slot.strip_prefix("nested."))
-        .or_else(|| slot.split_once('.').map(|(_, tail)| tail))
 }
 
 fn semantic_json_lookup<'a>(
@@ -1223,18 +1190,18 @@ mod tests {
     }
 
     #[test]
-    fn semantic_slot_data_key_prefers_explicit_slot_and_keeps_field_compatibility() {
+    fn semantic_slot_data_key_resolves_explicit_slot_and_keeps_field_compatibility() {
         let field =
             NodeSurfaceSlotDescriptor::field_row("field.source").with_anchor("field.source");
-        assert_eq!(semantic_slot_data_key(&field), Some("source"));
+        assert_eq!(field.data_key(), Some("source"));
 
         let badge = NodeSurfaceSlotDescriptor::badge("badge.model").with_anchor("meta.model");
-        assert_eq!(semantic_slot_data_key(&badge), None);
+        assert_eq!(badge.data_key(), None);
 
         let nested = NodeSurfaceSlotDescriptor::nested_region("nested.policy")
             .with_slot("nested.policy")
             .with_anchor("nested.policy");
-        assert_eq!(semantic_slot_data_key(&nested), Some("nested.policy"));
+        assert_eq!(nested.data_key(), Some("nested.policy"));
     }
 
     #[test]
