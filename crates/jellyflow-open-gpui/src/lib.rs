@@ -29,12 +29,15 @@ pub use controls::{
     support_for_primitive,
 };
 pub use inspector::{
-    OpenGpuiInspectorPlan, OpenGpuiInspectorSurface, plan_inspector_control_edit,
-    project_inspector, project_inspectors_for_surface,
+    OpenGpuiInspectorPlan, OpenGpuiInspectorSurface, OpenGpuiInspectorTargetBounds,
+    OpenGpuiInspectorTargetSource, plan_inspector_control_edit, project_inspector,
+    project_inspectors_for_surface, resolve_inspector_target_bounds,
 };
 pub use measurement::{
     OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
-    OpenGpuiMeasurementContext, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
+    OpenGpuiMeasurementSource, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    layout_pass_measurement_from_regions,
 };
 pub use projection::{
     OpenGpuiNodeSurfaceLayout, OpenGpuiNodeSurfaceSlotLayout, OpenGpuiRepeatableSurfaceLayout,

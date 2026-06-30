@@ -1,5 +1,6 @@
 use jellyflow::{
-    core::{Node, NodeId},
+    core::{CanvasRect, Node, NodeId},
+    runtime::runtime::measurement::NodeMeasurement,
     runtime::schema::{
         InspectorDescriptor, InspectorTarget, NodeKindViewDescriptor,
         NodeRepeatableCollectionDescriptor,
@@ -44,15 +45,94 @@ pub struct OpenGpuiInspectorPlan {
     pub key: String,
     pub label: String,
     pub target: InspectorTarget,
+    pub target_region_key: Option<String>,
     pub controls: Vec<OpenGpuiControlPlan>,
     pub action_menu: OpenGpuiMenuPlan,
     pub editable: bool,
     pub read_only_reason: Option<String>,
 }
 
+/// Source used to position an inspector target highlight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenGpuiInspectorTargetSource {
+    Measured,
+    Fallback,
+    Missing,
+}
+
+/// Node-local bounds for the semantic region targeted by an inspector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenGpuiInspectorTargetBounds {
+    pub rect: Option<CanvasRect>,
+    pub source: OpenGpuiInspectorTargetSource,
+}
+
 impl OpenGpuiInspectorPlan {
     pub fn editable_controls(&self) -> impl Iterator<Item = &OpenGpuiControlPlan> {
         self.controls.iter().filter(|control| control.is_editable())
+    }
+}
+
+/// Resolve an inspector target against fresh runtime measurement facts.
+pub fn resolve_inspector_target_bounds(
+    inspector: &OpenGpuiInspectorPlan,
+    measurement: Option<&NodeMeasurement>,
+    fallback: Option<CanvasRect>,
+) -> OpenGpuiInspectorTargetBounds {
+    let measured = measurement
+        .and_then(|measurement| measured_rect_for_inspector_target(inspector, measurement));
+    if let Some(rect) = measured {
+        return OpenGpuiInspectorTargetBounds {
+            rect: Some(rect),
+            source: OpenGpuiInspectorTargetSource::Measured,
+        };
+    }
+    if let Some(rect) = fallback {
+        return OpenGpuiInspectorTargetBounds {
+            rect: Some(rect),
+            source: OpenGpuiInspectorTargetSource::Fallback,
+        };
+    }
+    OpenGpuiInspectorTargetBounds {
+        rect: None,
+        source: OpenGpuiInspectorTargetSource::Missing,
+    }
+}
+
+fn measured_rect_for_inspector_target(
+    inspector: &OpenGpuiInspectorPlan,
+    measurement: &NodeMeasurement,
+) -> Option<CanvasRect> {
+    match &inspector.target {
+        InspectorTarget::Slot { .. }
+        | InspectorTarget::Control { .. }
+        | InspectorTarget::RepeatableItem { .. } => {
+            inspector
+                .target_region_key
+                .as_ref()
+                .and_then(|target_region_key| {
+                    measurement
+                        .slots
+                        .iter()
+                        .find(|slot| slot.is_visible() && slot.key == *target_region_key)
+                        .map(|slot| slot.rect)
+                })
+        }
+        InspectorTarget::Port { port_key } => measurement
+            .anchors
+            .iter()
+            .find(|anchor| {
+                anchor.is_visible()
+                    && anchor
+                        .port_key
+                        .as_ref()
+                        .is_some_and(|measured| measured.0 == *port_key)
+            })
+            .map(|anchor| anchor.rect),
+        InspectorTarget::Graph
+        | InspectorTarget::Node { .. }
+        | InspectorTarget::Edge
+        | InspectorTarget::Diagnostic { .. } => None,
     }
 }
 
@@ -77,6 +157,7 @@ pub fn project_inspector(
     inspector: &InspectorDescriptor,
 ) -> OpenGpuiInspectorPlan {
     let repeatable = repeatable_context_for_inspector(descriptor, node_data, &inspector.target);
+    let target_region_key = inspector_target_region_key(descriptor, node_data, &inspector.target);
     let controls = inspector
         .controls
         .iter()
@@ -104,6 +185,7 @@ pub fn project_inspector(
             .clone()
             .unwrap_or_else(|| inspector.key.clone()),
         target: inspector.target.clone(),
+        target_region_key,
         editable: read_only_reason.is_none(),
         read_only_reason,
         controls,
@@ -208,6 +290,36 @@ fn repeatable_item_action_parts(
             )
         }
         other => (target, other),
+    }
+}
+
+fn inspector_target_region_key(
+    descriptor: &NodeKindViewDescriptor,
+    node_data: &Value,
+    target: &InspectorTarget,
+) -> Option<String> {
+    match target {
+        InspectorTarget::Slot { slot_key } => Some(slot_key.clone()),
+        InspectorTarget::Control { control_key } => Some(control_key.clone()),
+        InspectorTarget::RepeatableItem {
+            collection_key,
+            item_id,
+        } => descriptor
+            .repeatable_collections
+            .iter()
+            .find(|collection| collection.key == *collection_key)
+            .and_then(|collection| {
+                collection
+                    .item_projections(node_data)
+                    .into_iter()
+                    .find(|item| item.item_id == *item_id)
+                    .map(|item| item.slot_key)
+            }),
+        InspectorTarget::Graph
+        | InspectorTarget::Node { .. }
+        | InspectorTarget::Edge
+        | InspectorTarget::Port { .. }
+        | InspectorTarget::Diagnostic { .. } => None,
     }
 }
 
@@ -365,6 +477,7 @@ mod tests {
         runtime::{
             io::{NodeGraphEditorConfig, NodeGraphViewState},
             runtime::create_node::CreateNodeRequest,
+            runtime::measurement::{MeasuredSurfaceSlot, NodeMeasurement},
             schema::{ActionIntent, InspectorTarget, NodeKitRegistry},
         },
     };
@@ -449,6 +562,10 @@ mod tests {
             .iter()
             .find(|inspector| inspector.key == "inspector.column.email")
             .expect("column inspector");
+        assert_eq!(
+            inspector.target_region_key.as_deref(),
+            Some("field.column.email")
+        );
         let name = inspector
             .controls
             .iter()
@@ -485,6 +602,62 @@ mod tests {
             panic!("expected node data edit");
         };
         assert_eq!(to["columns"][1]["name"], json!("email_address"));
+    }
+
+    #[test]
+    fn inspector_target_bounds_prefer_measured_region_then_fallback() {
+        let (descriptor, node_id, node) = schema_node("demo.table").expect("table schema node");
+        let inspector = project_inspectors_for_surface(
+            &descriptor,
+            &node.data,
+            &OpenGpuiInspectorSurface::RepeatableItem {
+                collection_key: "table.columns".to_owned(),
+                item_id: "email".to_owned(),
+            },
+        )
+        .into_iter()
+        .find(|inspector| inspector.key == "inspector.column.email")
+        .expect("column inspector");
+        let measured = CanvasRect {
+            origin: CanvasPoint { x: 8.0, y: 52.0 },
+            size: CanvasSize {
+                width: 144.0,
+                height: 24.0,
+            },
+        };
+        let fallback = CanvasRect {
+            origin: CanvasPoint { x: 0.0, y: 0.0 },
+            size: CanvasSize {
+                width: 32.0,
+                height: 16.0,
+            },
+        };
+        let measurement = NodeMeasurement::new(node_id).with_slots([MeasuredSurfaceSlot::new(
+            inspector
+                .target_region_key
+                .clone()
+                .expect("target region key"),
+            measured,
+        )]);
+
+        let target =
+            resolve_inspector_target_bounds(&inspector, Some(&measurement), Some(fallback));
+        assert_eq!(target.rect, Some(measured));
+        assert_eq!(target.source, OpenGpuiInspectorTargetSource::Measured);
+
+        let fallback_target = resolve_inspector_target_bounds(&inspector, None, Some(fallback));
+        assert_eq!(fallback_target.rect, Some(fallback));
+        assert_eq!(
+            fallback_target.source,
+            OpenGpuiInspectorTargetSource::Fallback
+        );
+
+        let missing_target = resolve_inspector_target_bounds(&inspector, None, None);
+        assert_eq!(missing_target.rect, None);
+        assert_eq!(
+            missing_target.source,
+            OpenGpuiInspectorTargetSource::Missing
+        );
     }
 
     #[test]
