@@ -8,10 +8,10 @@ and semantic capability evidence that does not depend on GPU output.
 
 | Shape | Fixture | Required states | Hard evidence |
 | --- | --- | --- | --- |
-| Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation` | full, compact, shell, resize, dropped-wire menu, inspector/action descriptors | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures` |
-| Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint` | typed port rails, config controls, preview, invalid hover, typed commit rejection | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures` |
-| ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table` | repeatable field rows, resize, slot bounds, handle-anchor proximity | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions` |
-| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas` | shell density, stable handles, graph-level visual coverage | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output |
+| Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation`, GPUI `demo.llm` schema probe | full, compact, shell, resize, dropped-wire menu, inspector/action descriptors | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::interaction_fixtures_cover_gpui_authoring_states` |
+| Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint`, GPUI `demo.shader.mix` schema probe | typed port rails, config controls, preview, invalid hover, typed commit rejection | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions` |
+| ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table` | repeatable field rows, resize, slot bounds, handle-anchor proximity | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions` |
+| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas` | shell density, stable handles, graph-level visual coverage | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions` |
 
 ## Commands
 
@@ -19,6 +19,7 @@ Run these as the focused authoring regression gate:
 
 ```sh
 cargo test -p jellyflow-egui --lib -- --nocapture
+cargo nextest run -p jellyflow-open-gpui --no-fail-fast
 cargo run -p jellyflow-egui --example gallery_snapshot -- target/jellyflow-egui-gallery
 RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow
 ```
@@ -36,6 +37,8 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
 - Shell density may hide rich controls, but visible handles and runtime anchor facts must remain
   queryable so wires do not drift.
 - Resize preview geometry must use the same renderer-minimum-size path as committed snapshots.
-- GPUI currently proves authoring descriptor projection and local component layout only. It must
-  continue reporting layout measurement as projection fallback until open-gpui exposes a stable
-  node-local element-bounds callback during layout or prepaint.
+- GPUI adapter-level gates now live in `jellyflow-open-gpui::testing`. The `canvas-jellyflow`
+  example is a consumer/manual smoke surface, not the owner of product fixture regression logic.
+- GPUI full measurement claims must still be backed by the open-gpui element-bounds hook. Projection
+  fixture gates may prove clipping, controls, repeatables, menus, and inspector contracts, but they
+  must keep capability reporting at `ProjectionFallback`.
