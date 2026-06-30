@@ -7,11 +7,18 @@
 #![deny(unsafe_code)]
 
 pub mod adapter;
+pub mod controls;
 pub mod measurement;
 pub mod projection;
 pub mod testing;
 
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
+pub use controls::{
+    OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
+    OpenGpuiControlPrimitive, OpenGpuiControlProjectionContext, OpenGpuiControlSupport,
+    plan_control_edit, primitive_for_kind, project_control, project_slot_controls,
+    support_for_primitive,
+};
 pub use measurement::{
     OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
     OpenGpuiMeasurementContext, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
