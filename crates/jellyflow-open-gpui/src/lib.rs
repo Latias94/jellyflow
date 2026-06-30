@@ -9,6 +9,7 @@
 pub mod actions;
 pub mod adapter;
 pub mod controls;
+pub mod inspector;
 pub mod measurement;
 pub mod projection;
 pub mod repeatable;
@@ -26,6 +27,10 @@ pub use controls::{
     OpenGpuiControlPrimitive, OpenGpuiControlProjectionContext, OpenGpuiControlSupport,
     plan_control_edit, primitive_for_kind, project_control, project_slot_controls,
     support_for_primitive,
+};
+pub use inspector::{
+    OpenGpuiInspectorPlan, OpenGpuiInspectorSurface, plan_inspector_control_edit,
+    project_inspector, project_inspectors_for_surface,
 };
 pub use measurement::{
     OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
