@@ -6,6 +6,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod actions;
 pub mod adapter;
 pub mod controls;
 pub mod measurement;
@@ -13,6 +14,12 @@ pub mod projection;
 pub mod repeatable;
 pub mod testing;
 
+pub use actions::{
+    OpenGpuiActionDispatchPlan, OpenGpuiActionPlan, OpenGpuiActionSurface,
+    OpenGpuiDroppedWireInsertPlan, OpenGpuiMenuPlan, plan_action_dispatch,
+    plan_dropped_wire_insert, project_action, project_actions_for_surface,
+    project_dropped_wire_menu, project_menu,
+};
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
 pub use controls::{
     OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
