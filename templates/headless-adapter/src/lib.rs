@@ -10,15 +10,17 @@ use jellyflow_core::{
 use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphPanInertiaTuning, NodeGraphViewState};
 use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
 use jellyflow_runtime::runtime::conformance::{
-    ConformanceAction, ConformanceCallbackEvent, ConformanceDeleteSelectionContract,
-    ConformanceDeleteSelectionDuringNodeDragContract, ConformanceEdgeEndpointPosition,
-    ConformanceFixtureDirectory, ConformanceFixtureDirectoryApprovalReport,
+    ConformanceAction, ConformanceCallbackEvent, ConformanceCapabilityClaim,
+    ConformanceCapabilityKind, ConformanceCapabilityMatrix, ConformanceCapabilityRequirement,
+    ConformanceDeleteSelectionContract, ConformanceDeleteSelectionDuringNodeDragContract,
+    ConformanceEdgeEndpointPosition, ConformanceFixtureDirectory,
+    ConformanceFixtureDirectoryApprovalReport,
     ConformanceFixtureDirectoryReport, ConformanceLayoutEdgePosition,
     ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsContract,
     ConformanceLayoutFactsExpectation, ConformanceNodeDragSessionContract,
     ConformanceNodeResizeSessionContract, ConformanceRenderingQueryContract, ConformanceRunReport,
-    ConformanceScenario, ConformanceSuite, ConformanceSuiteReport, ConformanceTraceEvent,
-    ConformanceViewChange, ConformanceViewportDragPanSessionContract,
+    ConformanceScenario, ConformanceSuite, ConformanceSuiteReport, ConformanceSupportLevel,
+    ConformanceTraceEvent, ConformanceViewChange, ConformanceViewportDragPanSessionContract,
 };
 use jellyflow_runtime::runtime::connection::{
     ConnectionHandleConnection, ConnectionHandleRef, ConnectionHandleValidity,
@@ -43,23 +45,118 @@ use jellyflow_runtime::runtime::viewport::{
 use jellyflow_runtime::runtime::xyflow::callbacks::EdgeConnection;
 use jellyflow_runtime::runtime::{store::NodeGraphStore, xyflow::ControlledGraph};
 use jellyflow_runtime::schema::{
-    NodeKitRegistry, NodeKindViewDescriptor, NodeRegistry, NodeSchema, PortDecl,
+    ActionIntent, ActionTarget, InspectorDescriptor, InspectorTarget, MenuDescriptor, MenuSurface,
+    NodeActionDescriptor, NodeControlBinding, NodeControlDescriptor, NodeKindViewDescriptor,
+    NodeKitRegistry, NodeRegistry, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
+    NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
 };
 
 pub fn adapter_smoke_suite() -> ConformanceSuite {
-    ConformanceSuite::new("headless adapter template").with_scenarios([
-        node_drag_scenario(),
-        node_drag_parent_expansion_scenario(),
-        node_resize_scenario(),
-        layout_facts_scenario(),
-        delete_selection_scenario(),
-        delete_during_active_drag_scenario(),
-        viewport_pan_scenario(),
-        viewport_constrained_pan_scenario(),
-        rendering_query_contract_scenario(),
-        viewport_animation_scenario(),
-        viewport_pan_inertia_scenario(),
-    ])
+    ConformanceSuite::new("headless adapter template")
+        .with_capabilities(template_capabilities())
+        .with_capability_requirements(template_capability_requirements())
+        .with_scenarios([
+            node_drag_scenario(),
+            node_drag_parent_expansion_scenario(),
+            node_resize_scenario(),
+            layout_facts_scenario(),
+            delete_selection_scenario(),
+            delete_during_active_drag_scenario(),
+            viewport_pan_scenario(),
+            viewport_constrained_pan_scenario(),
+            rendering_query_contract_scenario(),
+            viewport_animation_scenario(),
+            viewport_pan_inertia_scenario(),
+        ])
+}
+
+pub fn template_capability_requirements() -> Vec<ConformanceCapabilityRequirement> {
+    [
+        (
+            ConformanceCapabilityKind::MeasuredHandles,
+            ConformanceSupportLevel::Full,
+        ),
+        (
+            ConformanceCapabilityKind::MeasuredAnchors,
+            ConformanceSupportLevel::Full,
+        ),
+        (
+            ConformanceCapabilityKind::DynamicInternals,
+            ConformanceSupportLevel::Full,
+        ),
+        (
+            ConformanceCapabilityKind::ControlProjection,
+            ConformanceSupportLevel::Projection,
+        ),
+        (
+            ConformanceCapabilityKind::RepeatableCollections,
+            ConformanceSupportLevel::Projection,
+        ),
+        (
+            ConformanceCapabilityKind::Actions,
+            ConformanceSupportLevel::Projection,
+        ),
+    ]
+    .into_iter()
+    .map(|(capability, minimum)| ConformanceCapabilityRequirement::new(capability, minimum))
+    .collect()
+}
+
+pub fn template_capabilities() -> ConformanceCapabilityMatrix {
+    ConformanceCapabilityMatrix::for_adapter("headless-adapter-template")
+        .with_claim(ConformanceCapabilityClaim::full(
+            ConformanceCapabilityKind::MeasuredHandles,
+        ))
+        .with_claim(ConformanceCapabilityClaim::full(
+            ConformanceCapabilityKind::MeasuredAnchors,
+        ))
+        .with_claim(ConformanceCapabilityClaim::full(
+            ConformanceCapabilityKind::DynamicInternals,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::ControlProjection,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::RepeatableCollections,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::Actions,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::Menus,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::DroppedWireMenu,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::Inspector,
+        ))
+        .with_claim(ConformanceCapabilityClaim::projection(
+            ConformanceCapabilityKind::Blackboard,
+        ))
+        .with_claim(ConformanceCapabilityClaim::partial(
+            ConformanceCapabilityKind::TypedDiagnostics,
+        ))
+        .with_claim(
+            ConformanceCapabilityClaim::new(
+                ConformanceCapabilityKind::VisualRegression,
+                ConformanceSupportLevel::None,
+            )
+            .with_notes("visual and pixel checks belong in adapter-specific crates"),
+        )
+        .with_claim(
+            ConformanceCapabilityClaim::new(
+                ConformanceCapabilityKind::KeyboardAccessibility,
+                ConformanceSupportLevel::None,
+            )
+            .with_notes("host adapters own toolkit accessibility wiring"),
+        )
+        .with_claim(
+            ConformanceCapabilityClaim::projection(
+                ConformanceCapabilityKind::LayoutPassMeasurement,
+            )
+            .with_notes("template proves measurement vocabulary, not a toolkit layout pass"),
+        )
 }
 
 pub fn check_builtin_suite() -> ConformanceSuiteReport {
@@ -262,7 +359,70 @@ pub fn template_note_schema() -> NodeSchema {
         })
         .port(PortDecl::data_input("source").with_label("Source"))
         .port(PortDecl::data_output("result").with_label("Result"))
-        .default_data(serde_json::json!({ "body": "" }))
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.body")
+                .with_label("Body")
+                .with_slot("body")
+                .with_anchor("field.body")
+                .with_control(
+                    NodeControlDescriptor::text_area("control.body")
+                        .with_label("Body")
+                        .with_binding(NodeControlBinding::slot("body")),
+                ),
+        )
+        .repeatable_collection(
+            NodeRepeatableCollectionDescriptor::new("note.tags", "tags", "id")
+                .with_label("Tags")
+                .with_item_template_slot(
+                    NodeSurfaceSlotDescriptor::badge("tag")
+                        .with_label("Tag")
+                        .with_slot("tags"),
+                )
+                .with_anchor_rule(NodeRepeatableAnchorRule::new("tag", "tag"))
+                .with_max_items(8)
+                .with_add_action("action.tag.add")
+                .with_remove_action("action.tag.remove"),
+        )
+        .action(NodeActionDescriptor::new(
+            "action.tag.add",
+            "Add tag",
+            ActionTarget::Node {
+                node_kind: "template.note".to_owned(),
+            },
+            ActionIntent::AddRepeatableItem {
+                collection_key: "note.tags".to_owned(),
+            },
+        ))
+        .action(
+            NodeActionDescriptor::new(
+                "action.tag.remove",
+                "Remove tag",
+                ActionTarget::Node {
+                    node_kind: "template.note".to_owned(),
+                },
+                ActionIntent::RemoveRepeatableItem {
+                    collection_key: "note.tags".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .danger(),
+        )
+        .menu(MenuDescriptor::new("menu.note", MenuSurface::Node).with_action_key("action.tag.add"))
+        .inspector(
+            InspectorDescriptor::new(
+                "inspector.tag.urgent",
+                InspectorTarget::RepeatableItem {
+                    collection_key: "note.tags".to_owned(),
+                    item_id: "urgent".to_owned(),
+                },
+            )
+            .with_control(
+                NodeControlDescriptor::text_input("inspector.tag.label")
+                    .with_label("Label")
+                    .with_binding(NodeControlBinding::data_path("label")),
+            ),
+        )
+        .default_data(serde_json::json!({ "body": "", "tags": [] }))
         .build()
 }
 
@@ -353,6 +513,75 @@ pub fn run_create_node_palette_smoke() -> Result<(), String> {
             "expected create-node transaction label, got {:?}",
             outcome.dispatch.committed().label()
         ));
+    }
+
+    Ok(())
+}
+
+pub fn run_authoring_controls_projection_smoke() -> Result<(), String> {
+    let registry = template_node_registry();
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("template.note"))
+        .ok_or_else(|| "expected template.note descriptor".to_owned())?;
+    let projected = descriptor.surface_slots_projection(
+        &serde_json::json!({ "body": "adapter-local widgets render this" }),
+        None,
+        1.0,
+    );
+    let body_slot = projected
+        .iter()
+        .find(|slot| slot.key == "field.body")
+        .ok_or_else(|| "expected field.body projection".to_owned())?;
+    let control = body_slot
+        .controls
+        .first()
+        .ok_or_else(|| "expected projected body control".to_owned())?;
+
+    if control.data_key() != Some("body") {
+        return Err(format!(
+            "expected body control to bind to body, got {:?}",
+            control.data_key()
+        ));
+    }
+    if body_slot.value != "adapter-local widgets render this" {
+        return Err(format!(
+            "expected projected body preview, got {:?}",
+            body_slot.value
+        ));
+    }
+    let tag_items = descriptor.repeatable_items_projection(
+        &serde_json::json!({
+            "tags": [
+                { "id": "urgent", "label": "Urgent" },
+                { "id": "draft", "label": "Draft" }
+            ]
+        }),
+        "note.tags",
+    );
+    if tag_items.len() != 2 || tag_items[0].anchor != "tag.urgent" {
+        return Err(format!(
+            "expected stable tag repeatable anchors, got {:?}",
+            tag_items
+        ));
+    }
+    if descriptor.action("action.tag.add").is_none() {
+        return Err("expected template tag add action".to_owned());
+    }
+    if descriptor
+        .menu("menu.note")
+        .and_then(|menu| menu.action_keys.first())
+        .map(String::as_str)
+        != Some("action.tag.add")
+    {
+        return Err("expected template note menu to reference tag add action".to_owned());
+    }
+    if descriptor
+        .inspector("inspector.tag.urgent")
+        .and_then(|inspector| inspector.controls.first())
+        .and_then(|control| control.data_key())
+        != Some("label")
+    {
+        return Err("expected template tag inspector control".to_owned());
     }
 
     Ok(())
@@ -1324,6 +1553,44 @@ mod tests {
 
         assert!(report.is_match(), "{report}");
         assert_eq!(report.scenario_count(), 11);
+        assert_eq!(
+            report
+                .capabilities
+                .level(ConformanceCapabilityKind::MeasuredAnchors),
+            ConformanceSupportLevel::Full
+        );
+        assert_eq!(
+            report
+                .capabilities
+                .level(ConformanceCapabilityKind::ControlProjection),
+            ConformanceSupportLevel::Projection
+        );
+        assert!(!report.capabilities.satisfies(
+            ConformanceCapabilityKind::LayoutPassMeasurement,
+            ConformanceSupportLevel::Full,
+        ));
+    }
+
+    #[test]
+    fn template_capability_matrix_distinguishes_projection_from_full() {
+        let capabilities = template_capabilities();
+
+        assert!(capabilities.satisfies(
+            ConformanceCapabilityKind::MeasuredHandles,
+            ConformanceSupportLevel::Full
+        ));
+        assert!(capabilities.satisfies(
+            ConformanceCapabilityKind::ControlProjection,
+            ConformanceSupportLevel::Projection
+        ));
+        assert!(!capabilities.satisfies(
+            ConformanceCapabilityKind::EditableControls,
+            ConformanceSupportLevel::Projection
+        ));
+        assert!(!capabilities.satisfies(
+            ConformanceCapabilityKind::LayoutPassMeasurement,
+            ConformanceSupportLevel::Full
+        ));
     }
 
     #[test]

@@ -1,6 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jellyflow_headless_adapter_template::{adapter_smoke_suite, check_fixture_directory};
+use jellyflow_headless_adapter_template::{
+    adapter_smoke_suite, check_fixture_directory, run_authoring_controls_projection_smoke,
+    template_capabilities,
+};
+use jellyflow_runtime::runtime::conformance::{
+    ConformanceCapabilityKind, ConformanceSupportLevel,
+};
 
 #[test]
 fn template_adapter_conformance_suite_matches() {
@@ -8,6 +14,23 @@ fn template_adapter_conformance_suite_matches() {
 
     assert!(report.is_match(), "{report}");
     assert_eq!(report.scenario_count(), 11);
+    assert_eq!(
+        report
+            .capabilities
+            .level(ConformanceCapabilityKind::MeasuredAnchors),
+        ConformanceSupportLevel::Full
+    );
+    assert!(report.capability_gaps.is_empty());
+    assert_eq!(
+        report
+            .capabilities
+            .level(ConformanceCapabilityKind::ControlProjection),
+        ConformanceSupportLevel::Projection
+    );
+    assert!(!report.capabilities.satisfies(
+        ConformanceCapabilityKind::LayoutPassMeasurement,
+        ConformanceSupportLevel::Full,
+    ));
 }
 
 #[test]
@@ -24,6 +47,33 @@ fn template_adapter_fixture_directory_matches() {
     assert!(report.is_match(), "{report}");
     assert_eq!(report.file_count(), 1);
     assert_eq!(report.scenario_count(), 11);
+}
+
+#[test]
+fn template_adapter_capabilities_do_not_overclaim_authoring_support() {
+    let capabilities = template_capabilities();
+
+    assert!(capabilities.satisfies(
+        ConformanceCapabilityKind::MeasuredHandles,
+        ConformanceSupportLevel::Full,
+    ));
+    assert!(capabilities.satisfies(
+        ConformanceCapabilityKind::ControlProjection,
+        ConformanceSupportLevel::Projection,
+    ));
+    assert!(!capabilities.satisfies(
+        ConformanceCapabilityKind::EditableControls,
+        ConformanceSupportLevel::Projection,
+    ));
+    assert!(!capabilities.satisfies(
+        ConformanceCapabilityKind::LayoutPassMeasurement,
+        ConformanceSupportLevel::Full,
+    ));
+}
+
+#[test]
+fn template_adapter_can_project_authoring_controls_without_widgets() {
+    run_authoring_controls_projection_smoke().expect("authoring controls projection smoke");
 }
 
 fn temp_fixture_dir() -> std::path::PathBuf {

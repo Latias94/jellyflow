@@ -5,8 +5,12 @@ use super::{
     NodeKitRegistry,
 };
 use crate::schema::{
-    NodeChromeDescriptor, NodeChromePlacement, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
-    PortViewDescriptor,
+    ActionIntent, ActionTarget, BlackboardDescriptor, InspectorDescriptor, InspectorTarget,
+    MenuDescriptor, MenuSurface, NodeActionDescriptor, NodeChromeDescriptor, NodeChromePlacement,
+    NodeControlBinding, NodeControlDescriptor, NodeControlEditability, NodeControlOption,
+    NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
+    NodeControlValidationRule, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
+    NodeSchema, NodeSurfaceSlotDescriptor, PortDecl, PortViewDescriptor,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, PortCapacity,
@@ -214,7 +218,20 @@ fn workflow_llm_schema() -> NodeSchema {
                 .with_slot("prompt")
                 .with_anchor("field.prompt")
                 .with_lane("parameters")
-                .with_order(0),
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_area("control.prompt")
+                        .with_label("Prompt")
+                        .with_binding(NodeControlBinding::slot("prompt"))
+                        .required()
+                        .with_placeholder("Use {{ variable }} references"),
+                )
+                .with_control(
+                    NodeControlDescriptor::variable_picker("control.prompt_variable")
+                        .with_label("Variable")
+                        .with_binding(NodeControlBinding::graph_symbol("workflow.inputs"))
+                        .with_option_source(NodeControlOptionSource::Variables),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::field_row("field.completion")
@@ -222,14 +239,21 @@ fn workflow_llm_schema() -> NodeSchema {
                 .with_slot("completion")
                 .with_anchor("field.completion")
                 .with_lane("outputs")
-                .with_order(1),
+                .with_order(1)
+                .with_control(
+                    NodeControlDescriptor::text_area("control.completion")
+                        .with_label("Completion")
+                        .with_binding(NodeControlBinding::slot("completion"))
+                        .read_only(),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::badge("badge.model")
                 .with_label("Model")
                 .with_slot("meta.model")
                 .with_anchor("meta.model")
-                .with_order(0),
+                .with_order(0)
+                .with_control(llm_model_select_control()),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::metric_badge("metric.latency")
@@ -243,7 +267,29 @@ fn workflow_llm_schema() -> NodeSchema {
                 .with_label("Config")
                 .with_slot("config.model")
                 .with_anchor("config.model")
-                .with_order(1),
+                .with_order(1)
+                .with_controls([
+                    llm_model_select_control(),
+                    NodeControlDescriptor::slider("control.temperature")
+                        .with_label("Temperature")
+                        .with_binding(NodeControlBinding::data_path("config.model.temperature"))
+                        .with_validation_rule(NodeControlValidationRule::Range {
+                            min: Some(0.0),
+                            max: Some(2.0),
+                        })
+                        .with_presentation(
+                            NodeControlPresentation::default()
+                                .with_unit("temp")
+                                .compact_label(),
+                        ),
+                    NodeControlDescriptor::toggle("control.stream")
+                        .with_label("Stream")
+                        .with_binding(NodeControlBinding::data_path("config.model.stream")),
+                    NodeControlDescriptor::asset("control.knowledge_base")
+                        .with_label("Knowledge base")
+                        .with_binding(NodeControlBinding::data_path("config.model.knowledge_base"))
+                        .with_option_source(NodeControlOptionSource::Assets),
+                ]),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::nested_region("nested.policy")
@@ -264,7 +310,159 @@ fn workflow_llm_schema() -> NodeSchema {
                 .with_label("Actions")
                 .with_slot("actions.primary")
                 .with_anchor("actions.primary")
-                .with_order(4),
+                .with_order(4)
+                .with_control(
+                    NodeControlDescriptor::toggle("control.enable_run")
+                        .with_label("Run enabled")
+                        .with_binding(NodeControlBinding::data_path("actions.primary.enabled"))
+                        .with_editability(
+                            NodeControlEditability::default()
+                                .disabled("Requires a valid model and prompt"),
+                        ),
+                ),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.llm.run",
+                "Run",
+                ActionTarget::Node {
+                    node_kind: "demo.llm".to_owned(),
+                },
+                ActionIntent::RunNode,
+            )
+            .with_group("primary")
+            .with_order(0)
+            .with_icon_key("play"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.insert.llm",
+                "Insert LLM",
+                ActionTarget::DroppedWire {
+                    source_port_key: Some("completion".to_owned()),
+                },
+                ActionIntent::InsertNode {
+                    node_kind: "demo.llm".to_owned(),
+                },
+            )
+            .with_group("create")
+            .with_order(0),
+        )
+        .menu(
+            MenuDescriptor::new("menu.dropped_wire.llm", MenuSurface::DroppedWire)
+                .with_label("Insert compatible node")
+                .with_action_key("action.insert.llm"),
+        )
+        .menu(
+            MenuDescriptor::new("menu.node.llm", MenuSurface::Node)
+                .with_label("LLM")
+                .with_action_key("action.llm.run"),
+        )
+        .inspector(
+            InspectorDescriptor::new(
+                "inspector.llm",
+                InspectorTarget::Node {
+                    node_kind: "demo.llm".to_owned(),
+                },
+            )
+            .with_label("LLM")
+            .with_control(
+                NodeControlDescriptor::select("inspector.model")
+                    .with_label("Model")
+                    .with_binding(NodeControlBinding::data_path("meta.model"))
+                    .with_options([
+                        NodeControlOption::new("gpt-4.1-mini", "GPT 4.1 Mini"),
+                        NodeControlOption::new("gpt-4.1", "GPT 4.1"),
+                    ]),
+            )
+            .with_action_key("action.llm.run"),
+        )
+        .repeatable_collection(
+            NodeRepeatableCollectionDescriptor::new("llm.params", "params", "id")
+                .with_label("Parameters")
+                .with_empty_label("No parameters")
+                .with_item_template_slot(
+                    NodeSurfaceSlotDescriptor::field_row("param")
+                        .with_label("Parameter")
+                        .with_slot("params")
+                        .with_control(
+                            NodeControlDescriptor::text_input("control.param.name")
+                                .with_label("Name")
+                                .with_binding(NodeControlBinding::data_path("name")),
+                        )
+                        .with_control(
+                            NodeControlDescriptor::expression("control.param.value")
+                                .with_label("Value")
+                                .with_binding(NodeControlBinding::data_path("value"))
+                                .with_validation_rule(NodeControlValidationRule::ExpressionShape {
+                                    language: Some("jinja".to_owned()),
+                                }),
+                        ),
+                )
+                .with_anchor_rule(NodeRepeatableAnchorRule::new("param", "param"))
+                .with_min_items(0)
+                .with_max_items(12)
+                .reorderable()
+                .with_add_action("action.param.add")
+                .with_remove_action("action.param.remove")
+                .with_reorder_action("action.param.reorder"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.param.add",
+                "Add parameter",
+                ActionTarget::Node {
+                    node_kind: "demo.llm".to_owned(),
+                },
+                ActionIntent::AddRepeatableItem {
+                    collection_key: "llm.params".to_owned(),
+                },
+            )
+            .with_group("parameters"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.param.remove",
+                "Remove parameter",
+                ActionTarget::Node {
+                    node_kind: "demo.llm".to_owned(),
+                },
+                ActionIntent::RemoveRepeatableItem {
+                    collection_key: "llm.params".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("parameters")
+            .danger(),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.param.reorder",
+                "Reorder parameter",
+                ActionTarget::Node {
+                    node_kind: "demo.llm".to_owned(),
+                },
+                ActionIntent::ReorderRepeatableItem {
+                    collection_key: "llm.params".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("parameters"),
+        )
+        .inspector(
+            InspectorDescriptor::new(
+                "inspector.param.topic",
+                InspectorTarget::RepeatableItem {
+                    collection_key: "llm.params".to_owned(),
+                    item_id: "topic".to_owned(),
+                },
+            )
+            .with_label("Parameter")
+            .with_control(
+                NodeControlDescriptor::expression("inspector.param.value")
+                    .with_label("Value")
+                    .with_binding(NodeControlBinding::data_path("value")),
+            ),
         )
         .chrome(NodeChromeDescriptor::resizer("resize.corner").with_order(0))
         .chrome(
@@ -300,7 +498,9 @@ fn workflow_llm_schema() -> NodeSchema {
             "config": {
                 "model": {
                     "temperature": 0.2,
-                    "tools": "retrieval"
+                    "tools": "retrieval",
+                    "stream": true,
+                    "knowledge_base": "product-docs"
                 }
             },
             "status": {
@@ -313,14 +513,43 @@ fn workflow_llm_schema() -> NodeSchema {
                 }
             },
             "actions": {
-                "primary": ["Test prompt", "Open trace", "Copy config"]
+                "primary": {
+                    "enabled": false,
+                    "items": ["Test prompt", "Open trace", "Copy config"]
+                }
             },
             "fields": {
                 "prompt": "Customer intake + policy",
                 "completion": "Priority and route"
-            }
+            },
+            "params": [
+                { "id": "topic", "name": "topic", "value": "{{ customer.topic }}" },
+                { "id": "priority", "name": "priority", "value": "{{ intake.priority }}" }
+            ]
         }))
         .build()
+}
+
+fn llm_model_select_control() -> NodeControlDescriptor {
+    let model_values = vec![
+        json!("gpt-4.1-mini"),
+        json!("gpt-4.1"),
+        json!("local-llama"),
+    ];
+
+    NodeControlDescriptor::select("control.model")
+        .with_label("Model")
+        .with_binding(NodeControlBinding::data_path("meta.model"))
+        .with_options([
+            NodeControlOption::new("gpt-4.1-mini", "GPT 4.1 Mini"),
+            NodeControlOption::new("gpt-4.1", "GPT 4.1"),
+            NodeControlOption::new("local-llama", "Local Llama"),
+        ])
+        .with_validation(NodeControlValidation::default().required().with_rule(
+            NodeControlValidationRule::EnumValues {
+                values: model_values,
+            },
+        ))
 }
 
 fn workflow_decision_schema() -> NodeSchema {
@@ -441,7 +670,13 @@ fn erd_table_schema() -> NodeSchema {
                 .with_slot("primary_key")
                 .with_anchor("field.primary_key")
                 .with_lane("fields")
-                .with_order(0),
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_input("control.primary_key.name")
+                        .with_label("Name")
+                        .with_binding(NodeControlBinding::slot("primary_key"))
+                        .required(),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::field_row("field.field")
@@ -449,7 +684,20 @@ fn erd_table_schema() -> NodeSchema {
                 .with_slot("field")
                 .with_anchor("field.field")
                 .with_lane("fields")
-                .with_order(1),
+                .with_order(1)
+                .with_controls([
+                    NodeControlDescriptor::text_input("control.field.name")
+                        .with_label("Name")
+                        .with_binding(NodeControlBinding::slot("field")),
+                    NodeControlDescriptor::select("control.field.type")
+                        .with_label("Type")
+                        .with_binding(NodeControlBinding::data_path("schema.field.type"))
+                        .with_options([
+                            NodeControlOption::new("text", "Text"),
+                            NodeControlOption::new("integer", "Integer"),
+                            NodeControlOption::new("uuid", "UUID"),
+                        ]),
+                ]),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::field_row("field.foreign_key")
@@ -457,7 +705,12 @@ fn erd_table_schema() -> NodeSchema {
                 .with_slot("foreign_key")
                 .with_anchor("field.foreign_key")
                 .with_lane("fields")
-                .with_order(2),
+                .with_order(2)
+                .with_control(
+                    NodeControlDescriptor::port_binding("control.foreign_key.binding")
+                        .with_label("Relation")
+                        .with_binding(NodeControlBinding::port_anchor("field.foreign_key")),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::badge("badge.cardinality")
@@ -480,6 +733,106 @@ fn erd_table_schema() -> NodeSchema {
                 .with_anchor("actions.table")
                 .with_order(2),
         )
+        .repeatable_collection(
+            NodeRepeatableCollectionDescriptor::new("table.columns", "columns", "id")
+                .with_label("Columns")
+                .with_empty_label("No columns")
+                .with_item_template_slot(
+                    NodeSurfaceSlotDescriptor::field_row("column")
+                        .with_label("Column")
+                        .with_slot("columns")
+                        .with_control(
+                            NodeControlDescriptor::text_input("control.column.name")
+                                .with_label("Name")
+                                .with_binding(NodeControlBinding::data_path("name")),
+                        )
+                        .with_control(
+                            NodeControlDescriptor::select("control.column.type")
+                                .with_label("Type")
+                                .with_binding(NodeControlBinding::data_path("ty"))
+                                .with_options([
+                                    NodeControlOption::new("uuid", "UUID"),
+                                    NodeControlOption::new("text", "Text"),
+                                    NodeControlOption::new("integer", "Integer"),
+                                ]),
+                        ),
+                )
+                .with_anchor_rule(
+                    NodeRepeatableAnchorRule::new("field.column", "field.column")
+                        .with_port_key_path("port"),
+                )
+                .with_min_items(1)
+                .with_max_items(16)
+                .reorderable()
+                .with_add_action("action.column.add")
+                .with_remove_action("action.column.remove")
+                .with_reorder_action("action.column.reorder"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.column.add",
+                "Add column",
+                ActionTarget::Node {
+                    node_kind: "demo.table".to_owned(),
+                },
+                ActionIntent::AddRepeatableItem {
+                    collection_key: "table.columns".to_owned(),
+                },
+            )
+            .with_group("columns")
+            .with_order(0),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.column.remove",
+                "Remove column",
+                ActionTarget::Node {
+                    node_kind: "demo.table".to_owned(),
+                },
+                ActionIntent::RemoveRepeatableItem {
+                    collection_key: "table.columns".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("columns")
+            .danger(),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.column.reorder",
+                "Reorder column",
+                ActionTarget::Node {
+                    node_kind: "demo.table".to_owned(),
+                },
+                ActionIntent::ReorderRepeatableItem {
+                    collection_key: "table.columns".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("columns"),
+        )
+        .menu(
+            MenuDescriptor::new("menu.table", MenuSurface::Node).with_action_keys([
+                "action.column.add",
+                "action.column.remove",
+                "action.column.reorder",
+            ]),
+        )
+        .inspector(
+            InspectorDescriptor::new(
+                "inspector.column.email",
+                InspectorTarget::RepeatableItem {
+                    collection_key: "table.columns".to_owned(),
+                    item_id: "email".to_owned(),
+                },
+            )
+            .with_label("Column")
+            .with_control(
+                NodeControlDescriptor::text_input("inspector.column.name")
+                    .with_label("Name")
+                    .with_binding(NodeControlBinding::data_path("name")),
+            ),
+        )
         .default_data(json!({
             "title": "Table",
             "summary": "id · field · field",
@@ -491,7 +844,17 @@ fn erd_table_schema() -> NodeSchema {
                 "primary_key": "id",
                 "field": "field",
                 "foreign_key": "field_id"
-            }
+            },
+            "schema": {
+                "field": {
+                    "type": "text"
+                }
+            },
+            "columns": [
+                { "id": "id", "name": "id", "ty": "uuid", "port": "pk" },
+                { "id": "email", "name": "email", "ty": "text", "port": "field_email" },
+                { "id": "user_id", "name": "user_id", "ty": "uuid", "port": "fk" }
+            ]
         }))
         .build()
 }
@@ -536,7 +899,13 @@ fn shader_texture_sample_schema() -> NodeSchema {
                 .with_label("Preview")
                 .with_slot("preview.texture")
                 .with_anchor("preview.texture")
-                .with_order(1),
+                .with_order(1)
+                .with_control(
+                    NodeControlDescriptor::asset("control.texture")
+                        .with_label("Texture")
+                        .with_binding(NodeControlBinding::data_path("preview.texture"))
+                        .with_option_source(NodeControlOptionSource::Assets),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::port_rail("rail.outputs")
@@ -618,7 +987,16 @@ fn shader_mix_schema() -> NodeSchema {
                 .with_label("Factor")
                 .with_slot("config.factor")
                 .with_anchor("config.factor")
-                .with_order(1),
+                .with_order(1)
+                .with_control(
+                    NodeControlDescriptor::slider("control.factor")
+                        .with_label("Factor")
+                        .with_binding(NodeControlBinding::data_path("config.factor.default"))
+                        .with_validation_rule(NodeControlValidationRule::Range {
+                            min: Some(0.0),
+                            max: Some(1.0),
+                        }),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::preview("preview.result")
@@ -635,6 +1013,111 @@ fn shader_mix_schema() -> NodeSchema {
                 .with_lane("ports")
                 .with_order(3),
         )
+        .repeatable_collection(
+            NodeRepeatableCollectionDescriptor::new("shader.inputs", "dynamic_inputs", "id")
+                .with_label("Dynamic inputs")
+                .with_empty_label("No dynamic inputs")
+                .with_item_template_slot(
+                    NodeSurfaceSlotDescriptor::port_rail("input")
+                        .with_label("Input")
+                        .with_slot("dynamic_inputs")
+                        .with_control(
+                            NodeControlDescriptor::select("control.shader_input.type")
+                                .with_label("Type")
+                                .with_binding(NodeControlBinding::data_path("ty"))
+                                .with_options([
+                                    NodeControlOption::new("float", "Float"),
+                                    NodeControlOption::new("vec2", "Vec2"),
+                                    NodeControlOption::new("vec4", "Vec4"),
+                                ]),
+                        ),
+                )
+                .with_anchor_rule(
+                    NodeRepeatableAnchorRule::new("rail.inputs", "rail.inputs")
+                        .with_port_key_path("port"),
+                )
+                .with_min_items(2)
+                .with_max_items(8)
+                .reorderable()
+                .with_add_action("action.shader_input.add")
+                .with_remove_action("action.shader_input.remove")
+                .with_reorder_action("action.shader_input.reorder"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.shader_input.add",
+                "Add input",
+                ActionTarget::Node {
+                    node_kind: "demo.shader.mix".to_owned(),
+                },
+                ActionIntent::AddRepeatableItem {
+                    collection_key: "shader.inputs".to_owned(),
+                },
+            )
+            .with_group("inputs"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.shader_input.remove",
+                "Remove input",
+                ActionTarget::Node {
+                    node_kind: "demo.shader.mix".to_owned(),
+                },
+                ActionIntent::RemoveRepeatableItem {
+                    collection_key: "shader.inputs".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("inputs")
+            .danger(),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.shader_input.reorder",
+                "Reorder input",
+                ActionTarget::Node {
+                    node_kind: "demo.shader.mix".to_owned(),
+                },
+                ActionIntent::ReorderRepeatableItem {
+                    collection_key: "shader.inputs".to_owned(),
+                    item_id: String::new(),
+                },
+            )
+            .with_group("inputs"),
+        )
+        .action(
+            NodeActionDescriptor::new(
+                "action.shader_property.add",
+                "Add property",
+                ActionTarget::Blackboard {
+                    blackboard_key: "blackboard.shader.properties".to_owned(),
+                },
+                ActionIntent::AddRepeatableItem {
+                    collection_key: "shader.properties".to_owned(),
+                },
+            )
+            .with_group("blackboard"),
+        )
+        .blackboard(
+            BlackboardDescriptor::new(
+                "blackboard.shader.properties",
+                "Shader properties",
+                NodeRepeatableCollectionDescriptor::new("shader.properties", "properties", "id")
+                    .with_item_template_slot(
+                        NodeSurfaceSlotDescriptor::field_row("property")
+                            .with_label("Property")
+                            .with_slot("properties")
+                            .with_control(
+                                NodeControlDescriptor::text_input("control.property.name")
+                                    .with_label("Name")
+                                    .with_binding(NodeControlBinding::data_path("name")),
+                            ),
+                    )
+                    .with_anchor_rule(NodeRepeatableAnchorRule::new("property", "property"))
+                    .with_add_action("action.shader_property.add"),
+            )
+            .with_action_key("action.shader_property.add"),
+        )
         .default_data(json!({
             "title": "Mix",
             "summary": "Blend two color streams",
@@ -650,7 +1133,16 @@ fn shader_mix_schema() -> NodeSchema {
             },
             "preview": {
                 "result": "gradient"
-            }
+            },
+            "dynamic_inputs": [
+                { "id": "a", "name": "A", "ty": "vec4", "port": "a" },
+                { "id": "b", "name": "B", "ty": "vec4", "port": "b" },
+                { "id": "factor", "name": "Factor", "ty": "float", "port": "factor" }
+            ],
+            "properties": [
+                { "id": "base_color", "name": "Base Color", "ty": "vec4" },
+                { "id": "roughness", "name": "Roughness", "ty": "float" }
+            ]
         }))
         .build()
 }
@@ -669,14 +1161,25 @@ fn mind_topic_schema() -> NodeSchema {
         .surface_slot(
             NodeSurfaceSlotDescriptor::header("header.main")
                 .with_label("Topic")
-                .with_order(0),
+                .with_slot("title")
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_input("control.topic.title")
+                        .with_label("Title")
+                        .with_binding(NodeControlBinding::slot("title")),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::body("body.summary")
                 .with_label("Summary")
                 .with_slot("summary")
                 .with_anchor("body.summary")
-                .with_order(1),
+                .with_order(1)
+                .with_control(
+                    NodeControlDescriptor::text_area("control.topic.summary")
+                        .with_label("Summary")
+                        .with_binding(NodeControlBinding::slot("summary")),
+                ),
         )
         .default_data(json!({ "title": "Topic", "summary": "Central idea" }))
         .build()
@@ -696,7 +1199,13 @@ fn mind_idea_schema() -> NodeSchema {
         .surface_slot(
             NodeSurfaceSlotDescriptor::header("header.main")
                 .with_label("Idea")
-                .with_order(0),
+                .with_slot("title")
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_input("control.idea.title")
+                        .with_label("Title")
+                        .with_binding(NodeControlBinding::slot("title")),
+                ),
         )
         .default_data(json!({ "title": "Idea", "summary": "Branch note" }))
         .build()
@@ -715,16 +1224,32 @@ fn source_card_schema() -> NodeSchema {
         .surface_slot(
             NodeSurfaceSlotDescriptor::header("header.main")
                 .with_label("Source")
-                .with_order(0),
+                .with_slot("title")
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_input("control.source.title")
+                        .with_label("Title")
+                        .with_binding(NodeControlBinding::slot("title")),
+                ),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::preview("preview.main")
                 .with_label("Excerpt")
                 .with_slot("preview")
                 .with_anchor("preview.main")
-                .with_order(1),
+                .with_order(1)
+                .with_control(
+                    NodeControlDescriptor::asset("control.source.asset")
+                        .with_label("Source")
+                        .with_binding(NodeControlBinding::slot("preview"))
+                        .with_option_source(NodeControlOptionSource::Assets),
+                ),
         )
-        .default_data(json!({ "title": "Source", "summary": "Evidence card" }))
+        .default_data(json!({
+            "title": "Source",
+            "summary": "Evidence card",
+            "preview": "Annotated excerpt"
+        }))
         .build()
 }
 
@@ -825,7 +1350,12 @@ fn erd_fixture() -> NodeKitFixture {
                 },
                 "meta": { "cardinality": "1:N" },
                 "metrics": { "rows": "42k" },
-                "actions": { "table": ["Add column", "Inspect relation"] }
+                "actions": { "table": ["Add column", "Inspect relation"] },
+                "columns": [
+                    { "id": "id", "name": "id", "ty": "uuid", "port": "pk" },
+                    { "id": "email", "name": "email", "ty": "text", "port": "field_email" },
+                    { "id": "plan_id", "name": "plan_id", "ty": "uuid", "port": "fk" }
+                ]
             })),
         )
         .node(
@@ -841,7 +1371,12 @@ fn erd_fixture() -> NodeKitFixture {
                     },
                     "meta": { "cardinality": "1:N" },
                     "metrics": { "rows": "94k" },
-                    "actions": { "table": ["Add column", "Inspect relation"] }
+                    "actions": { "table": ["Add column", "Inspect relation"] },
+                    "columns": [
+                        { "id": "id", "name": "id", "ty": "uuid", "port": "pk" },
+                        { "id": "customer_id", "name": "customer_id", "ty": "uuid", "port": "fk" },
+                        { "id": "total", "name": "total", "ty": "integer", "port": "field_total" }
+                    ]
                 })),
         )
         .node(
@@ -861,7 +1396,12 @@ fn erd_fixture() -> NodeKitFixture {
                 },
                 "meta": { "cardinality": "1:N" },
                 "metrics": { "rows": "320k" },
-                "actions": { "table": ["Add column", "Inspect relation"] }
+                "actions": { "table": ["Add column", "Inspect relation"] },
+                "columns": [
+                    { "id": "id", "name": "id", "ty": "uuid", "port": "pk" },
+                    { "id": "order_id", "name": "order_id", "ty": "uuid", "port": "fk" },
+                    { "id": "qty", "name": "qty", "ty": "integer", "port": "field_qty" }
+                ]
             })),
         )
         .edge(

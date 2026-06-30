@@ -1,9 +1,11 @@
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, Key, Pos2, Rect, Response, Sense, Stroke,
-    StrokeKind, TextStyle, Ui, Vec2,
+    Align2, Area, Button, Color32, CornerRadius, CursorIcon, Frame, Id, Key, Order, Pos2, Rect,
+    Response, Sense, Stroke, StrokeKind, TextStyle, Ui, Vec2,
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
-use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
+use jellyflow::core::{
+    CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, NodeKindKey, PortDirection,
+};
 use jellyflow::runtime::runtime::chrome::{
     NodeChromeFacts, NodeChromeFactsRequest, NodeChromeLayoutPolicy, NodeChromeState,
     ResolvedNodeChrome, resolve_node_chrome_facts,
@@ -14,13 +16,16 @@ use jellyflow::runtime::runtime::geometry::{
     HandlePosition, bezier_edge_path, edge_path_contains_point, edge_position,
 };
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
-use jellyflow::runtime::schema::{NodeChromeKind, NodeChromePlacement};
+use jellyflow::runtime::schema::{ActionIntent, NodeChromeKind, NodeChromePlacement};
 
 use crate::bridge::JellyflowEguiBridge;
 use crate::renderer::{
-    NodeContentLevel, NodeRenderLayout, NodeRendererState, NodeRendererStyle, NodeWidgetRenderInput,
+    EguiNodeWidgetRenderOutcome, NodeContentLevel, NodeRenderLayout, NodeRendererState,
+    NodeRendererStyle, NodeWidgetRenderInput,
 };
-use crate::state::{ActiveCanvasInteraction, CanvasTool, HoverTarget, JellyflowEguiState};
+use crate::state::{
+    ActiveCanvasInteraction, CanvasTool, DroppedWireMenuState, HoverTarget, JellyflowEguiState,
+};
 
 const NODE_ROUNDING: f32 = 8.0;
 const CANVAS_BG: Color32 = Color32::from_rgb(246, 247, 249);
@@ -53,6 +58,7 @@ pub fn show_canvas(ui: &mut Ui, bridge: &mut JellyflowEguiBridge, state: &mut Je
     draw_nodes(ui, &painter, bridge, state);
     draw_interaction_preview(&painter, bridge, state);
     draw_selection(&painter, state);
+    draw_dropped_wire_menu(ui, bridge, state);
     update_cursor(ui, &response, state);
 }
 
@@ -108,11 +114,11 @@ fn draw_background(painter: &eframe::egui::Painter, state: &JellyflowEguiState) 
 fn draw_nodes(
     ui: &mut Ui,
     painter: &eframe::egui::Painter,
-    bridge: &JellyflowEguiBridge,
+    bridge: &mut JellyflowEguiBridge,
     state: &JellyflowEguiState,
 ) {
     for node_id in &state.canvas.snapshot.visible_node_render_order {
-        let Some(canvas_rect) = visual_node_canvas_rect(state, *node_id) else {
+        let Some(canvas_rect) = visual_node_canvas_rect(bridge, state, *node_id) else {
             continue;
         };
         let Some(descriptor) = bridge.descriptor_for_node(*node_id) else {
@@ -301,28 +307,43 @@ struct NodeWidgetDrawRequest<'a> {
 
 fn draw_node_widgets(
     ui: &mut Ui,
-    bridge: &JellyflowEguiBridge,
+    bridge: &mut JellyflowEguiBridge,
     state: &JellyflowEguiState,
     request: NodeWidgetDrawRequest<'_>,
 ) -> bool {
-    let Some(node_record) = bridge.store().graph().nodes().get(&request.node) else {
-        return false;
+    let outcome = {
+        let Some(node_record) = bridge.store().graph().nodes().get(&request.node) else {
+            return false;
+        };
+        bridge.renderers().render_widgets(
+            ui,
+            &NodeWidgetRenderInput {
+                id: request.node,
+                node: node_record,
+                descriptor: request.descriptor,
+                state: request.renderer_state,
+                style: request.style,
+                layout: request.layout,
+                node_rect: request.node_rect,
+                clip_rect: request.clip_rect,
+                zoom: state.canvas.snapshot.transform.zoom,
+                content_level: request.content_level,
+            },
+        )
     };
-    bridge.renderers().render_widgets(
-        ui,
-        &NodeWidgetRenderInput {
-            id: request.node,
-            node: node_record,
-            descriptor: request.descriptor,
-            state: request.renderer_state,
-            style: request.style,
-            layout: request.layout,
-            node_rect: request.node_rect,
-            clip_rect: request.clip_rect,
-            zoom: state.canvas.snapshot.transform.zoom,
-            content_level: request.content_level,
-        },
-    )
+    let rendered = outcome.rendered;
+    apply_node_widget_outcome(bridge, request.node, outcome);
+    rendered
+}
+
+fn apply_node_widget_outcome(
+    bridge: &mut JellyflowEguiBridge,
+    node: NodeId,
+    outcome: EguiNodeWidgetRenderOutcome,
+) {
+    if outcome.changed {
+        let _ = bridge.apply_node_widget_outcome(node, outcome);
+    }
 }
 
 fn draw_handles(
@@ -471,7 +492,7 @@ fn visual_node_resize_chrome(
     state: &JellyflowEguiState,
     node: NodeId,
 ) -> Option<ResolvedNodeChrome> {
-    let canvas_rect = visual_node_canvas_rect(state, node)?;
+    let canvas_rect = visual_node_canvas_rect(bridge, state, node)?;
     visual_node_chrome_facts(bridge, state, node, canvas_rect)?
         .chrome
         .into_iter()
@@ -930,7 +951,7 @@ fn handle_pointer(
                     preview: bridge.plan_pointer_resize(node, canvas, canvas, direction),
                 });
             state.canvas.hovered = Some(HoverTarget::ResizeHandle { node, direction });
-        } else if let Some(node) = hit_node(state, pointer)
+        } else if let Some(node) = hit_node(state, bridge, pointer)
             && matches!(state.canvas_tool, CanvasTool::Select | CanvasTool::Drag)
         {
             bridge.start_node_drag(node, ui.input(|i| i.modifiers.shift));
@@ -1011,6 +1032,9 @@ fn handle_pointer(
     if response.drag_stopped() {
         let interaction =
             std::mem::replace(&mut state.canvas.active, ActiveCanvasInteraction::None);
+        if open_dropped_wire_menu_for_interaction(ui, bridge, state, &interaction) {
+            return needs_rebuild;
+        }
         match bridge.commit_interaction(interaction) {
             Ok(Some(_)) => {
                 state.set_status("Committed");
@@ -1036,12 +1060,13 @@ fn handle_pointer(
                 }
                 state.canvas_tool = CanvasTool::Select;
             }
-        } else if let Some(node) = hit_node(state, pointer) {
+        } else if let Some(node) = hit_node(state, bridge, pointer) {
             bridge.select_node(node, ui.input(|i| i.modifiers.shift));
         } else if let Some(edge) = hit_edge(state, bridge, pointer) {
             bridge.select_edge(edge, ui.input(|i| i.modifiers.shift));
         } else {
             bridge.clear_selection();
+            state.canvas.dropped_wire_menu = None;
         }
     }
 
@@ -1080,7 +1105,105 @@ fn handle_pointer(
     needs_rebuild
 }
 
-fn hit_node(state: &JellyflowEguiState, pointer: Pos2) -> Option<NodeId> {
+fn open_dropped_wire_menu_for_interaction(
+    ui: &Ui,
+    bridge: &JellyflowEguiBridge,
+    state: &mut JellyflowEguiState,
+    interaction: &ActiveCanvasInteraction,
+) -> bool {
+    let ActiveCanvasInteraction::Connect {
+        from,
+        current_pointer,
+        target,
+        ..
+    } = interaction
+    else {
+        return false;
+    };
+    if target.as_ref().and_then(|target| target.target).is_some() {
+        return false;
+    }
+    let Some(menu) = bridge.dropped_wire_menu_for_handle(*from) else {
+        return false;
+    };
+    state.canvas.dropped_wire_menu = Some(DroppedWireMenuState {
+        source: *from,
+        canvas_pos: *current_pointer,
+        screen_pos: state
+            .canvas
+            .snapshot
+            .canvas_point_to_screen(*current_pointer),
+        menu,
+    });
+    state.set_status("Insert node");
+    ui.ctx().request_repaint();
+    true
+}
+
+fn draw_dropped_wire_menu(
+    ui: &mut Ui,
+    bridge: &mut JellyflowEguiBridge,
+    state: &mut JellyflowEguiState,
+) {
+    let Some(menu_state) = state.canvas.dropped_wire_menu.clone() else {
+        return;
+    };
+    let mut close = false;
+    let mut create_kind: Option<NodeKindKey> = None;
+    Area::new(Id::new("jellyflow_dropped_wire_menu"))
+        .order(Order::Foreground)
+        .fixed_pos(menu_state.screen_pos)
+        .show(ui.ctx(), |ui| {
+            Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(180.0);
+                ui.strong(
+                    menu_state
+                        .menu
+                        .label
+                        .as_deref()
+                        .unwrap_or(menu_state.menu.key.as_str()),
+                );
+                ui.separator();
+                for action_key in &menu_state.menu.action_keys {
+                    let Some(action) = bridge.action_descriptor(action_key) else {
+                        continue;
+                    };
+                    let response = ui
+                        .add_enabled(action.is_enabled(), Button::new(&action.label))
+                        .on_hover_text(format!("{:?}", action.intent));
+                    if response.clicked()
+                        && let ActionIntent::InsertNode { node_kind } = action.intent
+                    {
+                        create_kind = Some(NodeKindKey::new(node_kind));
+                    }
+                }
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+
+    if let Some(kind) = create_kind {
+        match bridge.create_node(kind, menu_state.canvas_pos) {
+            Ok(_) => {
+                state.canvas.dropped_wire_menu = None;
+                state.set_status("Node created");
+                let viewport = state.canvas.snapshot.viewport_rect;
+                state.canvas.snapshot = bridge.rebuild_snapshot(&state.canvas.snapshot, viewport);
+            }
+            Err(err) => state.set_status(err),
+        }
+    } else if close {
+        state.canvas.dropped_wire_menu = None;
+    }
+}
+
+fn hit_node(
+    state: &JellyflowEguiState,
+    bridge: &JellyflowEguiBridge,
+    pointer: Pos2,
+) -> Option<NodeId> {
     state
         .canvas
         .snapshot
@@ -1089,7 +1212,7 @@ fn hit_node(state: &JellyflowEguiState, pointer: Pos2) -> Option<NodeId> {
         .rev()
         .copied()
         .find(|node| {
-            visual_node_screen_rect(state, *node).is_some_and(|rect| rect.contains(pointer))
+            visual_node_screen_rect(bridge, state, *node).is_some_and(|rect| rect.contains(pointer))
         })
 }
 
@@ -1106,7 +1229,7 @@ fn hit_target(
             if let Some((node, direction)) = hit_resize_handle(state, bridge, pointer) {
                 return Some(HoverTarget::ResizeHandle { node, direction });
             }
-            if let Some(node) = hit_node(state, pointer) {
+            if let Some(node) = hit_node(state, bridge, pointer) {
                 return Some(HoverTarget::Node(node));
             }
             hit_edge(state, bridge, pointer).map(HoverTarget::Edge)
@@ -1114,7 +1237,7 @@ fn hit_target(
         CanvasTool::Connect => hit_handle(bridge, state, pointer).map(HoverTarget::Handle),
         CanvasTool::Resize => hit_resize_handle(state, bridge, pointer)
             .map(|(node, direction)| HoverTarget::ResizeHandle { node, direction }),
-        CanvasTool::Drag => hit_node(state, pointer).map(HoverTarget::Node),
+        CanvasTool::Drag => hit_node(state, bridge, pointer).map(HoverTarget::Node),
         CanvasTool::CreateNode | CanvasTool::Pan => None,
     }
 }
@@ -1198,7 +1321,7 @@ fn hit_resize_handle(
         .rev()
         .copied()
         .filter(|node| selected_nodes.contains(node))
-        .filter(|node| visual_node_screen_rect(state, *node).is_some())
+        .filter(|node| visual_node_screen_rect(bridge, state, *node).is_some())
         .find_map(|node| {
             if let Some(chrome) = visual_node_resize_chrome(bridge, state, node) {
                 let rect = canvas_rect_to_screen(state, chrome.rect);
@@ -1207,7 +1330,7 @@ fn hit_resize_handle(
                     .contains(pointer)
                     .then(|| (node, node_resize_direction_from_chrome(&chrome)));
             }
-            let rect = visual_node_screen_rect(state, node)?;
+            let rect = visual_node_screen_rect(bridge, state, node)?;
             resize_directions()
                 .into_iter()
                 .find(|direction| {
@@ -1223,11 +1346,19 @@ fn to_screen(state: &JellyflowEguiState, point: CanvasPoint) -> Pos2 {
     state.canvas.snapshot.canvas_point_to_screen(point)
 }
 
-fn visual_node_screen_rect(state: &JellyflowEguiState, node: NodeId) -> Option<Rect> {
-    visual_node_canvas_rect(state, node).map(|rect| canvas_rect_to_screen(state, rect))
+fn visual_node_screen_rect(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+) -> Option<Rect> {
+    visual_node_canvas_rect(bridge, state, node).map(|rect| canvas_rect_to_screen(state, rect))
 }
 
-fn visual_node_canvas_rect(state: &JellyflowEguiState, node: NodeId) -> Option<CanvasRect> {
+fn visual_node_canvas_rect(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+) -> Option<CanvasRect> {
     match &state.canvas.active {
         ActiveCanvasInteraction::NodeDrag { preview, .. } => {
             let preview = preview.as_ref()?;
@@ -1241,10 +1372,14 @@ fn visual_node_canvas_rect(state: &JellyflowEguiState, node: NodeId) -> Option<C
         }
         ActiveCanvasInteraction::NodeResize { preview, .. } => {
             let preview = preview.as_ref()?;
-            (preview.node == node).then_some(CanvasRect {
-                origin: preview.to_pos,
-                size: preview.to,
-            })
+            (preview.node == node).then_some(bridge.measured_node_rect_for(
+                node,
+                CanvasRect {
+                    origin: preview.to_pos,
+                    size: preview.to,
+                },
+                node_renderer_state(bridge, state, node),
+            ))
         }
         ActiveCanvasInteraction::None
         | ActiveCanvasInteraction::Connect { .. }
@@ -1271,12 +1406,12 @@ fn preview_edge_path(
     let target_handle = ConnectionHandleRef::new(target_port.node, edge_record.to, target_port.dir);
     let position = edge_position(
         EdgeEndpointInput {
-            node_rect: visual_node_canvas_rect(state, source_port.node)?,
+            node_rect: visual_node_canvas_rect(bridge, state, source_port.node)?,
             handle: visual_handle_bounds(bridge, state, source_handle),
             fallback_position: handle_fallback_position(source_port.dir),
         },
         EdgeEndpointInput {
-            node_rect: visual_node_canvas_rect(state, target_port.node)?,
+            node_rect: visual_node_canvas_rect(bridge, state, target_port.node)?,
             handle: visual_handle_bounds(bridge, state, target_handle),
             fallback_position: handle_fallback_position(target_port.dir),
         },
@@ -1317,7 +1452,7 @@ fn visual_handle_screen_rect(
     state: &JellyflowEguiState,
     handle: ConnectionHandleRef,
 ) -> Option<Rect> {
-    let node_rect = visual_node_screen_rect(state, handle.node)?;
+    let node_rect = visual_node_screen_rect(bridge, state, handle.node)?;
     let bounds = visual_handle_bounds(bridge, state, handle)?;
     Some(handle_screen_rect_for_node(state, node_rect, bounds.rect))
 }
@@ -1338,7 +1473,7 @@ fn visual_handle_bounds_for_node(
     node: NodeId,
 ) -> Vec<(ConnectionHandleRef, HandleBounds)> {
     if needs_preview_handle_bounds(state, node) {
-        let Some(canvas_rect) = visual_node_canvas_rect(state, node) else {
+        let Some(canvas_rect) = visual_node_canvas_rect(bridge, state, node) else {
             return Vec::new();
         };
         let Some(layout) = visual_node_render_layout(
@@ -1480,14 +1615,14 @@ mod tests {
         let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
         let mut state = state_with_snapshot(&mut bridge);
         let node = first_visible_node(&state);
-        let original = visual_node_canvas_rect(&state, node).expect("node rect exists");
+        let original = visual_node_canvas_rect(&bridge, &state, node).expect("node rect exists");
         state.canvas.active = ActiveCanvasInteraction::NodeDrag {
             primary: node,
             start_pointer: original.origin,
             preview: bridge.plan_node_drag(node, CanvasPoint { x: 48.0, y: -24.0 }),
         };
 
-        let visual = visual_node_canvas_rect(&state, node).expect("preview rect exists");
+        let visual = visual_node_canvas_rect(&bridge, &state, node).expect("preview rect exists");
 
         assert_eq!(visual.size, original.size);
         assert_eq!(
@@ -1543,7 +1678,7 @@ mod tests {
         let original_handle_rect =
             visual_handle_screen_rect(&bridge, &state, source_handle).expect("handle is visible");
         let source_rect =
-            visual_node_canvas_rect(&state, source_node).expect("source node rect exists");
+            visual_node_canvas_rect(&bridge, &state, source_node).expect("source node rect exists");
         let start = CanvasPoint {
             x: source_rect.origin.x + source_rect.size.width,
             y: source_rect.origin.y + source_rect.size.height,
@@ -1588,14 +1723,14 @@ mod tests {
         bridge.select_node(llm, false);
         let original_chrome =
             visual_node_resize_chrome(&bridge, &state, llm).expect("llm resize chrome");
-        let source_rect = visual_node_canvas_rect(&state, llm).expect("llm rect");
+        let source_rect = visual_node_canvas_rect(&bridge, &state, llm).expect("llm rect");
         let start = CanvasPoint {
             x: source_rect.origin.x + source_rect.size.width,
             y: source_rect.origin.y + source_rect.size.height,
         };
         let current = CanvasPoint {
             x: start.x + 96.0,
-            y: start.y + 24.0,
+            y: start.y + 360.0,
         };
         state.canvas.active = ActiveCanvasInteraction::NodeResize {
             node: llm,
@@ -1612,10 +1747,15 @@ mod tests {
 
         let resized_chrome =
             visual_node_resize_chrome(&bridge, &state, llm).expect("resized resize chrome");
+        let resized_rect = visual_node_canvas_rect(&bridge, &state, llm).expect("resized llm rect");
 
         assert!(
             resized_chrome.rect.origin.x > original_chrome.rect.origin.x + 40.0,
             "resizer chrome should follow the runtime resize preview width"
+        );
+        assert!(
+            resized_rect.size.height > source_rect.size.height + 40.0,
+            "test resize must exceed the renderer minimum height before checking chrome"
         );
         assert!(
             resized_chrome.rect.origin.y > original_chrome.rect.origin.y + 8.0,
@@ -1630,7 +1770,7 @@ mod tests {
         let state = state_with_snapshot(&mut bridge);
         let llm = first_node_of_kind(&bridge, "demo.llm");
         bridge.select_node(llm, false);
-        let rect = visual_node_canvas_rect(&state, llm).expect("llm rect");
+        let rect = visual_node_canvas_rect(&bridge, &state, llm).expect("llm rect");
         let facts = visual_node_chrome_facts(&bridge, &state, llm, rect).expect("chrome facts");
 
         assert!(
@@ -1648,23 +1788,8 @@ mod tests {
         let (mut bridge, _layout) =
             JellyflowEguiBridge::sample(SampleGraphKind::Erd).expect("erd sample builds");
         let state = state_with_snapshot(&mut bridge);
-        let table = first_table_node(&bridge);
+        let (table, pointer) = visible_table_field_pointer(&bridge, &state);
         bridge.select_node(table, false);
-        let node_rect = visual_node_screen_rect(&state, table).expect("table is visible");
-        let layout = state
-            .canvas
-            .snapshot
-            .node_render_layouts
-            .get(&table)
-            .expect("table layout exists");
-        let field = layout
-            .interactive_regions
-            .iter()
-            .find(|region| region.key == "field.primary_key")
-            .expect("primary key field exists");
-        let pointer =
-            node_local_rect_to_screen(node_rect, field.rect, state.canvas.snapshot.transform.zoom)
-                .center();
 
         assert_eq!(
             hit_target(&state, &bridge, pointer),
@@ -1677,7 +1802,7 @@ mod tests {
         let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
         let mut state = state_with_snapshot(&mut bridge);
         let node = first_visible_node(&state);
-        let node_rect = visual_node_screen_rect(&state, node).expect("node is visible");
+        let node_rect = visual_node_screen_rect(&bridge, &state, node).expect("node is visible");
         let node_center = node_rect.center();
 
         state.canvas_tool = CanvasTool::Select;
@@ -1864,8 +1989,42 @@ mod tests {
             .expect("demo node exists")
     }
 
-    fn first_table_node(bridge: &JellyflowEguiBridge) -> NodeId {
-        first_node_of_kind(bridge, "demo.table")
+    fn visible_table_field_pointer(
+        bridge: &JellyflowEguiBridge,
+        state: &JellyflowEguiState,
+    ) -> (NodeId, Pos2) {
+        state
+            .canvas
+            .snapshot
+            .visible_node_render_order
+            .iter()
+            .copied()
+            .filter(|node| {
+                bridge
+                    .store()
+                    .graph()
+                    .nodes()
+                    .get(node)
+                    .is_some_and(|record| record.kind.0 == "demo.table")
+            })
+            .filter_map(|node| {
+                let node_rect = visual_node_screen_rect(bridge, state, node)?;
+                let layout = state.canvas.snapshot.node_render_layouts.get(&node)?;
+                let field = layout
+                    .interactive_regions
+                    .iter()
+                    .find(|region| region.key == "field.primary_key")?;
+                let pointer = node_local_rect_to_screen(
+                    node_rect,
+                    field.rect,
+                    state.canvas.snapshot.transform.zoom,
+                )
+                .center();
+                (hit_target(state, bridge, pointer) == Some(HoverTarget::Node(node)))
+                    .then_some((node, pointer))
+            })
+            .next()
+            .expect("visible table primary key field should be hittable")
     }
 
     fn first_node_of_kind(bridge: &JellyflowEguiBridge, kind: &str) -> NodeId {

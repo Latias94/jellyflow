@@ -12,6 +12,7 @@ use jellyflow::runtime::runtime::measurement::LayoutFactsQueryResult;
 use jellyflow::runtime::runtime::rendering::RenderingQueryResult;
 use jellyflow::runtime::runtime::resize::{NodeResizeDirection, NodeResizePlan};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
+use jellyflow::runtime::schema::MenuDescriptor;
 
 use crate::renderer::NodeRenderLayout;
 use crate::samples::SampleGraphKind;
@@ -248,6 +249,7 @@ pub struct CanvasInteractionState {
     pub snapshot: CanvasSnapshot,
     pub node_measurements: HashMap<NodeId, (CanvasSize, Vec<(ConnectionHandleRef, HandleBounds)>)>,
     pub fit_view_requested: bool,
+    pub dropped_wire_menu: Option<DroppedWireMenuState>,
 }
 
 impl CanvasInteractionState {
@@ -266,6 +268,15 @@ impl CanvasInteractionState {
     pub fn is_busy(&self) -> bool {
         self.active.is_active()
     }
+}
+
+/// Adapter-local popup state for a wire released on empty pane.
+#[derive(Debug, Clone)]
+pub struct DroppedWireMenuState {
+    pub source: ConnectionHandleRef,
+    pub canvas_pos: CanvasPoint,
+    pub screen_pos: Pos2,
+    pub menu: MenuDescriptor,
 }
 
 impl Default for CanvasSnapshot {

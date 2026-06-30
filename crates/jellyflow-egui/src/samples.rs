@@ -9,8 +9,7 @@ use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::ConnectEdgeRequest;
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
 use jellyflow::runtime::schema::{
-    NodeKitRegistry, NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
-    PortViewDescriptor,
+    NodeKitRegistry, NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor,
 };
 use jellyflow::runtime::{DispatchOutcome, NodeGraphStore};
 use serde_json::json;
@@ -616,7 +615,12 @@ fn populate_shader_graph(builder: &mut SampleGraphBuilder) -> Result<(), SampleG
             },
             "preview": {
                 "result": "gradient"
-            }
+            },
+            "dynamic_inputs": [
+                { "id": "a", "name": "Albedo", "ty": "vec4", "port": "a" },
+                { "id": "b", "name": "Tint", "ty": "vec4", "port": "b" },
+                { "id": "factor", "name": "Factor", "ty": "float", "port": "factor" }
+            ]
         }),
         CanvasPoint { x: 40.0, y: 20.0 },
     )?;
@@ -1046,87 +1050,6 @@ fn sample_node_registry() -> NodeRegistry {
             .default_data(json!({ "title": "Source", "summary": "Evidence card" }))
             .build(),
     );
-    registry.register(
-        NodeSchema::builder("demo.table", "Table")
-            .category(["ERD"])
-            .keywords(["database", "schema", "relation"])
-            .renderer_key("table-card")
-            .default_size(CanvasSize {
-                width: 226.0,
-                height: 186.0,
-            })
-            .port(
-                data_input("fk")
-                    .with_label("foreign key")
-                    .on_left()
-                    .with_view_anchor("field.foreign_key")
-                    .with_view_group("fields")
-                    .with_view_order(0),
-            )
-            .port(
-                data_output("pk")
-                    .with_label("primary key")
-                    .on_right()
-                    .with_view_anchor("field.primary_key")
-                    .with_view_group("fields")
-                    .with_view_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.primary_key")
-                    .with_label("Primary key")
-                    .with_slot("primary_key")
-                    .with_anchor("field.primary_key")
-                    .with_lane("fields")
-                    .with_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.field")
-                    .with_label("Field")
-                    .with_slot("field")
-                    .with_anchor("field.field")
-                    .with_lane("fields")
-                    .with_order(1),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.foreign_key")
-                    .with_label("Foreign key")
-                    .with_slot("foreign_key")
-                    .with_anchor("field.foreign_key")
-                    .with_lane("fields")
-                    .with_order(2),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::badge("badge.cardinality")
-                    .with_label("1:N")
-                    .with_slot("meta.cardinality")
-                    .with_anchor("meta.cardinality")
-                    .with_order(0),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::action_row("actions.table")
-                    .with_label("Actions")
-                    .with_slot("actions.table")
-                    .with_anchor("actions.table")
-                    .with_order(1),
-            )
-            .default_data(json!({
-                "title": "Table",
-                "summary": "id · field · field",
-                "meta": {
-                    "cardinality": "1:N"
-                },
-                "actions": {
-                    "table": ["Add column", "Inspect relation"]
-                },
-                "field_order": ["primary_key", "field", "foreign_key"],
-                "fields": {
-                    "primary_key": "id",
-                    "field": "field",
-                    "foreign_key": "field_id"
-                }
-            }))
-            .build(),
-    );
     registry
 }
 
@@ -1140,12 +1063,4 @@ fn output_port(key: &str) -> PortDecl {
     PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi)
         .with_label(key)
         .with_view(PortViewDescriptor::right())
-}
-
-fn data_input(key: &str) -> PortDecl {
-    PortDecl::new(key, PortDirection::In, PortKind::Data, PortCapacity::Multi).with_label(key)
-}
-
-fn data_output(key: &str) -> PortDecl {
-    PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi).with_label(key)
 }

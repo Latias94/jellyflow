@@ -8,8 +8,11 @@ use jellyflow::core::{
 };
 use jellyflow::prelude::*;
 use jellyflow::runtime::schema::{
-    NodeKindViewDescriptor, NodeKitRegistry, NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor,
-    NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewSide,
+    ActionIntent, ActionTarget, InspectorDescriptor, InspectorTarget, MenuDescriptor, MenuSurface,
+    NodeActionDescriptor, NodeControlBinding, NodeControlDescriptor, NodeControlKind,
+    NodeKindViewDescriptor, NodeKitRegistry, NodeRegistry, NodeRepeatableAnchorRule,
+    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewSide,
 };
 use jellyflow::{NodeGraphEditorConfig, NodeGraphStore, NodeGraphViewState};
 use serde_json::json;
@@ -28,6 +31,9 @@ pub struct ProofNodeTrace {
     pub summary: Option<String>,
     pub ports: Vec<ProofPortTrace>,
     pub slots: Vec<ProofSlotTrace>,
+    pub actions: Vec<String>,
+    pub menus: Vec<String>,
+    pub inspectors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +57,16 @@ pub struct ProofSlotTrace {
     pub anchor: Option<String>,
     pub order: Option<i32>,
     pub visibility: Option<NodeSurfaceSlotVisibility>,
+    pub controls: Vec<ProofControlTrace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProofControlTrace {
+    pub key: String,
+    pub kind: NodeControlKind,
+    pub label: Option<String>,
+    pub data_key: Option<String>,
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +93,7 @@ pub struct ComponentChildProof {
     pub label: Option<String>,
     pub value: Option<String>,
     pub anchor: Option<String>,
+    pub control_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,14 +143,24 @@ pub fn proof_node_registry() -> NodeRegistry {
                     .with_label("Assignee")
                     .with_slot("assignee")
                     .with_anchor("field.assignee")
-                    .with_order(0),
+                    .with_order(0)
+                    .with_control(
+                        NodeControlDescriptor::text_input("control.assignee")
+                            .with_label("Assignee")
+                            .with_binding(NodeControlBinding::slot("assignee")),
+                    ),
             )
             .surface_slot(
                 NodeSurfaceSlotDescriptor::field_row("field.status")
                     .with_label("Status")
                     .with_slot("status")
                     .with_anchor("field.status")
-                    .with_order(1),
+                    .with_order(1)
+                    .with_control(
+                        NodeControlDescriptor::select("control.status")
+                            .with_label("Status")
+                            .with_binding(NodeControlBinding::slot("status")),
+                    ),
             )
             .surface_slot(
                 NodeSurfaceSlotDescriptor::badge("badge.priority")
@@ -170,6 +197,52 @@ pub fn proof_node_registry() -> NodeRegistry {
                     .with_anchor("actions.primary")
                     .with_order(6),
             )
+            .repeatable_collection(
+                NodeRepeatableCollectionDescriptor::new("review.checklist", "checklist", "id")
+                    .with_label("Checklist")
+                    .with_item_template_slot(
+                        NodeSurfaceSlotDescriptor::field_row("check")
+                            .with_label("Check")
+                            .with_slot("checklist")
+                            .with_control(
+                                NodeControlDescriptor::toggle("control.check.done")
+                                    .with_label("Done")
+                                    .with_binding(NodeControlBinding::data_path("done")),
+                            ),
+                    )
+                    .with_anchor_rule(NodeRepeatableAnchorRule::new("field.check", "field.check"))
+                    .with_min_items(1)
+                    .with_max_items(8)
+                    .reorderable(),
+            )
+            .action(NodeActionDescriptor::new(
+                "action.review.approve",
+                "Approve",
+                ActionTarget::Node {
+                    node_kind: "proof.review_card".to_owned(),
+                },
+                ActionIntent::Custom {
+                    key: "review.approve".to_owned(),
+                },
+            ))
+            .menu(
+                MenuDescriptor::new("menu.review_card", MenuSurface::Node)
+                    .with_action_key("action.review.approve"),
+            )
+            .inspector(
+                InspectorDescriptor::new(
+                    "inspector.check.policy",
+                    InspectorTarget::RepeatableItem {
+                        collection_key: "review.checklist".to_owned(),
+                        item_id: "policy".to_owned(),
+                    },
+                )
+                .with_control(
+                    NodeControlDescriptor::toggle("inspector.check.done")
+                        .with_label("Done")
+                        .with_binding(NodeControlBinding::data_path("done")),
+                ),
+            )
             .default_data(json!({
                 "title": "Review request",
                 "summary": "Proof node for adapter boundaries",
@@ -184,7 +257,11 @@ pub fn proof_node_registry() -> NodeRegistry {
                     }
                 },
                 "diagnostics": { "validation": "Needs approval" },
-                "actions": { "primary": ["Approve", "Reject"] }
+                "actions": { "primary": ["Approve", "Reject"] },
+                "checklist": [
+                    { "id": "policy", "label": "Policy checked", "done": false },
+                    { "id": "owner", "label": "Owner assigned", "done": true }
+                ]
             }))
             .build(),
     );
@@ -280,7 +357,7 @@ fn component_node_proof(
     node: &Node,
     descriptor: &NodeKindViewDescriptor,
 ) -> ComponentNodeProof {
-    let children = descriptor
+    let mut children = descriptor
         .surface_slots
         .iter()
         .filter(|slot| slot.is_visible())
@@ -290,8 +367,29 @@ fn component_node_proof(
             label: slot.display_label().map(ToOwned::to_owned),
             value: slot_value_preview(&node.data, slot),
             anchor: slot.anchor.clone(),
+            control_count: slot.controls.len(),
         })
         .collect::<Vec<_>>();
+    children.extend(
+        descriptor
+            .repeatable_collections
+            .iter()
+            .flat_map(|collection| collection.item_projections(&node.data))
+            .flat_map(|item| {
+                item.slots
+                    .iter()
+                    .filter(|slot| slot.is_visible())
+                    .map(|slot| ComponentChildProof {
+                        key: slot.key.clone(),
+                        kind: slot.kind,
+                        label: slot.display_label().map(ToOwned::to_owned),
+                        value: slot_value_preview(&item.item_data, slot),
+                        anchor: slot.anchor.clone(),
+                        control_count: slot.controls.len(),
+                    })
+                    .collect::<Vec<_>>()
+            }),
+    );
     let measurements = children
         .iter()
         .enumerate()
@@ -347,6 +445,16 @@ pub fn render_proof_trace(trace: &ProofAdapterTrace) -> String {
                     .map(|visibility| format!("{visibility:?}"))
                     .unwrap_or_else(|| "-".to_owned())
             );
+            for control in &slot.controls {
+                let _ = writeln!(
+                    out,
+                    "    control {} ({:?}) data_key={} disabled={}",
+                    control.key,
+                    control.kind,
+                    control.data_key.as_deref().unwrap_or("-"),
+                    control.disabled_reason.as_deref().unwrap_or("-")
+                );
+            }
         }
         for port in &node.ports {
             let _ = writeln!(
@@ -363,6 +471,15 @@ pub fn render_proof_trace(trace: &ProofAdapterTrace) -> String {
                     .map(|visibility| format!("{visibility:?}"))
                     .unwrap_or_else(|| "-".to_owned())
             );
+        }
+        for action in &node.actions {
+            let _ = writeln!(out, "  action {action}");
+        }
+        for menu in &node.menus {
+            let _ = writeln!(out, "  menu {menu}");
+        }
+        for inspector in &node.inspectors {
+            let _ = writeln!(out, "  inspector {inspector}");
         }
     }
 
@@ -397,7 +514,7 @@ fn proof_node_trace(
             })
         })
         .collect();
-    let slots = descriptor
+    let mut slots = descriptor
         .surface_slots
         .iter()
         .map(|slot| ProofSlotTrace {
@@ -409,8 +526,31 @@ fn proof_node_trace(
             anchor: slot.anchor.clone(),
             order: slot.order,
             visibility: slot.visibility,
+            controls: slot.controls.iter().map(proof_control_trace).collect(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    slots.extend(
+        descriptor
+            .repeatable_collections
+            .iter()
+            .flat_map(|collection| collection.item_projections(&node.data))
+            .flat_map(|item| {
+                item.slots
+                    .iter()
+                    .map(|slot| ProofSlotTrace {
+                        key: slot.key.clone(),
+                        kind: slot.kind,
+                        label: slot.label.clone(),
+                        data_key: slot.data_key().map(ToOwned::to_owned),
+                        value: slot_value_preview(&item.item_data, slot),
+                        anchor: slot.anchor.clone(),
+                        order: slot.order,
+                        visibility: slot.visibility,
+                        controls: slot.controls.iter().map(proof_control_trace).collect(),
+                    })
+                    .collect::<Vec<_>>()
+            }),
+    );
 
     ProofNodeTrace {
         kind: node.kind.0.clone(),
@@ -419,6 +559,31 @@ fn proof_node_trace(
         summary,
         ports,
         slots,
+        actions: descriptor
+            .actions
+            .iter()
+            .map(|action| action.key.clone())
+            .collect(),
+        menus: descriptor
+            .menus
+            .iter()
+            .map(|menu| menu.key.clone())
+            .collect(),
+        inspectors: descriptor
+            .inspectors
+            .iter()
+            .map(|inspector| inspector.key.clone())
+            .collect(),
+    }
+}
+
+fn proof_control_trace(control: &NodeControlDescriptor) -> ProofControlTrace {
+    ProofControlTrace {
+        key: control.key.clone(),
+        kind: control.kind,
+        label: control.label.clone(),
+        data_key: control.data_key().map(ToOwned::to_owned),
+        disabled_reason: control.editability.disabled_reason.clone(),
     }
 }
 
@@ -531,8 +696,20 @@ mod tests {
 
         assert_eq!(descriptor.renderer_key, "review-card");
         assert_eq!(descriptor.surface_slots.len(), 8);
+        assert_eq!(descriptor.repeatable_collections.len(), 1);
+        assert_eq!(descriptor.actions.len(), 1);
+        assert_eq!(descriptor.menus.len(), 1);
+        assert_eq!(descriptor.inspectors.len(), 1);
         assert_eq!(descriptor.surface_slots[0].key, "header.main");
         assert_eq!(descriptor.surface_slots[7].key, "actions.primary");
+        assert!(
+            descriptor
+                .surface_slot("field.assignee")
+                .expect("assignee slot")
+                .controls
+                .iter()
+                .any(|control| control.kind == NodeControlKind::TextInput)
+        );
         assert_eq!(
             descriptor
                 .surface_slot_by_anchor("actions.primary")
@@ -568,10 +745,23 @@ mod tests {
             node.summary.as_deref(),
             Some("Proof node for adapter boundaries")
         );
-        assert_eq!(node.slots.len(), 8);
+        assert_eq!(node.slots.len(), 10);
         assert_eq!(node.slots[1].data_key.as_deref(), Some("assignee"));
+        assert_eq!(node.slots[1].controls[0].key, "control.assignee");
+        assert_eq!(
+            node.slots[1].controls[0].data_key.as_deref(),
+            Some("assignee")
+        );
+        assert!(
+            node.slots
+                .iter()
+                .any(|slot| slot.anchor.as_deref() == Some("field.check.policy.check"))
+        );
         assert_eq!(node.ports[0].anchor.as_deref(), Some("field.assignee"));
         assert_eq!(node.ports[1].side, PortViewSide::Right);
+        assert_eq!(node.actions, vec!["action.review.approve"]);
+        assert_eq!(node.menus, vec!["menu.review_card"]);
+        assert_eq!(node.inspectors, vec!["inspector.check.policy"]);
 
         let rendered = render_proof_trace(&trace);
         assert!(rendered.contains("proof trace: graph="));
@@ -582,6 +772,11 @@ mod tests {
         assert!(rendered.contains("ConfigGroup"));
         assert!(rendered.contains("StatusBanner"));
         assert!(rendered.contains("slot field.assignee"));
+        assert!(rendered.contains("control control.assignee"));
+        assert!(rendered.contains("field.check.policy.check"));
+        assert!(rendered.contains("action action.review.approve"));
+        assert!(rendered.contains("menu menu.review_card"));
+        assert!(rendered.contains("inspector inspector.check.policy"));
         assert!(rendered.contains("port source"));
         assert!(rendered.contains("visibility="));
     }
@@ -617,6 +812,18 @@ mod tests {
                 .children
                 .iter()
                 .any(|child| child.anchor.as_deref() == Some("field.assignee"))
+        );
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.key == "field.assignee" && child.control_count == 1)
+        );
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.anchor.as_deref() == Some("field.check.policy.check"))
         );
         assert!(review.measurements.iter().all(|measurement| {
             measurement.rect.is_positive_finite()

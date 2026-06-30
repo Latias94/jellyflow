@@ -19,9 +19,10 @@ pub mod ui;
 pub use app::JellyflowEguiApp;
 pub use bridge::JellyflowEguiBridge;
 pub use renderer::{
-    EguiNodeWidgetRenderer, FieldListNodeRenderer, NodeContentLevel, NodeInteractiveRegion,
-    NodeRenderInput, NodeRenderLayout, NodeRendererState, NodeRendererStyle, NodeWidgetRenderInput,
-    RendererCatalog, RichNodeRenderer,
+    EguiNodeControlEdit, EguiNodeRepeatableAction, EguiNodeWidgetRenderOutcome,
+    EguiNodeWidgetRenderer, EguiRepeatableMoveDirection, FieldListNodeRenderer, NodeContentLevel,
+    NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeRendererState, NodeRendererStyle,
+    NodeWidgetRenderInput, RendererCatalog, RichNodeRenderer,
 };
 pub use samples::{SampleGraphError, SampleGraphKind};
 pub use state::{
@@ -32,13 +33,14 @@ pub use state::{
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveCanvasInteraction, CanvasSnapshot, JellyflowEguiApp, JellyflowEguiBridge,
-        NodeRendererStyle, RendererCatalog, SampleGraphKind,
+        ActiveCanvasInteraction, CanvasSnapshot, EguiNodeControlEdit, EguiNodeRepeatableAction,
+        EguiNodeWidgetRenderOutcome, EguiRepeatableMoveDirection, JellyflowEguiApp,
+        JellyflowEguiBridge, NodeContentLevel, NodeRendererStyle, RendererCatalog, SampleGraphKind,
     };
     use eframe::egui::{Pos2, Rect, Vec2};
     use jellyflow::core::{
-        CanvasPoint, CanvasSize, DefaultTypeCompatibility, GraphOp, GraphTransaction,
-        PortDirection, PortKind, TypeCompatibility, TypeDesc,
+        CanvasPoint, CanvasRect, CanvasSize, DefaultTypeCompatibility, GraphOp, GraphTransaction,
+        NodeId, PortDirection, PortKind, TypeCompatibility, TypeDesc,
     };
     use jellyflow::runtime::runtime::connection::{
         ConnectEdgeRequest, ConnectionHandleRef, ConnectionHandleValidity,
@@ -49,6 +51,7 @@ mod tests {
         NodeHandleMeasurementSource, NodeInternalsInvalidationReason, NodeMeasurementStatus,
     };
     use jellyflow::runtime::runtime::resize::NodeResizeDirection;
+    use jellyflow::runtime::schema::NodeControlBinding;
 
     #[test]
     fn demo_app_builds_without_windowing() {
@@ -742,6 +745,348 @@ mod tests {
     }
 
     #[test]
+    fn node_widget_outcome_control_edit_updates_node_data_and_marks_dirty() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let _snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let node = app
+            .bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(id, node)| (node.kind.0 == "demo.llm").then_some(*id))
+            .expect("automation llm node exists");
+
+        app.bridge
+            .apply_node_widget_outcome(
+                node,
+                EguiNodeWidgetRenderOutcome {
+                    rendered: true,
+                    changed: true,
+                    control_edits: vec![EguiNodeControlEdit::new(
+                        "control.prompt",
+                        NodeControlBinding::data_path("fields.prompt"),
+                        serde_json::json!("Updated prompt"),
+                    )],
+                    repeatable_actions: Vec::new(),
+                },
+            )
+            .expect("control edit applies");
+
+        let node_record = &app.bridge.store().graph().nodes()[&node];
+        assert_eq!(node_record.data["fields"]["prompt"], "Updated prompt");
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Dirty {
+                reason: NodeInternalsInvalidationReason::DataChanged,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn repeatable_actions_add_move_and_remove_items_through_store_transactions() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let node = app
+            .bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(id, node)| (node.kind.0 == "demo.table").then_some(*id))
+            .expect("erd table node exists");
+        let original_len = app.bridge.store().graph().nodes()[&node].data["columns"]
+            .as_array()
+            .expect("columns array exists")
+            .len();
+
+        app.bridge
+            .apply_node_repeatable_action(
+                node,
+                EguiNodeRepeatableAction::Add {
+                    collection_key: "table.columns".to_owned(),
+                },
+            )
+            .expect("add applies");
+        assert_eq!(
+            app.bridge.store().graph().nodes()[&node].data["columns"]
+                .as_array()
+                .expect("columns array exists")
+                .len(),
+            original_len + 1
+        );
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Dirty {
+                reason: NodeInternalsInvalidationReason::DataChanged,
+                ..
+            }
+        ));
+
+        app.bridge
+            .apply_node_repeatable_action(
+                node,
+                EguiNodeRepeatableAction::Move {
+                    collection_key: "table.columns".to_owned(),
+                    item_id: "id".to_owned(),
+                    direction: EguiRepeatableMoveDirection::Down,
+                },
+            )
+            .expect("move applies");
+        assert_eq!(
+            app.bridge.store().graph().nodes()[&node].data["columns"][1]["id"],
+            "id"
+        );
+
+        app.bridge
+            .apply_node_repeatable_action(
+                node,
+                EguiNodeRepeatableAction::Remove {
+                    collection_key: "table.columns".to_owned(),
+                    item_id: "email".to_owned(),
+                },
+            )
+            .expect("remove applies");
+        assert!(
+            app.bridge.store().graph().nodes()[&node].data["columns"]
+                .as_array()
+                .expect("columns array exists")
+                .iter()
+                .all(|item| item["id"] != "email")
+        );
+    }
+
+    #[test]
+    fn dropped_wire_menu_is_backed_by_authoring_action_descriptors() {
+        let app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let (node, port) = app
+            .bridge
+            .store()
+            .graph()
+            .ports()
+            .iter()
+            .find_map(|(id, port)| {
+                (port.dir == PortDirection::Out && port.key.0 == "completion")
+                    .then_some((port.node, *id))
+            })
+            .expect("sample has a completion output port");
+        let handle = ConnectionHandleRef::new(node, port, PortDirection::Out);
+
+        let menu = app
+            .bridge
+            .dropped_wire_menu_for_handle(handle)
+            .expect("dropped wire menu exists");
+
+        assert_eq!(menu.key, "menu.dropped_wire");
+        assert!(
+            menu.action_keys
+                .iter()
+                .any(|key| key == "action.insert.llm")
+        );
+        let action = app
+            .bridge
+            .action_descriptor("action.insert.llm")
+            .expect("insert action descriptor exists");
+        assert!(action.is_enabled());
+    }
+
+    #[test]
+    fn product_shape_snapshots_keep_authoring_regions_inside_nodes() {
+        for (sample, label, expected_kind, expected_region) in [
+            (
+                SampleGraphKind::AutomationBuilder,
+                "dify workflow",
+                "demo.llm",
+                Some("config.model"),
+            ),
+            (
+                SampleGraphKind::ShaderGraph,
+                "shader graph",
+                "demo.shader.mix",
+                Some("config.factor"),
+            ),
+            (
+                SampleGraphKind::Erd,
+                "erd table",
+                "demo.table",
+                Some("repeatable.table.columns.header"),
+            ),
+            (SampleGraphKind::MindMap, "mind map", "demo.topic", None),
+        ] {
+            let mut app = JellyflowEguiApp::sample(sample).expect("sample builds");
+            let snapshot = rebuild_product_snapshot(&mut app, 1.0);
+            let node = node_by_kind(&app, expected_kind);
+            let layout = snapshot
+                .node_render_layouts
+                .get(&node)
+                .unwrap_or_else(|| panic!("{label} layout exists"));
+            if let Some(expected_region) = expected_region {
+                assert!(
+                    layout
+                        .interactive_regions
+                        .iter()
+                        .any(|region| region.key == expected_region),
+                    "{label} should expose `{expected_region}`"
+                );
+            } else {
+                assert!(
+                    snapshot
+                        .handle_bounds
+                        .keys()
+                        .any(|handle| handle.node == node),
+                    "{label} should preserve handle facts even without rich internals"
+                );
+            }
+            assert_regions_inside_node(&snapshot, node, label);
+            assert_regions_do_not_overlap_vertically(layout, label);
+        }
+    }
+
+    #[test]
+    fn rich_node_resize_keeps_regions_and_handles_aligned() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let before = rebuild_product_snapshot(&mut app, 1.0);
+        let node = node_by_kind_with_region(&app, &before, "demo.table", "field.foreign_key");
+        let from_size = app.bridge.store().graph().nodes()[&node].size;
+
+        app.bridge
+            .store_mut()
+            .dispatch_transaction(&GraphTransaction::from_ops([GraphOp::SetNodeSize {
+                id: node,
+                from: from_size,
+                to: Some(CanvasSize {
+                    width: 124.0,
+                    height: 72.0,
+                }),
+            }]))
+            .expect("resize update dispatches");
+
+        let snapshot = app.bridge.rebuild_snapshot(
+            &before,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        assert_regions_inside_node(&snapshot, node, "resized erd table");
+        assert_handle_tracks_anchor(&app, &snapshot, node, "pk", "field.primary_key");
+        assert_handle_tracks_anchor(&app, &snapshot, node, "fk", "field.foreign_key");
+    }
+
+    #[test]
+    fn repeatable_item_port_handles_follow_dynamic_item_regions() {
+        let mut app =
+            JellyflowEguiApp::sample(SampleGraphKind::ShaderGraph).expect("shader sample builds");
+
+        let snapshot = rebuild_product_snapshot(&mut app, 1.0);
+        let node = node_by_kind(&app, "demo.shader.mix");
+        assert_handle_tracks_anchor(&app, &snapshot, node, "a", "rail.inputs.a.input");
+
+        let graph = app.bridge.store().graph();
+        let port = graph.nodes()[&node]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| graph.ports()[port].key.0 == "a")
+            .expect("dynamic input port exists");
+        let handle = ConnectionHandleRef::new(node, port, graph.ports()[&port].dir);
+        let measurement = app
+            .bridge
+            .store()
+            .node_measurement(node)
+            .expect("shader mix measurement exists");
+
+        assert!(measurement.anchors.iter().any(|anchor| {
+            anchor.anchor == "rail.inputs.a.input"
+                && anchor
+                    .port_key
+                    .as_ref()
+                    .is_some_and(|port_key| port_key.0 == "a")
+        }));
+        assert!(
+            app.bridge
+                .store()
+                .resolve_node_handle_measurement(handle)
+                .bounds
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn density_modes_have_regression_coverage_for_rich_nodes() {
+        assert_eq!(NodeContentLevel::from_zoom(1.0), NodeContentLevel::Full);
+        assert_eq!(NodeContentLevel::from_zoom(0.5), NodeContentLevel::Compact);
+        assert_eq!(NodeContentLevel::from_zoom(0.12), NodeContentLevel::Shell);
+
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let full = rebuild_product_snapshot(&mut app, 1.0);
+        let node = node_by_kind(&app, "demo.llm");
+        assert_regions_inside_node(&full, node, "full density llm");
+
+        let compact = rebuild_product_snapshot(&mut app, 0.5);
+        assert!(
+            compact
+                .handle_bounds
+                .keys()
+                .any(|handle| handle.node == node),
+            "compact density must keep visible handles even when details collapse"
+        );
+        assert_regions_inside_node(&compact, node, "compact density llm");
+
+        let shell = rebuild_product_snapshot(&mut app, 0.12);
+        assert!(
+            shell.handle_bounds.keys().any(|handle| handle.node == node),
+            "shell density must preserve handle facts for wires"
+        );
+    }
+
+    #[test]
+    fn authoring_interaction_states_have_regression_fixtures() {
+        let mut shader =
+            JellyflowEguiApp::sample(SampleGraphKind::ShaderGraph).expect("shader sample builds");
+        let _snapshot = rebuild_product_snapshot(&mut shader, 1.0);
+        assert_shader_invalid_hover(&mut shader);
+
+        let automation = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let (node, port) = automation
+            .bridge
+            .store()
+            .graph()
+            .ports()
+            .iter()
+            .find_map(|(id, port)| {
+                (port.dir == PortDirection::Out && port.key.0 == "completion")
+                    .then_some((port.node, *id))
+            })
+            .expect("completion output port exists");
+        let menu = automation
+            .bridge
+            .dropped_wire_menu_for_handle(ConnectionHandleRef::new(node, port, PortDirection::Out))
+            .expect("dropped-wire menu exists");
+        assert!(
+            menu.action_keys
+                .iter()
+                .any(|key| key == "action.insert.llm")
+        );
+
+        let erd = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let descriptor = erd
+            .bridge
+            .descriptor_for_node(node_by_kind(&erd, "demo.table"))
+            .expect("table descriptor exists");
+        assert!(!descriptor.inspectors.is_empty());
+        assert!(!descriptor.menus.is_empty());
+    }
+
+    #[test]
     fn start_node_drag_preserves_existing_multi_selection_for_drag_plan() {
         let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
         let mut nodes = bridge
@@ -825,6 +1170,188 @@ mod tests {
             .expect("pan commit ends interaction");
 
         assert_eq!(bridge.store().view_state().pan, after_live_pan);
+    }
+
+    fn rebuild_product_snapshot(app: &mut JellyflowEguiApp, zoom: f32) -> CanvasSnapshot {
+        let pan = app.bridge.store().view_state().pan;
+        app.bridge.store_mut().set_viewport(pan, zoom);
+        app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        )
+    }
+
+    fn node_by_kind(app: &JellyflowEguiApp, kind: &str) -> NodeId {
+        app.bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == kind).then_some(*node))
+            .unwrap_or_else(|| panic!("node kind `{kind}` exists"))
+    }
+
+    fn node_by_kind_with_region(
+        app: &JellyflowEguiApp,
+        snapshot: &CanvasSnapshot,
+        kind: &str,
+        region_key: &str,
+    ) -> NodeId {
+        app.bridge
+            .store()
+            .graph()
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| {
+                (record.kind.0 == kind
+                    && snapshot
+                        .node_render_layouts
+                        .get(node)
+                        .is_some_and(|layout| {
+                            layout
+                                .interactive_regions
+                                .iter()
+                                .any(|region| region.key == region_key)
+                        }))
+                .then_some(*node)
+            })
+            .unwrap_or_else(|| panic!("node kind `{kind}` with region `{region_key}` exists"))
+    }
+
+    fn assert_regions_inside_node(snapshot: &CanvasSnapshot, node: NodeId, label: &str) {
+        let node_rect = snapshot
+            .node_rects
+            .get(&node)
+            .unwrap_or_else(|| panic!("{label} node rect exists"));
+        let layout = snapshot
+            .node_render_layouts
+            .get(&node)
+            .unwrap_or_else(|| panic!("{label} render layout exists"));
+
+        for region in &layout.interactive_regions {
+            assert!(
+                rect_inside_node(region.rect, node_rect.size, 0.5),
+                "{label} region `{}` should stay inside node bounds: {:?} in {:?}",
+                region.key,
+                region.rect,
+                node_rect
+            );
+        }
+    }
+
+    fn assert_regions_do_not_overlap_vertically(
+        layout: &crate::renderer::NodeRenderLayout,
+        label: &str,
+    ) {
+        let mut regions = layout
+            .interactive_regions
+            .iter()
+            .filter(|region| region.z_index <= 1)
+            .collect::<Vec<_>>();
+        regions.sort_by(|a, b| a.rect.origin.y.total_cmp(&b.rect.origin.y));
+        for pair in regions.windows(2) {
+            let first = pair[0];
+            let second = pair[1];
+            let first_bottom = first.rect.origin.y + first.rect.size.height;
+            assert!(
+                first_bottom <= second.rect.origin.y + 0.5,
+                "{label} regions `{}` and `{}` should not overlap vertically",
+                first.key,
+                second.key
+            );
+        }
+    }
+
+    fn assert_handle_tracks_anchor(
+        app: &JellyflowEguiApp,
+        snapshot: &CanvasSnapshot,
+        node: NodeId,
+        port_key: &str,
+        anchor_key: &str,
+    ) {
+        let graph = app.bridge.store().graph();
+        let port = graph.nodes()[&node]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| graph.ports()[port].key.0 == port_key)
+            .unwrap_or_else(|| panic!("port `{port_key}` exists"));
+        let handle = ConnectionHandleRef::new(node, port, graph.ports()[&port].dir);
+        let bounds = snapshot
+            .handle_bounds
+            .get(&handle)
+            .unwrap_or_else(|| panic!("handle bounds for `{port_key}` exist"));
+        let anchor = snapshot
+            .node_render_layouts
+            .get(&node)
+            .and_then(|layout| {
+                layout
+                    .interactive_regions
+                    .iter()
+                    .find(|region| region.key == anchor_key)
+            })
+            .unwrap_or_else(|| panic!("anchor `{anchor_key}` exists"));
+        let handle_center_y = bounds.rect.origin.y + bounds.rect.size.height * 0.5;
+        let anchor_center_y = anchor.rect.origin.y + anchor.rect.size.height * 0.5;
+
+        assert!(
+            (handle_center_y - anchor_center_y).abs() <= 1.0,
+            "handle `{port_key}` should track anchor `{anchor_key}`: handle_y={handle_center_y}, anchor_y={anchor_center_y}, bounds={:?}, anchor={:?}",
+            bounds.rect,
+            anchor.rect
+        );
+    }
+
+    fn rect_inside_node(rect: CanvasRect, node_size: CanvasSize, epsilon: f32) -> bool {
+        rect.is_positive_finite()
+            && rect.origin.x >= -epsilon
+            && rect.origin.y >= -epsilon
+            && rect.origin.x + rect.size.width <= node_size.width + epsilon
+            && rect.origin.y + rect.size.height <= node_size.height + epsilon
+    }
+
+    fn assert_shader_invalid_hover(app: &mut JellyflowEguiApp) {
+        let graph = app.bridge.store().graph();
+        let texture = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| {
+                (record.kind.0 == "demo.shader.texture_sample").then_some(*node)
+            })
+            .expect("texture sample exists");
+        let mix = node_by_kind(app, "demo.shader.mix");
+        let color = graph.nodes()[&texture]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| {
+                graph.ports()[port].key.0 == "color"
+                    && graph.ports()[port].dir == PortDirection::Out
+            })
+            .expect("texture color port exists");
+        let factor = graph.nodes()[&mix]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| graph.ports()[port].key.0 == "factor")
+            .expect("factor port exists");
+        let color_handle = ConnectionHandleRef::new(texture, color, graph.ports()[&color].dir);
+        let factor_handle = ConnectionHandleRef::new(mix, factor, graph.ports()[&factor].dir);
+        let factor_bounds = app
+            .bridge
+            .store()
+            .resolve_node_handle_measurement(factor_handle)
+            .bounds
+            .expect("factor bounds");
+        let mix_pos = graph.nodes()[&mix].pos;
+        let pointer = CanvasPoint {
+            x: mix_pos.x + factor_bounds.rect.origin.x + factor_bounds.rect.size.width * 0.5,
+            y: mix_pos.y + factor_bounds.rect.origin.y + factor_bounds.rect.size.height * 0.5,
+        };
+
+        let hover = app.bridge.resolve_connection_target(pointer, color_handle);
+        assert_eq!(hover.feedback, ConnectionHandleValidity::Invalid);
+        assert!(!hover.is_handle_valid);
     }
 
     fn shader_vec4() -> TypeDesc {

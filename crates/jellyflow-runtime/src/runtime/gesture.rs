@@ -504,6 +504,7 @@ impl NodeGraphStore {
             connection,
             target,
             dropped_at: None,
+            dropped_wire_menu: None,
         }
     }
 

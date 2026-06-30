@@ -110,5 +110,10 @@ Run `cargo run -p jellyflow-egui --example gallery_snapshot` to export PNGs for 
 sample into `target/jellyflow-egui-gallery`. This is intentionally a local review aid instead of a
 CI pixel gate, because GPU snapshot output can vary across platforms.
 
+The hard regression gate lives in code-level geometry tests rather than pixel comparison. The egui
+library tests cover Dify-style workflow controls, shader/blueprint typed ports, ERD repeatable
+fields, mind-map shell density, resize, invalid hover, dropped-wire menus, and inspector descriptor
+availability. See `docs/testing/node-ui-authoring-regression.md` for the matrix and commands.
+
 The crate intentionally depends on `eframe`; the core `jellyflow`, `jellyflow-core`,
 `jellyflow-layout`, and `jellyflow-runtime` crates remain renderer-free.

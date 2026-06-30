@@ -28,7 +28,7 @@ pub(super) fn execute_action(
             hover,
             intent,
             expected,
-        } => assert_connection_lifecycle(start.clone(), *hover, *intent, expected.clone()),
+        } => assert_connection_lifecycle(start.clone(), *hover, intent.clone(), expected.clone()),
         ConformanceAction::ApplyConnectEdge { request } => apply_connect_edge(store, *request),
         ConformanceAction::ApplyConnectEdgeSession { start, request } => {
             apply_connect_edge_session(store, start.clone(), *request)

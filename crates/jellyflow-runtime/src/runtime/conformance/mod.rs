@@ -3,6 +3,7 @@
 //! These types describe renderer-free scenarios that can be replayed against the runtime store.
 
 mod approval;
+mod capability;
 mod fixtures;
 mod reports;
 mod runner;
@@ -12,6 +13,10 @@ pub use approval::{
     ConformanceApprovalError, ConformanceFixtureDirectoryApprovalReport,
     ConformanceScenarioApprovalReport, ConformanceSuiteApproval, ConformanceSuiteApprovalReport,
     ConformanceSuiteFileApprovalReport,
+};
+pub use capability::{
+    ConformanceCapabilityClaim, ConformanceCapabilityGap, ConformanceCapabilityKind,
+    ConformanceCapabilityMatrix, ConformanceCapabilityRequirement, ConformanceSupportLevel,
 };
 pub use fixtures::{
     ConformanceFixtureDirectory, ConformanceFixtureDirectoryReport, ConformanceFixtureFileError,

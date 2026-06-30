@@ -47,6 +47,16 @@ fn proof_component_tree_measurements_can_drive_runtime_layout_facts() {
             .iter()
             .any(|child| child.anchor.as_deref() == Some("field.assignee"))
     );
+    assert!(
+        node.children
+            .iter()
+            .any(|child| child.key == "field.assignee" && child.control_count == 1)
+    );
+    assert!(
+        node.children
+            .iter()
+            .any(|child| child.anchor.as_deref() == Some("field.check.policy.check"))
+    );
 
     let slots = node
         .measurements

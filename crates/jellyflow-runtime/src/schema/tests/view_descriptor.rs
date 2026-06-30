@@ -1,8 +1,13 @@
 use serde_json::json;
 
 use crate::schema::{
+    ActionAvailability, ActionIntent, ActionShortcut, ActionTarget, BlackboardDescriptor,
+    InspectorDescriptor, InspectorTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor,
     NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
-    NodeKitContentDensity, NodeRegistry, NodeSchema, NodeSurfaceProjection,
+    NodeControlBinding, NodeControlDescriptor, NodeControlEditability, NodeControlKind,
+    NodeControlOption, NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
+    NodeControlValidationRule, NodeKitContentDensity, NodeRegistry, NodeRepeatableAnchorRule,
+    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSurfaceProjection,
     NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl,
     PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
@@ -53,6 +58,11 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
                 .with_slot("source")
                 .with_icon_key("file-text"),
         ],
+        repeatable_collections: Vec::new(),
+        actions: Vec::new(),
+        menus: Vec::new(),
+        inspectors: Vec::new(),
+        blackboards: Vec::new(),
         chrome: Vec::new(),
         default_data: json!({ "body": "" }),
     });
@@ -67,6 +77,11 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         default_size: None,
         ports: Vec::new(),
         surface_slots: Vec::new(),
+        repeatable_collections: Vec::new(),
+        actions: Vec::new(),
+        menus: Vec::new(),
+        inspectors: Vec::new(),
+        blackboards: Vec::new(),
         chrome: Vec::new(),
         default_data: serde_json::Value::Null,
     });
@@ -298,6 +313,394 @@ fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets(
         descriptor.surface_slots[6].kind,
         NodeSurfaceSlotKind::MetricBadge
     );
+}
+
+#[test]
+fn node_control_descriptors_cover_authoring_controls_without_framework_widgets() {
+    let controls = vec![
+        NodeControlDescriptor::text_input("control.title")
+            .with_label("Title")
+            .with_binding(NodeControlBinding::data_path("title"))
+            .required(),
+        NodeControlDescriptor::select("control.model")
+            .with_label("Model")
+            .with_binding(NodeControlBinding::slot("config.model"))
+            .with_options([
+                NodeControlOption::new("gpt-4.1", "GPT 4.1"),
+                NodeControlOption::new("local", "Local").disabled(),
+            ]),
+        NodeControlDescriptor::toggle("control.stream")
+            .with_label("Stream")
+            .with_binding(NodeControlBinding::data_path("config.stream")),
+        NodeControlDescriptor::code("control.system_prompt")
+            .with_label("System")
+            .with_binding(NodeControlBinding::json_pointer("/prompts/system"))
+            .with_language("jinja"),
+        NodeControlDescriptor::color("control.tint")
+            .with_label("Tint")
+            .with_binding(NodeControlBinding::data_path("style.tint")),
+        NodeControlDescriptor::asset("control.texture")
+            .with_label("Texture")
+            .with_binding(NodeControlBinding::data_path("asset.texture"))
+            .with_option_source(NodeControlOptionSource::Assets),
+        NodeControlDescriptor::variable_picker("control.variable")
+            .with_label("Variable")
+            .with_binding(NodeControlBinding::graph_symbol("inputs.topic"))
+            .with_option_source(NodeControlOptionSource::Variables),
+        NodeControlDescriptor::text_area("control.prompt")
+            .with_label("Prompt")
+            .with_binding(NodeControlBinding::slot("prompt"))
+            .with_placeholder("Write the prompt"),
+    ];
+
+    let encoded = serde_json::to_value(&controls).expect("serialize controls");
+    let decoded: Vec<NodeControlDescriptor> =
+        serde_json::from_value(encoded).expect("deserialize controls");
+
+    assert_eq!(decoded, controls);
+    assert_eq!(decoded[0].kind, NodeControlKind::TextInput);
+    assert_eq!(decoded[1].options[1].label, "Local");
+    assert!(decoded[1].options[1].disabled);
+    assert_eq!(decoded[3].presentation.language.as_deref(), Some("jinja"));
+    assert!(decoded[7].presentation.multiline);
+}
+
+#[test]
+fn node_control_projection_preserves_binding_validation_and_editability() {
+    let schema = NodeSchema::builder("demo.authoring", "Authoring")
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.prompt")
+                .with_label("Prompt")
+                .with_slot("prompt")
+                .with_order(0)
+                .with_control(
+                    NodeControlDescriptor::text_area("control.prompt")
+                        .with_label("Prompt")
+                        .with_binding(NodeControlBinding::slot("prompt"))
+                        .with_validation(
+                            NodeControlValidation::default()
+                                .required()
+                                .with_rule(NodeControlValidationRule::Regex {
+                                    pattern: ".+".to_owned(),
+                                })
+                                .with_rule(NodeControlValidationRule::EnumValues {
+                                    values: vec![json!("short"), json!("long")],
+                                })
+                                .with_rule(NodeControlValidationRule::Range {
+                                    min: Some(1.0),
+                                    max: Some(4096.0),
+                                })
+                                .with_rule(NodeControlValidationRule::ExpressionShape {
+                                    language: Some("jinja".to_owned()),
+                                }),
+                        )
+                        .with_editability(
+                            NodeControlEditability::default()
+                                .read_only()
+                                .disabled("Prompt is inherited"),
+                        ),
+                ),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::config_group("config.model")
+                .with_label("Model")
+                .with_slot("config.model")
+                .with_order(1)
+                .with_controls([
+                    NodeControlDescriptor::select("control.model")
+                        .with_label("Model")
+                        .with_binding(NodeControlBinding::data_path("config.model"))
+                        .with_options([
+                            NodeControlOption::new("small", "Small"),
+                            NodeControlOption::new("large", "Large"),
+                        ]),
+                    NodeControlDescriptor::slider("control.temperature")
+                        .with_label("Temperature")
+                        .with_binding(NodeControlBinding::data_path("config.temperature"))
+                        .with_validation_rule(NodeControlValidationRule::Range {
+                            min: Some(0.0),
+                            max: Some(2.0),
+                        })
+                        .with_presentation(
+                            NodeControlPresentation::default()
+                                .with_unit("temp")
+                                .compact_label(),
+                        ),
+                    NodeControlDescriptor::port_binding("control.prompt_port")
+                        .with_label("Prompt port")
+                        .with_binding(NodeControlBinding::port_anchor("field.prompt")),
+                ]),
+        )
+        .build();
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.authoring"))
+        .expect("descriptor");
+    let node_data = json!({
+        "prompt": "Summarize {{topic}}",
+        "config": {
+            "model": "large",
+            "temperature": 0.7
+        }
+    });
+
+    let compact = descriptor.surface_slots_projection(
+        &node_data,
+        Some(&crate::schema::kit::NodeKitLayoutHints::default().with_zoom_range(0.3, 0.9)),
+        0.1,
+    );
+
+    assert_eq!(compact.len(), 2);
+    assert_eq!(compact[0].value, "Summarize {{topic}}");
+    assert_eq!(compact[0].controls[0].key, "control.prompt");
+    assert_eq!(compact[0].controls[0].data_key(), Some("prompt"));
+    assert_eq!(compact[0].controls[0].validation.rules.len(), 5);
+    assert!(compact[0].controls[0].editability.read_only);
+    assert_eq!(
+        compact[0].controls[0]
+            .editability
+            .disabled_reason
+            .as_deref(),
+        Some("Prompt is inherited")
+    );
+    assert_eq!(compact[1].controls.len(), 3);
+    assert_eq!(compact[1].controls[0].data_key(), Some("config.model"));
+    assert_eq!(
+        compact[1].controls[1].presentation.unit.as_deref(),
+        Some("temp")
+    );
+    assert_eq!(compact[1].controls[2].data_key(), None);
+}
+
+#[test]
+fn repeatable_collections_project_stable_item_slots_and_anchors() {
+    let schema = NodeSchema::builder("demo.shader.dynamic", "Dynamic shader")
+        .repeatable_collection(
+            NodeRepeatableCollectionDescriptor::new("shader.inputs", "inputs", "id")
+                .with_label("Inputs")
+                .with_empty_label("No inputs")
+                .with_item_template_slot(
+                    NodeSurfaceSlotDescriptor::field_row("input")
+                        .with_label("Input")
+                        .with_slot("inputs")
+                        .with_control(
+                            NodeControlDescriptor::select("control.input.type")
+                                .with_label("Type")
+                                .with_binding(NodeControlBinding::data_path("ty"))
+                                .with_options([
+                                    NodeControlOption::new("float", "Float"),
+                                    NodeControlOption::new("vec4", "Vec4"),
+                                ]),
+                        ),
+                )
+                .with_anchor_rule(
+                    NodeRepeatableAnchorRule::new("rail.input", "rail.input")
+                        .with_port_key_path("port"),
+                )
+                .with_min_items(1)
+                .with_max_items(3)
+                .reorderable()
+                .with_add_action("action.input.add")
+                .with_remove_action("action.input.remove")
+                .with_reorder_action("action.input.reorder"),
+        )
+        .build();
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.shader.dynamic"))
+        .expect("descriptor");
+    let before = json!({
+        "inputs": [
+            { "id": "albedo", "name": "Albedo", "ty": "vec4", "port": "in_albedo" },
+            { "id": "roughness", "name": "Roughness", "ty": "float", "port": "in_roughness" }
+        ]
+    });
+    let after_add = json!({
+        "inputs": [
+            { "id": "albedo", "name": "Albedo", "ty": "vec4", "port": "in_albedo" },
+            { "id": "roughness", "name": "Roughness", "ty": "float", "port": "in_roughness" },
+            { "id": "normal", "name": "Normal", "ty": "vec4", "port": "in_normal" }
+        ]
+    });
+    let after_reorder = json!({
+        "inputs": [
+            { "id": "roughness", "name": "Roughness", "ty": "float", "port": "in_roughness" },
+            { "id": "albedo", "name": "Albedo", "ty": "vec4", "port": "in_albedo" },
+            { "id": "normal", "name": "Normal", "ty": "vec4", "port": "in_normal" }
+        ]
+    });
+
+    let before_items = descriptor.repeatable_items_projection(&before, "shader.inputs");
+    let added_items = descriptor.repeatable_items_projection(&after_add, "shader.inputs");
+    let reordered_items = descriptor.repeatable_items_projection(&after_reorder, "shader.inputs");
+
+    assert_eq!(before_items.len(), 2);
+    assert_eq!(before_items[0].slot_key, "rail.input.albedo");
+    assert_eq!(before_items[0].anchor, "rail.input.albedo");
+    assert_eq!(before_items[0].port_key.as_deref(), Some("in_albedo"));
+    assert_eq!(before_items[0].slots[0].key, "rail.input.albedo.input");
+    assert_eq!(
+        before_items[0].slots[0].anchor.as_deref(),
+        Some("rail.input.albedo.input")
+    );
+    assert_eq!(before_items[0].slots[0].controls[0].data_key(), Some("ty"));
+    assert_eq!(added_items[0].anchor, "rail.input.albedo");
+    assert_eq!(added_items[1].anchor, "rail.input.roughness");
+    assert_eq!(added_items[2].anchor, "rail.input.normal");
+    assert_eq!(reordered_items[0].anchor, "rail.input.roughness");
+    assert_eq!(reordered_items[1].anchor, "rail.input.albedo");
+
+    let numeric_id = json!({
+        "inputs": [
+            { "id": 42, "name": "Numeric", "ty": "float", "port": 99 }
+        ]
+    });
+    let numeric_items = descriptor.repeatable_items_projection(&numeric_id, "shader.inputs");
+    assert_eq!(numeric_items.len(), 1);
+    assert_eq!(numeric_items[0].item_id, "42");
+    assert_eq!(numeric_items[0].anchor, "rail.input.42");
+    assert_eq!(numeric_items[0].port_key.as_deref(), Some("99"));
+
+    let collection = descriptor
+        .repeatable_collection("shader.inputs")
+        .expect("collection");
+    assert_eq!(
+        collection.add_disabled_reason(&after_add).as_deref(),
+        Some("Maximum of 3 items reached")
+    );
+    assert_eq!(
+        collection
+            .remove_disabled_reason(&json!({ "inputs": [{ "id": "albedo" }] }))
+            .as_deref(),
+        Some("Minimum of 1 items required")
+    );
+    assert!(collection.is_empty_for(&json!({ "inputs": [] })));
+    assert!(
+        descriptor
+            .repeatable_items_projection(&json!({ "inputs": [] }), "shader.inputs")
+            .is_empty(),
+        "empty collections must not create fake item slots or handles"
+    );
+}
+
+#[test]
+fn action_menu_inspector_and_blackboard_descriptors_are_headless() {
+    let insert_action = NodeActionDescriptor::new(
+        "action.insert.llm",
+        "Insert LLM",
+        ActionTarget::DroppedWire {
+            source_port_key: Some("completion".to_owned()),
+        },
+        ActionIntent::InsertNode {
+            node_kind: "demo.llm".to_owned(),
+        },
+    )
+    .with_group("create")
+    .with_order(0)
+    .with_icon_key("sparkles");
+    let disabled_remove = NodeActionDescriptor::new(
+        "action.param.remove",
+        "Remove parameter",
+        ActionTarget::RepeatableItem {
+            collection_key: "params".to_owned(),
+            item_id: "temperature".to_owned(),
+        },
+        ActionIntent::RemoveRepeatableItem {
+            collection_key: "params".to_owned(),
+            item_id: "temperature".to_owned(),
+        },
+    )
+    .disabled("Minimum of 1 items required")
+    .danger()
+    .with_shortcut(ActionShortcut::new("Backspace").shift());
+    let schema = NodeSchema::builder("demo.authoring_actions", "Actions")
+        .action(insert_action.clone())
+        .action(disabled_remove.clone())
+        .menu(
+            MenuDescriptor::new("menu.dropped_wire", MenuSurface::DroppedWire)
+                .with_label("Insert compatible node")
+                .with_action_key("action.insert.llm"),
+        )
+        .menu(
+            MenuDescriptor::new("menu.node", MenuSurface::Node)
+                .with_action_keys(["action.param.remove"]),
+        )
+        .inspector(
+            InspectorDescriptor::new(
+                "inspector.param.temperature",
+                InspectorTarget::RepeatableItem {
+                    collection_key: "params".to_owned(),
+                    item_id: "temperature".to_owned(),
+                },
+            )
+            .with_label("Temperature")
+            .with_control(
+                NodeControlDescriptor::slider("control.temperature")
+                    .with_label("Temperature")
+                    .with_binding(NodeControlBinding::data_path("value")),
+            )
+            .with_action_key("action.param.remove"),
+        )
+        .blackboard(BlackboardDescriptor::new(
+            "blackboard.shader_properties",
+            "Shader properties",
+            NodeRepeatableCollectionDescriptor::new("shader.properties", "properties", "id")
+                .with_item_template_slot(NodeSurfaceSlotDescriptor::field_row("property")),
+        ))
+        .build();
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.authoring_actions"))
+        .expect("descriptor");
+
+    assert_eq!(descriptor.actions.len(), 2);
+    assert!(
+        descriptor
+            .action("action.insert.llm")
+            .expect("insert")
+            .is_enabled()
+    );
+    assert_eq!(
+        descriptor
+            .action("action.param.remove")
+            .expect("remove")
+            .availability,
+        ActionAvailability::disabled("Minimum of 1 items required")
+    );
+    assert_eq!(
+        descriptor
+            .menu("menu.dropped_wire")
+            .expect("dropped menu")
+            .action_keys,
+        vec!["action.insert.llm"]
+    );
+    assert_eq!(
+        descriptor
+            .inspector("inspector.param.temperature")
+            .expect("inspector")
+            .controls[0]
+            .data_key(),
+        Some("value")
+    );
+    assert_eq!(
+        descriptor
+            .blackboard("blackboard.shader_properties")
+            .expect("blackboard")
+            .collection
+            .key,
+        "shader.properties"
+    );
+
+    let encoded = serde_json::to_value(&descriptor).expect("serialize descriptor");
+    let decoded: crate::schema::NodeKindViewDescriptor =
+        serde_json::from_value(encoded).expect("deserialize descriptor");
+    assert_eq!(decoded.actions, descriptor.actions);
+    assert_eq!(decoded.menus, descriptor.menus);
+    assert_eq!(decoded.inspectors, descriptor.inspectors);
+    assert_eq!(decoded.blackboards, descriptor.blackboards);
 }
 
 #[test]

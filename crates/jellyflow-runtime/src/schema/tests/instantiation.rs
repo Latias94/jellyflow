@@ -47,6 +47,11 @@ fn note_schema() -> NodeSchema {
             },
         ],
         surface_slots: Vec::new(),
+        repeatable_collections: Vec::new(),
+        actions: Vec::new(),
+        menus: Vec::new(),
+        inspectors: Vec::new(),
+        blackboards: Vec::new(),
         chrome: Vec::new(),
         default_data: json!({ "body": "" }),
     }

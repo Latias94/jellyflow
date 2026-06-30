@@ -20,8 +20,13 @@ use jellyflow_runtime::runtime::{
     gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::schema::{
-    NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
-    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
+    ActionIntent, ActionShortcut, ActionTarget, BlackboardDescriptor, InspectorDescriptor,
+    InspectorTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor, NodeChromeDescriptor,
+    NodeChromeKind, NodeChromePlacement, NodeChromeVisibility, NodeControlBinding,
+    NodeControlDescriptor, NodeControlEditability, NodeControlKind, NodeControlOption,
+    NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
+    NodeControlValidationRule, NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor,
+    NodeRegistry, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor, NodeSchema,
     NodeSchemaBuilder, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility,
     PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
@@ -156,8 +161,94 @@ fn explicit_modules_expose_their_owned_surfaces() {
                     .with_label("Source")
                     .with_anchor("field.source")
                     .with_lane("fields")
-                    .with_visibility(NodeSurfaceSlotVisibility::Visible),
+                    .with_visibility(NodeSurfaceSlotVisibility::Visible)
+                    .with_control(
+                        NodeControlDescriptor::select("control.source_kind")
+                            .with_label("Source kind")
+                            .with_binding(NodeControlBinding::slot("source"))
+                            .with_options([
+                                NodeControlOption::new("file", "File"),
+                                NodeControlOption::new("url", "URL"),
+                            ])
+                            .with_validation(NodeControlValidation::default().required().with_rule(
+                                NodeControlValidationRule::EnumValues {
+                                    values: vec![
+                                        serde_json::json!("file"),
+                                        serde_json::json!("url"),
+                                    ],
+                                },
+                            ))
+                            .with_presentation(
+                                NodeControlPresentation::default()
+                                    .with_placeholder("Choose a source")
+                                    .with_icon_key("file-text"),
+                            )
+                            .with_editability(
+                                NodeControlEditability::default()
+                                    .disabled("Source is locked in this public API smoke"),
+                            ),
+                    ),
             )
+            .repeatable_collection(
+                NodeRepeatableCollectionDescriptor::new("fields.args", "args", "id")
+                    .with_label("Arguments")
+                    .with_item_template_slot(
+                        NodeSurfaceSlotDescriptor::field_row("field.arg")
+                            .with_label("Argument")
+                            .with_slot("args")
+                            .with_control(
+                                NodeControlDescriptor::text_input("control.arg.name")
+                                    .with_label("Name")
+                                    .with_binding(NodeControlBinding::data_path("name")),
+                            ),
+                    )
+                    .with_anchor_rule(
+                        NodeRepeatableAnchorRule::new("field.arg", "field.arg")
+                            .with_port_key_path("port"),
+                    )
+                    .with_min_items(0)
+                    .with_max_items(4)
+                    .reorderable()
+                    .with_add_action("action.arg.add")
+                    .with_remove_action("action.arg.remove")
+                    .with_reorder_action("action.arg.reorder"),
+            )
+            .action(
+                NodeActionDescriptor::new(
+                    "action.arg.add",
+                    "Add argument",
+                    ActionTarget::Node {
+                        node_kind: "public.note".to_owned(),
+                    },
+                    ActionIntent::AddRepeatableItem {
+                        collection_key: "fields.args".to_owned(),
+                    },
+                )
+                .with_shortcut(ActionShortcut::new("A").ctrl()),
+            )
+            .menu(
+                MenuDescriptor::new("menu.node.public_note", MenuSurface::Node)
+                    .with_action_key("action.arg.add"),
+            )
+            .inspector(
+                InspectorDescriptor::new(
+                    "inspector.arg.topic",
+                    InspectorTarget::RepeatableItem {
+                        collection_key: "fields.args".to_owned(),
+                        item_id: "topic".to_owned(),
+                    },
+                )
+                .with_control(
+                    NodeControlDescriptor::text_input("inspector.arg.name")
+                        .with_label("Name")
+                        .with_binding(NodeControlBinding::data_path("name")),
+                ),
+            )
+            .blackboard(BlackboardDescriptor::new(
+                "blackboard.public.variables",
+                "Variables",
+                NodeRepeatableCollectionDescriptor::new("variables", "variables", "id"),
+            ))
             .chrome(
                 NodeChromeDescriptor::toolbar("toolbar.primary", NodeChromePlacement::TopRight)
                     .with_label("Tools")
@@ -171,6 +262,77 @@ fn explicit_modules_expose_their_owned_surfaces() {
     assert_eq!(
         view_descriptors[0].surface_slots[0].kind,
         NodeSurfaceSlotKind::FieldRow
+    );
+    assert_eq!(
+        view_descriptors[0].surface_slots[0].controls[0].kind,
+        NodeControlKind::Select
+    );
+    assert_eq!(
+        view_descriptors[0].surface_slots[0].controls[0].data_key(),
+        Some("source")
+    );
+    assert_eq!(
+        view_descriptors[0].surface_slots[0].controls[0].option_source,
+        NodeControlOptionSource::Inline
+    );
+    assert_eq!(
+        view_descriptors[0].surface_slots[0].controls[0]
+            .editability
+            .disabled_reason
+            .as_deref(),
+        Some("Source is locked in this public API smoke")
+    );
+    let projected_slots = view_descriptors[0].surface_slots_projection(
+        &serde_json::json!({ "source": "file" }),
+        None,
+        1.0,
+    );
+    assert_eq!(
+        projected_slots[0].controls[0].label.as_deref(),
+        Some("Source kind")
+    );
+    let args = view_descriptors[0].repeatable_items_projection(
+        &serde_json::json!({
+            "source": "file",
+            "args": [
+                { "id": "topic", "name": "Topic", "port": "arg_topic" },
+                { "id": "tone", "name": "Tone", "port": "arg_tone" }
+            ]
+        }),
+        "fields.args",
+    );
+    assert_eq!(args[0].slot_key, "field.arg.topic");
+    assert_eq!(args[0].anchor, "field.arg.topic");
+    assert_eq!(args[0].port_key.as_deref(), Some("arg_topic"));
+    assert_eq!(args[1].item_id, "tone");
+    assert!(
+        view_descriptors[0]
+            .action("action.arg.add")
+            .expect("action")
+            .is_enabled()
+    );
+    assert_eq!(
+        view_descriptors[0]
+            .menu("menu.node.public_note")
+            .expect("menu")
+            .action_keys,
+        vec!["action.arg.add"]
+    );
+    assert_eq!(
+        view_descriptors[0]
+            .inspector("inspector.arg.topic")
+            .expect("inspector")
+            .controls[0]
+            .data_key(),
+        Some("name")
+    );
+    assert_eq!(
+        view_descriptors[0]
+            .blackboard("blackboard.public.variables")
+            .expect("blackboard")
+            .collection
+            .key,
+        "variables"
     );
     assert_eq!(
         view_descriptors[0].ports[0].label.as_deref(),
@@ -528,6 +690,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
         None,
         connection::ConnectionEndIntent::DropOnPane {
             pointer: CanvasPoint { x: 2.0, y: 3.0 },
+            menu: None,
         },
     );
     assert!(dropped_lifecycle.opens_dropped_wire_menu());
@@ -1558,13 +1721,60 @@ fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
 
     let empty_scenario =
         conformance::ConformanceScenario::new("public empty fixture", Graph::new(GraphId::new()));
-    let mut suite = conformance::ConformanceSuite::new("public adapter suite");
+    let capability_matrix = conformance::ConformanceCapabilityMatrix::for_adapter("public-adapter")
+        .with_claim(conformance::ConformanceCapabilityClaim::full(
+            conformance::ConformanceCapabilityKind::MeasuredAnchors,
+        ))
+        .with_claim(conformance::ConformanceCapabilityClaim::projection(
+            conformance::ConformanceCapabilityKind::LayoutPassMeasurement,
+        ));
+    assert!(capability_matrix.satisfies(
+        conformance::ConformanceCapabilityKind::MeasuredAnchors,
+        conformance::ConformanceSupportLevel::Full,
+    ));
+    assert!(!capability_matrix.satisfies(
+        conformance::ConformanceCapabilityKind::LayoutPassMeasurement,
+        conformance::ConformanceSupportLevel::Full,
+    ));
+    let capability_fixture =
+        serde_json::to_value(&capability_matrix).expect("serialize capability matrix");
+    let capability_decoded: conformance::ConformanceCapabilityMatrix =
+        serde_json::from_value(capability_fixture).expect("deserialize capability matrix");
+    assert_eq!(
+        capability_decoded.level(conformance::ConformanceCapabilityKind::LayoutPassMeasurement),
+        conformance::ConformanceSupportLevel::Projection
+    );
+    let mut suite = conformance::ConformanceSuite::new("public adapter suite")
+        .with_capabilities(capability_decoded);
     suite.push_scenario(empty_scenario.clone());
-    let suite = suite.with_scenarios([empty_scenario]);
+    let suite = suite.with_scenarios([empty_scenario.clone()]);
     let suite_report = conformance::run_conformance_suite(&suite);
     assert!(suite_report.is_match(), "{suite_report}");
     assert_eq!(suite_report.scenario_count(), 1);
     assert_eq!(suite_report.failed_scenarios(), 0);
+    assert_eq!(
+        suite_report
+            .capabilities
+            .level(conformance::ConformanceCapabilityKind::MeasuredAnchors),
+        conformance::ConformanceSupportLevel::Full
+    );
+
+    let overclaim_suite = conformance::ConformanceSuite::new("overclaim suite")
+        .with_capabilities(conformance::ConformanceCapabilityMatrix::for_adapter(
+            "overclaim-adapter",
+        ))
+        .with_capability_requirement(conformance::ConformanceCapabilityRequirement::new(
+            conformance::ConformanceCapabilityKind::MeasuredAnchors,
+            conformance::ConformanceSupportLevel::Full,
+        ))
+        .with_scenarios([empty_scenario.clone()]);
+    let overclaim_report = conformance::run_conformance_suite(&overclaim_suite);
+    assert!(!overclaim_report.is_match());
+    assert_eq!(overclaim_report.capability_gaps.len(), 1);
+    assert_eq!(
+        overclaim_report.capability_gaps[0].capability,
+        conformance::ConformanceCapabilityKind::MeasuredAnchors
+    );
 
     let suite_encoded = serde_json::to_value(&suite).expect("serialize suite");
     let suite_decoded: conformance::ConformanceSuite =

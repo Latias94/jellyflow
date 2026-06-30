@@ -37,6 +37,10 @@ use crate::runtime::viewport::{
     ViewportZoomRequest, plan_viewport_pan_inertia,
 };
 use crate::runtime::xyflow::callbacks::{ConnectionChange, EdgeConnection};
+use crate::schema::{
+    ActionAvailability, ActionIntent, ActionTarget, MenuDescriptor, MenuSurface,
+    NodeActionDescriptor,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeRouteKind, EdgeViewDescriptor,
     Graph, GraphBuilder, GraphId, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, Port,

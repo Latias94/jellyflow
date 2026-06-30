@@ -1,3 +1,4 @@
+mod authoring;
 mod connection;
 mod graph;
 mod layout_facts;
@@ -15,6 +16,9 @@ pub(super) fn execute_action(
     action: &ConformanceAction,
 ) -> Result<(), String> {
     if let Some(result) = graph::execute_action(store, action) {
+        return result;
+    }
+    if let Some(result) = authoring::execute_action(store, action) {
         return result;
     }
     if let Some(result) = node::execute_action(store, action) {

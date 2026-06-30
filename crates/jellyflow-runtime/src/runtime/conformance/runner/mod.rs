@@ -37,6 +37,8 @@ pub fn run_conformance_suite(suite: &ConformanceSuite) -> ConformanceSuiteReport
 
     ConformanceSuiteReport {
         suite: suite.name.clone(),
+        capabilities: suite.capabilities.clone(),
+        capability_gaps: suite.capabilities.gaps(&suite.capability_requirements),
         scenario_reports,
         errors,
     }

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+mod authoring;
 mod connection;
 mod graph;
 mod layout_facts;
@@ -34,6 +35,7 @@ use crate::runtime::viewport::{
     ViewportGestureRejection, ViewportPanInertiaFrame, ViewportPanInertiaRequest,
     ViewportPanRequest, ViewportScrollInput, ViewportZoomRequest,
 };
+use crate::schema::NodeActionDescriptor;
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
@@ -208,11 +210,17 @@ pub enum ConformanceAction {
     EmitGesture {
         event: NodeGraphGestureEvent,
     },
+    AssertNodeActionAvailability {
+        action: NodeActionDescriptor,
+        #[serde(default)]
+        expect_enabled: bool,
+    },
 }
 
 impl ConformanceAction {
     pub fn kind(&self) -> &'static str {
         graph::kind(self)
+            .or_else(|| authoring::kind(self))
             .or_else(|| node::kind(self))
             .or_else(|| selection::kind(self))
             .or_else(|| connection::kind(self))

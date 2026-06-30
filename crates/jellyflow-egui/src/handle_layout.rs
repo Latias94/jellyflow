@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
@@ -14,9 +15,10 @@ pub(crate) struct HandleLayoutPort<'a> {
     pub(crate) decl: Option<&'a PortDecl>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct HandleAnchorRegion<'a> {
-    pub(crate) key: &'a str,
+    pub(crate) key: Cow<'a, str>,
+    pub(crate) port_key: Option<Cow<'a, str>>,
     pub(crate) rect: CanvasRect,
 }
 
@@ -36,7 +38,12 @@ pub(crate) fn handle_bounds_for_node<'a>(
     let anchor_regions = anchor_regions
         .iter()
         .filter(|region| region.rect.is_positive_finite())
-        .map(|region| (region.key, region.rect))
+        .map(|region| {
+            (
+                (region.key.as_ref(), region.port_key.as_deref()),
+                region.rect,
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let mut by_side: BTreeMap<
         PortViewSide,
@@ -57,7 +64,12 @@ pub(crate) fn handle_bounds_for_node<'a>(
         let handle = ConnectionHandleRef::new(node, port.id, port.direction);
         let anchor = view
             .and_then(|view| view.anchor.as_deref())
-            .and_then(|key| anchor_regions.get(key).copied());
+            .and_then(|key| {
+                port.decl
+                    .and_then(|decl| anchor_regions.get(&(key, Some(decl.key.0.as_str()))))
+                    .or_else(|| anchor_regions.get(&(key, None)))
+                    .copied()
+            });
         by_side.entry(side).or_default().push((
             SideOrderKey {
                 group: view.and_then(|view| view.group.as_deref()),
@@ -267,7 +279,8 @@ mod tests {
             },
             &[
                 HandleAnchorRegion {
-                    key: "field.primary_key",
+                    key: Cow::Borrowed("field.primary_key"),
+                    port_key: None,
                     rect: CanvasRect {
                         origin: CanvasPoint { x: 16.0, y: 44.0 },
                         size: CanvasSize {
@@ -277,7 +290,8 @@ mod tests {
                     },
                 },
                 HandleAnchorRegion {
-                    key: "field.foreign_key",
+                    key: Cow::Borrowed("field.foreign_key"),
+                    port_key: None,
                     rect: CanvasRect {
                         origin: CanvasPoint { x: 16.0, y: 72.0 },
                         size: CanvasSize {

@@ -7,9 +7,9 @@ use jellyflow::runtime::schema::{
     NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, PortDecl,
 };
 use jellyflow_egui::{
-    EguiNodeWidgetRenderer, JellyflowEguiApp, JellyflowEguiBridge, NodeContentLevel,
-    NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout, NodeWidgetRenderInput,
-    RendererCatalog, RichNodeRenderer,
+    EguiNodeWidgetRenderOutcome, EguiNodeWidgetRenderer, JellyflowEguiApp, JellyflowEguiBridge,
+    NodeContentLevel, NodeInteractiveRegion, NodeRenderInput, NodeRenderLayout,
+    NodeWidgetRenderInput, RendererCatalog, RichNodeRenderer,
 };
 use serde_json::json;
 
@@ -43,11 +43,16 @@ impl RichNodeRenderer for ReviewCardRenderer {
 }
 
 impl EguiNodeWidgetRenderer for ReviewCardRenderer {
-    fn render_widgets(&self, ui: &mut egui::Ui, input: &NodeWidgetRenderInput<'_>) -> bool {
+    fn render_widgets(
+        &self,
+        ui: &mut egui::Ui,
+        input: &NodeWidgetRenderInput<'_>,
+    ) -> EguiNodeWidgetRenderOutcome {
         if input.content_level == NodeContentLevel::Shell {
-            return false;
+            return EguiNodeWidgetRenderOutcome::default();
         }
 
+        let mut outcome = EguiNodeWidgetRenderOutcome::default();
         for region in input.layout.interactive_regions.iter().filter(|region| {
             region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
                 || region.key.starts_with("field.")
@@ -65,6 +70,7 @@ impl EguiNodeWidgetRenderer for ReviewCardRenderer {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
             };
+            outcome.mark_rendered();
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .id_salt(Id::new(("review-card", input.id, &region.key)))
@@ -95,7 +101,7 @@ impl EguiNodeWidgetRenderer for ReviewCardRenderer {
                 });
         }
 
-        true
+        outcome
     }
 }
 

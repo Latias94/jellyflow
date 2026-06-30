@@ -7,7 +7,10 @@ use crate::runtime::measurement::{
     NodeMeasurement, NodeMeasurementError, NodeMeasurementOutcome, NodeMeasurementStatus,
 };
 use crate::runtime::store::NodeGraphStore;
-use crate::schema::NodeSurfaceSlotVisibility;
+use crate::schema::{
+    NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor, NodeSurfaceSlotDescriptor,
+    NodeSurfaceSlotVisibility,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeRouteKind,
     EdgeViewDescriptor, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
@@ -754,6 +757,114 @@ fn semantic_measurement_facts_serialize_without_renderer_types() {
 }
 
 #[test]
+fn repeatable_item_anchors_survive_reorder_and_disappear_after_remove() {
+    let node = NodeId::from_u128(95);
+    let graph = graph_with_unsized_node(node);
+    let mut store = NodeGraphStore::new(
+        graph,
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let collection = NodeRepeatableCollectionDescriptor::new("table.columns", "columns", "id")
+        .with_item_template_slot(NodeSurfaceSlotDescriptor::field_row("column"))
+        .with_anchor_rule(NodeRepeatableAnchorRule::new(
+            "field.column",
+            "field.column",
+        ));
+    let initial_data = serde_json::json!({
+        "columns": [
+            { "id": "id", "name": "id" },
+            { "id": "email", "name": "email" },
+            { "id": "user_id", "name": "user_id" }
+        ]
+    });
+    let reordered_data = serde_json::json!({
+        "columns": [
+            { "id": "user_id", "name": "user_id" },
+            { "id": "id", "name": "id" },
+            { "id": "email", "name": "email" }
+        ]
+    });
+    let removed_data = serde_json::json!({
+        "columns": [
+            { "id": "id", "name": "id" },
+            { "id": "email", "name": "email" }
+        ]
+    });
+
+    let initial_items = collection.item_projections(&initial_data);
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(node)
+                .with_revision(1)
+                .with_slots(repeatable_slots(&initial_items))
+                .with_anchors(repeatable_anchors(&initial_items)),
+        )
+        .expect("initial repeatable measurement");
+    assert!(
+        store
+            .node_measurement(node)
+            .expect("initial measurement")
+            .anchors
+            .iter()
+            .any(|anchor| anchor.anchor == "field.column.user_id")
+    );
+
+    store
+        .node_internals()
+        .invalidate_one(node, NodeInternalsInvalidationReason::DataChanged);
+    assert_eq!(
+        store.node_measurement_status(node),
+        NodeMeasurementStatus::Dirty {
+            revision: 1,
+            reason: NodeInternalsInvalidationReason::DataChanged,
+        }
+    );
+
+    let reordered_items = collection.item_projections(&reordered_data);
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(node)
+                .with_revision(2)
+                .with_slots(repeatable_slots(&reordered_items))
+                .with_anchors(repeatable_anchors(&reordered_items)),
+        )
+        .expect("reordered repeatable measurement");
+    let reordered = store.node_measurement(node).expect("reordered measurement");
+    assert_eq!(
+        reordered.anchors[0].anchor, "field.column.user_id",
+        "y/order can change, but logical item id drives the same anchor"
+    );
+    assert!(
+        reordered
+            .anchors
+            .iter()
+            .any(|anchor| anchor.anchor == "field.column.email")
+    );
+
+    let removed_items = collection.item_projections(&removed_data);
+    store
+        .node_internals()
+        .invalidate_one(node, NodeInternalsInvalidationReason::DataChanged);
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(node)
+                .with_revision(3)
+                .with_slots(repeatable_slots(&removed_items))
+                .with_anchors(repeatable_anchors(&removed_items)),
+        )
+        .expect("removed repeatable measurement");
+    let removed = store.node_measurement(node).expect("removed measurement");
+    assert!(
+        removed
+            .anchors
+            .iter()
+            .all(|anchor| anchor.anchor != "field.column.user_id"),
+        "removed repeatable items stop reporting stale anchors"
+    );
+}
+
+#[test]
 fn clearing_measurement_removes_derived_handle_facts() {
     let source = NodeId::from_u128(40);
     let target = NodeId::from_u128(41);
@@ -994,6 +1105,47 @@ fn node_fixture(ports: Vec<PortId>) -> Node {
         ports,
         data: serde_json::Value::Null,
     }
+}
+
+fn repeatable_slots<'a>(
+    items: &'a [crate::schema::NodeRepeatableItemProjection],
+) -> impl Iterator<Item = MeasuredSurfaceSlot> + 'a {
+    items.iter().map(|item| {
+        MeasuredSurfaceSlot::new(
+            item.slot_key.clone(),
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: 8.0,
+                    y: 24.0 + item.item_index as f32 * 28.0,
+                },
+                size: CanvasSize {
+                    width: 144.0,
+                    height: 24.0,
+                },
+            },
+        )
+    })
+}
+
+fn repeatable_anchors<'a>(
+    items: &'a [crate::schema::NodeRepeatableItemProjection],
+) -> impl Iterator<Item = MeasuredSurfaceAnchor> + 'a {
+    items.iter().map(|item| {
+        MeasuredSurfaceAnchor::new(
+            item.anchor.clone(),
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: 0.0,
+                    y: 26.0 + item.item_index as f32 * 28.0,
+                },
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 20.0,
+                },
+            },
+            HandlePosition::Left,
+        )
+    })
 }
 
 fn port_fixture(node: NodeId, direction: PortDirection) -> Port {

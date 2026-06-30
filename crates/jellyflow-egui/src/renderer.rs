@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{
-    Align, Color32, CornerRadius, Id, Label, Layout, Pos2, Rect, Stroke, Ui, UiBuilder, Vec2,
+    Align, Button, Color32, ComboBox, CornerRadius, DragValue, Id, Label, Layout, Pos2, Rect,
+    Slider, Stroke, TextEdit, Ui, UiBuilder, Vec2,
 };
 use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, Node, NodeId};
 use jellyflow::runtime::schema::{
-    NodeKindViewDescriptor, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    NodeControlBinding, NodeControlBindingSource, NodeControlDescriptor, NodeControlKind,
+    NodeControlOptionSource, NodeControlValidationRule, NodeKindViewDescriptor,
+    NodeRepeatableCollectionDescriptor, NodeRepeatableItemProjection, NodeSurfaceSlotDescriptor,
+    NodeSurfaceSlotKind,
 };
 
 /// Visual style mapped from an adapter-owned renderer key.
@@ -272,7 +276,97 @@ pub trait RichNodeRenderer: Send + Sync {
 
 /// Adapter-owned egui widget renderer for drawing controls inside a node.
 pub trait EguiNodeWidgetRenderer: Send + Sync {
-    fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool;
+    fn render_widgets(
+        &self,
+        ui: &mut Ui,
+        input: &NodeWidgetRenderInput<'_>,
+    ) -> EguiNodeWidgetRenderOutcome;
+}
+
+/// Result of an egui node widget render pass.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct EguiNodeWidgetRenderOutcome {
+    pub rendered: bool,
+    pub changed: bool,
+    pub control_edits: Vec<EguiNodeControlEdit>,
+    pub repeatable_actions: Vec<EguiNodeRepeatableAction>,
+}
+
+impl EguiNodeWidgetRenderOutcome {
+    pub fn rendered() -> Self {
+        Self {
+            rendered: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn mark_rendered(&mut self) {
+        self.rendered = true;
+    }
+
+    pub fn push_control_edit(&mut self, edit: EguiNodeControlEdit) {
+        self.rendered = true;
+        self.changed = true;
+        self.control_edits.push(edit);
+    }
+
+    pub fn push_repeatable_action(&mut self, action: EguiNodeRepeatableAction) {
+        self.rendered = true;
+        self.changed = true;
+        self.repeatable_actions.push(action);
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.rendered |= other.rendered;
+        self.changed |= other.changed;
+        self.control_edits.extend(other.control_edits);
+        self.repeatable_actions.extend(other.repeatable_actions);
+    }
+}
+
+/// Adapter-local edit emitted by egui controls after resolving renderer-neutral bindings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EguiNodeControlEdit {
+    pub control_key: String,
+    pub binding: NodeControlBinding,
+    pub value: serde_json::Value,
+}
+
+impl EguiNodeControlEdit {
+    pub fn new(
+        control_key: impl Into<String>,
+        binding: NodeControlBinding,
+        value: serde_json::Value,
+    ) -> Self {
+        Self {
+            control_key: control_key.into(),
+            binding,
+            value,
+        }
+    }
+}
+
+/// Adapter-local command emitted by repeatable collection controls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EguiNodeRepeatableAction {
+    Add {
+        collection_key: String,
+    },
+    Remove {
+        collection_key: String,
+        item_id: String,
+    },
+    Move {
+        collection_key: String,
+        item_id: String,
+        direction: EguiRepeatableMoveDirection,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EguiRepeatableMoveDirection {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -381,10 +475,15 @@ impl RendererCatalog {
             .render(input, rect)
     }
 
-    pub fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool {
+    pub fn render_widgets(
+        &self,
+        ui: &mut Ui,
+        input: &NodeWidgetRenderInput<'_>,
+    ) -> EguiNodeWidgetRenderOutcome {
         self.widget_renderers
             .get(&input.descriptor.renderer_key)
-            .is_some_and(|renderer| renderer.render_widgets(ui, input))
+            .map(|renderer| renderer.render_widgets(ui, input))
+            .unwrap_or_default()
     }
 
     pub fn has_widget_renderer(&self, renderer_key: &str) -> bool {
@@ -440,6 +539,7 @@ impl RichNodeRenderer for FieldListNodeRenderer {
         let preview_slots = semantic_slots(input, NodeSurfaceSlotKind::Preview);
         let nested_slots = semantic_slots(input, NodeSurfaceSlotKind::NestedRegion);
         let action_slots = semantic_slots(input, NodeSurfaceSlotKind::ActionRow);
+        let repeatable_collections = &input.descriptor.repeatable_collections;
         let keys = fields
             .map(|fields| field_keys(input, fields, &field_slots))
             .unwrap_or_default();
@@ -535,6 +635,74 @@ impl RichNodeRenderer for FieldListNodeRenderer {
             cursor_y = block_rect.origin.y + block_rect.size.height + 8.0;
         }
 
+        for collection in repeatable_collections {
+            let title = repeatable_collection_title(collection);
+            let header_rect = CanvasRect {
+                origin: CanvasPoint {
+                    x: 14.0,
+                    y: cursor_y,
+                },
+                size: CanvasSize {
+                    width: (rect.size.width - 28.0).max(96.0),
+                    height: 20.0,
+                },
+            };
+            layout.interactive_regions.push(NodeInteractiveRegion {
+                key: repeatable_header_region_key(collection),
+                slot_kind: Some(NodeSurfaceSlotKind::ActionRow),
+                rect: header_rect,
+                label: Some(title),
+                z_index: 1,
+            });
+            cursor_y = header_rect.origin.y + header_rect.size.height + 4.0;
+
+            let items = collection.item_projections(&input.node.data);
+            if items.is_empty() {
+                let empty_rect = CanvasRect {
+                    origin: CanvasPoint {
+                        x: 14.0,
+                        y: cursor_y,
+                    },
+                    size: CanvasSize {
+                        width: (rect.size.width - 28.0).max(96.0),
+                        height: 20.0,
+                    },
+                };
+                layout.interactive_regions.push(NodeInteractiveRegion {
+                    key: repeatable_empty_region_key(collection),
+                    slot_kind: Some(NodeSurfaceSlotKind::NestedRegion),
+                    rect: empty_rect,
+                    label: collection.empty_label.clone(),
+                    z_index: 1,
+                });
+                cursor_y = empty_rect.origin.y + empty_rect.size.height + 8.0;
+                continue;
+            }
+
+            for item in items {
+                let row_height = repeatable_item_region_height(&item);
+                let item_rect = CanvasRect {
+                    origin: CanvasPoint {
+                        x: 14.0,
+                        y: cursor_y,
+                    },
+                    size: CanvasSize {
+                        width: (rect.size.width - 28.0).max(96.0),
+                        height: row_height,
+                    },
+                };
+                layout.interactive_regions.push(NodeInteractiveRegion {
+                    key: repeatable_item_region_key(&item),
+                    slot_kind: repeatable_item_slot_kind(&item),
+                    rect: item_rect,
+                    label: Some(repeatable_item_label(&item)),
+                    z_index: 1,
+                });
+                cursor_y = item_rect.origin.y + item_rect.size.height + 4.0;
+            }
+            cursor_y += 4.0;
+        }
+
         for slot in action_slots {
             let items = semantic_slot_lines(&input.node.data, slot, fields);
             let height = semantic_action_region_height(&items);
@@ -589,9 +757,13 @@ impl RichNodeRenderer for FieldListNodeRenderer {
 }
 
 impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
-    fn render_widgets(&self, ui: &mut Ui, input: &NodeWidgetRenderInput<'_>) -> bool {
+    fn render_widgets(
+        &self,
+        ui: &mut Ui,
+        input: &NodeWidgetRenderInput<'_>,
+    ) -> EguiNodeWidgetRenderOutcome {
         if input.content_level == NodeContentLevel::Shell {
-            return false;
+            return EguiNodeWidgetRenderOutcome::default();
         }
 
         let fields = input
@@ -601,7 +773,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             .and_then(|value| value.as_object());
 
         let show_detail = input.content_level.shows_detail();
-        let mut rendered_any = false;
+        let mut outcome = EguiNodeWidgetRenderOutcome::default();
 
         if let Some(fields) = fields {
             for region in input.layout.interactive_regions.iter().filter(|region| {
@@ -612,78 +784,70 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
                     .key
                     .strip_prefix("field.")
                     .unwrap_or(region.key.as_str());
-                let Some(label) = fields
+                let slot = field_slot_for_region(input, region, key);
+                let label = fields
                     .get(key)
                     .map(field_value_label)
-                    .filter(|label| !label.is_empty())
-                else {
+                    .filter(|label| !label.is_empty());
+                if label.is_none() && !slot.is_some_and(|slot| !slot.controls.is_empty()) {
                     continue;
-                };
+                }
                 let Some(rect) = input.region_screen_rect(region) else {
                     continue;
                 };
-                rendered_any = true;
-                let mut child_ui = ui.new_child(
-                    UiBuilder::new()
-                        .id_salt(Id::new(("field-region", input.id, &region.key)))
-                        .max_rect(rect)
-                        .layout(Layout::left_to_right(Align::Center)),
-                );
-                child_ui.set_clip_rect(rect);
-                child_ui.set_min_size(rect.size());
-                child_ui.painter().rect_filled(
+                draw_field_region(
+                    ui,
                     rect,
-                    CornerRadius::same(4),
-                    Color32::from_rgb(255, 255, 255),
+                    input,
+                    FieldRegionRender {
+                        key,
+                        label: label.as_deref(),
+                        slot,
+                        fields: Some(fields),
+                        show_detail,
+                    },
+                    &mut outcome,
                 );
-                child_ui.painter().rect_stroke(
-                    rect,
-                    CornerRadius::same(4),
-                    Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
-                    eframe::egui::StrokeKind::Inside,
-                );
+            }
+        }
 
-                let mut content_rect = rect.shrink2(Vec2::new(7.0, 2.0));
-                if content_rect.width() <= 6.0 || content_rect.height() <= 6.0 {
-                    continue;
-                }
-                child_ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
-                    ui.set_clip_rect(content_rect);
-                    ui.set_min_size(content_rect.size());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
-                        if show_detail && let Some(badge) = field_badge(key) {
-                            let badge_width = 24.0f32.min(content_rect.width() * 0.38);
-                            let badge_rect = Rect::from_min_size(
-                                content_rect.min,
-                                Vec2::new(badge_width, content_rect.height()),
-                            );
-                            draw_field_badge(ui, badge_rect, badge, input.style.accent);
-                            content_rect.min.x = badge_rect.max.x + 6.0;
-                        }
-                        ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
-                            ui.set_clip_rect(content_rect);
-                            ui.add(
-                                Label::new(
-                                    eframe::egui::RichText::new(label)
-                                        .small()
-                                        .color(input.style.text.gamma_multiply(0.84)),
-                                )
-                                .truncate(),
-                            );
-                        });
-                    });
-                });
+        for region in input
+            .layout
+            .interactive_regions
+            .iter()
+            .filter(|region| input.content_level.renders_slot_kind(region.slot_kind))
+        {
+            let Some(rect) = input.region_screen_rect(region) else {
+                continue;
+            };
+            if let Some(collection) = repeatable_header_collection(input, region) {
+                draw_repeatable_header(ui, rect, input, collection, &mut outcome);
+            } else if let Some(collection) = repeatable_empty_collection(input, region) {
+                outcome.mark_rendered();
+                draw_semantic_nested_region(
+                    ui,
+                    rect,
+                    collection
+                        .empty_label
+                        .as_deref()
+                        .or(collection.label.as_deref()),
+                    &[],
+                    input.style,
+                );
+            } else if let Some((collection, item)) = repeatable_item_for_region(input, region) {
+                draw_repeatable_item_row(ui, rect, input, collection, &item, &mut outcome);
             }
         }
 
         for region in input.layout.interactive_regions.iter().filter(|region| {
-            input.content_level.renders_slot_kind(region.slot_kind) && region_is_badge(region)
+            input.content_level.renders_slot_kind(region.slot_kind)
+                && region_is_badge(region)
+                && !region_is_repeatable(input, region)
         }) {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
             };
-            rendered_any = true;
+            outcome.mark_rendered();
             draw_semantic_chip(
                 ui,
                 rect,
@@ -697,11 +861,12 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
         for region in input.layout.interactive_regions.iter().filter(|region| {
             input.content_level.renders_slot_kind(region.slot_kind)
                 && region_is_detail_block(region)
+                && !region_is_repeatable(input, region)
         }) {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
             };
-            rendered_any = true;
+            outcome.mark_rendered();
             let slot = input
                 .descriptor
                 .surface_slots
@@ -715,16 +880,22 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
                 .filter(|_| show_detail)
                 .map(|slot| semantic_slot_lines(&input.node.data, slot, fields))
                 .unwrap_or_default();
-            draw_semantic_nested_region(ui, rect, title, &lines, input.style);
+            if let Some(slot) = slot.filter(|slot| show_detail && !slot.controls.is_empty()) {
+                draw_control_region(ui, rect, input, title, slot, fields, &mut outcome);
+            } else {
+                draw_semantic_nested_region(ui, rect, title, &lines, input.style);
+            }
         }
 
         for region in input.layout.interactive_regions.iter().filter(|region| {
-            input.content_level.renders_slot_kind(region.slot_kind) && region_is_action(region)
+            input.content_level.renders_slot_kind(region.slot_kind)
+                && region_is_action(region)
+                && !region_is_repeatable(input, region)
         }) {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
             };
-            rendered_any = true;
+            outcome.mark_rendered();
             let text = region
                 .label
                 .as_deref()
@@ -739,8 +910,793 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             );
         }
 
-        rendered_any
+        outcome
     }
+}
+
+struct FieldRegionRender<'a> {
+    key: &'a str,
+    label: Option<&'a str>,
+    slot: Option<&'a NodeSurfaceSlotDescriptor>,
+    fields: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    show_detail: bool,
+}
+
+fn draw_field_region(
+    ui: &mut Ui,
+    rect: Rect,
+    input: &NodeWidgetRenderInput<'_>,
+    request: FieldRegionRender<'_>,
+    outcome: &mut EguiNodeWidgetRenderOutcome,
+) {
+    outcome.mark_rendered();
+    let mut child_ui = ui.new_child(
+        UiBuilder::new()
+            .id_salt(Id::new(("field-region", input.id, request.key)))
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child_ui.set_clip_rect(rect);
+    child_ui.set_min_size(rect.size());
+    child_ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(4),
+        Color32::from_rgb(255, 255, 255),
+    );
+    child_ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
+        eframe::egui::StrokeKind::Inside,
+    );
+
+    let mut content_rect = rect.shrink2(Vec2::new(7.0, 2.0));
+    if content_rect.width() <= 6.0 || content_rect.height() <= 6.0 {
+        return;
+    }
+    child_ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+        ui.set_clip_rect(content_rect);
+        ui.set_min_size(content_rect.size());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+            if request.show_detail
+                && let Some(badge) = field_badge(request.key)
+            {
+                let badge_width = 24.0f32.min(content_rect.width() * 0.38);
+                let badge_rect = Rect::from_min_size(
+                    content_rect.min,
+                    Vec2::new(badge_width, content_rect.height()),
+                );
+                draw_field_badge(ui, badge_rect, badge, input.style.accent);
+                content_rect.min.x = badge_rect.max.x + 6.0;
+            }
+            ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.set_clip_rect(content_rect);
+                if request.show_detail
+                    && let Some(slot) = request.slot.filter(|slot| !slot.controls.is_empty())
+                {
+                    outcome.merge(draw_slot_controls(
+                        ui,
+                        input,
+                        slot,
+                        ControlRenderContext::node(request.fields, slot),
+                    ));
+                } else if let Some(label) = request.label {
+                    ui.add(
+                        Label::new(
+                            eframe::egui::RichText::new(label)
+                                .small()
+                                .color(input.style.text.gamma_multiply(0.84)),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+        });
+    });
+}
+
+fn draw_control_region(
+    ui: &mut Ui,
+    rect: Rect,
+    input: &NodeWidgetRenderInput<'_>,
+    title: Option<&str>,
+    slot: &NodeSurfaceSlotDescriptor,
+    fields: Option<&serde_json::Map<String, serde_json::Value>>,
+    outcome: &mut EguiNodeWidgetRenderOutcome,
+) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(4),
+        input.style.fill.gamma_multiply(0.9),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(0.8, input.style.stroke.gamma_multiply(0.72)),
+        eframe::egui::StrokeKind::Inside,
+    );
+
+    let mut content_rect = rect.shrink2(Vec2::new(7.0, 4.0));
+    if let Some(title) = title {
+        let title_rect =
+            Rect::from_min_size(content_rect.min, Vec2::new(content_rect.width(), 13.0));
+        ui.painter().text(
+            title_rect.left_top(),
+            eframe::egui::Align2::LEFT_TOP,
+            title,
+            eframe::egui::TextStyle::Small.resolve(ui.style()),
+            input.style.text,
+        );
+        content_rect.min.y = title_rect.max.y + 3.0;
+    }
+    if content_rect.is_positive() {
+        ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+            ui.set_clip_rect(content_rect);
+            outcome.merge(draw_slot_controls(
+                ui,
+                input,
+                slot,
+                ControlRenderContext::node(fields, slot),
+            ));
+        });
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ControlRenderContext<'a> {
+    fields: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    slot: Option<&'a NodeSurfaceSlotDescriptor>,
+    item_data: Option<&'a serde_json::Value>,
+    item_path: Option<&'a str>,
+}
+
+impl<'a> ControlRenderContext<'a> {
+    fn node(
+        fields: Option<&'a serde_json::Map<String, serde_json::Value>>,
+        slot: &'a NodeSurfaceSlotDescriptor,
+    ) -> Self {
+        Self {
+            fields,
+            slot: Some(slot),
+            item_data: None,
+            item_path: None,
+        }
+    }
+
+    fn repeatable(item_data: &'a serde_json::Value, item_path: &'a str) -> Self {
+        Self {
+            fields: None,
+            slot: None,
+            item_data: Some(item_data),
+            item_path: Some(item_path),
+        }
+    }
+}
+
+fn draw_slot_controls(
+    ui: &mut Ui,
+    input: &NodeWidgetRenderInput<'_>,
+    slot: &NodeSurfaceSlotDescriptor,
+    context: ControlRenderContext<'_>,
+) -> EguiNodeWidgetRenderOutcome {
+    draw_controls(ui, input, &slot.controls, context)
+}
+
+fn draw_controls(
+    ui: &mut Ui,
+    input: &NodeWidgetRenderInput<'_>,
+    controls: &[NodeControlDescriptor],
+    context: ControlRenderContext<'_>,
+) -> EguiNodeWidgetRenderOutcome {
+    let mut outcome = EguiNodeWidgetRenderOutcome::default();
+    if controls.is_empty() {
+        return outcome;
+    }
+    outcome.mark_rendered();
+
+    let mut controls = controls.iter().collect::<Vec<_>>();
+    controls.sort_by(|a, b| (a.order_key(), &a.key).cmp(&(b.order_key(), &b.key)));
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 2.0);
+        for control in controls {
+            let value = control_current_value(&input.node.data, control, context)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let write_binding = control_write_binding(control, context);
+            let enabled = write_binding.is_some()
+                && !control.editability.read_only
+                && !control.editability.is_disabled();
+            let id_salt = Id::new(("control", input.id, &control.key, context.item_path));
+            let mut edit = None;
+            ui.add_enabled_ui(enabled, |ui| {
+                edit = draw_control(ui, input, control, &value, write_binding.clone(), id_salt);
+            });
+            if let Some(edit) = edit {
+                outcome.push_control_edit(edit);
+            }
+        }
+    });
+
+    outcome
+}
+
+fn draw_control(
+    ui: &mut Ui,
+    input: &NodeWidgetRenderInput<'_>,
+    control: &NodeControlDescriptor,
+    value: &serde_json::Value,
+    write_binding: Option<NodeControlBinding>,
+    id_salt: Id,
+) -> Option<EguiNodeControlEdit> {
+    let binding = write_binding?;
+    match control.kind {
+        NodeControlKind::TextInput => {
+            let mut text = control_text_value(value);
+            let mut editor = TextEdit::singleline(&mut text).desired_width(control_width(ui, 92.0));
+            if let Some(placeholder) = &control.presentation.placeholder {
+                editor = editor.hint_text(placeholder);
+            }
+            ui.add(editor)
+                .changed()
+                .then(|| EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(text)))
+        }
+        NodeControlKind::TextArea | NodeControlKind::Code | NodeControlKind::Expression => {
+            let mut text = control_text_value(value);
+            let mut editor = TextEdit::multiline(&mut text)
+                .desired_width(control_width(ui, 128.0))
+                .desired_rows(if control.kind == NodeControlKind::TextArea {
+                    2
+                } else {
+                    1
+                });
+            if matches!(
+                control.kind,
+                NodeControlKind::Code | NodeControlKind::Expression
+            ) {
+                editor = editor.font(eframe::egui::TextStyle::Monospace);
+            }
+            if let Some(placeholder) = &control.presentation.placeholder {
+                editor = editor.hint_text(placeholder);
+            }
+            ui.add(editor)
+                .changed()
+                .then(|| EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(text)))
+        }
+        NodeControlKind::NumberInput => {
+            let mut number = value.as_f64().unwrap_or_default();
+            ui.add(DragValue::new(&mut number).speed(0.1))
+                .changed()
+                .then(|| EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(number)))
+        }
+        NodeControlKind::Slider => {
+            let (min, max) = control_slider_range(control);
+            let mut number = value.as_f64().unwrap_or(min).clamp(min, max);
+            ui.add(Slider::new(&mut number, min..=max).show_value(true))
+                .changed()
+                .then(|| EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(number)))
+        }
+        NodeControlKind::Toggle => {
+            let mut checked = value.as_bool().unwrap_or_default();
+            ui.checkbox(&mut checked, control_compact_label(control))
+                .changed()
+                .then(|| {
+                    EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(checked))
+                })
+        }
+        NodeControlKind::Select => draw_select_control(ui, control, value, binding, id_salt, false),
+        NodeControlKind::Asset | NodeControlKind::VariablePicker | NodeControlKind::PortBinding => {
+            if control.options.is_empty() {
+                let text = format!(
+                    "{}: {}",
+                    control_compact_label(control),
+                    option_source_label(&control.option_source)
+                );
+                ui.add_enabled(false, Button::new(text));
+                None
+            } else {
+                draw_select_control(ui, control, value, binding, id_salt, false)
+            }
+        }
+        NodeControlKind::MultiSelect => {
+            ui.add_enabled(false, Button::new(control_preview_label(control, value)));
+            None
+        }
+        NodeControlKind::Color => {
+            let mut text = control_text_value(value);
+            ui.horizontal(|ui| {
+                if let Some(color) = parse_hex_color(&text) {
+                    let (swatch_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(14.0, 14.0), eframe::egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(swatch_rect, CornerRadius::same(3), color);
+                    ui.painter().rect_stroke(
+                        swatch_rect,
+                        CornerRadius::same(3),
+                        Stroke::new(0.75, input.style.stroke),
+                        eframe::egui::StrokeKind::Inside,
+                    );
+                }
+                ui.add(TextEdit::singleline(&mut text).desired_width(control_width(ui, 72.0)))
+            })
+            .inner
+            .changed()
+            .then(|| EguiNodeControlEdit::new(&control.key, binding, serde_json::json!(text)))
+        }
+    }
+}
+
+fn draw_select_control(
+    ui: &mut Ui,
+    control: &NodeControlDescriptor,
+    value: &serde_json::Value,
+    binding: NodeControlBinding,
+    id_salt: Id,
+    _multi: bool,
+) -> Option<EguiNodeControlEdit> {
+    if control.options.is_empty() {
+        ui.add_enabled(false, Button::new(control_preview_label(control, value)));
+        return None;
+    }
+
+    let mut selected = value.clone();
+    let original = selected.clone();
+    ComboBox::from_id_salt(id_salt)
+        .selected_text(control_option_label(control, value))
+        .width(control_width(ui, 96.0))
+        .show_ui(ui, |ui| {
+            for option in &control.options {
+                ui.add_enabled_ui(!option.disabled, |ui| {
+                    ui.selectable_value(&mut selected, option.value.clone(), &option.label);
+                });
+            }
+        });
+
+    (selected != original).then(|| EguiNodeControlEdit::new(&control.key, binding, selected))
+}
+
+fn draw_repeatable_header(
+    ui: &mut Ui,
+    rect: Rect,
+    input: &NodeWidgetRenderInput<'_>,
+    collection: &NodeRepeatableCollectionDescriptor,
+    outcome: &mut EguiNodeWidgetRenderOutcome,
+) {
+    outcome.mark_rendered();
+    draw_semantic_chip(
+        ui,
+        rect,
+        collection
+            .label
+            .as_deref()
+            .unwrap_or(collection.key.as_str()),
+        input.style.accent.gamma_multiply(0.1),
+        input.style.accent.gamma_multiply(0.42),
+        input.style.text,
+    );
+
+    let add_disabled = collection.add_disabled_reason(&input.node.data);
+    let button_rect = Rect::from_min_size(
+        Pos2::new(rect.right() - 46.0, rect.top() + 2.0),
+        Vec2::new(40.0, rect.height().max(18.0) - 4.0),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(button_rect), |ui| {
+        ui.set_clip_rect(button_rect);
+        if ui
+            .add_enabled(add_disabled.is_none(), Button::new("Add"))
+            .on_disabled_hover_text(add_disabled.unwrap_or_default())
+            .clicked()
+        {
+            outcome.push_repeatable_action(EguiNodeRepeatableAction::Add {
+                collection_key: collection.key.clone(),
+            });
+        }
+    });
+}
+
+fn draw_repeatable_item_row(
+    ui: &mut Ui,
+    rect: Rect,
+    input: &NodeWidgetRenderInput<'_>,
+    collection: &NodeRepeatableCollectionDescriptor,
+    item: &NodeRepeatableItemProjection,
+    outcome: &mut EguiNodeWidgetRenderOutcome,
+) {
+    outcome.mark_rendered();
+    let mut child_ui = ui.new_child(
+        UiBuilder::new()
+            .id_salt(Id::new((
+                "repeatable-item",
+                input.id,
+                &collection.key,
+                &item.item_id,
+            )))
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child_ui.set_clip_rect(rect);
+    child_ui.set_min_size(rect.size());
+    child_ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(4),
+        Color32::from_rgb(255, 255, 255),
+    );
+    child_ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
+        eframe::egui::StrokeKind::Inside,
+    );
+
+    let button_width = if collection.reorderable { 74.0 } else { 32.0 };
+    let label_width = 58.0f32.min(rect.width() * 0.32);
+    let label_rect = Rect::from_min_size(
+        rect.left_top() + Vec2::new(7.0, 2.0),
+        Vec2::new(label_width, rect.height() - 4.0),
+    );
+    draw_field_badge(&mut child_ui, label_rect, &item.item_id, input.style.accent);
+
+    let controls_rect = Rect::from_min_max(
+        Pos2::new(label_rect.max.x + 6.0, rect.top() + 2.0),
+        Pos2::new(rect.right() - button_width - 8.0, rect.bottom() - 2.0),
+    );
+    if controls_rect.is_positive() {
+        let item_path = format!("{}.{}", collection.item_source, item.item_index);
+        child_ui.scope_builder(UiBuilder::new().max_rect(controls_rect), |ui| {
+            ui.set_clip_rect(controls_rect);
+            let controls = item
+                .slots
+                .iter()
+                .flat_map(|slot| slot.controls.iter().cloned())
+                .collect::<Vec<_>>();
+            outcome.merge(draw_controls(
+                ui,
+                input,
+                &controls,
+                ControlRenderContext::repeatable(&item.item_data, &item_path),
+            ));
+        });
+    } else {
+        let text_rect = rect.shrink2(Vec2::new(7.0, 2.0));
+        child_ui.painter().text(
+            text_rect.left_center(),
+            eframe::egui::Align2::LEFT_CENTER,
+            repeatable_item_label(item),
+            eframe::egui::TextStyle::Small.resolve(child_ui.style()),
+            input.style.text.gamma_multiply(0.84),
+        );
+    }
+
+    let buttons_rect = Rect::from_min_max(
+        Pos2::new(rect.right() - button_width - 4.0, rect.top() + 2.0),
+        Pos2::new(rect.right() - 4.0, rect.bottom() - 2.0),
+    );
+    child_ui.scope_builder(UiBuilder::new().max_rect(buttons_rect), |ui| {
+        ui.set_clip_rect(buttons_rect);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+            if collection.reorderable {
+                if ui.add(Button::new("^")).clicked() {
+                    outcome.push_repeatable_action(EguiNodeRepeatableAction::Move {
+                        collection_key: collection.key.clone(),
+                        item_id: item.item_id.clone(),
+                        direction: EguiRepeatableMoveDirection::Up,
+                    });
+                }
+                if ui.add(Button::new("v")).clicked() {
+                    outcome.push_repeatable_action(EguiNodeRepeatableAction::Move {
+                        collection_key: collection.key.clone(),
+                        item_id: item.item_id.clone(),
+                        direction: EguiRepeatableMoveDirection::Down,
+                    });
+                }
+            }
+            let remove_disabled = collection.remove_disabled_reason(&input.node.data);
+            if ui
+                .add_enabled(remove_disabled.is_none(), Button::new("Del"))
+                .on_disabled_hover_text(remove_disabled.unwrap_or_default())
+                .clicked()
+            {
+                outcome.push_repeatable_action(EguiNodeRepeatableAction::Remove {
+                    collection_key: collection.key.clone(),
+                    item_id: item.item_id.clone(),
+                });
+            }
+        });
+    });
+}
+
+fn field_slot_for_region<'a>(
+    input: &'a NodeWidgetRenderInput<'_>,
+    region: &NodeInteractiveRegion,
+    field_key: &str,
+) -> Option<&'a NodeSurfaceSlotDescriptor> {
+    input.descriptor.surface_slots.iter().find(|slot| {
+        slot.key == region.key
+            || (slot.kind == NodeSurfaceSlotKind::FieldRow && slot.data_key() == Some(field_key))
+    })
+}
+
+fn control_current_value<'a>(
+    node_data: &'a serde_json::Value,
+    control: &NodeControlDescriptor,
+    context: ControlRenderContext<'a>,
+) -> Option<&'a serde_json::Value> {
+    if let Some(item_data) = context.item_data {
+        return control
+            .binding
+            .as_ref()
+            .and_then(|binding| match binding.source {
+                NodeControlBindingSource::DataPath | NodeControlBindingSource::Slot => {
+                    semantic_json_lookup(item_data, &binding.path)
+                }
+                NodeControlBindingSource::JsonPointer => item_data.pointer(&binding.path),
+                NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {
+                    None
+                }
+            })
+            .or_else(|| {
+                control
+                    .slot
+                    .as_deref()
+                    .and_then(|path| semantic_json_lookup(item_data, path))
+            });
+    }
+
+    if let Some(binding) = &control.binding {
+        match binding.source {
+            NodeControlBindingSource::DataPath => {
+                return semantic_json_lookup(node_data, &binding.path);
+            }
+            NodeControlBindingSource::Slot => {
+                if let Some(slot) = context.slot
+                    && slot.kind == NodeSurfaceSlotKind::FieldRow
+                    && let Some(fields) = context.fields
+                    && let Some(value) = fields.get(&binding.path)
+                {
+                    return Some(value);
+                }
+                return semantic_json_lookup(node_data, &binding.path);
+            }
+            NodeControlBindingSource::JsonPointer => return node_data.pointer(&binding.path),
+            NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {}
+        }
+    }
+
+    control
+        .slot
+        .as_deref()
+        .and_then(|path| semantic_json_lookup(node_data, path))
+        .or_else(|| {
+            context
+                .slot
+                .and_then(|slot| semantic_slot_value(node_data, slot, context.fields))
+        })
+}
+
+fn control_write_binding(
+    control: &NodeControlDescriptor,
+    context: ControlRenderContext<'_>,
+) -> Option<NodeControlBinding> {
+    let binding = control
+        .binding
+        .clone()
+        .or_else(|| {
+            control
+                .slot
+                .as_ref()
+                .map(|slot| NodeControlBinding::data_path(slot.clone()))
+        })
+        .or_else(|| {
+            context
+                .slot
+                .and_then(NodeSurfaceSlotDescriptor::data_key)
+                .map(|path| NodeControlBinding::slot(path.to_owned()))
+        })?;
+
+    if let Some(item_path) = context.item_path {
+        return match binding.source {
+            NodeControlBindingSource::DataPath | NodeControlBindingSource::Slot => Some(
+                NodeControlBinding::data_path(join_data_path(item_path, &binding.path)),
+            ),
+            NodeControlBindingSource::JsonPointer
+            | NodeControlBindingSource::GraphSymbol
+            | NodeControlBindingSource::PortAnchor => None,
+        };
+    }
+
+    match binding.source {
+        NodeControlBindingSource::DataPath | NodeControlBindingSource::JsonPointer => Some(binding),
+        NodeControlBindingSource::Slot => {
+            let path = if let Some(slot) = context.slot {
+                if slot.kind == NodeSurfaceSlotKind::FieldRow {
+                    join_data_path("fields", &binding.path)
+                } else {
+                    binding.path
+                }
+            } else {
+                binding.path
+            };
+            Some(NodeControlBinding::data_path(path))
+        }
+        NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => None,
+    }
+}
+
+fn join_data_path(prefix: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        prefix.to_owned()
+    } else {
+        format!("{prefix}.{suffix}")
+    }
+}
+
+fn control_text_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => String::new(),
+        other => semantic_value_preview(other),
+    }
+}
+
+fn control_compact_label(control: &NodeControlDescriptor) -> &str {
+    control.display_label().unwrap_or(control.key.as_str())
+}
+
+fn control_preview_label(control: &NodeControlDescriptor, value: &serde_json::Value) -> String {
+    let preview = semantic_value_preview(value);
+    if preview.is_empty() {
+        control_compact_label(control).to_owned()
+    } else {
+        format!("{}: {preview}", control_compact_label(control))
+    }
+}
+
+fn control_option_label(control: &NodeControlDescriptor, value: &serde_json::Value) -> String {
+    control
+        .options
+        .iter()
+        .find(|option| option.value == *value)
+        .map(|option| option.label.clone())
+        .unwrap_or_else(|| control_preview_label(control, value))
+}
+
+fn option_source_label(source: &NodeControlOptionSource) -> &'static str {
+    match source {
+        NodeControlOptionSource::Inline => "options",
+        NodeControlOptionSource::Variables => "variables",
+        NodeControlOptionSource::Assets => "assets",
+        NodeControlOptionSource::Ports => "ports",
+        NodeControlOptionSource::Custom(_) => "custom",
+    }
+}
+
+fn control_width(ui: &Ui, preferred: f32) -> f32 {
+    ui.available_width().min(preferred).max(40.0)
+}
+
+fn control_slider_range(control: &NodeControlDescriptor) -> (f64, f64) {
+    control
+        .validation
+        .rules
+        .iter()
+        .find_map(|rule| match rule {
+            NodeControlValidationRule::Range { min, max } => {
+                Some((min.unwrap_or(0.0), max.unwrap_or(1.0)))
+            }
+            _ => None,
+        })
+        .filter(|(min, max)| min.is_finite() && max.is_finite() && min < max)
+        .unwrap_or((0.0, 1.0))
+}
+
+fn parse_hex_color(value: &str) -> Option<Color32> {
+    let value = value.strip_prefix('#')?;
+    if value.len() != 6 {
+        return None;
+    }
+    let red = u8::from_str_radix(&value[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&value[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&value[4..6], 16).ok()?;
+    Some(Color32::from_rgb(red, green, blue))
+}
+
+fn repeatable_collection_title(collection: &NodeRepeatableCollectionDescriptor) -> String {
+    collection
+        .label
+        .clone()
+        .unwrap_or_else(|| collection.key.clone())
+}
+
+fn repeatable_header_region_key(collection: &NodeRepeatableCollectionDescriptor) -> String {
+    format!("repeatable.{}.header", collection.key)
+}
+
+fn repeatable_empty_region_key(collection: &NodeRepeatableCollectionDescriptor) -> String {
+    format!("repeatable.{}.empty", collection.key)
+}
+
+fn repeatable_item_region_key(item: &NodeRepeatableItemProjection) -> String {
+    item.slots
+        .first()
+        .map(|slot| slot.key.clone())
+        .unwrap_or_else(|| item.slot_key.clone())
+}
+
+fn repeatable_item_slot_kind(item: &NodeRepeatableItemProjection) -> Option<NodeSurfaceSlotKind> {
+    item.slots
+        .first()
+        .map(|slot| slot.kind)
+        .or(Some(NodeSurfaceSlotKind::FieldRow))
+}
+
+fn repeatable_item_region_height(item: &NodeRepeatableItemProjection) -> f32 {
+    let control_count = item
+        .slots
+        .iter()
+        .map(|slot| slot.controls.len())
+        .sum::<usize>();
+    if control_count > 1 { 28.0 } else { 24.0 }
+}
+
+fn repeatable_item_label(item: &NodeRepeatableItemProjection) -> String {
+    item.item_data
+        .get("label")
+        .or_else(|| item.item_data.get("name"))
+        .or_else(|| item.item_data.get("title"))
+        .map(semantic_value_preview)
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| item.item_id.clone())
+}
+
+fn repeatable_header_collection<'a>(
+    input: &'a NodeWidgetRenderInput<'_>,
+    region: &NodeInteractiveRegion,
+) -> Option<&'a NodeRepeatableCollectionDescriptor> {
+    input
+        .descriptor
+        .repeatable_collections
+        .iter()
+        .find(|collection| region.key == repeatable_header_region_key(collection))
+}
+
+fn repeatable_empty_collection<'a>(
+    input: &'a NodeWidgetRenderInput<'_>,
+    region: &NodeInteractiveRegion,
+) -> Option<&'a NodeRepeatableCollectionDescriptor> {
+    input
+        .descriptor
+        .repeatable_collections
+        .iter()
+        .find(|collection| region.key == repeatable_empty_region_key(collection))
+}
+
+fn repeatable_item_for_region<'a>(
+    input: &'a NodeWidgetRenderInput<'_>,
+    region: &NodeInteractiveRegion,
+) -> Option<(
+    &'a NodeRepeatableCollectionDescriptor,
+    NodeRepeatableItemProjection,
+)> {
+    input
+        .descriptor
+        .repeatable_collections
+        .iter()
+        .find_map(|collection| {
+            collection
+                .item_projections(&input.node.data)
+                .into_iter()
+                .find(|item| repeatable_item_region_key(item) == region.key)
+                .map(|item| (collection, item))
+        })
+}
+
+fn region_is_repeatable(input: &NodeWidgetRenderInput<'_>, region: &NodeInteractiveRegion) -> bool {
+    repeatable_header_collection(input, region).is_some()
+        || repeatable_empty_collection(input, region).is_some()
+        || repeatable_item_for_region(input, region).is_some()
 }
 
 fn region_is_detail_block(region: &NodeInteractiveRegion) -> bool {
@@ -1102,6 +2058,7 @@ fn node_local_rect_to_screen(node_rect: Rect, local_rect: CanvasRect, zoom: f32)
 mod tests {
     use super::*;
     use jellyflow::core::{CanvasPoint, NodeKindKey};
+    use jellyflow::runtime::schema::NodeRepeatableAnchorRule;
 
     #[derive(Debug, Clone, Copy)]
     struct TestRenderer;
@@ -1134,6 +2091,11 @@ mod tests {
             default_size: None,
             ports: Vec::new(),
             surface_slots: Vec::new(),
+            repeatable_collections: Vec::new(),
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
             chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         }
@@ -1248,6 +2210,11 @@ mod tests {
                     .with_anchor("actions.primary")
                     .with_order(1),
             ],
+            repeatable_collections: Vec::new(),
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
             chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };
@@ -1284,6 +2251,168 @@ mod tests {
             .with_slot("nested.policy")
             .with_anchor("nested.policy");
         assert_eq!(nested.data_key(), Some("nested.policy"));
+    }
+
+    #[test]
+    fn field_row_control_binding_targets_fields_namespace() {
+        let node_data = serde_json::json!({
+            "fields": {
+                "prompt": "Classify customer intent"
+            }
+        });
+        let fields = node_data
+            .get("fields")
+            .and_then(serde_json::Value::as_object)
+            .expect("fields object exists");
+        let slot = NodeSurfaceSlotDescriptor::field_row("field.prompt")
+            .with_slot("prompt")
+            .with_control(
+                NodeControlDescriptor::text_area("control.prompt")
+                    .with_binding(NodeControlBinding::slot("prompt")),
+            );
+        let control = &slot.controls[0];
+        let context = ControlRenderContext::node(Some(fields), &slot);
+
+        assert_eq!(
+            control_current_value(&node_data, control, context),
+            Some(&serde_json::json!("Classify customer intent"))
+        );
+        assert_eq!(
+            control_write_binding(control, context),
+            Some(NodeControlBinding::data_path("fields.prompt"))
+        );
+    }
+
+    #[test]
+    fn repeatable_control_binding_targets_item_index_path() {
+        let collection = NodeRepeatableCollectionDescriptor::new("table.columns", "columns", "id")
+            .with_item_template_slot(
+                NodeSurfaceSlotDescriptor::field_row("column").with_control(
+                    NodeControlDescriptor::text_input("control.column.name")
+                        .with_binding(NodeControlBinding::data_path("name")),
+                ),
+            );
+        let node_data = serde_json::json!({
+            "columns": [
+                { "id": "id", "name": "id" },
+                { "id": "email", "name": "email" }
+            ]
+        });
+        let item = collection.item_projections(&node_data)[1].clone();
+        let control = &item.slots[0].controls[0];
+        let context = ControlRenderContext::repeatable(&item.item_data, "columns.1");
+
+        assert_eq!(
+            control_current_value(&node_data, control, context),
+            Some(&serde_json::json!("email"))
+        );
+        assert_eq!(
+            control_write_binding(control, context),
+            Some(NodeControlBinding::data_path("columns.1.name"))
+        );
+    }
+
+    #[test]
+    fn slider_control_range_uses_validation_rule() {
+        let ranged = NodeControlDescriptor::slider("control.factor").with_validation_rule(
+            NodeControlValidationRule::Range {
+                min: Some(-1.0),
+                max: Some(2.5),
+            },
+        );
+        let fallback = NodeControlDescriptor::slider("control.default");
+
+        assert_eq!(control_slider_range(&ranged), (-1.0, 2.5));
+        assert_eq!(control_slider_range(&fallback), (0.0, 1.0));
+    }
+
+    #[test]
+    fn field_list_renderer_emits_repeatable_regions_with_stable_item_keys() {
+        let descriptor = NodeKindViewDescriptor {
+            kind: NodeKindKey::new("demo.table"),
+            renderer_key: "table-card".to_owned(),
+            title: "Table".to_owned(),
+            category: Vec::new(),
+            keywords: Vec::new(),
+            default_size: None,
+            ports: Vec::new(),
+            surface_slots: Vec::new(),
+            repeatable_collections: vec![
+                NodeRepeatableCollectionDescriptor::new("table.columns", "columns", "id")
+                    .with_label("Columns")
+                    .with_item_template_slot(
+                        NodeSurfaceSlotDescriptor::field_row("column").with_control(
+                            NodeControlDescriptor::text_input("control.column.name")
+                                .with_binding(NodeControlBinding::data_path("name")),
+                        ),
+                    )
+                    .with_anchor_rule(NodeRepeatableAnchorRule::new(
+                        "field.column",
+                        "field.column",
+                    )),
+            ],
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
+            chrome: Vec::new(),
+            default_data: serde_json::Value::Null,
+        };
+        let node = Node {
+            kind: NodeKindKey::new("demo.table"),
+            kind_version: 1,
+            pos: CanvasPoint::default(),
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({
+                "columns": [
+                    { "id": "id", "name": "id" },
+                    { "id": "email", "name": "email" }
+                ]
+            }),
+        };
+        let input = NodeRenderInput {
+            id: NodeId::from_u128(21),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::section(),
+        };
+
+        let layout = RendererCatalog::default().render_node(
+            &input,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 240.0,
+                    height: 120.0,
+                },
+            },
+        );
+
+        assert!(
+            layout
+                .interactive_regions
+                .iter()
+                .any(|region| region.key == "repeatable.table.columns.header")
+        );
+        assert!(
+            layout
+                .interactive_regions
+                .iter()
+                .any(|region| region.key == "field.column.email.column")
+        );
     }
 
     #[test]
@@ -1456,6 +2585,11 @@ mod tests {
             default_size: None,
             ports: Vec::new(),
             surface_slots: Vec::new(),
+            repeatable_collections: Vec::new(),
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
             chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };
@@ -1555,6 +2689,11 @@ mod tests {
                     .with_label("Actions")
                     .with_slot("actions.primary"),
             ],
+            repeatable_collections: Vec::new(),
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
             chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };
@@ -1666,6 +2805,11 @@ mod tests {
                     .with_slot("ports.outputs")
                     .with_anchor("rail.outputs"),
             ],
+            repeatable_collections: Vec::new(),
+            actions: Vec::new(),
+            menus: Vec::new(),
+            inspectors: Vec::new(),
+            blackboards: Vec::new(),
             chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };

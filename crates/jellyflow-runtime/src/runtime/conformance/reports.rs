@@ -2,6 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use super::capability::{ConformanceCapabilityGap, ConformanceCapabilityMatrix};
 use super::scenario::ConformanceTraceEvent;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +74,10 @@ impl fmt::Display for ConformanceRunReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConformanceSuiteReport {
     pub suite: String,
+    #[serde(default, skip_serializing_if = "ConformanceCapabilityMatrix::is_empty")]
+    pub capabilities: ConformanceCapabilityMatrix,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_gaps: Vec<ConformanceCapabilityGap>,
     pub scenario_reports: Vec<ConformanceRunReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<ConformanceRunError>,
@@ -81,6 +86,7 @@ pub struct ConformanceSuiteReport {
 impl ConformanceSuiteReport {
     pub fn is_match(&self) -> bool {
         self.errors.is_empty()
+            && self.capability_gaps.is_empty()
             && self
                 .scenario_reports
                 .iter()
@@ -104,21 +110,33 @@ impl ConformanceSuiteReport {
 impl fmt::Display for ConformanceSuiteReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_match() {
-            return write!(
+            write!(
                 f,
                 "conformance suite `{}` matched {} scenario(s)",
                 self.suite,
                 self.scenario_count()
-            );
+            )?;
+            if let Some(adapter) = self.capabilities.adapter.as_deref() {
+                write!(f, " for adapter `{adapter}`")?;
+            }
+            return Ok(());
         }
 
         writeln!(
             f,
-            "conformance suite `{}` failed: {} scenario(s), {} execution error(s)",
+            "conformance suite `{}` failed: {} scenario(s), {} execution error(s), {} capability gap(s)",
             self.suite,
             self.failed_scenarios(),
-            self.errors.len()
+            self.errors.len(),
+            self.capability_gaps.len()
         )?;
+        for gap in self.capability_gaps.iter().take(8) {
+            writeln!(
+                f,
+                "  capability {:?} required {:?}, actual {:?}",
+                gap.capability, gap.required, gap.actual
+            )?;
+        }
         for report in self
             .scenario_reports
             .iter()

@@ -10,6 +10,7 @@ use crate::runtime::connection::{
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, fixture_insert_port};
+use crate::schema::{MenuDescriptor, MenuSurface};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
@@ -584,11 +585,24 @@ fn connection_lifecycle_distinguishes_cancel_empty_drop_and_noop() {
         None,
         ConnectionEndIntent::DropOnPane {
             pointer: CanvasPoint { x: 40.0, y: 50.0 },
+            menu: Some(
+                MenuDescriptor::new("menu.dropped_wire", MenuSurface::DroppedWire)
+                    .with_label("Insert node")
+                    .with_action_key("action.insert.compatible_node"),
+            ),
         },
     );
     assert_eq!(dropped.state, ConnectionLifecycleState::DroppedOnPane);
     assert!(dropped.opens_dropped_wire_menu());
     assert_eq!(dropped.dropped_at, Some(CanvasPoint { x: 40.0, y: 50.0 }));
+    assert_eq!(
+        dropped
+            .dropped_wire_menu
+            .as_ref()
+            .and_then(|menu| menu.action_keys.first())
+            .map(String::as_str),
+        Some("action.insert.compatible_node")
+    );
     assert_eq!(
         dropped.end.outcome,
         crate::runtime::events::ConnectEndOutcome::OpenInsertNodePicker

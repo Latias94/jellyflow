@@ -53,46 +53,48 @@ Adapters own:
 # Current Proof Level
 
 - egui has the strongest proof today: current-frame node region measurement reports measured handles,
-  slots, anchors, and invalidates data, resize, zoom, and component-state changes.
+  slots, anchors, and invalidates data, resize, zoom, and component-state changes. It now maps
+  authoring controls, repeatable rows, node actions, dropped-wire menus, and inspector descriptors
+  to adapter-local egui widgets or panels.
 - GPUI proves adapter-local component projection: rendering and runtime measurement now share
-  `NodeSurfaceComponentLayout`, so slot and anchor rects are derived from the same local component
-  model. This is still a projection-layout proof, not yet a true GPUI layout-pass bounds callback.
+  `NodeSurfaceComponentLayout`, so slot, repeatable, and anchor rects are derived from the same
+  local component model. It consumes control, repeatable, action, menu, inspector, and blackboard
+  descriptors locally, but this is still a projection-layout proof, not yet a true GPUI layout-pass
+  bounds callback.
 - `jellyflow-proof` proves component-tree shape plus runtime measurement integration, including
   dynamic child remeasurement. It intentionally avoids Dioxus or widget types.
 
-# Next Contract Gaps
+# Completed Contract Additions
 
-- repeatable slot/field collections for ERD fields, shader dynamic inputs, and Dify parameter lists;
-- control descriptors for input/select/toggle/code/color/asset/variable-picker controls;
-- action/menu descriptors for dropped-wire insert menus, node menus, graph menus, and inspector
-  actions;
+- field/control descriptors for input, textarea, select, slider, toggle, expression, code, color,
+  asset, variable-picker, and port-binding semantics;
+- repeatable collection descriptors with stable item identity, add/remove/reorder action keys, and
+  item-id based anchors;
+- action, menu, inspector, blackboard, and dropped-wire intent descriptors without adapter widget
+  types;
+- adapter capability reporting that distinguishes `none`, `projection`, `partial`, and `full`;
+- egui geometry regression gates for Dify-style workflow, Shader/Blueprint, ERD, and mind-map
+  product shapes;
+- GPUI projection capability reporting that explicitly avoids claiming full layout-pass
+  measurement.
+
+# Remaining Contract Gaps
+
 - diagnostics bound to slots, fields, ports, and chrome, not only commit-time edge errors;
-- adapter capability matrix covering measured anchors, dynamic internals, typed feedback, menus,
-  inspector, chrome, visual regression, and accessibility;
+- adapter capability coverage for keyboard accessibility, focus order, screen-reader labels, and
+  framework-specific widget behavior;
 - a real GPUI layout-pass measurement hook before claiming full retained-view geometry parity.
+- broader adapter-native visual automation for GPUI and future Dioxus beyond projection geometry.
 
 # Roadmap
-
-P0 should finish the adapter capability matrix and turn the current egui/GPUI/proof checks into
-named conformance expectations. The minimum useful matrix columns are measured handles, measured
-semantic anchors, dirty-to-fresh internals, typed hover feedback, typed commit rejection, chrome,
-density degradation, dropped-wire menu, inspector, visual regression, and keyboard accessibility.
-
-P1 should add repeatable fields and control descriptors. This is the layer needed for Dify
-parameter lists, ERD tables with arbitrary fields, shader dynamic inputs, and Blueprint-style pins
-without copying widget logic into runtime.
-
-P1 should also add action/menu descriptors for dropped-wire insert menus, node menus, graph menus,
-toolbar actions, and inspector actions. Runtime should describe the action target, availability,
-diagnostics, and graph operation intent; adapters should render the actual menus.
 
 P2 should promote GPUI from projection-layout proof to retained layout-pass measurement by
 collecting actual component bounds from open-gpui canvas overlays or element layout callbacks and
 reporting those bounds through `NodeInternalsController`.
 
-P2 should add visual and interaction regression suites per product shape: Dify workflow,
-Shader/Blueprint, ERD, and mind-map/knowledge canvas. These should cover full/compact/shell density,
-resize, dynamic slot changes, invalid hover, reconnect, and dropped-wire creation.
+P2 should deepen visual and interaction regression suites per adapter. egui now has code-level
+geometry gates plus a gallery snapshot path; GPUI still needs a real layout-pass hook before it can
+graduate from projection fallback to full retained-view geometry evidence.
 
 # Consequences
 

@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::events::{ConnectDragKind, ConnectEnd, ConnectEndOutcome, ConnectStart};
+use crate::schema::MenuDescriptor;
 use jellyflow_core::core::{CanvasPoint, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
 use super::{ConnectionHandleConnection, ResolvedConnectionTarget};
 
 /// Adapter-normalized intent for ending a connection gesture.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConnectionEndIntent {
     /// End the gesture at the currently resolved hover target.
@@ -15,7 +16,11 @@ pub enum ConnectionEndIntent {
     /// Explicit cancellation: escape key, lost focus, tool switch, or adapter-level cancel action.
     Cancel,
     /// Pointer was released on the pane/background instead of on a handle.
-    DropOnPane { pointer: CanvasPoint },
+    DropOnPane {
+        pointer: CanvasPoint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        menu: Option<MenuDescriptor>,
+    },
 }
 
 /// Stable high-level connection lifecycle state for adapter presentation.
@@ -47,6 +52,8 @@ pub struct ConnectionLifecycleResult {
     pub end: ConnectEnd,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped_at: Option<CanvasPoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_wire_menu: Option<MenuDescriptor>,
 }
 
 impl ConnectionLifecycleResult {
@@ -70,6 +77,7 @@ impl ConnectionLifecycleResult {
             connection: hover.and_then(|hover| hover.connection),
             target: hover.and_then(|hover| hover.target.map(|target| target.handle.port)),
             dropped_at: None,
+            dropped_wire_menu: None,
         }
     }
 
@@ -88,20 +96,22 @@ pub fn resolve_connection_lifecycle(
     hover: Option<ResolvedConnectionTarget>,
     intent: ConnectionEndIntent,
 ) -> ConnectionLifecycleResult {
-    let (state, connection, target, outcome, dropped_at) = match intent {
+    let (state, connection, target, outcome, dropped_at, dropped_wire_menu) = match intent {
         ConnectionEndIntent::Cancel => (
             ConnectionLifecycleState::Canceled,
             None,
             None,
             ConnectEndOutcome::Canceled,
             None,
+            None,
         ),
-        ConnectionEndIntent::DropOnPane { pointer } => (
+        ConnectionEndIntent::DropOnPane { pointer, menu } => (
             ConnectionLifecycleState::DroppedOnPane,
             None,
             None,
             ConnectEndOutcome::OpenInsertNodePicker,
             Some(pointer),
+            menu,
         ),
         ConnectionEndIntent::Complete => resolve_completed_lifecycle(hover),
     };
@@ -121,6 +131,7 @@ pub fn resolve_connection_lifecycle(
         target,
         end,
         dropped_at,
+        dropped_wire_menu,
     }
 }
 
@@ -132,6 +143,7 @@ fn resolve_completed_lifecycle(
     Option<PortId>,
     ConnectEndOutcome,
     Option<CanvasPoint>,
+    Option<MenuDescriptor>,
 ) {
     let Some(hover) = hover else {
         return (
@@ -139,6 +151,7 @@ fn resolve_completed_lifecycle(
             None,
             None,
             ConnectEndOutcome::NoOp,
+            None,
             None,
         );
     };
@@ -151,6 +164,7 @@ fn resolve_completed_lifecycle(
             connection,
             target,
             ConnectEndOutcome::Committed,
+            None,
             None,
         );
     }
@@ -167,7 +181,7 @@ fn resolve_completed_lifecycle(
         ConnectEndOutcome::NoOp
     };
 
-    (state, hover.connection, target, outcome, None)
+    (state, hover.connection, target, outcome, None, None)
 }
 
 /// Creates a lifecycle start payload for a new edge gesture.

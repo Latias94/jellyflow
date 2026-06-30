@@ -8,6 +8,9 @@ use super::behavior::ConformanceBehavior;
 use super::constants::default_schema_version;
 use super::setup::{ConformanceSetup, ConformanceTraceConfig};
 use super::trace::ConformanceTraceEvent;
+use crate::runtime::conformance::capability::{
+    ConformanceCapabilityMatrix, ConformanceCapabilityRequirement,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConformanceScenario {
@@ -99,6 +102,10 @@ pub struct ConformanceSuite {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     pub name: String,
+    #[serde(default, skip_serializing_if = "ConformanceCapabilityMatrix::is_empty")]
+    pub capabilities: ConformanceCapabilityMatrix,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_requirements: Vec<ConformanceCapabilityRequirement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ConformanceScenario>,
 }
@@ -108,8 +115,31 @@ impl ConformanceSuite {
         Self {
             schema_version: default_schema_version(),
             name: name.into(),
+            capabilities: ConformanceCapabilityMatrix::default(),
+            capability_requirements: Vec::new(),
             scenarios: Vec::new(),
         }
+    }
+
+    pub fn with_capabilities(mut self, capabilities: ConformanceCapabilityMatrix) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_capability_requirement(
+        mut self,
+        requirement: ConformanceCapabilityRequirement,
+    ) -> Self {
+        self.capability_requirements.push(requirement);
+        self
+    }
+
+    pub fn with_capability_requirements(
+        mut self,
+        requirements: impl IntoIterator<Item = ConformanceCapabilityRequirement>,
+    ) -> Self {
+        self.capability_requirements.extend(requirements);
+        self
     }
 
     pub fn with_scenarios(

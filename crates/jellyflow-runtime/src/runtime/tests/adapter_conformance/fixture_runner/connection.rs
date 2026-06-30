@@ -40,6 +40,71 @@ fn adapter_conformance_fixture_runner_asserts_connection_lifecycle() {
 }
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_dropped_wire_menu_and_action_availability() {
+    let (graph, _source_node, _target_node, out_port, _in_port, _eid) = make_graph();
+    let start = ConnectStart {
+        kind: ConnectDragKind::New {
+            from: out_port,
+            bundle: vec![out_port],
+        },
+        mode: NodeGraphConnectionMode::Strict,
+    };
+    let menu = MenuDescriptor::new("menu.dropped_wire", MenuSurface::DroppedWire)
+        .with_action_key("action.insert.llm");
+    let expected = resolve_connection_lifecycle(
+        start.clone(),
+        None,
+        ConnectionEndIntent::DropOnPane {
+            pointer: CanvasPoint { x: 16.0, y: 24.0 },
+            menu: Some(menu.clone()),
+        },
+    );
+    let insert = NodeActionDescriptor::new(
+        "action.insert.llm",
+        "Insert LLM",
+        ActionTarget::DroppedWire {
+            source_port_key: Some("out".to_owned()),
+        },
+        ActionIntent::InsertNode {
+            node_kind: "demo.llm".to_owned(),
+        },
+    );
+    let disabled = NodeActionDescriptor::new(
+        "action.insert.disabled",
+        "Insert disabled",
+        ActionTarget::DroppedWire {
+            source_port_key: Some("out".to_owned()),
+        },
+        ActionIntent::InsertNode {
+            node_kind: "demo.disabled".to_owned(),
+        },
+    )
+    .disabled("No compatible target type");
+    assert_eq!(
+        disabled.availability,
+        ActionAvailability::disabled("No compatible target type")
+    );
+
+    let scenario = ConformanceScenario::new("dropped wire menu assertion", graph)
+        .with_actions([
+            ConformanceAction::assert_connection_lifecycle(
+                start,
+                None,
+                ConnectionEndIntent::DropOnPane {
+                    pointer: CanvasPoint { x: 16.0, y: 24.0 },
+                    menu: Some(menu),
+                },
+                expected,
+            ),
+            ConformanceAction::assert_node_action_available(insert),
+            ConformanceAction::assert_node_action_disabled(disabled),
+        ])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_lifecycle() {
     let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
     let kind = ConnectDragKind::New {

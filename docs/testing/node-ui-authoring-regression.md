@@ -1,0 +1,41 @@
+# Node UI Authoring Regression Gates
+
+Jellyflow's rich-node regression gates are split between headless contract tests, adapter geometry
+tests, and local visual review. Pixel snapshots are useful for review, but the hard gate is geometry
+and semantic capability evidence that does not depend on GPU output.
+
+## Product Shape Matrix
+
+| Shape | Fixture | Required states | Hard evidence |
+| --- | --- | --- | --- |
+| Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation` | full, compact, shell, resize, dropped-wire menu, inspector/action descriptors | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures` |
+| Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint` | typed port rails, config controls, preview, invalid hover, typed commit rejection | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures` |
+| ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table` | repeatable field rows, resize, slot bounds, handle-anchor proximity | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions` |
+| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas` | shell density, stable handles, graph-level visual coverage | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output |
+
+## Commands
+
+Run these as the focused authoring regression gate:
+
+```sh
+cargo test -p jellyflow-egui --lib -- --nocapture
+cargo run -p jellyflow-egui --example gallery_snapshot -- target/jellyflow-egui-gallery
+RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow
+```
+
+The broad plan gate still includes runtime, proof, template, examples, GPUI check, and format
+commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md`.
+
+## Adapter Rules
+
+- Rich node snapshots must expand the adapter node rect to at least the renderer-reported
+  `NodeRenderLayout::min_size` before reporting node measurements or handle bounds.
+- `slot` remains the data lookup path. `anchor` is placement and port binding metadata. If a
+  rendered region key differs from its descriptor anchor, adapters must report both names as
+  aliases for measurement and handle layout.
+- Shell density may hide rich controls, but visible handles and runtime anchor facts must remain
+  queryable so wires do not drift.
+- Resize preview geometry must use the same renderer-minimum-size path as committed snapshots.
+- GPUI currently proves authoring descriptor projection and local component layout only. It must
+  continue reporting layout measurement as projection fallback until open-gpui exposes a stable
+  node-local element-bounds callback during layout or prepaint.

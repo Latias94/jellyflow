@@ -17,11 +17,16 @@ pub use migration::{
 };
 pub use registry::NodeRegistry;
 pub use types::{
+    ActionAvailability, ActionIntent, ActionShortcut, ActionTarget, BlackboardDescriptor,
+    InspectorDescriptor, InspectorTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor,
     NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
-    NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeSchema,
-    NodeSchemaBuilder, NodeSurfaceProjection, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
-    NodeSurfaceSlotProjection, NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility,
-    PortViewDescriptor, PortViewSide,
+    NodeControlBinding, NodeControlBindingSource, NodeControlDescriptor, NodeControlEditability,
+    NodeControlKind, NodeControlOption, NodeControlOptionSource, NodeControlPresentation,
+    NodeControlValidation, NodeControlValidationRule, NodeInstantiation, NodeInstantiationError,
+    NodeKindViewDescriptor, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
+    NodeRepeatableItemProjection, NodeSchema, NodeSchemaBuilder, NodeSurfaceProjection,
+    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotProjection,
+    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 
 #[cfg(test)]
