@@ -83,6 +83,7 @@ cargo run -p jellyflow-egui --example tree
 cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
 cargo run -p jellyflow-egui --example erd
+cargo run -p jellyflow-egui --example shader_graph
 ```
 
 MSRV is `rust-version = 1.95`.
@@ -150,6 +151,7 @@ cargo run -p jellyflow-egui --example tree
 cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
 cargo run -p jellyflow-egui --example erd
+cargo run -p jellyflow-egui --example shader_graph
 ```
 
 ## Custom Nodes And Adapters
@@ -165,10 +167,13 @@ size, category, and search metadata.
 
 Ports can carry `PortViewDescriptor` metadata for side, order, group, anchor, lane, slot, label,
 icon key, and handle visibility. Node schemas can also carry `NodeSurfaceSlotDescriptor` metadata
-for semantic node-local slots such as headers, field rows, action rows, badges, previews, and nested
-regions. Edges can carry opaque domain data plus `EdgeViewDescriptor` metadata for labels, renderer
-keys, markers, style tokens, and hit-target width. These are normal graph fields, so they serialize,
-diff, undo/redo, and flow through transaction footprints.
+for semantic node-local slots such as headers, field rows, action rows, badges, metric badges,
+validation/status banners, config groups, typed port rails, previews, and nested regions. Node
+schemas can also declare adapter-owned chrome such as resize handles, toolbars, status strips, run
+actions, validation banners, and inspector anchors. Edges can carry opaque domain data plus
+`EdgeViewDescriptor` metadata for labels, renderer keys, markers, style tokens, route kind, and
+hit-target width. These are normal graph fields, so they serialize, diff, undo/redo, and flow
+through transaction footprints.
 Adapter-only state such as hover, focused inputs, open menus, and transient connection previews
 stays outside the graph.
 
@@ -202,6 +207,23 @@ registry.register(
 let descriptors = registry.view_descriptors();
 assert_eq!(descriptors[0].renderer_key, "task-card");
 ```
+
+Custom node checklist:
+
+- Put reusable semantics in node kits or schemas: ports, slot kinds, `slot` data paths, `anchor`
+  placement keys, default data, layout hints, and adapter chrome descriptors.
+- Keep toolkit widgets adapter-local. egui, GPUI, Dioxus, DOM, and other hosts map the same
+  `renderer_key` and slot descriptors to their own components.
+- Report measurements after rendering rich internals. Slot, anchor, handle, node-size, density, and
+  invalidation facts are the bridge that keeps handles, edges, hit tests, and resize previews aligned
+  with real UI.
+- Trigger node-internal invalidation when node data, component state, zoom, or size changes enough
+  to move internal slots or handles.
+- Keep backend execution outside Jellyflow. LLM calls, shader compilation, database queries,
+  schedulers, collaboration, and persistence services belong in the host product.
+
+See [`docs/examples/README.md`](docs/examples/README.md) for Dify-style workflow, shader/blueprint,
+ERD/table, and knowledge-canvas gallery coverage.
 
 Use `jellyflow_runtime::profile::GraphProfileMetadata` when a product needs reusable field schemas,
 variable surfaces, validation hints, or connection-rule labels without creating a domain crate. A

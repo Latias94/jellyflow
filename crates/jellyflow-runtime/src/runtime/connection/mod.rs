@@ -7,6 +7,7 @@ mod activation;
 mod connect;
 mod handles;
 mod indicator;
+mod lifecycle;
 mod reconnect;
 mod target;
 
@@ -22,6 +23,10 @@ pub use handles::{
 };
 pub use indicator::{
     ConnectionHandleIndicator, ConnectionHandleIndicatorInput, resolve_connection_handle_indicator,
+};
+pub use lifecycle::{
+    ConnectionEndIntent, ConnectionLifecycleResult, ConnectionLifecycleState, new_connection_start,
+    resolve_connection_lifecycle,
 };
 pub use reconnect::{
     RECONNECT_EDGE_TRANSACTION_LABEL, ReconnectEdgeError, ReconnectEdgeRequest,

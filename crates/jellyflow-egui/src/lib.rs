@@ -37,11 +37,17 @@ mod tests {
     };
     use eframe::egui::{Pos2, Rect, Vec2};
     use jellyflow::core::{
-        CanvasPoint, CanvasSize, GraphOp, GraphTransaction, PortDirection, PortKind,
+        CanvasPoint, CanvasSize, DefaultTypeCompatibility, GraphOp, GraphTransaction,
+        PortDirection, PortKind, TypeCompatibility, TypeDesc,
     };
-    use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
+    use jellyflow::runtime::runtime::connection::{
+        ConnectEdgeRequest, ConnectionHandleRef, ConnectionHandleValidity,
+    };
     use jellyflow::runtime::runtime::drag::NodeNudgeDirection;
     use jellyflow::runtime::runtime::geometry::HandlePosition;
+    use jellyflow::runtime::runtime::measurement::{
+        NodeHandleMeasurementSource, NodeInternalsInvalidationReason, NodeMeasurementStatus,
+    };
     use jellyflow::runtime::runtime::resize::NodeResizeDirection;
 
     #[test]
@@ -65,7 +71,7 @@ mod tests {
             assert_eq!(app.state.selected_layout_preset, sample.default_layout());
             assert!(app.state.status_message.is_none());
             assert!(
-                app.bridge.store().graph().nodes().len() >= 4,
+                app.bridge.store().graph().nodes().len() >= 3,
                 "{sample:?} should contain multiple nodes"
             );
             assert!(
@@ -105,6 +111,77 @@ mod tests {
             edge.view.label.as_deref() == Some("1:N")
                 && edge.data.get("label").and_then(|value| value.as_str()) == Some("1:N")
         }));
+
+        let shader =
+            JellyflowEguiApp::sample(SampleGraphKind::ShaderGraph).expect("shader sample builds");
+        assert!(shader.bridge.store().graph().nodes().values().any(|node| {
+            node.kind.0 == "demo.shader.mix"
+                && node
+                    .data
+                    .get("config")
+                    .and_then(|value| value.get("factor"))
+                    .is_some()
+        }));
+        assert!(shader.bridge.store().graph().ports().values().any(|port| {
+            port.kind == PortKind::Data && port.key.0 == "color" && port.dir == PortDirection::Out
+        }));
+        assert!(shader.bridge.store().graph().ports().values().any(|port| {
+            port.key.0 == "factor" && port.ty.as_ref().is_some_and(|ty| *ty == TypeDesc::Float)
+        }));
+        assert!(shader.bridge.store().graph().ports().values().any(|port| {
+            port.key.0 == "color" && port.ty.as_ref().is_some_and(|ty| *ty == shader_vec4())
+        }));
+        let shader_descriptor = shader
+            .bridge
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.renderer_key == "shader-card")
+            .expect("shader descriptor exists");
+        assert!(
+            shader_descriptor
+                .surface_slots
+                .iter()
+                .any(|slot| slot.anchor.as_deref() == Some("rail.inputs"))
+        );
+    }
+
+    #[test]
+    fn shader_sample_rejects_incompatible_typed_connections_through_default_store_path() {
+        let mut shader =
+            JellyflowEguiApp::sample(SampleGraphKind::ShaderGraph).expect("shader sample builds");
+        let graph = shader.bridge.store().graph();
+        let color = graph
+            .ports()
+            .iter()
+            .find_map(|(id, port)| {
+                (port.key.0 == "color" && port.dir == PortDirection::Out).then_some(*id)
+            })
+            .expect("shader color output exists");
+        let factor = graph
+            .ports()
+            .iter()
+            .find_map(|(id, port)| {
+                (port.key.0 == "factor" && port.dir == PortDirection::In).then_some(*id)
+            })
+            .expect("shader factor input exists");
+        let mode = shader
+            .bridge
+            .store()
+            .resolved_interaction_state()
+            .connection_mode;
+
+        let err = shader
+            .bridge
+            .store_mut()
+            .apply_connect_edge(ConnectEdgeRequest::new(color, factor, mode))
+            .expect_err("vec4 color output must not connect to float factor input");
+
+        let diagnostics = err.diagnostics().expect("typed rejection diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.key == "connect.type_mismatch")
+        );
     }
 
     #[test]
@@ -242,6 +319,134 @@ mod tests {
     }
 
     #[test]
+    fn erd_snapshot_reports_semantic_region_measurements_to_runtime() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let first = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let graph = app.bridge.store().graph();
+        let table = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
+            .expect("table node exists");
+        assert!(matches!(
+            first.layout_facts.node_measurement_status(table),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+        let pk_port = graph.nodes()[&table]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| graph.ports()[port].key.0 == "pk")
+            .expect("pk port exists");
+
+        let measurement = app
+            .bridge
+            .store()
+            .node_measurement(table)
+            .expect("runtime measurement reported");
+        assert!(
+            measurement
+                .slots
+                .iter()
+                .any(|slot| slot.key == "field.primary_key")
+        );
+        assert!(
+            measurement
+                .anchors
+                .iter()
+                .any(|anchor| anchor.anchor == "field.primary_key"
+                    && anchor.port_key.as_ref().is_some_and(|key| key.0 == "pk"))
+        );
+
+        let source = app
+            .bridge
+            .store()
+            .resolve_node_handle_measurement(ConnectionHandleRef::new(
+                table,
+                pk_port,
+                graph.ports()[&pk_port].dir,
+            ))
+            .source;
+        assert!(matches!(
+            source,
+            NodeHandleMeasurementSource::MeasuredHandle
+                | NodeHandleMeasurementSource::MeasuredAnchor { .. }
+        ));
+    }
+
+    #[test]
+    fn shader_graph_typed_ports_reject_incompatible_hover_and_commit() {
+        let mut app =
+            JellyflowEguiApp::sample(SampleGraphKind::ShaderGraph).expect("shader sample builds");
+        let _snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let graph = app.bridge.store().graph();
+        let texture = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| {
+                (record.kind.0 == "demo.shader.texture_sample").then_some(*node)
+            })
+            .expect("texture node exists");
+        let mix = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.shader.mix").then_some(*node))
+            .expect("mix node exists");
+        let color = graph.nodes()[&texture]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| {
+                graph.ports()[port].key.0 == "color"
+                    && graph.ports()[port].dir == PortDirection::Out
+            })
+            .expect("texture color port exists");
+        let factor = graph.nodes()[&mix]
+            .ports
+            .iter()
+            .copied()
+            .find(|port| graph.ports()[port].key.0 == "factor")
+            .expect("factor port exists");
+        let color_handle = ConnectionHandleRef::new(texture, color, graph.ports()[&color].dir);
+        let factor_handle = ConnectionHandleRef::new(mix, factor, graph.ports()[&factor].dir);
+        let factor_bounds = app
+            .bridge
+            .store()
+            .resolve_node_handle_measurement(factor_handle)
+            .bounds
+            .expect("factor bounds");
+        let mix_pos = graph.nodes()[&mix].pos;
+        let pointer = CanvasPoint {
+            x: mix_pos.x + factor_bounds.rect.origin.x + factor_bounds.rect.size.width * 0.5,
+            y: mix_pos.y + factor_bounds.rect.origin.y + factor_bounds.rect.size.height * 0.5,
+        };
+
+        let hover = app.bridge.resolve_connection_target(pointer, color_handle);
+
+        assert_eq!(hover.feedback, ConnectionHandleValidity::Invalid);
+        assert!(!hover.is_handle_valid);
+        assert!(
+            app.bridge
+                .connect_handles(color_handle, factor_handle)
+                .expect_err("float factor must not connect to vec4 albedo")
+                .contains("type mismatch")
+        );
+
+        let mut compat = DefaultTypeCompatibility::default();
+        assert!(
+            !compat
+                .compatible(&TypeDesc::Float, &shader_vec4())
+                .is_compatible()
+        );
+    }
+
+    #[test]
     fn snapshot_caches_node_render_layouts_for_visible_nodes() {
         let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
         let snapshot = app.bridge.rebuild_snapshot(
@@ -334,6 +539,209 @@ mod tests {
     }
 
     #[test]
+    fn resize_commit_remeasures_node_internals_on_next_snapshot() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::Erd).expect("erd sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let graph = app.bridge.store().graph();
+        let table = graph
+            .nodes()
+            .iter()
+            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
+            .expect("table node exists");
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(table),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+        let rect = snapshot.node_rects[&table];
+        let start = CanvasPoint {
+            x: rect.origin.x + rect.size.width,
+            y: rect.origin.y + rect.size.height,
+        };
+        let current = CanvasPoint {
+            x: start.x + 96.0,
+            y: start.y + 32.0,
+        };
+        let plan = app
+            .bridge
+            .plan_pointer_resize(table, start, current, NodeResizeDirection::BottomRight)
+            .expect("resize plan");
+
+        app.bridge
+            .commit_interaction(ActiveCanvasInteraction::NodeResize {
+                node: table,
+                direction: NodeResizeDirection::BottomRight,
+                start_pointer: start,
+                current_pointer: current,
+                preview: Some(plan),
+            })
+            .expect("resize commit succeeds")
+            .expect("resize commits");
+
+        assert!(
+            matches!(
+                app.bridge.store().node_measurement_status(table),
+                NodeMeasurementStatus::Dirty { .. }
+            ),
+            "adapter must mark resized node internals dirty so old field handles are not reused"
+        );
+
+        let next = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        assert!(
+            matches!(
+                app.bridge.store().node_measurement_status(table),
+                NodeMeasurementStatus::Fresh { .. }
+            ),
+            "the next adapter snapshot must report current geometry before querying layout facts"
+        );
+        assert!(matches!(
+            next.layout_facts.node_measurement_status(table),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+        assert_eq!(
+            next.node_rects[&table].size,
+            app.bridge.store().graph().nodes()[&table].size.unwrap()
+        );
+    }
+
+    #[test]
+    fn zoom_change_invalidates_visible_node_internals_for_density_remeasurement() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let _snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let node = *app
+            .bridge
+            .store()
+            .graph()
+            .nodes()
+            .keys()
+            .next()
+            .expect("node exists");
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+
+        assert!(
+            app.bridge
+                .zoom_at_screen(CanvasPoint { x: 400.0, y: 240.0 }, 0.55)
+        );
+
+        assert!(
+            matches!(
+                app.bridge.store().node_measurement_status(node),
+                NodeMeasurementStatus::Dirty { .. }
+            ),
+            "zoom changes can change density/content slots, so adapter measurements must be dirty"
+        );
+    }
+
+    #[test]
+    fn data_change_notification_invalidates_node_internals_until_remeasured() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let node = *app
+            .bridge
+            .store()
+            .graph()
+            .nodes()
+            .keys()
+            .next()
+            .expect("node exists");
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+
+        app.bridge.notify_node_data_changed(node);
+
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Dirty {
+                reason: NodeInternalsInvalidationReason::DataChanged,
+                ..
+            }
+        ));
+
+        let _stale = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        assert!(
+            matches!(
+                app.bridge.store().node_measurement_status(node),
+                NodeMeasurementStatus::Fresh { revision } if revision > 0
+            ),
+            "current widget geometry reported during rebuild should clear data-change dirty state"
+        );
+
+        let _fresh = app.bridge.rebuild_snapshot(
+            &_stale,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Fresh { .. }
+        ));
+    }
+
+    #[test]
+    fn component_state_change_notification_uses_component_dirty_reason() {
+        let mut app = JellyflowEguiApp::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let snapshot = app.bridge.rebuild_snapshot(
+            &CanvasSnapshot::empty(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let _snapshot = app.bridge.rebuild_snapshot(
+            &snapshot,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)),
+        );
+        let node = *app
+            .bridge
+            .store()
+            .graph()
+            .nodes()
+            .keys()
+            .next()
+            .expect("node exists");
+
+        app.bridge.notify_node_component_state_changed(node);
+
+        assert!(matches!(
+            app.bridge.store().node_measurement_status(node),
+            NodeMeasurementStatus::Dirty {
+                reason: NodeInternalsInvalidationReason::ComponentStateChanged,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn start_node_drag_preserves_existing_multi_selection_for_drag_plan() {
         let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
         let mut nodes = bridge
@@ -417,5 +825,12 @@ mod tests {
             .expect("pan commit ends interaction");
 
         assert_eq!(bridge.store().view_state().pan, after_live_pan);
+    }
+
+    fn shader_vec4() -> TypeDesc {
+        TypeDesc::Opaque {
+            key: "shader.vec4".to_owned(),
+            params: Vec::new(),
+        }
     }
 }

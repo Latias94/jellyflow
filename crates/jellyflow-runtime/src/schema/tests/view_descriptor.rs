@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::schema::{
+    NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
     NodeKitContentDensity, NodeRegistry, NodeSchema, NodeSurfaceProjection,
     NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl,
     PortHandleVisibility, PortViewDescriptor, PortViewSide,
@@ -52,6 +53,7 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
                 .with_slot("source")
                 .with_icon_key("file-text"),
         ],
+        chrome: Vec::new(),
         default_data: json!({ "body": "" }),
     });
     registry.register(NodeSchema {
@@ -65,6 +67,7 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         default_size: None,
         ports: Vec::new(),
         surface_slots: Vec::new(),
+        chrome: Vec::new(),
         default_data: serde_json::Value::Null,
     });
 
@@ -236,6 +239,27 @@ fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets(
                 .with_label("Actions")
                 .collapsed(),
         )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::status_banner("status.validation")
+                .with_label("Validation")
+                .with_slot("status.validation")
+                .with_renderer_key("status-banner"),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::config_group("config.model")
+                .with_label("Model config")
+                .with_slot("config.model"),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::port_rail("rail.typed_inputs")
+                .with_label("Inputs")
+                .with_anchor("rail.typed_inputs"),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::metric_badge("metric.cost")
+                .with_label("Cost")
+                .with_slot("metrics.cost"),
+        )
         .build();
 
     let mut registry = NodeRegistry::new();
@@ -244,7 +268,7 @@ fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets(
         .view_descriptor(&NodeKindKey::new("demo.workflow_card"))
         .expect("descriptor");
 
-    assert_eq!(descriptor.surface_slots.len(), 3);
+    assert_eq!(descriptor.surface_slots.len(), 7);
     assert_eq!(
         descriptor.surface_slots[0],
         NodeSurfaceSlotDescriptor::header("header.main").with_order(0)
@@ -258,6 +282,106 @@ fn node_surface_slot_descriptors_cover_semantic_slots_without_framework_widgets(
         descriptor.surface_slots[2].visibility,
         Some(NodeSurfaceSlotVisibility::Collapsed)
     );
+    assert_eq!(
+        descriptor.surface_slots[3].kind,
+        NodeSurfaceSlotKind::StatusBanner
+    );
+    assert_eq!(
+        descriptor.surface_slots[4].kind,
+        NodeSurfaceSlotKind::ConfigGroup
+    );
+    assert_eq!(
+        descriptor.surface_slots[5].kind,
+        NodeSurfaceSlotKind::PortRail
+    );
+    assert_eq!(
+        descriptor.surface_slots[6].kind,
+        NodeSurfaceSlotKind::MetricBadge
+    );
+}
+
+#[test]
+fn node_chrome_descriptors_cover_adapter_owned_chrome_without_framework_widgets() {
+    let schema = NodeSchema::builder("demo.llm", "LLM")
+        .renderer_key("decision-card")
+        .default_size(CanvasSize {
+            width: 228.0,
+            height: 196.0,
+        })
+        .chrome(NodeChromeDescriptor::resizer("resize.corner"))
+        .chrome(
+            NodeChromeDescriptor::toolbar("toolbar.primary", NodeChromePlacement::TopRight)
+                .with_label("Tools")
+                .with_renderer_key("node-toolbar")
+                .with_icon_key("wrench")
+                .with_order(10),
+        )
+        .chrome(
+            NodeChromeDescriptor::status_strip("status.run", NodeChromePlacement::InsideFooter)
+                .with_label("Run status")
+                .with_renderer_key("run-status")
+                .with_order(20),
+        )
+        .chrome(
+            NodeChromeDescriptor::run_action_strip("actions.run", NodeChromePlacement::Bottom)
+                .with_label("Run")
+                .with_renderer_key("run-actions")
+                .with_icon_key("play")
+                .with_order(30),
+        )
+        .chrome(
+            NodeChromeDescriptor::validation_banner(
+                "validation.warning",
+                NodeChromePlacement::InsideHeader,
+            )
+            .with_label("Warning")
+            .hidden(),
+        )
+        .build();
+
+    let mut registry = NodeRegistry::new();
+    registry.register(schema);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.llm"))
+        .expect("descriptor");
+
+    assert_eq!(descriptor.chrome.len(), 5);
+    assert_eq!(descriptor.chrome[0].kind, NodeChromeKind::Resizer);
+    assert_eq!(
+        descriptor.chrome[0].effective_visibility(),
+        NodeChromeVisibility::Selected
+    );
+    assert!(descriptor.chrome[0].interactive);
+    assert!(!descriptor.chrome[0].is_visible_for_state(false, false, false));
+    assert!(descriptor.chrome[0].is_visible_for_state(true, false, false));
+
+    let toolbar = &descriptor.chrome[1];
+    assert_eq!(toolbar.kind, NodeChromeKind::Toolbar);
+    assert_eq!(toolbar.placement, NodeChromePlacement::TopRight);
+    assert_eq!(toolbar.label.as_deref(), Some("Tools"));
+    assert_eq!(toolbar.renderer_key.as_deref(), Some("node-toolbar"));
+    assert_eq!(toolbar.icon_key.as_deref(), Some("wrench"));
+    assert!(toolbar.interactive);
+
+    let status = &descriptor.chrome[2];
+    assert_eq!(status.kind, NodeChromeKind::StatusStrip);
+    assert_eq!(status.placement, NodeChromePlacement::InsideFooter);
+    assert_eq!(status.effective_visibility(), NodeChromeVisibility::Always);
+    assert!(status.is_visible_for_state(false, false, false));
+    assert!(!status.interactive);
+
+    let run = &descriptor.chrome[3];
+    assert_eq!(run.kind, NodeChromeKind::RunActionStrip);
+    assert_eq!(run.effective_visibility(), NodeChromeVisibility::Selected);
+    assert!(run.interactive);
+
+    let validation = &descriptor.chrome[4];
+    assert_eq!(validation.kind, NodeChromeKind::ValidationBanner);
+    assert_eq!(
+        validation.effective_visibility(),
+        NodeChromeVisibility::Hidden
+    );
+    assert!(!validation.is_visible_for_state(true, true, true));
 }
 
 #[test]

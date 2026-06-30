@@ -1,4 +1,5 @@
 use super::super::{NodeGraphLookups, NodeLookupEntry};
+use crate::runtime::measurement::NodeInternalsInvalidationReason;
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Edge, EdgeId, Graph, GroupId, Node, NodeId, NodeKindKey, NodeOrigin,
     PortId,
@@ -36,7 +37,12 @@ impl NodeGraphLookups {
         id: NodeId,
         kind: &NodeKindKey,
     ) -> bool {
-        self.update_node_lookup_or_insert(graph, id, |node| node.kind = kind.clone())
+        self.update_node_lookup_or_insert(graph, id, |node| {
+            node.kind = kind.clone();
+            node.mark_measurement_dirty_if_present(
+                NodeInternalsInvalidationReason::ComponentStateChanged,
+            );
+        })
     }
 
     pub(super) fn apply_set_node_kind_version(
@@ -45,7 +51,12 @@ impl NodeGraphLookups {
         id: NodeId,
         version: u32,
     ) -> bool {
-        self.update_node_lookup_or_insert(graph, id, |node| node.kind_version = version)
+        self.update_node_lookup_or_insert(graph, id, |node| {
+            node.kind_version = version;
+            node.mark_measurement_dirty_if_present(
+                NodeInternalsInvalidationReason::ComponentStateChanged,
+            );
+        })
     }
 
     pub(super) fn apply_set_node_parent(&mut self, id: NodeId, parent: Option<GroupId>) -> bool {
@@ -53,22 +64,52 @@ impl NodeGraphLookups {
     }
 
     pub(super) fn apply_set_node_size(&mut self, id: NodeId, size: Option<CanvasSize>) -> bool {
-        self.update_existing_node_lookup(id, |node| node.size = size)
+        self.update_existing_node_lookup(id, |node| {
+            node.size = size;
+            node.mark_measurement_dirty_if_present(NodeInternalsInvalidationReason::SizeChanged);
+        })
     }
 
     pub(super) fn apply_set_node_hidden(&mut self, id: NodeId, hidden: bool) -> bool {
-        self.update_existing_node_lookup(id, |node| node.hidden = hidden)
+        self.update_existing_node_lookup(id, |node| {
+            node.hidden = hidden;
+            node.mark_measurement_dirty_if_present(
+                NodeInternalsInvalidationReason::ComponentStateChanged,
+            );
+        })
     }
 
     pub(super) fn apply_set_node_collapsed(&mut self, id: NodeId, collapsed: bool) -> bool {
-        self.update_existing_node_lookup(id, |node| node.collapsed = collapsed)
+        self.update_existing_node_lookup(id, |node| {
+            node.collapsed = collapsed;
+            node.mark_measurement_dirty_if_present(
+                NodeInternalsInvalidationReason::ComponentStateChanged,
+            );
+        })
     }
 
-    pub(super) fn apply_set_node_ports(&mut self, id: NodeId, ports: &[PortId]) -> bool {
+    pub(super) fn apply_set_node_ports(
+        &mut self,
+        graph: &Graph,
+        id: NodeId,
+        ports: &[PortId],
+    ) -> bool {
+        let port_keys = ports
+            .iter()
+            .filter_map(|port| graph.ports().get(port).map(|port| port.key.clone()))
+            .collect::<Vec<_>>();
         self.update_existing_node_lookup(id, |node| {
             node.ports = ports.to_vec();
-            node.measured_handles
-                .retain(|measured| node.ports.contains(&measured.handle.port));
+            node.retain_measurements_for_ports(ports, &port_keys);
+            node.mark_measurement_dirty_if_present(
+                NodeInternalsInvalidationReason::ComponentStateChanged,
+            );
+        })
+    }
+
+    pub(super) fn apply_set_node_data(&mut self, id: NodeId) -> bool {
+        self.update_existing_node_lookup(id, |node| {
+            node.mark_measurement_dirty_if_present(NodeInternalsInvalidationReason::DataChanged);
         })
     }
 

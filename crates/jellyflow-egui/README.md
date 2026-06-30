@@ -16,13 +16,14 @@ cargo run -p jellyflow-egui --example tree
 cargo run -p jellyflow-egui --example org_chart
 cargo run -p jellyflow-egui --example knowledge_board
 cargo run -p jellyflow-egui --example erd
+cargo run -p jellyflow-egui --example shader_graph
 cargo run -p jellyflow-egui --example custom_widget
 cargo run -p jellyflow-egui --example gallery_snapshot
 ```
 
 The demo ships with a sample gallery for workflow, automation builder, mind map, tree, org chart,
-knowledge-board, and ERD-style graphs. It includes selection, marquee selection, node dragging,
-handle-to-handle connections, selected node resize handles, viewport panning and zooming, keyboard
+knowledge-board, ERD-style, and shader/blueprint-style graphs. It includes selection, marquee
+selection, node dragging, handle-to-handle connections, selected node resize handles, viewport panning and zooming, keyboard
 nudging, cursor feedback, layout presets, undo/redo, delete, a schema-driven palette, and a read-only
 inspector.
 
@@ -32,6 +33,8 @@ The samples are product fixtures, not separate domain frameworks:
   profile-ready metadata for Dify-like LLM/tool branches and error paths.
 - ERD uses the built-in `table-card` renderer to expose node-local field regions; table ports with
   `field.*` anchors are placed on those field rows, with edge-owned cardinality labels.
+- Shader graph reuses the built-in `shader-card` renderer to expose typed port rails, config groups,
+  preview regions, and shader-style data edges without adding a shader compiler backend.
 - Mind map and org chart stress hierarchy layout with the same node/edge graph model.
 - Knowledge board stresses freeform source, claim, question, action, and output cards.
 

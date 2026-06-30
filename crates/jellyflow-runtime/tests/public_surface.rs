@@ -1,6 +1,6 @@
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor,
-    Graph, GraphId, GroupId, NodeId, PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeRouteKind,
+    EdgeViewDescriptor, Graph, GraphId, GroupId, NodeId, PortDirection, PortId,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphMutationFootprint, GraphTransaction};
@@ -16,10 +16,11 @@ use jellyflow_runtime::profile::{
 };
 use jellyflow_runtime::rules::{ConnectPlan, Diagnostic, DiagnosticTarget, EdgeEndpoint};
 use jellyflow_runtime::runtime::{
-    auto_pan, commit, conformance, connection, create_node, delete, drag, events, geometry,
+    auto_pan, chrome, commit, conformance, connection, create_node, delete, drag, events, geometry,
     gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
 };
 use jellyflow_runtime::schema::{
+    NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeRegistry, NodeSchema,
     NodeSchemaBuilder, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility,
     PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
@@ -76,9 +77,11 @@ fn explicit_modules_expose_their_owned_surfaces() {
         source_marker_key: None,
         target_marker_key: Some("arrow".to_owned()),
         style_token: Some("accent".to_owned()),
+        route_kind: Some(EdgeRouteKind::SmoothStep),
         hit_target_width: Some(24.0),
     };
     assert_eq!(edge_view.label_anchor, Some(EdgeLabelAnchor::Center));
+    assert_eq!(edge_view.route_kind, Some(EdgeRouteKind::SmoothStep));
     let profile_metadata = GraphProfileMetadata::new("public.workflow", "Public workflow")
         .with_node_fields(
             NodeFieldSchemaSet::new("public.note").with_field(
@@ -155,6 +158,11 @@ fn explicit_modules_expose_their_owned_surfaces() {
                     .with_lane("fields")
                     .with_visibility(NodeSurfaceSlotVisibility::Visible),
             )
+            .chrome(
+                NodeChromeDescriptor::toolbar("toolbar.primary", NodeChromePlacement::TopRight)
+                    .with_label("Tools")
+                    .with_visibility(NodeChromeVisibility::Selected),
+            )
             .build(),
     );
     let view_descriptors = node_registry.view_descriptors();
@@ -177,6 +185,29 @@ fn explicit_modules_expose_their_owned_surfaces() {
         view_descriptors[0].ports[0].view.anchor.as_deref(),
         Some("field.source")
     );
+    assert_eq!(view_descriptors[0].chrome[0].kind, NodeChromeKind::Toolbar);
+    assert_eq!(
+        view_descriptors[0].chrome[0].effective_visibility(),
+        NodeChromeVisibility::Selected
+    );
+    let chrome_facts = chrome::resolve_node_chrome_facts(
+        chrome::NodeChromeFactsRequest::new(
+            NodeId::new(),
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 120.0,
+                    height: 80.0,
+                },
+            },
+            &view_descriptors[0].chrome,
+        )
+        .with_state(chrome::NodeChromeState::selected()),
+    )
+    .expect("public chrome facts");
+    let _: &chrome::NodeChromeFacts = &chrome_facts;
+    let _: &chrome::ResolvedNodeChrome = &chrome_facts.chrome[0];
+    let _: chrome::NodeChromeLayoutPolicy = chrome::NodeChromeLayoutPolicy::default();
     assert!(
         node_registry
             .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
@@ -466,6 +497,44 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     let _: connection::ConnectionHandleIndicator = indicator;
     assert!(indicator.show_connection_indicator);
+    let connection_start = connection::new_connection_start(
+        from_handle.port,
+        [from_handle.port],
+        NodeGraphConnectionMode::Strict,
+    );
+    let lifecycle = connection::resolve_connection_lifecycle(
+        connection_start.clone(),
+        Some(resolved_target),
+        connection::ConnectionEndIntent::Complete,
+    );
+    assert_eq!(
+        lifecycle.state,
+        connection::ConnectionLifecycleState::Committed
+    );
+    assert!(lifecycle.did_commit());
+    assert_eq!(lifecycle.start, connection_start);
+    let hover_lifecycle =
+        connection::ConnectionLifecycleResult::for_hover(connection_start, Some(resolved_target));
+    assert_eq!(
+        hover_lifecycle.state,
+        connection::ConnectionLifecycleState::HoverValid
+    );
+    let dropped_lifecycle = connection::resolve_connection_lifecycle(
+        connection::new_connection_start(
+            from_handle.port,
+            [from_handle.port],
+            NodeGraphConnectionMode::Strict,
+        ),
+        None,
+        connection::ConnectionEndIntent::DropOnPane {
+            pointer: CanvasPoint { x: 2.0, y: 3.0 },
+        },
+    );
+    assert!(dropped_lifecycle.opens_dropped_wire_menu());
+    let _ = std::mem::size_of::<geometry::ResolvedEdgeRouteKind>();
+    let _ = std::mem::size_of::<geometry::EdgeInteractionFacts>();
+    let _ = std::mem::size_of::<geometry::EdgeRouteFacts>();
+    let _ = std::mem::size_of::<connection::ConnectionLifecycleResult>();
     let _ = std::mem::size_of::<connection::ConnectEdgeRequest>();
     let _ = std::mem::size_of::<connection::ConnectEdgeError>();
     let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::connect_edge_transaction;
@@ -505,6 +574,7 @@ fn explicit_modules_expose_their_owned_surfaces() {
     );
     let _connection_handle_target = gesture::PointerSessionTarget::ConnectionHandle(from_handle);
     let _ = std::mem::size_of::<gesture::ConnectEdgeSession>();
+    let _ = std::mem::size_of::<gesture::ConnectSessionOutcome>();
     let _viewport_drag_pan_session = gesture::ViewportDragPanSession::new(
         viewport::ViewportGestureContext::idle(),
         viewport::ViewportDragPanInput::new(
@@ -535,15 +605,61 @@ fn explicit_modules_expose_their_owned_surfaces() {
             position: geometry::HandlePosition::Right,
         },
     );
+    let measured_slot = measurement::MeasuredSurfaceSlot::new(
+        "field.prompt",
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 80.0,
+                height: 24.0,
+            },
+        },
+    );
+    let measured_anchor = measurement::MeasuredSurfaceAnchor::new(
+        "field.prompt.input",
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 10.0,
+                height: 10.0,
+            },
+        },
+        geometry::HandlePosition::Left,
+    )
+    .with_port_key("input");
     let _node_measurement = measurement::NodeMeasurement::new(NodeId::new())
+        .with_revision(1)
         .with_size(Some(CanvasSize {
             width: 100.0,
             height: 80.0,
         }))
-        .with_handles([measured_handle]);
+        .with_handles([measured_handle])
+        .with_slots([measured_slot])
+        .with_anchors([measured_anchor]);
+    let _node_internals_invalidation = measurement::NodeInternalsInvalidation::one(
+        NodeId::new(),
+        measurement::NodeInternalsInvalidationReason::DataChanged,
+    );
+    assert!(measurement::NodeMeasurementStatus::Fresh { revision: 1 }.is_fresh());
+    assert!(
+        measurement::NodeMeasurementStatus::Dirty {
+            revision: 1,
+            reason: measurement::NodeInternalsInvalidationReason::AdapterRequest,
+        }
+        .is_dirty()
+    );
+    let _handle_resolution = measurement::NodeHandleMeasurementResolution {
+        handle: from_handle,
+        bounds: None,
+        source: measurement::NodeHandleMeasurementSource::Fallback {
+            reason: measurement::NodeHandleFallbackReason::MissingMeasurement,
+        },
+        status: measurement::NodeMeasurementStatus::Missing,
+    };
     let _ = std::mem::size_of::<measurement::NodeMeasurementOutcome>();
     let _ = std::mem::size_of::<measurement::NodeMeasurementError>();
     let _ = std::mem::size_of::<measurement::LayoutEdgePosition>();
+    let _ = std::mem::size_of::<measurement::LayoutNodeMeasurementStatus>();
     let _ = std::mem::size_of::<measurement::LayoutFactsQueryResult>();
     let _: fn(
         &mut NodeGraphStore,
@@ -553,8 +669,19 @@ fn explicit_modules_expose_their_owned_surfaces() {
         NodeGraphStore::report_node_measurement;
     let _: fn(&mut NodeGraphStore, NodeId) -> measurement::NodeMeasurementOutcome =
         NodeGraphStore::clear_node_measurement;
+    let _: fn(
+        &mut NodeGraphStore,
+        measurement::NodeInternalsInvalidation,
+    ) -> measurement::NodeMeasurementOutcome = NodeGraphStore::invalidate_node_internals;
     let _: fn(&NodeGraphStore, NodeId) -> Option<measurement::NodeMeasurement> =
         NodeGraphStore::node_measurement;
+    let _: fn(&NodeGraphStore, NodeId) -> measurement::NodeMeasurementStatus =
+        NodeGraphStore::node_measurement_status;
+    let _: fn(
+        &NodeGraphStore,
+        connection::ConnectionHandleRef,
+    ) -> measurement::NodeHandleMeasurementResolution =
+        NodeGraphStore::resolve_node_handle_measurement;
     let _: fn(&NodeGraphStore) -> u64 = NodeGraphStore::layout_facts_revision;
     let _: fn(&NodeGraphStore, CanvasSize) -> measurement::LayoutFactsQueryResult =
         NodeGraphStore::layout_facts_query;

@@ -1,12 +1,16 @@
 //! Renderer-neutral geometry primitives for Jellyflow runtimes and adapters.
 
 mod bounds;
+mod edge_route;
 mod endpoints;
 mod hit_test;
 mod paths;
 mod viewport;
 
 pub(crate) use bounds::CanvasBounds;
+pub use edge_route::{
+    EdgeInteractionFacts, EdgeRouteFacts, ResolvedEdgeRouteKind, resolve_edge_route_path,
+};
 pub use endpoints::{
     EdgeEndpointInput, EdgeEndpointPosition, EdgePosition, HandleBounds, HandlePosition,
     edge_position, handle_anchor_position, handle_center_position,

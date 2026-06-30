@@ -402,6 +402,12 @@ fn connect_edge_session_emits_lifecycle_around_store_commit() {
         .apply_connect_edge_session(ConnectEdgeSession::new(start.clone(), request))
         .expect("connect edge session");
     assert!(outcome.committed_update().is_some());
+    assert_eq!(
+        outcome.lifecycle().state,
+        crate::runtime::connection::ConnectionLifecycleState::Committed
+    );
+    assert_eq!(outcome.lifecycle().target, Some(next_in));
+    assert!(outcome.lifecycle().did_commit());
 
     let end = ConnectEnd {
         kind,

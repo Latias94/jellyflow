@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasSize, EdgeId, EdgeLabelAnchor, EdgeViewDescriptor, Graph, GraphId, GraphOp,
-    GraphTransaction, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
+    CanvasPoint, CanvasSize, EdgeId, EdgeLabelAnchor, EdgeRouteKind, EdgeViewDescriptor, Graph,
+    GraphId, GraphOp, GraphTransaction, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId,
+    PortKind,
 };
 use jellyflow::runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
 use jellyflow::runtime::runtime::connection::ConnectEdgeRequest;
@@ -27,10 +28,11 @@ pub enum SampleGraphKind {
     OrgChart,
     KnowledgeBoard,
     Erd,
+    ShaderGraph,
 }
 
 impl SampleGraphKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Workflow,
         Self::AutomationBuilder,
         Self::MindMap,
@@ -38,6 +40,7 @@ impl SampleGraphKind {
         Self::OrgChart,
         Self::KnowledgeBoard,
         Self::Erd,
+        Self::ShaderGraph,
     ];
 
     pub fn label(self) -> &'static str {
@@ -49,6 +52,7 @@ impl SampleGraphKind {
             Self::OrgChart => "Org chart",
             Self::KnowledgeBoard => "Knowledge board",
             Self::Erd => "ERD",
+            Self::ShaderGraph => "Shader graph",
         }
     }
 
@@ -57,7 +61,7 @@ impl SampleGraphKind {
             Self::Workflow | Self::AutomationBuilder => LayoutPresetChoice::Workflow,
             Self::MindMap => LayoutPresetChoice::MindMap,
             Self::Tree | Self::OrgChart => LayoutPresetChoice::Tree,
-            Self::KnowledgeBoard | Self::Erd => LayoutPresetChoice::Freeform,
+            Self::KnowledgeBoard | Self::Erd | Self::ShaderGraph => LayoutPresetChoice::Freeform,
         }
     }
 }
@@ -94,6 +98,7 @@ pub(crate) fn sample_graph(kind: SampleGraphKind) -> Result<SampleGraph, SampleG
         SampleGraphKind::OrgChart => populate_org_chart(&mut builder)?,
         SampleGraphKind::KnowledgeBoard => populate_knowledge_board(&mut builder)?,
         SampleGraphKind::Erd => populate_erd(&mut builder)?,
+        SampleGraphKind::ShaderGraph => populate_shader_graph(&mut builder)?,
     }
     builder.fit_view();
 
@@ -554,6 +559,74 @@ fn populate_erd(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError
     Ok(())
 }
 
+fn populate_shader_graph(builder: &mut SampleGraphBuilder) -> Result<(), SampleGraphError> {
+    builder.shader_node(
+        "texture",
+        "demo.shader.texture_sample",
+        json!({
+            "title": "Texture Sample",
+            "summary": "Sample base color from UV",
+            "ports": {
+                "inputs": ["vec2 uv"],
+                "outputs": ["vec4 color"]
+            },
+            "preview": {
+                "texture": "checker"
+            }
+        }),
+        CanvasPoint {
+            x: -320.0,
+            y: -80.0,
+        },
+    )?;
+    builder.shader_node(
+        "tint",
+        "demo.shader.texture_sample",
+        json!({
+            "title": "Tint Ramp",
+            "summary": "Procedural color ramp",
+            "ports": {
+                "inputs": ["vec2 uv"],
+                "outputs": ["vec4 color"]
+            },
+            "preview": {
+                "texture": "warm ramp"
+            }
+        }),
+        CanvasPoint {
+            x: -320.0,
+            y: 120.0,
+        },
+    )?;
+    builder.shader_node(
+        "mix",
+        "demo.shader.mix",
+        json!({
+            "title": "Mix",
+            "summary": "Blend albedo with tint",
+            "ports": {
+                "inputs": ["vec4 albedo", "vec4 tint", "float factor"],
+                "outputs": ["vec4 result"]
+            },
+            "config": {
+                "factor": {
+                    "type": "float",
+                    "default": 0.5
+                }
+            },
+            "preview": {
+                "result": "gradient"
+            }
+        }),
+        CanvasPoint { x: 40.0, y: 20.0 },
+    )?;
+
+    builder.connect_ports("texture", "color", "mix", "a")?;
+    builder.connect_ports("tint", "color", "mix", "b")?;
+    builder.apply_default_layout(SampleGraphKind::ShaderGraph.default_layout());
+    Ok(())
+}
+
 struct SampleGraphBuilder {
     store: NodeGraphStore,
     registry: NodeRegistry,
@@ -606,6 +679,27 @@ impl SampleGraphBuilder {
         let node = self.node(alias, "demo.table", title, &summary, pos)?;
         self.set_table_fields(node, fields)
             .map_err(SampleGraphError::Create)?;
+        Ok(node)
+    }
+
+    fn shader_node(
+        &mut self,
+        alias: &str,
+        kind: &str,
+        data: serde_json::Value,
+        pos: CanvasPoint,
+    ) -> Result<NodeId, SampleGraphError> {
+        let outcome = self
+            .store
+            .apply_create_node_from_schema(
+                &self.registry,
+                CreateNodeRequest::new(NodeKindKey::from(kind), pos),
+            )
+            .map_err(|err| SampleGraphError::Create(err.to_string()))?;
+        let node = outcome.node_id();
+        self.set_node_data(node, data)
+            .map_err(SampleGraphError::Create)?;
+        self.aliases.insert(alias.to_owned(), node);
         Ok(node)
     }
 
@@ -752,6 +846,28 @@ impl SampleGraphBuilder {
             .map_err(|err| err.to_string())
     }
 
+    fn set_node_data(
+        &mut self,
+        node: NodeId,
+        to: serde_json::Value,
+    ) -> Result<DispatchOutcome, String> {
+        let from = self
+            .store
+            .graph()
+            .nodes()
+            .get(&node)
+            .map(|node| node.data.clone())
+            .ok_or_else(|| format!("missing node `{node:?}`"))?;
+        self.store
+            .dispatch_transaction(
+                &jellyflow::core::GraphTransaction::from_ops([
+                    jellyflow::core::GraphOp::SetNodeData { id: node, from, to },
+                ])
+                .with_label("Set sample node data"),
+            )
+            .map_err(|err| err.to_string())
+    }
+
     fn set_table_fields(
         &mut self,
         node: NodeId,
@@ -797,6 +913,7 @@ impl SampleGraphBuilder {
             .with_label_anchor(EdgeLabelAnchor::Center)
             .with_target_marker_key("arrow")
             .with_style_token("default")
+            .with_route_kind(EdgeRouteKind::Orthogonal)
             .with_hit_target_width(24.0);
         self.store
             .dispatch_transaction(

@@ -5,9 +5,10 @@ use jellyflow_core::core::{
 
 use crate::runtime::connection::ConnectionHandleRef;
 use crate::runtime::geometry::{
-    EdgeEndpointInput, HandleBounds, HandlePosition, edge_position, handle_anchor_position,
+    EdgeEndpointInput, HandlePosition, edge_position, handle_anchor_position,
 };
 use crate::runtime::lookups::NodeGraphLookups;
+use crate::runtime::measurement::resolve_handle_measurement;
 use crate::runtime::utils::get_node_rect;
 
 use super::query::{
@@ -147,10 +148,12 @@ fn resolve_port_target(
     };
     let Some(point) = handle_anchor_position(
         node_rect,
-        measured_handle_bounds(
+        resolve_handle_measurement(
+            graph,
             lookups,
             ConnectionHandleRef::new(model.node, port, model.dir),
-        ),
+        )
+        .bounds,
         fallback_handle_position(model.dir),
     )
     .map(|endpoint| endpoint.point) else {
@@ -211,18 +214,22 @@ fn resolve_edge_target(
     let Some(position) = edge_position(
         EdgeEndpointInput {
             node_rect: source_rect,
-            handle: measured_handle_bounds(
+            handle: resolve_handle_measurement(
+                graph,
                 lookups,
                 ConnectionHandleRef::new(from_port.node, edge_model.from, from_port.dir),
-            ),
+            )
+            .bounds,
             fallback_position: fallback_handle_position(from_port.dir),
         },
         EdgeEndpointInput {
             node_rect: target_rect,
-            handle: measured_handle_bounds(
+            handle: resolve_handle_measurement(
+                graph,
                 lookups,
                 ConnectionHandleRef::new(to_port.node, edge_model.to, to_port.dir),
-            ),
+            )
+            .bounds,
             fallback_position: fallback_handle_position(to_port.dir),
         },
     ) else {
@@ -230,19 +237,6 @@ fn resolve_edge_target(
     };
 
     BindingEndpointResolution::EdgePosition { edge, position }
-}
-
-fn measured_handle_bounds(
-    lookups: &NodeGraphLookups,
-    handle: ConnectionHandleRef,
-) -> Option<HandleBounds> {
-    lookups
-        .node_lookup
-        .get(&handle.node)?
-        .measured_handles
-        .iter()
-        .find(|measured| measured.handle == handle)
-        .map(|measured| measured.bounds)
 }
 
 fn fallback_handle_position(direction: PortDirection) -> HandlePosition {

@@ -1,11 +1,12 @@
 use crate::runtime::connection::{
     CONNECT_EDGE_TRANSACTION_LABEL, ClosestConnectionHandleInput, ConnectEdgeRequest,
-    ConnectionDragActivationInput, ConnectionHandleCandidate, ConnectionHandleConnection,
-    ConnectionHandleIndicatorInput, ConnectionHandleRef, ConnectionHandleValidity,
-    ConnectionTargetCandidate, ConnectionTargetFromHandlesInput, ConnectionTargetHandle,
-    ConnectionTargetInput, closest_connection_handle, connection_drag_threshold_met,
-    connection_handle_validity, resolve_connection_handle_indicator, resolve_connection_target,
-    resolve_connection_target_from_handles,
+    ConnectionDragActivationInput, ConnectionEndIntent, ConnectionHandleCandidate,
+    ConnectionHandleConnection, ConnectionHandleIndicatorInput, ConnectionHandleRef,
+    ConnectionHandleValidity, ConnectionLifecycleState, ConnectionTargetCandidate,
+    ConnectionTargetFromHandlesInput, ConnectionTargetHandle, ConnectionTargetInput,
+    closest_connection_handle, connection_drag_threshold_met, connection_handle_validity,
+    new_connection_start, resolve_connection_handle_indicator, resolve_connection_lifecycle,
+    resolve_connection_target, resolve_connection_target_from_handles,
 };
 use crate::runtime::geometry::{HandleBounds, HandlePosition};
 use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, fixture_insert_port};
@@ -15,6 +16,7 @@ use jellyflow_core::core::{
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::GraphOp;
+use jellyflow_core::types::TypeDesc;
 
 #[test]
 fn connection_drag_threshold_uses_xyflow_squared_screen_distance_semantics() {
@@ -456,6 +458,159 @@ fn store_apply_connect_edge_commits_labeled_add_edge_transaction() {
         other => panic!("expected single add-edge op, got {other:#?}"),
     };
     assert!(store.graph().edges().contains_key(&edge_id));
+}
+
+#[test]
+fn store_apply_connect_edge_rejects_incompatible_typed_data_ports() {
+    let (mut graph, _a, b, out_port, _in_port, _edge_id) = super::fixtures::make_graph();
+    graph
+        .update_port(&out_port, |port| port.ty = Some(TypeDesc::Int))
+        .expect("source port exists");
+    let string_in = PortId::new();
+    graph
+        .update_node(&b, |node| node.ports.push(string_in))
+        .expect("target node exists");
+    fixture_insert_port(
+        &mut graph,
+        string_in,
+        Port {
+            node: b,
+            key: PortKey::new("string"),
+            dir: PortDirection::In,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: Some(TypeDesc::String),
+            data: serde_json::Value::Null,
+        },
+    );
+    let mut store = crate::runtime::store::NodeGraphStore::new(
+        graph,
+        crate::io::NodeGraphViewState::default(),
+        crate::runtime::tests::fixtures::default_editor_config(),
+    );
+
+    let err = store
+        .apply_connect_edge(ConnectEdgeRequest::new(
+            out_port,
+            string_in,
+            NodeGraphConnectionMode::Strict,
+        ))
+        .expect_err("typed mismatch should be rejected by the default store connect path");
+
+    let diagnostics = err.diagnostics().expect("typed rejection diagnostics");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.key == "connect.type_mismatch"
+            && diagnostic.message.contains("types are incompatible")
+    }));
+}
+
+#[test]
+fn connection_lifecycle_commits_valid_hover_target() {
+    let from = handle_ref(PortDirection::Out);
+    let target = target_handle(PortDirection::In);
+    let hover = resolve_connection_target(ConnectionTargetInput::new(
+        from,
+        Some(target),
+        NodeGraphConnectionMode::Strict,
+        true,
+    ));
+    let start = new_connection_start(from.port, [from.port], NodeGraphConnectionMode::Strict);
+
+    let result =
+        resolve_connection_lifecycle(start.clone(), Some(hover), ConnectionEndIntent::Complete);
+
+    assert_eq!(result.start, start);
+    assert_eq!(result.state, ConnectionLifecycleState::Committed);
+    assert!(result.did_commit());
+    assert_eq!(result.target, Some(target.handle.port));
+    assert_eq!(result.end.target, Some(target.handle.port));
+    assert_eq!(
+        result.end.outcome,
+        crate::runtime::events::ConnectEndOutcome::Committed
+    );
+    assert_eq!(
+        result.connection,
+        Some(ConnectionHandleConnection {
+            source: from,
+            target: target.handle,
+        })
+    );
+}
+
+#[test]
+fn connection_lifecycle_rejects_invalid_hover_target_without_committing() {
+    let from = handle_ref(PortDirection::Out);
+    let target = ConnectionTargetHandle::new(handle_ref(PortDirection::In), true, false);
+    let hover = resolve_connection_target(ConnectionTargetInput::new(
+        from,
+        Some(target),
+        NodeGraphConnectionMode::Strict,
+        true,
+    ));
+    let start = new_connection_start(from.port, [from.port], NodeGraphConnectionMode::Strict);
+
+    let result = resolve_connection_lifecycle(start, Some(hover), ConnectionEndIntent::Complete);
+
+    assert_eq!(result.state, ConnectionLifecycleState::Rejected);
+    assert!(!result.did_commit());
+    assert_eq!(result.target, Some(target.handle.port));
+    assert_eq!(result.end.target, Some(target.handle.port));
+    assert_eq!(
+        result.end.outcome,
+        crate::runtime::events::ConnectEndOutcome::Rejected
+    );
+    assert_eq!(
+        result.hover.unwrap().feedback,
+        ConnectionHandleValidity::Invalid
+    );
+}
+
+#[test]
+fn connection_lifecycle_distinguishes_cancel_empty_drop_and_noop() {
+    let from = handle_ref(PortDirection::Out);
+    let start = new_connection_start(from.port, [from.port], NodeGraphConnectionMode::Strict);
+    let canceled = resolve_connection_lifecycle(start.clone(), None, ConnectionEndIntent::Cancel);
+    assert_eq!(canceled.state, ConnectionLifecycleState::Canceled);
+    assert_eq!(
+        canceled.end.outcome,
+        crate::runtime::events::ConnectEndOutcome::Canceled
+    );
+
+    let dropped = resolve_connection_lifecycle(
+        start.clone(),
+        None,
+        ConnectionEndIntent::DropOnPane {
+            pointer: CanvasPoint { x: 40.0, y: 50.0 },
+        },
+    );
+    assert_eq!(dropped.state, ConnectionLifecycleState::DroppedOnPane);
+    assert!(dropped.opens_dropped_wire_menu());
+    assert_eq!(dropped.dropped_at, Some(CanvasPoint { x: 40.0, y: 50.0 }));
+    assert_eq!(
+        dropped.end.outcome,
+        crate::runtime::events::ConnectEndOutcome::OpenInsertNodePicker
+    );
+
+    let empty_hover = resolve_connection_target(ConnectionTargetInput::new(
+        from,
+        None,
+        NodeGraphConnectionMode::Strict,
+        false,
+    ));
+    let noop =
+        resolve_connection_lifecycle(start, Some(empty_hover), ConnectionEndIntent::Complete);
+    assert_eq!(noop.state, ConnectionLifecycleState::NoOp);
+    assert_eq!(
+        noop.end.outcome,
+        crate::runtime::events::ConnectEndOutcome::NoOp
+    );
+    assert_eq!(
+        noop.hover.unwrap().feedback,
+        ConnectionHandleValidity::NoHandle
+    );
 }
 
 fn handle_ref(direction: PortDirection) -> ConnectionHandleRef {

@@ -47,6 +47,7 @@ fn note_schema() -> NodeSchema {
             },
         ],
         surface_slots: Vec::new(),
+        chrome: Vec::new(),
         default_data: json!({ "body": "" }),
     }
 }

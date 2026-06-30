@@ -32,6 +32,20 @@ impl EdgeKind {
     }
 }
 
+/// Route-style hint for adapter-owned edge drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeRouteKind {
+    /// Direct line between resolved endpoints.
+    Straight,
+    /// Orthogonal/polyline route with right-angle legs.
+    Orthogonal,
+    /// Cubic bezier route using endpoint sides as curvature hints.
+    Bezier,
+    /// XyFlow-style smooth-step route.
+    SmoothStep,
+}
+
 /// Edge between two ports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
@@ -136,6 +150,9 @@ pub struct EdgeViewDescriptor {
     /// Style token, interpreted by adapters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_token: Option<String>,
+    /// Route-style hint, interpreted by adapters and runtime geometry projections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_kind: Option<EdgeRouteKind>,
     /// Optional hit-test width hint in logical pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hit_target_width: Option<f32>,
@@ -173,6 +190,11 @@ impl EdgeViewDescriptor {
 
     pub fn with_style_token(mut self, style_token: impl Into<String>) -> Self {
         self.style_token = Some(style_token.into());
+        self
+    }
+
+    pub fn with_route_kind(mut self, route_kind: EdgeRouteKind) -> Self {
+        self.route_kind = Some(route_kind);
         self
     }
 

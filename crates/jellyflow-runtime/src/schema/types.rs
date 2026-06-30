@@ -13,6 +13,10 @@ fn port_view_descriptor_is_default(value: &PortViewDescriptor) -> bool {
     value.is_default()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Declares a port for a node kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortDecl {
@@ -210,6 +214,10 @@ pub enum NodeSurfaceSlotKind {
     ActionRow,
     Preview,
     NestedRegion,
+    StatusBanner,
+    PortRail,
+    ConfigGroup,
+    MetricBadge,
 }
 
 /// Adapter-facing visibility hint for a node-local surface slot.
@@ -219,6 +227,170 @@ pub enum NodeSurfaceSlotVisibility {
     Visible,
     Hidden,
     Collapsed,
+}
+
+/// Shared semantic role for adapter-owned chrome around a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeChromeKind {
+    Resizer,
+    Toolbar,
+    StatusStrip,
+    ValidationBanner,
+    RunActionStrip,
+    InspectorAnchor,
+}
+
+/// Preferred placement for adapter-owned chrome around a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeChromePlacement {
+    Top,
+    TopRight,
+    Right,
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+    TopLeft,
+    InsideHeader,
+    InsideFooter,
+}
+
+/// Adapter-facing visibility hint for node chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeChromeVisibility {
+    Always,
+    Selected,
+    Hovered,
+    Focused,
+    Hidden,
+}
+
+/// Renderer-neutral metadata for adapter-owned node chrome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeChromeDescriptor {
+    pub key: String,
+    pub kind: NodeChromeKind,
+    pub placement: NodeChromePlacement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<NodeChromeVisibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub interactive: bool,
+}
+
+impl NodeChromeDescriptor {
+    pub fn new(
+        key: impl Into<String>,
+        kind: NodeChromeKind,
+        placement: NodeChromePlacement,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            kind,
+            placement,
+            label: None,
+            renderer_key: None,
+            icon_key: None,
+            visibility: None,
+            order: None,
+            interactive: false,
+        }
+    }
+
+    pub fn resizer(key: impl Into<String>) -> Self {
+        Self::new(
+            key,
+            NodeChromeKind::Resizer,
+            NodeChromePlacement::BottomRight,
+        )
+        .interactive()
+        .with_visibility(NodeChromeVisibility::Selected)
+    }
+
+    pub fn toolbar(key: impl Into<String>, placement: NodeChromePlacement) -> Self {
+        Self::new(key, NodeChromeKind::Toolbar, placement)
+            .interactive()
+            .with_visibility(NodeChromeVisibility::Selected)
+    }
+
+    pub fn status_strip(key: impl Into<String>, placement: NodeChromePlacement) -> Self {
+        Self::new(key, NodeChromeKind::StatusStrip, placement)
+            .with_visibility(NodeChromeVisibility::Always)
+    }
+
+    pub fn validation_banner(key: impl Into<String>, placement: NodeChromePlacement) -> Self {
+        Self::new(key, NodeChromeKind::ValidationBanner, placement)
+            .with_visibility(NodeChromeVisibility::Always)
+    }
+
+    pub fn run_action_strip(key: impl Into<String>, placement: NodeChromePlacement) -> Self {
+        Self::new(key, NodeChromeKind::RunActionStrip, placement)
+            .interactive()
+            .with_visibility(NodeChromeVisibility::Selected)
+    }
+
+    pub fn inspector_anchor(key: impl Into<String>, placement: NodeChromePlacement) -> Self {
+        Self::new(key, NodeChromeKind::InspectorAnchor, placement)
+            .with_visibility(NodeChromeVisibility::Selected)
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_renderer_key(mut self, renderer_key: impl Into<String>) -> Self {
+        self.renderer_key = Some(renderer_key.into());
+        self
+    }
+
+    pub fn with_icon_key(mut self, icon_key: impl Into<String>) -> Self {
+        self.icon_key = Some(icon_key.into());
+        self
+    }
+
+    pub fn with_visibility(mut self, visibility: NodeChromeVisibility) -> Self {
+        self.visibility = Some(visibility);
+        self
+    }
+
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    pub fn interactive(mut self) -> Self {
+        self.interactive = true;
+        self
+    }
+
+    pub fn hidden(self) -> Self {
+        self.with_visibility(NodeChromeVisibility::Hidden)
+    }
+
+    pub fn effective_visibility(&self) -> NodeChromeVisibility {
+        self.visibility.unwrap_or(NodeChromeVisibility::Always)
+    }
+
+    pub fn is_visible_for_state(&self, selected: bool, hovered: bool, focused: bool) -> bool {
+        match self.effective_visibility() {
+            NodeChromeVisibility::Always => true,
+            NodeChromeVisibility::Selected => selected,
+            NodeChromeVisibility::Hovered => hovered,
+            NodeChromeVisibility::Focused => focused,
+            NodeChromeVisibility::Hidden => false,
+        }
+    }
 }
 
 /// Adapter-facing, toolkit-neutral semantic surface projection for one node.
@@ -335,6 +507,22 @@ impl NodeSurfaceSlotDescriptor {
 
     pub fn nested_region(key: impl Into<String>) -> Self {
         Self::new(key, NodeSurfaceSlotKind::NestedRegion)
+    }
+
+    pub fn status_banner(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::StatusBanner)
+    }
+
+    pub fn port_rail(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::PortRail)
+    }
+
+    pub fn config_group(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::ConfigGroup)
+    }
+
+    pub fn metric_badge(key: impl Into<String>) -> Self {
+        Self::new(key, NodeSurfaceSlotKind::MetricBadge)
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
@@ -489,6 +677,9 @@ pub struct NodeSchema {
     /// Renderer-neutral semantic slots for rich adapter node surfaces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surface_slots: Vec<NodeSurfaceSlotDescriptor>,
+    /// Renderer-neutral semantic chrome around rich adapter node surfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chrome: Vec<NodeChromeDescriptor>,
 
     /// Default node payload.
     #[serde(default)]
@@ -582,6 +773,7 @@ impl NodeSchema {
                 default_size: None,
                 ports: Vec::new(),
                 surface_slots: Vec::new(),
+                chrome: Vec::new(),
                 default_data: Value::Null,
             },
         }
@@ -730,6 +922,18 @@ impl NodeSchemaBuilder {
         slots: impl IntoIterator<Item = NodeSurfaceSlotDescriptor>,
     ) -> Self {
         self.schema.surface_slots.extend(slots);
+        self
+    }
+
+    /// Adds one renderer-neutral node chrome descriptor.
+    pub fn chrome(mut self, chrome: NodeChromeDescriptor) -> Self {
+        self.schema.chrome.push(chrome);
+        self
+    }
+
+    /// Adds renderer-neutral node chrome descriptors.
+    pub fn chromes(mut self, chromes: impl IntoIterator<Item = NodeChromeDescriptor>) -> Self {
+        self.schema.chrome.extend(chromes);
         self
     }
 
@@ -888,6 +1092,9 @@ pub struct NodeKindViewDescriptor {
     /// Renderer-neutral semantic slots for rich adapter node surfaces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surface_slots: Vec<NodeSurfaceSlotDescriptor>,
+    /// Renderer-neutral semantic chrome around rich adapter node surfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chrome: Vec<NodeChromeDescriptor>,
     /// Default node payload.
     #[serde(default)]
     pub default_data: Value,
@@ -907,6 +1114,7 @@ impl NodeKindViewDescriptor {
             default_size: schema.default_size,
             ports: schema.ports.clone(),
             surface_slots: schema.surface_slots.clone(),
+            chrome: schema.chrome.clone(),
             default_data: schema.default_data.clone(),
         }
     }

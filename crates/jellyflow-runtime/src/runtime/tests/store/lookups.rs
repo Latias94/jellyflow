@@ -3,6 +3,7 @@ use super::super::fixtures::{
 };
 
 use crate::runtime::lookups::ConnectionSide;
+use crate::runtime::measurement::{MeasuredSurfaceAnchor, NodeMeasurement};
 use jellyflow_core::core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable, Group, GroupId,
     NodeOrigin, PortKind,
@@ -163,6 +164,61 @@ fn store_lookups_remove_port_updates_node_ports_and_incident_edges() {
             .contains(&out_port)
     );
     assert!(!store.lookups().edge_lookup.contains_key(&eid));
+}
+
+#[test]
+fn store_lookups_remove_port_prunes_measured_semantic_anchors() {
+    let (g, a, _b, out_port, _in_port, eid) = make_graph();
+    let port = g.ports().get(&out_port).expect("port").clone();
+    let edge = g.edges().get(&eid).expect("edge").clone();
+    let mut store = make_store(g);
+
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(a)
+                .with_size(Some(CanvasSize {
+                    width: 120.0,
+                    height: 80.0,
+                }))
+                .with_anchors([MeasuredSurfaceAnchor::new(
+                    "field.out.output",
+                    CanvasRect {
+                        origin: CanvasPoint { x: 110.0, y: 20.0 },
+                        size: CanvasSize {
+                            width: 10.0,
+                            height: 20.0,
+                        },
+                    },
+                    crate::runtime::geometry::HandlePosition::Right,
+                )
+                .with_port(out_port)
+                .with_port_key("out")]),
+        )
+        .expect("node measurement");
+    assert_eq!(
+        store
+            .node_measurement(a)
+            .expect("measurement")
+            .anchors
+            .len(),
+        1
+    );
+
+    let tx = GraphTransaction::from_ops([GraphOp::RemovePort {
+        id: out_port,
+        port,
+        edges: vec![(eid, edge)],
+        bindings: Vec::new(),
+    }]);
+
+    store.dispatch_transaction(&tx).expect("dispatch");
+    assert!(
+        store
+            .node_measurement(a)
+            .expect("measurement survives via measured size")
+            .anchors
+            .is_empty()
+    );
 }
 
 #[test]

@@ -1,6 +1,7 @@
 mod adapter_conformance;
 mod auto_pan;
 mod binding;
+mod chrome;
 mod conformance;
 mod connection;
 mod create_node;

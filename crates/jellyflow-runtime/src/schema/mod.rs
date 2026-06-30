@@ -17,6 +17,7 @@ pub use migration::{
 };
 pub use registry::NodeRegistry;
 pub use types::{
+    NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
     NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor, NodeSchema,
     NodeSchemaBuilder, NodeSurfaceProjection, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
     NodeSurfaceSlotProjection, NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility,

@@ -75,6 +75,7 @@ fn apply_edge_changes_updates_kind_and_ignores_missing() {
         source_marker_key: Some("one".to_owned()),
         target_marker_key: Some("many".to_owned()),
         style_token: Some("relation".to_owned()),
+        route_kind: None,
         hit_target_width: Some(24.0),
     };
 
@@ -176,6 +177,7 @@ fn edge_update_changes_apply_and_transaction_paths_agree() {
         source_marker_key: None,
         target_marker_key: Some("arrow".to_owned()),
         style_token: Some("danger".to_owned()),
+        route_kind: None,
         hit_target_width: Some(36.0),
     };
     let changes = NodeGraphChanges::from_parts(

@@ -81,6 +81,7 @@ fn edge_data_and_view_footprint_records_touched_edge_only() {
                 source_marker_key: None,
                 target_marker_key: None,
                 style_token: None,
+                route_kind: None,
                 hit_target_width: None,
             },
         },

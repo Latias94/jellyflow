@@ -19,6 +19,7 @@ fn changes_to_transaction_is_reversible_and_applicable() {
         source_marker_key: None,
         target_marker_key: Some("arrow".to_owned()),
         style_token: Some("success".to_owned()),
+        route_kind: None,
         hit_target_width: Some(26.0),
     };
 

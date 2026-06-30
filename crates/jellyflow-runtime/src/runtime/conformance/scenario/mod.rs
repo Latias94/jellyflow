@@ -10,7 +10,8 @@ mod trace;
 pub use action::{
     ConformanceAction, ConformanceConnectionTargetFromHandlesInput,
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
-    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsExpectation,
+    ConformanceLayoutEdgeRouteFacts, ConformanceLayoutFactsConnectionTargetExpectation,
+    ConformanceLayoutFactsExpectation,
 };
 pub use behavior::{
     ConformanceBehavior, ConformanceConnectEdgeSessionContract, ConformanceDeleteSelectionContract,

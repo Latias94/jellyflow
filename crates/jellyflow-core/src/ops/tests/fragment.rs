@@ -29,6 +29,7 @@ fn fragment_paste_transaction_is_deterministic_for_seed() {
         source_marker_key: None,
         target_marker_key: Some("arrow".to_string()),
         style_token: Some("success".to_string()),
+        route_kind: None,
         hit_target_width: Some(24.0),
     };
 

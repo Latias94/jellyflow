@@ -6,6 +6,7 @@
 
 pub mod auto_pan;
 pub mod binding;
+pub mod chrome;
 pub mod commit;
 pub mod conformance;
 pub mod connection;

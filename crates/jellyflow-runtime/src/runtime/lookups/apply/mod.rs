@@ -31,10 +31,19 @@ impl NodeGraphLookups {
             GraphOp::SetNodeSize { id, to, .. } => self.apply_set_node_size(*id, *to),
             GraphOp::SetNodeHidden { id, to, .. } => self.apply_set_node_hidden(*id, *to),
             GraphOp::SetNodeCollapsed { id, to, .. } => self.apply_set_node_collapsed(*id, *to),
-            GraphOp::SetNodePorts { id, to, .. } => self.apply_set_node_ports(*id, to),
+            GraphOp::SetNodePorts { id, to, .. } => self.apply_set_node_ports(graph, *id, to),
+            GraphOp::SetNodeData { id, .. } => self.apply_set_node_data(*id),
             GraphOp::RemovePort {
                 id, port, edges, ..
             } => self.apply_remove_port(*id, port, edges),
+            GraphOp::AddPort { id, .. }
+            | GraphOp::SetPortType { id, .. }
+            | GraphOp::SetPortData { id, .. }
+            | GraphOp::SetPortConnectable { id, .. }
+            | GraphOp::SetPortConnectableStart { id, .. }
+            | GraphOp::SetPortConnectableEnd { id, .. } => {
+                self.apply_port_node_internals_change(graph, *id)
+            }
             GraphOp::AddEdge { id, .. } => self.apply_add_edge(graph, *id),
             GraphOp::RemoveEdge { id, .. } => self.apply_remove_edge(*id),
             GraphOp::SetEdgeKind { id, to, .. } => self.apply_set_edge_kind(graph, *id, *to),
@@ -53,13 +62,6 @@ impl NodeGraphLookups {
             | GraphOp::SetNodeDeletable { .. }
             | GraphOp::SetNodeExtent { .. }
             | GraphOp::SetNodeExpandParent { .. }
-            | GraphOp::SetNodeData { .. }
-            | GraphOp::AddPort { .. }
-            | GraphOp::SetPortConnectable { .. }
-            | GraphOp::SetPortConnectableStart { .. }
-            | GraphOp::SetPortConnectableEnd { .. }
-            | GraphOp::SetPortType { .. }
-            | GraphOp::SetPortData { .. }
             | GraphOp::SetEdgeSelectable { .. }
             | GraphOp::SetEdgeFocusable { .. }
             | GraphOp::SetEdgeHidden { .. }

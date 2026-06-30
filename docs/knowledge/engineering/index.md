@@ -22,4 +22,5 @@
 * [Node kit plan and goal setup](sessions/2026-06-19-node-kit-plan-and-goal.md)
 * [Node kit implementation slice](sessions/2026-06-19-node-kit-implementation-slice.md)
 * [open-gpui pull blocked by existing local changes](sessions/2026-06-23-open-gpui-pull-blocked-by-existing-local-changes.md)
+* [Node UI Kit Component Contract](decisions/node-ui-kit-component-contract.md)
 * [Node kit boundary plan](../../plans/2026-06-19-003-feat-adapter-node-kit-boundary-plan.md)

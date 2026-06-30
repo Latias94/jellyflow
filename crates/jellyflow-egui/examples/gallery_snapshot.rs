@@ -41,5 +41,6 @@ fn sample_file_name(sample: SampleGraphKind) -> &'static str {
         SampleGraphKind::OrgChart => "org-chart",
         SampleGraphKind::KnowledgeBoard => "knowledge-board",
         SampleGraphKind::Erd => "erd",
+        SampleGraphKind::ShaderGraph => "shader-graph",
     }
 }

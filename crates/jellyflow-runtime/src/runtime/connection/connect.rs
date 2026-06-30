@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::rules::{ConnectPlan, Diagnostic, plan_connect_with_mode_and_policy};
+use crate::rules::{
+    ConnectPlan, Diagnostic, plan_connect_typed_with_mode_and_policy,
+    plan_connect_with_mode_and_policy,
+};
 use crate::runtime::store::{DispatchError, DispatchOutcome, NodeGraphStore};
 use jellyflow_core::core::{EdgeId, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
+use jellyflow_core::types::DefaultTypeCompatibility;
 
 /// Default transaction label used for committed connect updates.
 pub const CONNECT_EDGE_TRANSACTION_LABEL: &str = "connect edge";
@@ -107,6 +111,25 @@ impl NodeGraphStore {
     /// Plans connecting two existing ports against the resolved interaction policy.
     pub fn plan_connect_edge(&self, request: ConnectEdgeRequest) -> ConnectPlan {
         let interaction = self.resolved_interaction_state();
+        let has_typed_endpoint = |port: PortId| {
+            self.graph()
+                .ports()
+                .get(&port)
+                .is_some_and(|port| port.ty.is_some())
+        };
+        if has_typed_endpoint(request.from) || has_typed_endpoint(request.to) {
+            let mut compat = DefaultTypeCompatibility;
+            return plan_connect_typed_with_mode_and_policy(
+                self.graph(),
+                request.from,
+                request.to,
+                request.mode,
+                &interaction,
+                |graph, port| graph.ports().get(&port).and_then(|port| port.ty.clone()),
+                &mut compat,
+            );
+        }
+
         plan_connect_with_mode_and_policy(
             self.graph(),
             request.from,

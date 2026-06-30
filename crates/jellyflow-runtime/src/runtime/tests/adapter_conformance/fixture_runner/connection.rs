@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn adapter_conformance_fixture_runner_asserts_connection_lifecycle() {
+    let (graph, source_node, target_node, out_port, in_port, _eid) = make_graph();
+    let source = ConnectionHandleRef::new(source_node, out_port, PortDirection::Out);
+    let target = ConnectionTargetHandle::new(
+        ConnectionHandleRef::new(target_node, in_port, PortDirection::In),
+        true,
+        true,
+    );
+    let hover = ResolvedConnectionTarget {
+        target: Some(target),
+        connection: Some(ConnectionHandleConnection {
+            source,
+            target: target.handle,
+        }),
+        is_handle_valid: true,
+        feedback: ConnectionHandleValidity::Valid,
+    };
+    let start = ConnectStart {
+        kind: ConnectDragKind::New {
+            from: out_port,
+            bundle: vec![out_port],
+        },
+        mode: NodeGraphConnectionMode::Strict,
+    };
+    let expected =
+        resolve_connection_lifecycle(start.clone(), Some(hover), ConnectionEndIntent::Complete);
+    let scenario = ConformanceScenario::new("connection lifecycle assertion", graph)
+        .with_actions([ConformanceAction::assert_connection_lifecycle(
+            start,
+            Some(hover),
+            ConnectionEndIntent::Complete,
+            expected,
+        )])
+        .with_expected_trace([]);
+
+    assert_conformance_trace(&scenario);
+}
+
+#[test]
 fn adapter_conformance_fixture_runner_records_connect_gesture_lifecycle() {
     let (graph, _a, _b, out_port, in_port, _eid) = make_graph();
     let kind = ConnectDragKind::New {

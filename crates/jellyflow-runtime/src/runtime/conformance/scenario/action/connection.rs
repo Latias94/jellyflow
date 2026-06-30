@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::connection::{
-    ConnectEdgeRequest, ConnectionTargetCandidate, ConnectionTargetFromHandlesInput,
-    ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
+    ConnectEdgeRequest, ConnectionEndIntent, ConnectionLifecycleResult, ConnectionTargetCandidate,
+    ConnectionTargetFromHandlesInput, ConnectionTargetInput, ReconnectEdgeRequest,
+    ResolvedConnectionTarget,
 };
 use crate::runtime::events::ConnectStart;
 use jellyflow_core::core::CanvasPoint;
@@ -16,6 +17,7 @@ pub(super) fn kind(action: &ConformanceAction) -> Option<&'static str> {
         ConformanceAction::AssertConnectionTargetFromHandles { .. } => {
             "assert_connection_target_from_handles"
         }
+        ConformanceAction::AssertConnectionLifecycle { .. } => "assert_connection_lifecycle",
         ConformanceAction::ApplyConnectEdge { .. } => "apply_connect_edge",
         ConformanceAction::ApplyConnectEdgeSession { .. } => "apply_connect_edge_session",
         ConformanceAction::ApplyReconnectEdge { .. } => "apply_reconnect_edge",
@@ -76,6 +78,20 @@ impl ConformanceAction {
     ) -> Self {
         Self::AssertConnectionTargetFromHandles {
             input: ConformanceConnectionTargetFromHandlesInput::from_runtime(input),
+            expected,
+        }
+    }
+
+    pub fn assert_connection_lifecycle(
+        start: ConnectStart,
+        hover: Option<ResolvedConnectionTarget>,
+        intent: ConnectionEndIntent,
+        expected: ConnectionLifecycleResult,
+    ) -> Self {
+        Self::AssertConnectionLifecycle {
+            start,
+            hover,
+            intent,
             expected,
         }
     }

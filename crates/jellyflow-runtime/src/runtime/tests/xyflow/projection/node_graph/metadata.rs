@@ -60,6 +60,7 @@ fn changes_from_transaction_maps_all_node_edge_metadata_ops() {
         source_marker_key: None,
         target_marker_key: Some("arrow".to_owned()),
         style_token: Some("warning".to_owned()),
+        route_kind: None,
         hit_target_width: Some(30.0),
     };
 

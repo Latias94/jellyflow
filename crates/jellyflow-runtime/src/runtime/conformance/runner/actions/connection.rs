@@ -1,5 +1,6 @@
 use crate::runtime::connection::{
-    ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
+    ConnectEdgeRequest, ConnectionEndIntent, ConnectionLifecycleResult, ConnectionTargetInput,
+    ReconnectEdgeRequest, ResolvedConnectionTarget, resolve_connection_lifecycle,
     resolve_connection_target, resolve_connection_target_from_handles,
 };
 use crate::runtime::events::ConnectStart;
@@ -22,6 +23,12 @@ pub(super) fn execute_action(
         ConformanceAction::AssertConnectionTargetFromHandles { input, expected } => {
             assert_connection_target_from_handles(input, *expected)
         }
+        ConformanceAction::AssertConnectionLifecycle {
+            start,
+            hover,
+            intent,
+            expected,
+        } => assert_connection_lifecycle(start.clone(), *hover, *intent, expected.clone()),
         ConformanceAction::ApplyConnectEdge { request } => apply_connect_edge(store, *request),
         ConformanceAction::ApplyConnectEdgeSession { start, request } => {
             apply_connect_edge_session(store, start.clone(), *request)
@@ -29,6 +36,22 @@ pub(super) fn execute_action(
         ConformanceAction::ApplyReconnectEdge { request } => apply_reconnect_edge(store, *request),
         _ => return None,
     })
+}
+
+pub(super) fn assert_connection_lifecycle(
+    start: ConnectStart,
+    hover: Option<ResolvedConnectionTarget>,
+    intent: ConnectionEndIntent,
+    expected: ConnectionLifecycleResult,
+) -> Result<(), String> {
+    let actual = resolve_connection_lifecycle(start, hover, intent);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "connection lifecycle resolved to {actual:?}, expected {expected:?}"
+        ))
+    }
 }
 
 pub(super) fn assert_connection_target(

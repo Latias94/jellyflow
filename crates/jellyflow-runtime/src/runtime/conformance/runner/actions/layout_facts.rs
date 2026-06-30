@@ -54,6 +54,25 @@ fn assert_layout_facts(
         }
     }
 
+    for expected_route in &expected.edge_routes {
+        let Some(actual) = facts.visible_edge_route_facts(expected_route.edge) else {
+            return Err(format!(
+                "layout facts missing edge route facts for {:?}",
+                expected_route.edge
+            ));
+        };
+        if actual.kind != expected_route.kind
+            || (actual.hit_test.interaction_width - expected_route.interaction_width).abs()
+                > f32::EPSILON
+            || actual.interaction.selected != expected_route.selected
+        {
+            return Err(format!(
+                "layout facts edge route facts for {:?} resolved to {:?}, expected {:?}",
+                expected_route.edge, actual, expected_route
+            ));
+        }
+    }
+
     if let Some(expected_target) = &expected.connection_target {
         let actual = store.resolve_connection_target_from_layout_facts(
             expected_target.pointer,

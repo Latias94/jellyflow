@@ -4,12 +4,17 @@ use eframe::egui::{
 };
 use eframe::epaint::{CubicBezierShape, PathShape, Shape};
 use jellyflow::core::{CanvasPoint, CanvasRect, EdgeLabelAnchor, NodeId, PortDirection};
+use jellyflow::runtime::runtime::chrome::{
+    NodeChromeFacts, NodeChromeFactsRequest, NodeChromeLayoutPolicy, NodeChromeState,
+    ResolvedNodeChrome, resolve_node_chrome_facts,
+};
 use jellyflow::runtime::runtime::connection::ConnectionHandleRef;
 use jellyflow::runtime::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointInput, EdgeHitTestOptions, EdgePath, HandleBounds,
     HandlePosition, bezier_edge_path, edge_path_contains_point, edge_position,
 };
 use jellyflow::runtime::runtime::resize::NodeResizeDirection;
+use jellyflow::runtime::schema::{NodeChromeKind, NodeChromePlacement};
 
 use crate::bridge::JellyflowEguiBridge;
 use crate::renderer::{
@@ -121,7 +126,8 @@ fn draw_nodes(
             continue;
         };
         let rect = canvas_rect_to_screen(state, layout.body_rect);
-        let content_level = NodeContentLevel::from_zoom(state.canvas.snapshot.transform.zoom);
+        let content_level =
+            NodeContentLevel::from_zoom_and_size(state.canvas.snapshot.transform.zoom, rect.size());
         draw_node_shell(painter, rect, style, renderer_state);
         draw_node_title(painter, rect, &layout.title, style, content_level);
         let widgets_rendered = draw_node_widgets(
@@ -147,9 +153,15 @@ fn draw_nodes(
         }
 
         draw_handles(painter, bridge, state, *node_id, rect, style);
-        if renderer_state.selected {
-            draw_resize_handles(painter, rect, style);
-        }
+        draw_node_chrome(
+            painter,
+            bridge,
+            state,
+            *node_id,
+            canvas_rect,
+            style,
+            renderer_state,
+        );
     }
 }
 
@@ -427,6 +439,187 @@ fn node_renderer_state(
             .is_none_or(|record| record.hidden),
         diagnostic: false,
     }
+}
+
+fn visual_node_chrome_facts(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+    canvas_rect: CanvasRect,
+) -> Option<NodeChromeFacts> {
+    let descriptor = bridge.descriptor_for_node(node)?;
+    if descriptor.chrome.is_empty() {
+        return None;
+    }
+    let renderer_state = node_renderer_state(bridge, state, node);
+    resolve_node_chrome_facts(
+        NodeChromeFactsRequest::new(node, canvas_rect, &descriptor.chrome)
+            .with_state(NodeChromeState {
+                selected: renderer_state.selected,
+                hovered: renderer_state.hovered,
+                focused: renderer_state.focused,
+            })
+            .with_policy(
+                NodeChromeLayoutPolicy::default().with_zoom(state.canvas.snapshot.transform.zoom),
+            )
+            .with_resize_constraints(bridge.resize_constraints_for_node(node)),
+    )
+}
+
+fn visual_node_resize_chrome(
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+) -> Option<ResolvedNodeChrome> {
+    let canvas_rect = visual_node_canvas_rect(state, node)?;
+    visual_node_chrome_facts(bridge, state, node, canvas_rect)?
+        .chrome
+        .into_iter()
+        .find(|chrome| chrome.kind == NodeChromeKind::Resizer)
+}
+
+fn node_resize_direction_from_chrome(chrome: &ResolvedNodeChrome) -> NodeResizeDirection {
+    match chrome.placement {
+        NodeChromePlacement::Top => NodeResizeDirection::Top,
+        NodeChromePlacement::TopRight => NodeResizeDirection::TopRight,
+        NodeChromePlacement::Right => NodeResizeDirection::Right,
+        NodeChromePlacement::BottomRight => NodeResizeDirection::BottomRight,
+        NodeChromePlacement::Bottom => NodeResizeDirection::Bottom,
+        NodeChromePlacement::BottomLeft => NodeResizeDirection::BottomLeft,
+        NodeChromePlacement::Left => NodeResizeDirection::Left,
+        NodeChromePlacement::TopLeft => NodeResizeDirection::TopLeft,
+        NodeChromePlacement::InsideHeader | NodeChromePlacement::InsideFooter => {
+            NodeResizeDirection::BottomRight
+        }
+    }
+}
+
+fn draw_node_chrome(
+    painter: &eframe::egui::Painter,
+    bridge: &JellyflowEguiBridge,
+    state: &JellyflowEguiState,
+    node: NodeId,
+    canvas_rect: CanvasRect,
+    style: NodeRendererStyle,
+    renderer_state: NodeRendererState,
+) {
+    let Some(chrome_facts) = visual_node_chrome_facts(bridge, state, node, canvas_rect) else {
+        if renderer_state.selected {
+            draw_resize_handles(painter, canvas_rect_to_screen(state, canvas_rect), style);
+        }
+        return;
+    };
+
+    for chrome in &chrome_facts.chrome {
+        match chrome.kind {
+            NodeChromeKind::Resizer => {
+                draw_node_chrome_resizer(painter, state, chrome, style);
+            }
+            NodeChromeKind::StatusStrip
+            | NodeChromeKind::RunActionStrip
+            | NodeChromeKind::ValidationBanner => {
+                draw_node_chrome_strip(painter, state, chrome, style);
+            }
+            NodeChromeKind::Toolbar | NodeChromeKind::InspectorAnchor => {
+                draw_node_chrome_control(painter, state, chrome, style);
+            }
+        }
+    }
+}
+
+fn draw_node_chrome_resizer(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    chrome: &ResolvedNodeChrome,
+    style: NodeRendererStyle,
+) {
+    let rect = canvas_rect_to_screen(state, chrome.rect);
+    if !rect.is_positive() {
+        return;
+    }
+    painter.rect_filled(rect, CornerRadius::same(2), style.accent);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(2),
+        Stroke::new(1.0, Color32::WHITE),
+        StrokeKind::Outside,
+    );
+}
+
+fn draw_node_chrome_strip(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    chrome: &ResolvedNodeChrome,
+    style: NodeRendererStyle,
+) {
+    let rect =
+        canvas_rect_to_screen(state, chrome.rect).intersect(state.canvas.snapshot.viewport_rect);
+    if !rect.is_positive() || rect.width() < 28.0 || rect.height() < 8.0 {
+        return;
+    }
+    let fill = match chrome.kind {
+        NodeChromeKind::ValidationBanner => Color32::from_rgb(255, 244, 220),
+        NodeChromeKind::RunActionStrip => style.accent.gamma_multiply(0.14),
+        _ => Color32::from_rgba_premultiplied(255, 255, 255, 172),
+    };
+    painter.rect_filled(rect, CornerRadius::same(4), fill);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, style.accent.gamma_multiply(0.28)),
+        StrokeKind::Inside,
+    );
+    if rect.width() >= 44.0 && rect.height() >= 14.0 {
+        let label = chrome.label.as_deref().unwrap_or(chrome.key.as_str());
+        let text = label.to_owned();
+        let clipped = painter.with_clip_rect(rect.shrink(4.0));
+        let galley = clipped.layout_no_wrap(
+            text,
+            TextStyle::Small.resolve(&painter.ctx().global_style()),
+            style.text.gamma_multiply(0.78),
+        );
+        clipped.galley(
+            rect.left_center() + Vec2::new(6.0, -galley.size().y / 2.0),
+            galley,
+            style.text,
+        );
+    }
+}
+
+fn draw_node_chrome_control(
+    painter: &eframe::egui::Painter,
+    state: &JellyflowEguiState,
+    chrome: &ResolvedNodeChrome,
+    style: NodeRendererStyle,
+) {
+    let rect =
+        canvas_rect_to_screen(state, chrome.rect).intersect(state.canvas.snapshot.viewport_rect);
+    if !rect.is_positive() || rect.width() < 8.0 || rect.height() < 8.0 {
+        return;
+    }
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(4),
+        Color32::from_rgba_premultiplied(255, 255, 255, 212),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, style.accent.gamma_multiply(0.42)),
+        StrokeKind::Outside,
+    );
+    let center = rect.center();
+    painter.circle_filled(center, 2.2, style.accent);
+    painter.circle_filled(
+        center + Vec2::new(-6.0, 0.0),
+        2.0,
+        style.accent.gamma_multiply(0.74),
+    );
+    painter.circle_filled(
+        center + Vec2::new(6.0, 0.0),
+        2.0,
+        style.accent.gamma_multiply(0.74),
+    );
 }
 
 fn draw_resize_handles(painter: &eframe::egui::Painter, rect: Rect, style: NodeRendererStyle) {
@@ -935,15 +1128,25 @@ fn hit_edge(
         let Some(edge) = bridge.store().graph().edges().get(edge_id) else {
             continue;
         };
-        let hit_target_width = edge.view.hit_target_width;
-        let base_options = bridge
-            .store()
-            .resolved_interaction_state()
-            .edge_hit_test_options_for(edge);
+        let options = state
+            .canvas
+            .snapshot
+            .layout_facts
+            .visible_edge_route_facts(*edge_id)
+            .map(|facts| facts.hit_test)
+            .unwrap_or_else(|| {
+                edge_hit_test_options(
+                    bridge
+                        .store()
+                        .resolved_interaction_state()
+                        .edge_hit_test_options_for(edge),
+                    edge.view.hit_target_width,
+                )
+            });
         if edge_path_contains_point(
             path,
             state.canvas.snapshot.screen_point_to_canvas(pointer),
-            edge_hit_test_options(base_options, hit_target_width),
+            options,
         ) {
             return Some(*edge_id);
         }
@@ -997,6 +1200,13 @@ fn hit_resize_handle(
         .filter(|node| selected_nodes.contains(node))
         .filter(|node| visual_node_screen_rect(state, *node).is_some())
         .find_map(|node| {
+            if let Some(chrome) = visual_node_resize_chrome(bridge, state, node) {
+                let rect = canvas_rect_to_screen(state, chrome.rect);
+                return rect
+                    .expand(3.0)
+                    .contains(pointer)
+                    .then(|| (node, node_resize_direction_from_chrome(&chrome)));
+            }
             let rect = visual_node_screen_rect(state, node)?;
             resize_directions()
                 .into_iter()
@@ -1256,7 +1466,8 @@ mod tests {
     use super::{
         edge_hit_test_options, edge_label, edge_label_point, hit_target, node_local_rect_to_screen,
         node_title_text_rect, preview_edge_path, resize_handle_rect, should_draw_edge_labels,
-        visual_handle_screen_rect, visual_node_canvas_rect, visual_node_screen_rect,
+        visual_handle_screen_rect, visual_node_canvas_rect, visual_node_chrome_facts,
+        visual_node_resize_chrome, visual_node_screen_rect,
     };
     use crate::bridge::JellyflowEguiBridge;
     use crate::samples::SampleGraphKind;
@@ -1365,6 +1576,70 @@ mod tests {
         assert!(
             first_path_point(&preview_path).x > first_path_point(&original_path).x + 40.0,
             "edge source endpoint should follow the resized source handle"
+        );
+    }
+
+    #[test]
+    fn node_chrome_resizer_follows_resized_node_preview_geometry() {
+        let (mut bridge, _layout) = JellyflowEguiBridge::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let mut state = state_with_snapshot(&mut bridge);
+        let llm = first_node_of_kind(&bridge, "demo.llm");
+        bridge.select_node(llm, false);
+        let original_chrome =
+            visual_node_resize_chrome(&bridge, &state, llm).expect("llm resize chrome");
+        let source_rect = visual_node_canvas_rect(&state, llm).expect("llm rect");
+        let start = CanvasPoint {
+            x: source_rect.origin.x + source_rect.size.width,
+            y: source_rect.origin.y + source_rect.size.height,
+        };
+        let current = CanvasPoint {
+            x: start.x + 96.0,
+            y: start.y + 24.0,
+        };
+        state.canvas.active = ActiveCanvasInteraction::NodeResize {
+            node: llm,
+            direction: NodeResizeDirection::BottomRight,
+            start_pointer: start,
+            current_pointer: current,
+            preview: bridge.plan_pointer_resize(
+                llm,
+                start,
+                current,
+                NodeResizeDirection::BottomRight,
+            ),
+        };
+
+        let resized_chrome =
+            visual_node_resize_chrome(&bridge, &state, llm).expect("resized resize chrome");
+
+        assert!(
+            resized_chrome.rect.origin.x > original_chrome.rect.origin.x + 40.0,
+            "resizer chrome should follow the runtime resize preview width"
+        );
+        assert!(
+            resized_chrome.rect.origin.y > original_chrome.rect.origin.y + 8.0,
+            "resizer chrome should follow the runtime resize preview height"
+        );
+    }
+
+    #[test]
+    fn semantic_status_and_run_chrome_are_visible_for_selected_llm_node() {
+        let (mut bridge, _layout) = JellyflowEguiBridge::sample(SampleGraphKind::AutomationBuilder)
+            .expect("automation sample builds");
+        let state = state_with_snapshot(&mut bridge);
+        let llm = first_node_of_kind(&bridge, "demo.llm");
+        bridge.select_node(llm, false);
+        let rect = visual_node_canvas_rect(&state, llm).expect("llm rect");
+        let facts = visual_node_chrome_facts(&bridge, &state, llm, rect).expect("chrome facts");
+
+        assert!(
+            facts.get("status.run").is_some(),
+            "status strip is always visible for Dify-style nodes"
+        );
+        assert!(
+            facts.get("actions.run").is_some(),
+            "run action strip is selected-visible adapter chrome"
         );
     }
 
@@ -1509,6 +1784,29 @@ mod tests {
     }
 
     #[test]
+    fn committed_edge_paths_use_runtime_route_facts() {
+        let mut bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
+        let state = state_with_snapshot(&mut bridge);
+        let edge = *state
+            .canvas
+            .snapshot
+            .visible_edge_render_order
+            .first()
+            .expect("demo edge exists");
+        let path = state
+            .canvas
+            .snapshot
+            .edge_paths
+            .get(&edge)
+            .expect("snapshot edge path");
+
+        assert!(
+            path.commands.len() > 2,
+            "demo edges declare an orthogonal route hint, so egui snapshots should use runtime route facts instead of a fixed bezier path"
+        );
+    }
+
+    #[test]
     fn edge_hit_test_options_use_positive_hit_target_width() {
         let base_options = EdgeHitTestOptions {
             interaction_width: 17.0,
@@ -1567,13 +1865,17 @@ mod tests {
     }
 
     fn first_table_node(bridge: &JellyflowEguiBridge) -> NodeId {
+        first_node_of_kind(bridge, "demo.table")
+    }
+
+    fn first_node_of_kind(bridge: &JellyflowEguiBridge, kind: &str) -> NodeId {
         bridge
             .store()
             .graph()
             .nodes()
             .iter()
-            .find_map(|(node, record)| (record.kind.0 == "demo.table").then_some(*node))
-            .expect("table node exists")
+            .find_map(|(node, record)| (record.kind.0 == kind).then_some(*node))
+            .expect("node kind exists")
     }
 
     fn first_edge_with_table_source(

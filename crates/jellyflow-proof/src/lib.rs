@@ -3,7 +3,9 @@
 use std::borrow::ToOwned;
 use std::fmt::Write as _;
 
-use jellyflow::core::{CanvasPoint, CanvasSize, Graph, GraphBuilder, GraphId, Node, NodeKindKey};
+use jellyflow::core::{
+    CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
+};
 use jellyflow::prelude::*;
 use jellyflow::runtime::schema::{
     NodeKindViewDescriptor, NodeKitRegistry, NodeRegistry, NodeSchema, NodeSurfaceSlotDescriptor,
@@ -49,6 +51,39 @@ pub struct ProofSlotTrace {
     pub anchor: Option<String>,
     pub order: Option<i32>,
     pub visibility: Option<NodeSurfaceSlotVisibility>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentTreeProof {
+    pub framework_family: &'static str,
+    pub graph_id: GraphId,
+    pub nodes: Vec<ComponentNodeProof>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentNodeProof {
+    pub node_id: NodeId,
+    pub kind: String,
+    pub renderer_key: String,
+    pub component_key: String,
+    pub children: Vec<ComponentChildProof>,
+    pub measurements: Vec<ComponentMeasurementProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentChildProof {
+    pub key: String,
+    pub kind: NodeSurfaceSlotKind,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub anchor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentMeasurementProof {
+    pub key: String,
+    pub rect: CanvasRect,
+    pub anchor: Option<String>,
 }
 
 impl ProofAdapterTrace {
@@ -108,11 +143,32 @@ pub fn proof_node_registry() -> NodeRegistry {
                     .with_order(2),
             )
             .surface_slot(
+                NodeSurfaceSlotDescriptor::metric_badge("metric.sla")
+                    .with_label("SLA")
+                    .with_slot("metrics.sla")
+                    .with_anchor("metric.sla")
+                    .with_order(3),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::config_group("config.routing")
+                    .with_label("Routing")
+                    .with_slot("config.routing")
+                    .with_anchor("config.routing")
+                    .with_order(4),
+            )
+            .surface_slot(
+                NodeSurfaceSlotDescriptor::status_banner("status.validation")
+                    .with_label("Validation")
+                    .with_slot("diagnostics.validation")
+                    .with_anchor("status.validation")
+                    .with_order(5),
+            )
+            .surface_slot(
                 NodeSurfaceSlotDescriptor::action_row("actions.primary")
                     .with_label("Actions")
                     .with_slot("actions.primary")
                     .with_anchor("actions.primary")
-                    .with_order(3),
+                    .with_order(6),
             )
             .default_data(json!({
                 "title": "Review request",
@@ -120,6 +176,14 @@ pub fn proof_node_registry() -> NodeRegistry {
                 "assignee": "Maya",
                 "status": "Waiting",
                 "meta": { "priority": "High" },
+                "metrics": { "sla": "2h" },
+                "config": {
+                    "routing": {
+                        "team": "Support",
+                        "escalation": "Tier 2"
+                    }
+                },
+                "diagnostics": { "validation": "Needs approval" },
                 "actions": { "primary": ["Approve", "Reject"] }
             }))
             .build(),
@@ -181,6 +245,70 @@ pub fn proof_adapter_trace_from_store(
     ProofAdapterTrace {
         graph_id: store.graph().graph_id(),
         nodes,
+    }
+}
+
+pub fn dioxus_shaped_component_tree_proof() -> ComponentTreeProof {
+    let graph = proof_graph();
+    component_tree_proof_from_graph("dioxus-component-tree", &graph, &proof_node_registry())
+}
+
+pub fn component_tree_proof_from_graph(
+    framework_family: &'static str,
+    graph: &Graph,
+    registry: &NodeRegistry,
+) -> ComponentTreeProof {
+    let mut nodes = graph
+        .nodes()
+        .iter()
+        .filter_map(|(node_id, node)| {
+            let descriptor = registry.view_descriptor(&node.kind)?;
+            Some(component_node_proof(*node_id, node, &descriptor))
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
+    ComponentTreeProof {
+        framework_family,
+        graph_id: graph.graph_id(),
+        nodes,
+    }
+}
+
+fn component_node_proof(
+    node_id: NodeId,
+    node: &Node,
+    descriptor: &NodeKindViewDescriptor,
+) -> ComponentNodeProof {
+    let children = descriptor
+        .surface_slots
+        .iter()
+        .filter(|slot| slot.is_visible())
+        .map(|slot| ComponentChildProof {
+            key: slot.key.clone(),
+            kind: slot.kind,
+            label: slot.display_label().map(ToOwned::to_owned),
+            value: slot_value_preview(&node.data, slot),
+            anchor: slot.anchor.clone(),
+        })
+        .collect::<Vec<_>>();
+    let measurements = children
+        .iter()
+        .enumerate()
+        .map(|(index, child)| ComponentMeasurementProof {
+            key: child.key.clone(),
+            rect: component_child_rect(index),
+            anchor: child.anchor.clone(),
+        })
+        .collect();
+
+    ComponentNodeProof {
+        node_id,
+        kind: node.kind.0.clone(),
+        renderer_key: descriptor.renderer_key.clone(),
+        component_key: format!("{}::{}", descriptor.renderer_key, node.kind.0),
+        children,
+        measurements,
     }
 }
 
@@ -294,6 +422,19 @@ fn proof_node_trace(
     }
 }
 
+fn component_child_rect(index: usize) -> CanvasRect {
+    CanvasRect {
+        origin: CanvasPoint {
+            x: 12.0,
+            y: 16.0 + index as f32 * 28.0,
+        },
+        size: CanvasSize {
+            width: 216.0,
+            height: 22.0,
+        },
+    }
+}
+
 fn node_summary(node: &Node) -> Option<String> {
     let summary = node
         .data
@@ -389,9 +530,9 @@ mod tests {
             .expect("descriptor");
 
         assert_eq!(descriptor.renderer_key, "review-card");
-        assert_eq!(descriptor.surface_slots.len(), 5);
+        assert_eq!(descriptor.surface_slots.len(), 8);
         assert_eq!(descriptor.surface_slots[0].key, "header.main");
-        assert_eq!(descriptor.surface_slots[4].key, "actions.primary");
+        assert_eq!(descriptor.surface_slots[7].key, "actions.primary");
         assert_eq!(
             descriptor
                 .surface_slot_by_anchor("actions.primary")
@@ -427,7 +568,7 @@ mod tests {
             node.summary.as_deref(),
             Some("Proof node for adapter boundaries")
         );
-        assert_eq!(node.slots.len(), 5);
+        assert_eq!(node.slots.len(), 8);
         assert_eq!(node.slots[1].data_key.as_deref(), Some("assignee"));
         assert_eq!(node.ports[0].anchor.as_deref(), Some("field.assignee"));
         assert_eq!(node.ports[1].side, PortViewSide::Right);
@@ -437,8 +578,52 @@ mod tests {
         assert!(rendered.contains("Review request"));
         assert!(rendered.contains("Maya"));
         assert!(rendered.contains("Waiting"));
+        assert!(rendered.contains("MetricBadge"));
+        assert!(rendered.contains("ConfigGroup"));
+        assert!(rendered.contains("StatusBanner"));
         assert!(rendered.contains("slot field.assignee"));
         assert!(rendered.contains("port source"));
         assert!(rendered.contains("visibility="));
+    }
+
+    #[test]
+    fn dioxus_shaped_component_tree_consumes_builtin_kits_without_framework_types() {
+        let proof = dioxus_shaped_component_tree_proof();
+
+        assert_eq!(proof.framework_family, "dioxus-component-tree");
+        assert_eq!(proof.nodes.len(), 1);
+        let review = proof
+            .nodes
+            .iter()
+            .find(|node| node.kind == "proof.review_card")
+            .expect("component proof includes the review card node");
+
+        assert_eq!(review.renderer_key, "review-card");
+        assert!(review.component_key.contains("review-card"));
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.kind == NodeSurfaceSlotKind::ConfigGroup)
+        );
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.kind == NodeSurfaceSlotKind::StatusBanner)
+        );
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.anchor.as_deref() == Some("field.assignee"))
+        );
+        assert!(review.measurements.iter().all(|measurement| {
+            measurement.rect.is_positive_finite()
+                && review
+                    .children
+                    .iter()
+                    .any(|child| child.key == measurement.key)
+        }));
     }
 }

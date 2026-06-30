@@ -1,19 +1,29 @@
 use std::collections::{BTreeMap, HashMap};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, NodeKindKey};
+use jellyflow::core::{
+    CanvasPoint, CanvasRect, CanvasSize, DefaultTypeCompatibility, EdgeId, NodeId, NodeKindKey,
+};
 use jellyflow::layout::{LayoutEngineRegistry, builtin_layout_engine_registry};
-use jellyflow::runtime::runtime::connection::{ConnectEdgeRequest, ConnectionHandleRef};
+use jellyflow::runtime::rules::plan_connect_typed_with_mode_and_policy;
+use jellyflow::runtime::runtime::connection::{
+    ConnectEdgeError, ConnectEdgeRequest, ConnectionHandleRef, ConnectionTargetHandle,
+    ConnectionTargetInput, ResolvedConnectionTarget, resolve_connection_target,
+};
 use jellyflow::runtime::runtime::create_node::CreateNodeRequest;
 use jellyflow::runtime::runtime::drag::{NodeNudgeDirection, NodeNudgeRequest};
 use jellyflow::runtime::runtime::fit_view::{
     FitViewComputeOptions, FitViewNodeInfo, compute_fit_view_target,
 };
-use jellyflow::runtime::runtime::geometry::{BezierEdgeOptions, HandleBounds, bezier_edge_path};
+use jellyflow::runtime::runtime::geometry::{HandleBounds, HandlePosition};
 use jellyflow::runtime::runtime::keyboard::{
     KeyboardActionError, KeyboardActionOutcome, KeyboardIntent,
 };
 use jellyflow::runtime::runtime::layout::{LayoutApplyError, LayoutEngineRequest};
-use jellyflow::runtime::runtime::measurement::{MeasuredHandle, NodeMeasurement};
+use jellyflow::runtime::runtime::measurement::{
+    MeasuredHandle, MeasuredSurfaceAnchor, MeasuredSurfaceSlot, NodeInternalsInvalidation,
+    NodeInternalsInvalidationReason, NodeMeasurement, NodeMeasurementOutcome,
+    NodeMeasurementStatus,
+};
 use jellyflow::runtime::runtime::resize::{
     NodePointerResizeRequest, NodeResizeConstraints, NodeResizeDirection,
 };
@@ -21,7 +31,10 @@ use jellyflow::runtime::runtime::selection::{NodePointerDownInput, SelectionBoxI
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportTransform, ViewportZoomRequest,
 };
-use jellyflow::runtime::schema::{NodeKindViewDescriptor, NodeRegistry};
+use jellyflow::runtime::schema::{
+    NodeKindViewDescriptor, NodeRegistry, NodeSurfaceSlotVisibility, PortHandleVisibility,
+    PortViewSide,
+};
 use jellyflow::runtime::{DispatchError, DispatchOutcome, NodeGraphStore};
 
 use crate::handle_layout::{HandleAnchorRegion, HandleLayoutPort, handle_bounds_for_node};
@@ -109,10 +122,9 @@ impl JellyflowEguiBridge {
 
     pub fn rebuild_snapshot(
         &mut self,
-        previous: &CanvasSnapshot,
+        _previous: &CanvasSnapshot,
         viewport_rect: eframe::egui::Rect,
     ) -> CanvasSnapshot {
-        self.report_snapshot_measurements(previous);
         let viewport_size = CanvasSize {
             width: viewport_rect.width().max(1.0),
             height: viewport_rect.height().max(1.0),
@@ -122,6 +134,10 @@ impl JellyflowEguiBridge {
                 ViewportTransform::new(CanvasPoint::default(), 1.0)
                     .expect("default viewport transform is valid")
             });
+        let initial_layout_facts = self.store.layout_facts_query(viewport_size);
+        let (node_rects, node_render_layouts, handle_bounds) =
+            self.snapshot_geometry(&initial_layout_facts.rendering);
+        self.report_current_measurements(&node_rects, &node_render_layouts, &handle_bounds);
         let layout_facts = self.store.layout_facts_query(viewport_size);
         let rendering = layout_facts.rendering.clone();
         let visible_node_render_order =
@@ -133,45 +149,10 @@ impl JellyflowEguiBridge {
         let visible_edge_ids =
             visible_or_full_edges(&rendering.visible_edge_ids, &rendering.edge_order);
 
-        let mut node_rects = BTreeMap::new();
-        for node in &visible_node_ids {
-            if let Some(rect) = self.node_rect(*node) {
-                node_rects.insert(*node, rect);
-            }
-        }
-
-        let mut node_render_layouts = BTreeMap::new();
-        for (node, rect) in &node_rects {
-            if let Some(layout) =
-                self.node_render_layout(*node, *rect, NodeRendererState::default())
-            {
-                node_render_layouts.insert(*node, layout);
-            }
-        }
-
-        let mut handle_bounds = HashMap::new();
-        for node in &visible_node_ids {
-            let regions = node_rects
-                .get(node)
-                .and_then(|_| node_render_layouts.get(node))
-                .map(|layout| layout.interactive_regions.as_slice())
-                .unwrap_or(&[]);
-            for (handle, bounds) in self.handle_bounds_with_regions(*node, regions) {
-                handle_bounds.insert(handle, bounds);
-            }
-        }
-
         let edge_paths = layout_facts
-            .visible_edge_positions
+            .visible_edge_route_facts
             .iter()
-            .filter_map(|position| {
-                bezier_edge_path(
-                    position.position.source,
-                    position.position.target,
-                    BezierEdgeOptions::default(),
-                )
-                .map(|path| (position.edge, path))
-            })
+            .map(|facts| (facts.edge, facts.facts.path.clone()))
             .collect();
 
         CanvasSnapshot {
@@ -303,13 +284,49 @@ impl JellyflowEguiBridge {
     ) -> Result<Option<DispatchOutcome>, String> {
         let connection = jellyflow::runtime::runtime::connection::ConnectionHandleConnection::from_start_and_target(from, to);
         let mode = self.store.resolved_interaction_state().connection_mode;
+        let request = ConnectEdgeRequest::new(connection.source.port, connection.target.port, mode);
+        let plan = self.plan_typed_connect(request);
+        if plan.is_reject() {
+            return Err(connect_plan_error_message(&plan));
+        }
         self.store
-            .apply_connect_edge(ConnectEdgeRequest::new(
-                connection.source.port,
-                connection.target.port,
-                mode,
+            .apply_connect_edge(request)
+            .map_err(|err| match err {
+                ConnectEdgeError::Rejected { ref diagnostics } => diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.clone())
+                    .unwrap_or_else(|| "connection rejected".to_owned()),
+                ConnectEdgeError::Dispatch(err) => err.to_string(),
+            })
+    }
+
+    pub fn invalidate_node_internals(
+        &mut self,
+        node: NodeId,
+        reason: NodeInternalsInvalidationReason,
+    ) -> NodeMeasurementOutcome {
+        self.store.node_internals().invalidate_one(node, reason)
+    }
+
+    pub fn invalidate_visible_node_internals(
+        &mut self,
+        snapshot: &CanvasSnapshot,
+        reason: NodeInternalsInvalidationReason,
+    ) -> NodeMeasurementOutcome {
+        self.store
+            .node_internals()
+            .invalidate(NodeInternalsInvalidation::new(
+                snapshot.visible_node_ids.iter().copied(),
+                reason,
             ))
-            .map_err(|err| err.to_string())
+    }
+
+    pub fn notify_node_data_changed(&mut self, node: NodeId) -> NodeMeasurementOutcome {
+        self.invalidate_node_internals(node, NodeInternalsInvalidationReason::DataChanged)
+    }
+
+    pub fn notify_node_component_state_changed(&mut self, node: NodeId) -> NodeMeasurementOutcome {
+        self.invalidate_node_internals(node, NodeInternalsInvalidationReason::ComponentStateChanged)
     }
 
     pub fn apply_layout(
@@ -383,14 +400,31 @@ impl JellyflowEguiBridge {
         {
             return false;
         }
-        self.store
+        let changed = self
+            .store
             .apply_viewport_zoom(ViewportZoomRequest::new(
                 anchor_screen,
                 current_zoom * factor,
                 0.2,
                 3.0,
             ))
-            .is_some()
+            .is_some();
+        if changed {
+            let nodes = self
+                .store
+                .graph()
+                .nodes()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            self.store
+                .node_internals()
+                .invalidate(NodeInternalsInvalidation::new(
+                    nodes,
+                    NodeInternalsInvalidationReason::ZoomChanged,
+                ));
+        }
+        changed
     }
 
     pub fn select_node(&mut self, node: NodeId, additive: bool) {
@@ -470,10 +504,13 @@ impl JellyflowEguiBridge {
                 let Some(plan) = preview else {
                     return Ok(None);
                 };
-                self.store
+                let node = plan.node;
+                let outcome = self
+                    .store
                     .dispatch_transaction(plan.transaction())
-                    .map(Some)
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| err.to_string())?;
+                self.invalidate_node_internals(node, NodeInternalsInvalidationReason::SizeChanged);
+                Ok(Some(outcome))
             }
             ActiveCanvasInteraction::Connect { from, target, .. } => {
                 let Some(target) = target.and_then(|target| target.target) else {
@@ -528,8 +565,10 @@ impl JellyflowEguiBridge {
         pointer: CanvasPoint,
         from: ConnectionHandleRef,
     ) -> jellyflow::runtime::runtime::connection::ResolvedConnectionTarget {
-        self.store
-            .resolve_connection_target_from_layout_facts(pointer, from)
+        let base = self
+            .store
+            .resolve_connection_target_from_layout_facts(pointer, from);
+        self.resolve_typed_connection_target(pointer, from, base)
     }
 
     pub fn undo(&mut self) -> Result<Option<DispatchOutcome>, DispatchError> {
@@ -558,31 +597,138 @@ impl JellyflowEguiBridge {
             }))
     }
 
-    fn report_snapshot_measurements(&mut self, snapshot: &CanvasSnapshot) {
-        for (node, rect) in &snapshot.node_rects {
-            let handles = self
-                .snapshot_handle_bounds(snapshot, *node)
-                .map(|(handle, bounds)| MeasuredHandle::new(handle, bounds));
+    fn snapshot_geometry(
+        &self,
+        rendering: &jellyflow::runtime::runtime::rendering::RenderingQueryResult,
+    ) -> (
+        BTreeMap<NodeId, CanvasRect>,
+        BTreeMap<NodeId, NodeRenderLayout>,
+        HashMap<ConnectionHandleRef, HandleBounds>,
+    ) {
+        let visible_node_ids =
+            visible_or_full_nodes(&rendering.visible_node_ids, &rendering.node_order);
+        let mut node_rects = BTreeMap::new();
+        for node in &visible_node_ids {
+            if let Some(rect) = self.node_rect(*node) {
+                node_rects.insert(*node, rect);
+            }
+        }
+
+        let mut node_render_layouts = BTreeMap::new();
+        for (node, rect) in &node_rects {
+            if let Some(layout) =
+                self.node_render_layout(*node, *rect, NodeRendererState::default())
+            {
+                node_render_layouts.insert(*node, layout);
+            }
+        }
+
+        let mut handle_bounds = HashMap::new();
+        for node in &visible_node_ids {
+            let regions = node_render_layouts
+                .get(node)
+                .map(|layout| layout.interactive_regions.as_slice())
+                .unwrap_or(&[]);
+            for (handle, bounds) in self.handle_bounds_with_regions(*node, regions) {
+                handle_bounds.insert(handle, bounds);
+            }
+        }
+
+        (node_rects, node_render_layouts, handle_bounds)
+    }
+
+    fn report_current_measurements(
+        &mut self,
+        node_rects: &BTreeMap<NodeId, CanvasRect>,
+        node_render_layouts: &BTreeMap<NodeId, NodeRenderLayout>,
+        handle_bounds: &HashMap<ConnectionHandleRef, HandleBounds>,
+    ) {
+        for (node, rect) in node_rects {
+            let descriptor = self.descriptor_for_node(*node);
+            let regions = node_render_layouts
+                .get(node)
+                .map(|layout| layout.interactive_regions.as_slice())
+                .unwrap_or(&[]);
+            let handles = handle_bounds.iter().filter_map(|(handle, bounds)| {
+                (handle.node == *node).then_some(MeasuredHandle::new(*handle, *bounds))
+            });
+            let slots = measured_surface_slots(regions);
+            let anchors = descriptor
+                .as_ref()
+                .map(|descriptor| measured_surface_anchors(descriptor, regions))
+                .unwrap_or_default();
             let _ = self.store.report_node_measurement(
                 NodeMeasurement::new(*node)
+                    .with_revision(self.next_measurement_revision(*node))
                     .with_size(Some(rect.size))
-                    .with_handles(handles),
+                    .with_handles(handles)
+                    .with_slots(slots)
+                    .with_anchors(anchors),
             );
         }
     }
 
-    fn snapshot_handle_bounds<'a>(
-        &self,
-        snapshot: &'a CanvasSnapshot,
-        node: NodeId,
-    ) -> impl Iterator<Item = (ConnectionHandleRef, HandleBounds)> + 'a {
-        snapshot
-            .handle_bounds
-            .iter()
-            .filter_map(move |(handle, bounds)| (handle.node == node).then_some((*handle, *bounds)))
+    fn next_measurement_revision(&self, node: NodeId) -> u64 {
+        match self.store.node_measurement_status(node) {
+            NodeMeasurementStatus::Fresh { revision }
+            | NodeMeasurementStatus::Dirty { revision, .. } => revision.saturating_add(1),
+            NodeMeasurementStatus::Missing => 1,
+        }
     }
 
-    fn resize_constraints_for_node(&self, node: NodeId) -> NodeResizeConstraints {
+    fn resolve_typed_connection_target(
+        &self,
+        _pointer: CanvasPoint,
+        from: ConnectionHandleRef,
+        base: ResolvedConnectionTarget,
+    ) -> ResolvedConnectionTarget {
+        let Some(target) = base.target else {
+            return base;
+        };
+        let connection =
+            jellyflow::runtime::runtime::connection::ConnectionHandleConnection::from_start_and_target(
+                from,
+                target.handle,
+            );
+        let request = ConnectEdgeRequest::new(
+            connection.source.port,
+            connection.target.port,
+            self.store.resolved_interaction_state().connection_mode,
+        );
+        let is_valid_connection = self.plan_typed_connect(request).is_accept();
+        resolve_connection_target(
+            ConnectionTargetInput::new(
+                from,
+                Some(ConnectionTargetHandle::new(
+                    target.handle,
+                    target.connectable,
+                    target.connectable_end,
+                )),
+                self.store.resolved_interaction_state().connection_mode,
+                true,
+            )
+            .with_connection_validity(is_valid_connection),
+        )
+    }
+
+    fn plan_typed_connect(
+        &self,
+        request: ConnectEdgeRequest,
+    ) -> jellyflow::runtime::rules::ConnectPlan {
+        let mut compat = DefaultTypeCompatibility::default();
+        let interaction = self.store.resolved_interaction_state();
+        plan_connect_typed_with_mode_and_policy(
+            self.store.graph(),
+            request.from,
+            request.to,
+            request.mode,
+            &interaction,
+            |graph, port| graph.ports().get(&port).and_then(|port| port.ty.clone()),
+            &mut compat,
+        )
+    }
+
+    pub(crate) fn resize_constraints_for_node(&self, node: NodeId) -> NodeResizeConstraints {
         NodeResizeConstraints::new(Some(self.minimum_node_size(node)), None)
     }
 
@@ -598,6 +744,70 @@ impl JellyflowEguiBridge {
             .map(|layout| minimum_render_size(layout.min_size))
             .unwrap_or(fallback)
     }
+}
+
+fn measured_surface_slots(
+    regions: &[NodeInteractiveRegion],
+) -> impl Iterator<Item = MeasuredSurfaceSlot> + '_ {
+    regions
+        .iter()
+        .filter(|region| region.rect.is_positive_finite())
+        .map(|region| MeasuredSurfaceSlot::new(region.key.clone(), region.rect))
+}
+
+fn measured_surface_anchors(
+    descriptor: &NodeKindViewDescriptor,
+    regions: &[NodeInteractiveRegion],
+) -> Vec<MeasuredSurfaceAnchor> {
+    regions
+        .iter()
+        .filter(|region| region.rect.is_positive_finite())
+        .flat_map(|region| {
+            descriptor
+                .ports_by_anchor(&region.key)
+                .into_iter()
+                .map(move |port| {
+                    MeasuredSurfaceAnchor::new(
+                        region.key.clone(),
+                        region.rect,
+                        port_side_to_handle_position(port.view.resolved_side(port.dir)),
+                    )
+                    .with_port_key(port.key.clone())
+                    .with_visibility(
+                        port.view
+                            .visibility
+                            .map(port_visibility_to_slot_visibility)
+                            .unwrap_or(NodeSurfaceSlotVisibility::Visible),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn port_visibility_to_slot_visibility(
+    visibility: PortHandleVisibility,
+) -> NodeSurfaceSlotVisibility {
+    match visibility {
+        PortHandleVisibility::Visible => NodeSurfaceSlotVisibility::Visible,
+        PortHandleVisibility::Hidden => NodeSurfaceSlotVisibility::Hidden,
+        PortHandleVisibility::Collapsed => NodeSurfaceSlotVisibility::Collapsed,
+    }
+}
+
+fn port_side_to_handle_position(side: PortViewSide) -> HandlePosition {
+    match side {
+        PortViewSide::Top => HandlePosition::Top,
+        PortViewSide::Right => HandlePosition::Right,
+        PortViewSide::Bottom => HandlePosition::Bottom,
+        PortViewSide::Left => HandlePosition::Left,
+    }
+}
+
+fn connect_plan_error_message(plan: &jellyflow::runtime::rules::ConnectPlan) -> String {
+    plan.diagnostics()
+        .first()
+        .map(|diagnostic| diagnostic.message.clone())
+        .unwrap_or_else(|| "connect edge was rejected".to_owned())
 }
 
 fn layout_request_for_choice(

@@ -11,13 +11,15 @@ mod viewport;
 pub use connection::ConformanceConnectionTargetFromHandlesInput;
 pub use layout_facts::{
     ConformanceEdgeEndpointPosition, ConformanceLayoutEdgePosition,
-    ConformanceLayoutFactsConnectionTargetExpectation, ConformanceLayoutFactsExpectation,
+    ConformanceLayoutEdgeRouteFacts, ConformanceLayoutFactsConnectionTargetExpectation,
+    ConformanceLayoutFactsExpectation,
 };
 
 use crate::io::NodeGraphKeyCode;
 use crate::runtime::auto_pan::{AutoPanRequest, SelectionAutoPanRequest};
 use crate::runtime::connection::{
-    ConnectEdgeRequest, ConnectionTargetInput, ReconnectEdgeRequest, ResolvedConnectionTarget,
+    ConnectEdgeRequest, ConnectionEndIntent, ConnectionLifecycleResult, ConnectionTargetInput,
+    ReconnectEdgeRequest, ResolvedConnectionTarget,
 };
 use crate::runtime::drag::{NodeNudgeRequest, PointerGestureClaim};
 use crate::runtime::events::{ConnectStart, NodeGraphGestureEvent};
@@ -84,6 +86,13 @@ pub enum ConformanceAction {
     AssertConnectionTargetFromHandles {
         input: ConformanceConnectionTargetFromHandlesInput,
         expected: ResolvedConnectionTarget,
+    },
+    AssertConnectionLifecycle {
+        start: ConnectStart,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hover: Option<ResolvedConnectionTarget>,
+        intent: ConnectionEndIntent,
+        expected: ConnectionLifecycleResult,
     },
     ApplyConnectEdge {
         request: ConnectEdgeRequest,

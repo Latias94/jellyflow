@@ -14,7 +14,7 @@ mod builtins;
 
 pub use builtins::{
     builtin_node_kits, erd_table_manifest, mind_map_knowledge_canvas_manifest,
-    workflow_automation_manifest,
+    shader_blueprint_manifest, workflow_automation_manifest,
 };
 
 /// Stable identifier for a node kit.

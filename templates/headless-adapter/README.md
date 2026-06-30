@@ -32,5 +32,19 @@ small projections such as graph and layout-facts revisions, then call
 `NodeGraphStore::rendering_query` for the current viewport to get visible IDs and render order.
 Keep component instances, memoization, batching, and pixel tests in the adapter repository.
 
+Adapter responsibility checklist:
+
+- Map each `renderer_key` to local toolkit components; do not put framework widget types in
+  Jellyflow runtime/core data.
+- Treat `slot` as the semantic data lookup path and `anchor` as layout or port-binding metadata.
+- Report measured slot, anchor, handle, node-size, and density facts after rendering custom node
+  internals.
+- Invalidate and remeasure node internals after data, component state, zoom, or resize changes that
+  move rows, handles, previews, or toolbars.
+- Use runtime connection lifecycle, edge route, resize, viewport, and conformance APIs before adding
+  renderer-specific pointer or screenshot tests.
+- Keep backend workflow execution, shader compilation, database IO, synchronization, and remote
+  collaboration in the host product.
+
 When copying this template into another repository, replace the path dependencies in `Cargo.toml`
 with the Jellyflow version you want to consume.

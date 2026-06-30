@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::connection::{ConnectionHandleRef, ResolvedConnectionTarget};
-use crate::runtime::geometry::{EdgePosition, HandlePosition};
+use crate::runtime::geometry::{EdgePosition, HandlePosition, ResolvedEdgeRouteKind};
 use crate::runtime::measurement::NodeMeasurement;
 use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, NodeId};
 
@@ -23,6 +23,8 @@ pub struct ConformanceLayoutFactsExpectation {
     pub visible_edge_ids: Vec<EdgeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_positions: Vec<ConformanceLayoutEdgePosition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_routes: Vec<ConformanceLayoutEdgeRouteFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_target: Option<ConformanceLayoutFactsConnectionTargetExpectation>,
 }
@@ -36,6 +38,7 @@ impl ConformanceLayoutFactsExpectation {
             visible_node_ids: visible_node_ids.into_iter().collect(),
             visible_edge_ids: visible_edge_ids.into_iter().collect(),
             edge_positions: Vec::new(),
+            edge_routes: Vec::new(),
             connection_target: None,
         }
     }
@@ -45,6 +48,14 @@ impl ConformanceLayoutFactsExpectation {
         edge_positions: impl IntoIterator<Item = ConformanceLayoutEdgePosition>,
     ) -> Self {
         self.edge_positions = edge_positions.into_iter().collect();
+        self
+    }
+
+    pub fn with_edge_routes(
+        mut self,
+        edge_routes: impl IntoIterator<Item = ConformanceLayoutEdgeRouteFacts>,
+    ) -> Self {
+        self.edge_routes = edge_routes.into_iter().collect();
         self
     }
 
@@ -110,6 +121,30 @@ impl ConformanceEdgeEndpointPosition {
 
     fn matches_endpoint(self, endpoint: crate::runtime::geometry::EdgeEndpointPosition) -> bool {
         self.point == endpoint.point && self.position == endpoint.position
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ConformanceLayoutEdgeRouteFacts {
+    pub edge: EdgeId,
+    pub kind: ResolvedEdgeRouteKind,
+    pub interaction_width: f32,
+    pub selected: bool,
+}
+
+impl ConformanceLayoutEdgeRouteFacts {
+    pub fn new(
+        edge: EdgeId,
+        kind: ResolvedEdgeRouteKind,
+        interaction_width: f32,
+        selected: bool,
+    ) -> Self {
+        Self {
+            edge,
+            kind,
+            interaction_width,
+            selected,
+        }
     }
 }
 

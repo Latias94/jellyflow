@@ -7,8 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::connection::{
-    ConnectEdgeError, ConnectEdgeRequest, ConnectionDragActivationInput, ConnectionHandleRef,
-    connection_drag_threshold_met,
+    ConnectEdgeError, ConnectEdgeRequest, ConnectionDragActivationInput, ConnectionEndIntent,
+    ConnectionHandleConnection, ConnectionHandleRef, ConnectionLifecycleResult,
+    ConnectionLifecycleState, ConnectionTargetHandle, ResolvedConnectionTarget,
+    connection_drag_threshold_met, connection_handle_validity, resolve_connection_lifecycle,
 };
 use crate::runtime::drag::{
     NodeDragRequest, PointerGestureClaim as DragPointerGestureClaim, PointerGestureClaimInput,
@@ -139,27 +141,34 @@ impl ConnectEdgeSession {
 /// Outcome of applying a connection session.
 #[derive(Debug, Clone)]
 pub struct ConnectSessionOutcome {
+    pub lifecycle: ConnectionLifecycleResult,
     pub end_outcome: ConnectEndOutcome,
     pub committed_update: Option<DispatchOutcome>,
 }
 
 impl ConnectSessionOutcome {
-    fn committed(committed_update: DispatchOutcome) -> Self {
+    fn committed(lifecycle: ConnectionLifecycleResult, committed_update: DispatchOutcome) -> Self {
         Self {
-            end_outcome: ConnectEndOutcome::Committed,
+            end_outcome: lifecycle.end.outcome,
+            lifecycle,
             committed_update: Some(committed_update),
         }
     }
 
-    fn without_commit(end_outcome: ConnectEndOutcome) -> Self {
+    fn without_commit(lifecycle: ConnectionLifecycleResult) -> Self {
         Self {
-            end_outcome,
+            end_outcome: lifecycle.end.outcome,
+            lifecycle,
             committed_update: None,
         }
     }
 
     pub fn committed_update(&self) -> Option<&DispatchOutcome> {
         self.committed_update.as_ref()
+    }
+
+    pub fn lifecycle(&self) -> &ConnectionLifecycleResult {
+        &self.lifecycle
     }
 }
 
@@ -421,34 +430,80 @@ impl NodeGraphStore {
 
         match self.apply_connect_edge(session.request) {
             Ok(Some(committed_update)) => {
-                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(ConnectEnd {
-                    kind: session.start.kind,
-                    mode: session.start.mode,
-                    target: Some(session.request.to),
-                    outcome: ConnectEndOutcome::Committed,
-                }));
-                Ok(ConnectSessionOutcome::committed(committed_update))
-            }
-            Ok(None) => {
-                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(ConnectEnd {
-                    kind: session.start.kind,
-                    mode: session.start.mode,
-                    target: Some(session.request.to),
-                    outcome: ConnectEndOutcome::NoOp,
-                }));
-                Ok(ConnectSessionOutcome::without_commit(
-                    ConnectEndOutcome::NoOp,
+                let lifecycle = resolve_connection_lifecycle(
+                    session.start,
+                    self.connect_session_hover(session.request, true),
+                    ConnectionEndIntent::Complete,
+                );
+                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(lifecycle.end.clone()));
+                Ok(ConnectSessionOutcome::committed(
+                    lifecycle,
+                    committed_update,
                 ))
             }
+            Ok(None) => {
+                let lifecycle = self.connect_session_noop_lifecycle(session.start, session.request);
+                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(lifecycle.end.clone()));
+                Ok(ConnectSessionOutcome::without_commit(lifecycle))
+            }
             Err(err) => {
-                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(ConnectEnd {
-                    kind: session.start.kind,
-                    mode: session.start.mode,
-                    target: Some(session.request.to),
-                    outcome: ConnectEndOutcome::Rejected,
-                }));
+                let lifecycle = resolve_connection_lifecycle(
+                    session.start,
+                    self.connect_session_hover(session.request, false),
+                    ConnectionEndIntent::Complete,
+                );
+                self.emit_gesture(NodeGraphGestureEvent::ConnectEnd(lifecycle.end));
                 Err(err)
             }
+        }
+    }
+
+    fn connect_session_hover(
+        &self,
+        request: ConnectEdgeRequest,
+        is_handle_valid: bool,
+    ) -> Option<ResolvedConnectionTarget> {
+        let from_port = self.graph().ports().get(&request.from)?;
+        let to_port = self.graph().ports().get(&request.to)?;
+        let from = ConnectionHandleRef::new(from_port.node, request.from, from_port.dir);
+        let target_handle = ConnectionHandleRef::new(to_port.node, request.to, to_port.dir);
+        let target = ConnectionTargetHandle::new(target_handle, true, is_handle_valid);
+
+        Some(ResolvedConnectionTarget {
+            target: Some(target),
+            connection: Some(ConnectionHandleConnection::from_start_and_target(
+                from,
+                target_handle,
+            )),
+            is_handle_valid,
+            feedback: connection_handle_validity(true, is_handle_valid),
+        })
+    }
+
+    fn connect_session_noop_lifecycle(
+        &self,
+        start: ConnectStart,
+        request: ConnectEdgeRequest,
+    ) -> ConnectionLifecycleResult {
+        let hover = self.connect_session_hover(request, true);
+        let connection = hover.and_then(|hover| hover.connection);
+        let target = hover
+            .and_then(|hover| hover.target)
+            .map(|target| target.handle.port)
+            .or(Some(request.to));
+        ConnectionLifecycleResult {
+            end: ConnectEnd {
+                kind: start.kind.clone(),
+                mode: start.mode,
+                target,
+                outcome: ConnectEndOutcome::NoOp,
+            },
+            start,
+            state: ConnectionLifecycleState::NoOp,
+            hover,
+            connection,
+            target,
+            dropped_at: None,
         }
     }
 

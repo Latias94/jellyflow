@@ -158,12 +158,42 @@ impl NodeContentLevel {
         }
     }
 
+    pub fn from_zoom_and_size(zoom: f32, size: Vec2) -> Self {
+        let zoom_level = Self::from_zoom(zoom);
+        if size.x < 48.0 || size.y < 24.0 {
+            Self::Shell
+        } else if size.x < 150.0 || size.y < 90.0 {
+            zoom_level.min_detail(Self::Compact)
+        } else {
+            zoom_level
+        }
+    }
+
     pub fn shows_text(self) -> bool {
         matches!(self, Self::Full | Self::Compact)
     }
 
     pub fn shows_detail(self) -> bool {
         matches!(self, Self::Full)
+    }
+
+    fn min_detail(self, cap: Self) -> Self {
+        match (self, cap) {
+            (Self::Shell, _) | (_, Self::Shell) => Self::Shell,
+            (Self::Compact, _) | (_, Self::Compact) => Self::Compact,
+            (Self::Full, Self::Full) => Self::Full,
+        }
+    }
+
+    fn renders_slot_kind(self, slot_kind: Option<NodeSurfaceSlotKind>) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Compact => matches!(
+                slot_kind,
+                Some(NodeSurfaceSlotKind::FieldRow | NodeSurfaceSlotKind::PortRail)
+            ),
+            Self::Shell => false,
+        }
     }
 }
 
@@ -304,10 +334,13 @@ impl RendererCatalog {
             .register("section-card", NodeRendererStyle::section())
             .register("source-card", NodeRendererStyle::source())
             .register("table-card", NodeRendererStyle::section())
+            .register("shader-card", NodeRendererStyle::data())
             .register_rich("decision-card", FieldListNodeRenderer)
             .register_widgets("decision-card", FieldListNodeRenderer)
             .register_rich("table-card", FieldListNodeRenderer)
-            .register_widgets("table-card", FieldListNodeRenderer);
+            .register_widgets("table-card", FieldListNodeRenderer)
+            .register_rich("shader-card", FieldListNodeRenderer)
+            .register_widgets("shader-card", FieldListNodeRenderer);
         catalog
     }
 
@@ -393,25 +426,28 @@ fn node_title(input: &NodeRenderInput<'_>) -> Option<String> {
 impl RichNodeRenderer for FieldListNodeRenderer {
     fn render(&self, input: &NodeRenderInput<'_>, rect: CanvasRect) -> NodeRenderLayout {
         let mut layout = NodeRenderLayout::fallback(input, rect);
-        let Some(fields) = input
+        let fields = input
             .node
             .data
             .get("fields")
-            .and_then(|value| value.as_object())
-        else {
-            return layout;
-        };
+            .and_then(|value| value.as_object());
         let field_slots = semantic_slots(input, NodeSurfaceSlotKind::FieldRow);
         let badge_slots = semantic_slots(input, NodeSurfaceSlotKind::Badge);
+        let metric_slots = semantic_slots(input, NodeSurfaceSlotKind::MetricBadge);
+        let status_slots = semantic_slots(input, NodeSurfaceSlotKind::StatusBanner);
+        let rail_slots = semantic_slots(input, NodeSurfaceSlotKind::PortRail);
+        let config_slots = semantic_slots(input, NodeSurfaceSlotKind::ConfigGroup);
+        let preview_slots = semantic_slots(input, NodeSurfaceSlotKind::Preview);
         let nested_slots = semantic_slots(input, NodeSurfaceSlotKind::NestedRegion);
         let action_slots = semantic_slots(input, NodeSurfaceSlotKind::ActionRow);
-        let keys = field_keys(input, fields, &field_slots);
-        let mut metrics = FieldListMetrics::new(rect.size);
-        let mut cursor_y = metrics.top;
+        let keys = fields
+            .map(|fields| field_keys(input, fields, &field_slots))
+            .unwrap_or_default();
+        let metrics = FieldListMetrics::new(rect.size);
         let field_count = keys.len();
 
-        for slot in badge_slots {
-            let text = semantic_slot_chip_text(&input.node.data, slot, Some(fields));
+        for slot in badge_slots.into_iter().chain(metric_slots) {
+            let text = semantic_slot_chip_text(&input.node.data, slot, fields);
             let width = semantic_chip_width(&text, 32.0, rect.size.width * 0.42);
             let chip_rect = CanvasRect {
                 origin: CanvasPoint {
@@ -425,16 +461,35 @@ impl RichNodeRenderer for FieldListNodeRenderer {
             };
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: slot.key.clone(),
-                slot_kind: Some(NodeSurfaceSlotKind::Badge),
+                slot_kind: Some(slot.kind),
                 rect: chip_rect,
                 label: Some(text),
                 z_index: 2,
             });
         }
 
-        for slot in nested_slots {
+        for (index, key) in keys.into_iter().enumerate() {
+            let row_rect = metrics.row_rect(index);
+            layout.interactive_regions.push(NodeInteractiveRegion {
+                key: format!("field.{key}"),
+                slot_kind: Some(NodeSurfaceSlotKind::FieldRow),
+                rect: row_rect,
+                label: fields
+                    .and_then(|fields| fields.get(&key))
+                    .map(field_value_label),
+                z_index: 1,
+            });
+        }
+        let mut cursor_y = metrics.bottom_after(field_count);
+
+        for slot in rail_slots
+            .into_iter()
+            .chain(config_slots)
+            .chain(preview_slots)
+            .chain(nested_slots)
+        {
             let title = semantic_slot_title(slot);
-            let lines = semantic_slot_lines(&input.node.data, slot, Some(fields));
+            let lines = semantic_slot_lines(&input.node.data, slot, fields);
             let height = semantic_nested_region_height(title.as_deref(), &lines);
             let block_rect = CanvasRect {
                 origin: CanvasPoint {
@@ -448,7 +503,7 @@ impl RichNodeRenderer for FieldListNodeRenderer {
             };
             layout.interactive_regions.push(NodeInteractiveRegion {
                 key: slot.key.clone(),
-                slot_kind: Some(NodeSurfaceSlotKind::NestedRegion),
+                slot_kind: Some(slot.kind),
                 rect: block_rect,
                 label: title,
                 z_index: 1,
@@ -456,21 +511,32 @@ impl RichNodeRenderer for FieldListNodeRenderer {
             cursor_y = block_rect.origin.y + block_rect.size.height + 8.0;
         }
 
-        metrics = metrics.with_top(cursor_y);
-        for (index, key) in keys.into_iter().enumerate() {
-            let row_rect = metrics.row_rect(index);
+        for slot in status_slots {
+            let title = semantic_slot_title(slot);
+            let lines = semantic_slot_lines(&input.node.data, slot, fields);
+            let height = semantic_nested_region_height(title.as_deref(), &lines).min(42.0);
+            let block_rect = CanvasRect {
+                origin: CanvasPoint {
+                    x: 14.0,
+                    y: cursor_y,
+                },
+                size: CanvasSize {
+                    width: (rect.size.width - 28.0).max(96.0),
+                    height,
+                },
+            };
             layout.interactive_regions.push(NodeInteractiveRegion {
-                key: format!("field.{key}"),
-                slot_kind: Some(NodeSurfaceSlotKind::FieldRow),
-                rect: row_rect,
-                label: fields.get(&key).map(field_value_label),
+                key: slot.key.clone(),
+                slot_kind: Some(NodeSurfaceSlotKind::StatusBanner),
+                rect: block_rect,
+                label: title,
                 z_index: 1,
             });
+            cursor_y = block_rect.origin.y + block_rect.size.height + 8.0;
         }
-        cursor_y = metrics.bottom_after(field_count);
 
         for slot in action_slots {
-            let items = semantic_slot_lines(&input.node.data, slot, Some(fields));
+            let items = semantic_slot_lines(&input.node.data, slot, fields);
             let height = semantic_action_region_height(&items);
             let block_rect = CanvasRect {
                 origin: CanvasPoint {
@@ -528,93 +594,91 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             return false;
         }
 
-        let Some(fields) = input
+        let fields = input
             .node
             .data
             .get("fields")
-            .and_then(|value| value.as_object())
-        else {
-            return false;
-        };
+            .and_then(|value| value.as_object());
 
-        let show_text = input.content_level.shows_text();
         let show_detail = input.content_level.shows_detail();
         let mut rendered_any = false;
 
-        for region in input.layout.interactive_regions.iter().filter(|region| {
-            region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
-                || region.key.starts_with("field.")
-        }) {
-            let key = region
-                .key
-                .strip_prefix("field.")
-                .unwrap_or(region.key.as_str());
-            let Some(label) = fields
-                .get(key)
-                .map(field_value_label)
-                .filter(|label| !label.is_empty())
-            else {
-                continue;
-            };
-            let Some(rect) = input.region_screen_rect(region) else {
-                continue;
-            };
-            rendered_any = true;
-            let mut child_ui = ui.new_child(
-                UiBuilder::new()
-                    .id_salt(Id::new(("field-region", input.id, &region.key)))
-                    .max_rect(rect)
-                    .layout(Layout::left_to_right(Align::Center)),
-            );
-            child_ui.set_clip_rect(rect);
-            child_ui.set_min_size(rect.size());
-            child_ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(4),
-                Color32::from_rgb(255, 255, 255),
-            );
-            child_ui.painter().rect_stroke(
-                rect,
-                CornerRadius::same(4),
-                Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
-                eframe::egui::StrokeKind::Inside,
-            );
+        if let Some(fields) = fields {
+            for region in input.layout.interactive_regions.iter().filter(|region| {
+                region.slot_kind == Some(NodeSurfaceSlotKind::FieldRow)
+                    || region.key.starts_with("field.")
+            }) {
+                let key = region
+                    .key
+                    .strip_prefix("field.")
+                    .unwrap_or(region.key.as_str());
+                let Some(label) = fields
+                    .get(key)
+                    .map(field_value_label)
+                    .filter(|label| !label.is_empty())
+                else {
+                    continue;
+                };
+                let Some(rect) = input.region_screen_rect(region) else {
+                    continue;
+                };
+                rendered_any = true;
+                let mut child_ui = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt(Id::new(("field-region", input.id, &region.key)))
+                        .max_rect(rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                child_ui.set_clip_rect(rect);
+                child_ui.set_min_size(rect.size());
+                child_ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(4),
+                    Color32::from_rgb(255, 255, 255),
+                );
+                child_ui.painter().rect_stroke(
+                    rect,
+                    CornerRadius::same(4),
+                    Stroke::new(0.75, input.style.stroke.gamma_multiply(0.55)),
+                    eframe::egui::StrokeKind::Inside,
+                );
 
-            let mut content_rect = rect.shrink2(Vec2::new(7.0, 2.0));
-            if content_rect.width() <= 6.0 || content_rect.height() <= 6.0 {
-                continue;
-            }
-            child_ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.set_clip_rect(content_rect);
-                ui.set_min_size(content_rect.size());
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
-                    if show_detail && let Some(badge) = field_badge(key) {
-                        let badge_width = 24.0f32.min(content_rect.width() * 0.38);
-                        let badge_rect = Rect::from_min_size(
-                            content_rect.min,
-                            Vec2::new(badge_width, content_rect.height()),
-                        );
-                        draw_field_badge(ui, badge_rect, badge, input.style.accent);
-                        content_rect.min.x = badge_rect.max.x + 6.0;
-                    }
-                    ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
-                        ui.set_clip_rect(content_rect);
-                        ui.add(
-                            Label::new(
-                                eframe::egui::RichText::new(label)
-                                    .small()
-                                    .color(input.style.text.gamma_multiply(0.84)),
-                            )
-                            .truncate(),
-                        );
+                let mut content_rect = rect.shrink2(Vec2::new(7.0, 2.0));
+                if content_rect.width() <= 6.0 || content_rect.height() <= 6.0 {
+                    continue;
+                }
+                child_ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                    ui.set_clip_rect(content_rect);
+                    ui.set_min_size(content_rect.size());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                        if show_detail && let Some(badge) = field_badge(key) {
+                            let badge_width = 24.0f32.min(content_rect.width() * 0.38);
+                            let badge_rect = Rect::from_min_size(
+                                content_rect.min,
+                                Vec2::new(badge_width, content_rect.height()),
+                            );
+                            draw_field_badge(ui, badge_rect, badge, input.style.accent);
+                            content_rect.min.x = badge_rect.max.x + 6.0;
+                        }
+                        ui.scope_builder(UiBuilder::new().max_rect(content_rect), |ui| {
+                            ui.set_clip_rect(content_rect);
+                            ui.add(
+                                Label::new(
+                                    eframe::egui::RichText::new(label)
+                                        .small()
+                                        .color(input.style.text.gamma_multiply(0.84)),
+                                )
+                                .truncate(),
+                            );
+                        });
                     });
                 });
-            });
+            }
         }
 
         for region in input.layout.interactive_regions.iter().filter(|region| {
-            region.slot_kind == Some(NodeSurfaceSlotKind::Badge) || region.key.starts_with("badge.")
+            input.content_level.renders_slot_kind(region.slot_kind) && region_is_badge(region)
         }) {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
@@ -630,35 +694,32 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
             );
         }
 
-        if show_text {
-            for region in input.layout.interactive_regions.iter().filter(|region| {
-                region.slot_kind == Some(NodeSurfaceSlotKind::NestedRegion)
-                    || region.key.starts_with("nested.")
-            }) {
-                let Some(rect) = input.region_screen_rect(region) else {
-                    continue;
-                };
-                rendered_any = true;
-                let slot = input
-                    .descriptor
-                    .surface_slots
-                    .iter()
-                    .find(|slot| slot.key == region.key);
-                let title = region
-                    .label
-                    .as_deref()
-                    .or_else(|| slot.and_then(|slot| slot.display_label()));
-                let lines = slot
-                    .filter(|_| show_detail)
-                    .map(|slot| semantic_slot_lines(&input.node.data, slot, Some(fields)))
-                    .unwrap_or_default();
-                draw_semantic_nested_region(ui, rect, title, &lines, input.style);
-            }
+        for region in input.layout.interactive_regions.iter().filter(|region| {
+            input.content_level.renders_slot_kind(region.slot_kind)
+                && region_is_detail_block(region)
+        }) {
+            let Some(rect) = input.region_screen_rect(region) else {
+                continue;
+            };
+            rendered_any = true;
+            let slot = input
+                .descriptor
+                .surface_slots
+                .iter()
+                .find(|slot| slot.key == region.key);
+            let title = region
+                .label
+                .as_deref()
+                .or_else(|| slot.and_then(|slot| slot.display_label()));
+            let lines = slot
+                .filter(|_| show_detail)
+                .map(|slot| semantic_slot_lines(&input.node.data, slot, fields))
+                .unwrap_or_default();
+            draw_semantic_nested_region(ui, rect, title, &lines, input.style);
         }
 
         for region in input.layout.interactive_regions.iter().filter(|region| {
-            region.slot_kind == Some(NodeSurfaceSlotKind::ActionRow)
-                || region.key.starts_with("actions.")
+            input.content_level.renders_slot_kind(region.slot_kind) && region_is_action(region)
         }) {
             let Some(rect) = input.region_screen_rect(region) else {
                 continue;
@@ -680,6 +741,30 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
 
         rendered_any
     }
+}
+
+fn region_is_detail_block(region: &NodeInteractiveRegion) -> bool {
+    region.slot_kind == Some(NodeSurfaceSlotKind::NestedRegion)
+        || region.slot_kind == Some(NodeSurfaceSlotKind::ConfigGroup)
+        || region.slot_kind == Some(NodeSurfaceSlotKind::PortRail)
+        || region.slot_kind == Some(NodeSurfaceSlotKind::Preview)
+        || region.slot_kind == Some(NodeSurfaceSlotKind::StatusBanner)
+        || region.key.starts_with("nested.")
+        || region.key.starts_with("config.")
+        || region.key.starts_with("rail.")
+        || region.key.starts_with("preview.")
+        || region.key.starts_with("status.")
+}
+
+fn region_is_action(region: &NodeInteractiveRegion) -> bool {
+    region.slot_kind == Some(NodeSurfaceSlotKind::ActionRow) || region.key.starts_with("actions.")
+}
+
+fn region_is_badge(region: &NodeInteractiveRegion) -> bool {
+    region.slot_kind == Some(NodeSurfaceSlotKind::Badge)
+        || region.key.starts_with("badge.")
+        || region.slot_kind == Some(NodeSurfaceSlotKind::MetricBadge)
+        || region.key.starts_with("metric.")
 }
 
 fn field_keys(
@@ -886,11 +971,6 @@ impl FieldListMetrics {
         }
     }
 
-    fn with_top(mut self, top: f32) -> Self {
-        self.top = top;
-        self
-    }
-
     fn row_rect(self, index: usize) -> CanvasRect {
         CanvasRect {
             origin: jellyflow::core::CanvasPoint {
@@ -1054,6 +1134,7 @@ mod tests {
             default_size: None,
             ports: Vec::new(),
             surface_slots: Vec::new(),
+            chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         }
     }
@@ -1167,6 +1248,7 @@ mod tests {
                     .with_anchor("actions.primary")
                     .with_order(1),
             ],
+            chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };
         let input = NodeRenderInput {
@@ -1209,10 +1291,30 @@ mod tests {
         assert_eq!(NodeContentLevel::from_zoom(1.0), NodeContentLevel::Full);
         assert_eq!(NodeContentLevel::from_zoom(0.5), NodeContentLevel::Compact);
         assert_eq!(NodeContentLevel::from_zoom(0.12), NodeContentLevel::Shell);
+        assert_eq!(
+            NodeContentLevel::from_zoom_and_size(1.0, Vec2::new(220.0, 120.0)),
+            NodeContentLevel::Full
+        );
+        assert_eq!(
+            NodeContentLevel::from_zoom_and_size(1.0, Vec2::new(120.0, 70.0)),
+            NodeContentLevel::Compact
+        );
+        assert_eq!(
+            NodeContentLevel::from_zoom_and_size(1.0, Vec2::new(40.0, 20.0)),
+            NodeContentLevel::Shell
+        );
         assert!(NodeContentLevel::Full.shows_text());
         assert!(NodeContentLevel::Compact.shows_text());
         assert!(NodeContentLevel::Full.shows_detail());
         assert!(!NodeContentLevel::Compact.shows_detail());
+        assert!(NodeContentLevel::Full.renders_slot_kind(Some(NodeSurfaceSlotKind::Badge)));
+        assert!(NodeContentLevel::Compact.renders_slot_kind(Some(NodeSurfaceSlotKind::FieldRow)));
+        assert!(NodeContentLevel::Compact.renders_slot_kind(Some(NodeSurfaceSlotKind::PortRail)));
+        assert!(!NodeContentLevel::Compact.renders_slot_kind(Some(NodeSurfaceSlotKind::Badge)));
+        assert!(
+            !NodeContentLevel::Compact.renders_slot_kind(Some(NodeSurfaceSlotKind::StatusBanner))
+        );
+        assert!(!NodeContentLevel::Shell.renders_slot_kind(Some(NodeSurfaceSlotKind::FieldRow)));
     }
 
     #[test]
@@ -1354,6 +1456,7 @@ mod tests {
             default_size: None,
             ports: Vec::new(),
             surface_slots: Vec::new(),
+            chrome: Vec::new(),
             default_data: serde_json::Value::Null,
         };
         let node = Node {
@@ -1416,5 +1519,224 @@ mod tests {
         assert_eq!(primary.label.as_deref(), Some("id"));
         assert!(foreign.rect.origin.y > primary.rect.origin.y);
         assert_eq!(foreign.label.as_deref(), Some("customer_id"));
+    }
+
+    #[test]
+    fn dify_style_regions_keep_field_anchors_before_status_and_actions() {
+        let descriptor = NodeKindViewDescriptor {
+            kind: NodeKindKey::new("demo.llm"),
+            renderer_key: "decision-card".to_owned(),
+            title: "LLM".to_owned(),
+            category: Vec::new(),
+            keywords: Vec::new(),
+            default_size: None,
+            ports: Vec::new(),
+            surface_slots: vec![
+                NodeSurfaceSlotDescriptor::field_row("field.prompt")
+                    .with_label("Prompt")
+                    .with_slot("prompt")
+                    .with_anchor("field.prompt")
+                    .with_order(0),
+                NodeSurfaceSlotDescriptor::field_row("field.completion")
+                    .with_label("Completion")
+                    .with_slot("completion")
+                    .with_anchor("field.completion")
+                    .with_order(1),
+                NodeSurfaceSlotDescriptor::metric_badge("metric.latency")
+                    .with_label("Latency")
+                    .with_slot("metrics.latency"),
+                NodeSurfaceSlotDescriptor::config_group("config.model")
+                    .with_label("Config")
+                    .with_slot("config.model"),
+                NodeSurfaceSlotDescriptor::status_banner("status.validation")
+                    .with_label("Status")
+                    .with_slot("status.validation"),
+                NodeSurfaceSlotDescriptor::action_row("actions.primary")
+                    .with_label("Actions")
+                    .with_slot("actions.primary"),
+            ],
+            chrome: Vec::new(),
+            default_data: serde_json::Value::Null,
+        };
+        let node = Node {
+            kind: NodeKindKey::new("demo.llm"),
+            kind_version: 1,
+            pos: CanvasPoint::default(),
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({
+                "fields": {
+                    "prompt": "Customer intake + policy",
+                    "completion": "Priority and route"
+                },
+                "metrics": { "latency": "420ms" },
+                "config": { "model": { "temperature": 0.2 } },
+                "status": { "validation": "Ready" },
+                "actions": { "primary": ["Test prompt", "Open trace"] }
+            }),
+        };
+        let input = NodeRenderInput {
+            id: NodeId::from_u128(3),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::decision(),
+        };
+        let layout = RendererCatalog::default().render_node(
+            &input,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 268.0,
+                    height: 228.0,
+                },
+            },
+        );
+
+        let prompt = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "field.prompt")
+            .expect("prompt field anchor exists");
+        let completion = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "field.completion")
+            .expect("completion field anchor exists");
+        let status = layout
+            .interactive_regions
+            .iter()
+            .find(|region| region.key == "status.validation")
+            .expect("status region exists");
+        let last_action = layout
+            .interactive_regions
+            .iter()
+            .filter(|region| region.slot_kind == Some(NodeSurfaceSlotKind::ActionRow))
+            .max_by(|a, b| a.rect.origin.y.total_cmp(&b.rect.origin.y))
+            .expect("action chip exists");
+
+        assert_eq!(prompt.rect.origin.y, 46.0);
+        assert_eq!(completion.rect.origin.y - prompt.rect.origin.y, 26.0);
+        assert!(
+            status.rect.origin.y > completion.rect.origin.y,
+            "decorative/status regions should not push port-bearing field anchors down"
+        );
+        assert!(
+            last_action.rect.origin.y + last_action.rect.size.height <= layout.min_size.height,
+            "layout minimum height should cover adapter-owned Dify controls"
+        );
+    }
+
+    #[test]
+    fn shader_card_renderer_measures_port_rail_config_and_preview_without_fields() {
+        let descriptor = NodeKindViewDescriptor {
+            kind: NodeKindKey::new("demo.shader.mix"),
+            renderer_key: "shader-card".to_owned(),
+            title: "Mix".to_owned(),
+            category: Vec::new(),
+            keywords: Vec::new(),
+            default_size: None,
+            ports: Vec::new(),
+            surface_slots: vec![
+                NodeSurfaceSlotDescriptor::port_rail("rail.inputs")
+                    .with_label("Inputs")
+                    .with_slot("ports.inputs")
+                    .with_anchor("rail.inputs"),
+                NodeSurfaceSlotDescriptor::config_group("config.factor")
+                    .with_label("Factor")
+                    .with_slot("config.factor")
+                    .with_anchor("config.factor"),
+                NodeSurfaceSlotDescriptor::preview("preview.result")
+                    .with_label("Preview")
+                    .with_slot("preview.result")
+                    .with_anchor("preview.result"),
+                NodeSurfaceSlotDescriptor::port_rail("rail.outputs")
+                    .with_label("Outputs")
+                    .with_slot("ports.outputs")
+                    .with_anchor("rail.outputs"),
+            ],
+            chrome: Vec::new(),
+            default_data: serde_json::Value::Null,
+        };
+        let node = Node {
+            kind: NodeKindKey::new("demo.shader.mix"),
+            kind_version: 1,
+            pos: CanvasPoint::default(),
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({
+                "ports": {
+                    "inputs": ["vec4 albedo", "float factor"],
+                    "outputs": ["vec4 result"]
+                },
+                "config": {
+                    "factor": { "type": "float", "default": 0.5 }
+                },
+                "preview": {
+                    "result": "gradient"
+                }
+            }),
+        };
+        let input = NodeRenderInput {
+            id: NodeId::from_u128(4),
+            node: &node,
+            descriptor: &descriptor,
+            state: NodeRendererState::default(),
+            style: NodeRendererStyle::data(),
+        };
+        let layout = RendererCatalog::default().render_node(
+            &input,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 236.0,
+                    height: 190.0,
+                },
+            },
+        );
+
+        let keys = layout
+            .interactive_regions
+            .iter()
+            .map(|region| region.key.as_str())
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&"rail.inputs"));
+        assert!(keys.contains(&"config.factor"));
+        assert!(keys.contains(&"preview.result"));
+        assert!(keys.contains(&"rail.outputs"));
+        assert!(
+            layout
+                .interactive_regions
+                .iter()
+                .any(|region| region.slot_kind == Some(NodeSurfaceSlotKind::PortRail))
+        );
+        assert!(
+            layout
+                .interactive_regions
+                .iter()
+                .any(|region| region.slot_kind == Some(NodeSurfaceSlotKind::Preview))
+        );
     }
 }

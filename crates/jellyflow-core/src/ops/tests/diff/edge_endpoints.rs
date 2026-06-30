@@ -69,6 +69,7 @@ fn graph_diff_roundtrips_when_edge_data_and_view_change() {
         source_marker_key: Some("one".to_string()),
         target_marker_key: Some("many".to_string()),
         style_token: Some("relation".to_string()),
+        route_kind: None,
         hit_target_width: Some(24.0),
     };
 

@@ -273,6 +273,7 @@ fn edge_view_descriptor_builder_matches_explicit_construction() {
         source_marker_key: Some("source-dot".to_string()),
         target_marker_key: Some("arrow".to_string()),
         style_token: Some("success".to_string()),
+        route_kind: None,
         hit_target_width: Some(28.0),
     };
     let built = EdgeViewDescriptor::new()

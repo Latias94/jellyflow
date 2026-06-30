@@ -4,15 +4,20 @@ use super::{
     NodeKitFixture, NodeKitFixtureEdge, NodeKitFixtureNode, NodeKitLayoutHints, NodeKitManifest,
     NodeKitRegistry,
 };
-use crate::schema::{NodeSchema, NodeSurfaceSlotDescriptor, PortDecl, PortViewDescriptor};
+use crate::schema::{
+    NodeChromeDescriptor, NodeChromePlacement, NodeSchema, NodeSurfaceSlotDescriptor, PortDecl,
+    PortViewDescriptor,
+};
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, PortCapacity,
     PortDirection, PortKind,
 };
+use jellyflow_core::types::TypeDesc;
 
 pub fn builtin_node_kits() -> NodeKitRegistry {
     let mut registry = NodeKitRegistry::new();
     registry.register(workflow_automation_manifest());
+    registry.register(shader_blueprint_manifest());
     registry.register(erd_table_manifest());
     registry.register(mind_map_knowledge_canvas_manifest());
     registry
@@ -62,6 +67,26 @@ pub fn erd_table_manifest() -> NodeKitManifest {
         )
         .recipe(erd_table_schema())
         .fixture(erd_fixture())
+}
+
+pub fn shader_blueprint_manifest() -> NodeKitManifest {
+    NodeKitManifest::new("shader.blueprint", "Shader and blueprint")
+        .with_supported_adapter("egui")
+        .with_supported_adapter("proof")
+        .with_supported_adapter("gpui")
+        .with_capability("shader")
+        .with_capability("blueprint")
+        .with_layout_hints(
+            NodeKitLayoutHints::default()
+                .with_zoom_range(0.74, 0.92)
+                .with_field_spacing(6.0)
+                .with_measurement_note(
+                    "Typed port rails and preview regions should preserve handle alignment.",
+                ),
+        )
+        .recipe(shader_texture_sample_schema())
+        .recipe(shader_mix_schema())
+        .fixture(shader_fixture())
 }
 
 pub fn mind_map_knowledge_canvas_manifest() -> NodeKitManifest {
@@ -207,24 +232,79 @@ fn workflow_llm_schema() -> NodeSchema {
                 .with_order(0),
         )
         .surface_slot(
+            NodeSurfaceSlotDescriptor::metric_badge("metric.latency")
+                .with_label("Latency")
+                .with_slot("metrics.latency")
+                .with_anchor("metric.latency")
+                .with_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::config_group("config.model")
+                .with_label("Config")
+                .with_slot("config.model")
+                .with_anchor("config.model")
+                .with_order(1),
+        )
+        .surface_slot(
             NodeSurfaceSlotDescriptor::nested_region("nested.policy")
                 .with_label("Policy")
                 .with_slot("nested.policy")
                 .with_anchor("nested.policy")
-                .with_order(1),
+                .with_order(2),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::status_banner("status.validation")
+                .with_label("Status")
+                .with_slot("status.validation")
+                .with_anchor("status.validation")
+                .with_order(3),
         )
         .surface_slot(
             NodeSurfaceSlotDescriptor::action_row("actions.primary")
                 .with_label("Actions")
                 .with_slot("actions.primary")
                 .with_anchor("actions.primary")
-                .with_order(2),
+                .with_order(4),
+        )
+        .chrome(NodeChromeDescriptor::resizer("resize.corner").with_order(0))
+        .chrome(
+            NodeChromeDescriptor::toolbar("toolbar.primary", NodeChromePlacement::TopRight)
+                .with_label("Node tools")
+                .with_renderer_key("node-toolbar")
+                .with_icon_key("settings")
+                .with_order(10),
+        )
+        .chrome(
+            NodeChromeDescriptor::status_strip("status.run", NodeChromePlacement::InsideFooter)
+                .with_label("Ready")
+                .with_renderer_key("run-status")
+                .with_icon_key("activity")
+                .with_order(20),
+        )
+        .chrome(
+            NodeChromeDescriptor::run_action_strip("actions.run", NodeChromePlacement::Bottom)
+                .with_label("Run")
+                .with_renderer_key("run-actions")
+                .with_icon_key("play")
+                .with_order(30),
         )
         .default_data(json!({
             "title": "LLM",
             "summary": "Prompt, model, tools, and variables",
             "meta": {
                 "model": "gpt-4.1-mini"
+            },
+            "metrics": {
+                "latency": "420ms"
+            },
+            "config": {
+                "model": {
+                    "temperature": 0.2,
+                    "tools": "retrieval"
+                }
+            },
+            "status": {
+                "validation": "Ready"
             },
             "nested": {
                 "policy": {
@@ -387,22 +467,189 @@ fn erd_table_schema() -> NodeSchema {
                 .with_order(0),
         )
         .surface_slot(
+            NodeSurfaceSlotDescriptor::metric_badge("metric.rows")
+                .with_label("Rows")
+                .with_slot("metrics.rows")
+                .with_anchor("metric.rows")
+                .with_order(1),
+        )
+        .surface_slot(
             NodeSurfaceSlotDescriptor::action_row("actions.table")
                 .with_label("Actions")
                 .with_slot("actions.table")
                 .with_anchor("actions.table")
-                .with_order(1),
+                .with_order(2),
         )
         .default_data(json!({
             "title": "Table",
             "summary": "id · field · field",
             "meta": { "cardinality": "1:N" },
+            "metrics": { "rows": "12k" },
             "actions": { "table": ["Add column", "Inspect relation"] },
             "field_order": ["primary_key", "field", "foreign_key"],
             "fields": {
                 "primary_key": "id",
                 "field": "field",
                 "foreign_key": "field_id"
+            }
+        }))
+        .build()
+}
+
+fn shader_texture_sample_schema() -> NodeSchema {
+    NodeSchema::builder("demo.shader.texture_sample", "Texture Sample")
+        .category(["Shader", "Blueprint"])
+        .keywords(["shader", "texture", "unreal", "graph"])
+        .renderer_key("shader-card")
+        .default_size(CanvasSize {
+            width: 224.0,
+            height: 156.0,
+        })
+        .port(
+            data_input("uv")
+                .with_label("UV")
+                .with_type(shader_vec(2))
+                .on_left()
+                .with_view_anchor("rail.inputs")
+                .with_view_group("typed_ports")
+                .with_view_order(0),
+        )
+        .port(
+            data_output("color")
+                .with_label("Color")
+                .with_type(shader_vec(4))
+                .on_right()
+                .with_view_anchor("rail.outputs")
+                .with_view_group("typed_ports")
+                .with_view_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::port_rail("rail.inputs")
+                .with_label("Inputs")
+                .with_slot("ports.inputs")
+                .with_anchor("rail.inputs")
+                .with_lane("ports")
+                .with_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::preview("preview.texture")
+                .with_label("Preview")
+                .with_slot("preview.texture")
+                .with_anchor("preview.texture")
+                .with_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::port_rail("rail.outputs")
+                .with_label("Outputs")
+                .with_slot("ports.outputs")
+                .with_anchor("rail.outputs")
+                .with_lane("ports")
+                .with_order(2),
+        )
+        .default_data(json!({
+            "title": "Texture Sample",
+            "summary": "Samples albedo from UV",
+            "ports": {
+                "inputs": ["vec2 uv"],
+                "outputs": ["vec4 color"]
+            },
+            "preview": {
+                "texture": "checker"
+            }
+        }))
+        .build()
+}
+
+fn shader_mix_schema() -> NodeSchema {
+    NodeSchema::builder("demo.shader.mix", "Mix")
+        .category(["Shader", "Blueprint"])
+        .keywords(["shader", "mix", "lerp", "blueprint"])
+        .renderer_key("shader-card")
+        .default_size(CanvasSize {
+            width: 224.0,
+            height: 168.0,
+        })
+        .port(
+            data_input("a")
+                .with_label("A")
+                .with_type(shader_vec(4))
+                .on_left()
+                .with_view_anchor("rail.inputs")
+                .with_view_group("typed_ports")
+                .with_view_order(0),
+        )
+        .port(
+            data_input("b")
+                .with_label("B")
+                .with_type(shader_vec(4))
+                .on_left()
+                .with_view_anchor("rail.inputs")
+                .with_view_group("typed_ports")
+                .with_view_order(1),
+        )
+        .port(
+            data_input("factor")
+                .with_label("Factor")
+                .with_type(TypeDesc::Float)
+                .on_bottom()
+                .with_view_anchor("config.factor")
+                .with_view_group("config")
+                .with_view_order(2),
+        )
+        .port(
+            data_output("result")
+                .with_label("Result")
+                .with_type(shader_vec(4))
+                .on_right()
+                .with_view_anchor("rail.outputs")
+                .with_view_group("typed_ports")
+                .with_view_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::port_rail("rail.inputs")
+                .with_label("Inputs")
+                .with_slot("ports.inputs")
+                .with_anchor("rail.inputs")
+                .with_lane("ports")
+                .with_order(0),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::config_group("config.factor")
+                .with_label("Factor")
+                .with_slot("config.factor")
+                .with_anchor("config.factor")
+                .with_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::preview("preview.result")
+                .with_label("Preview")
+                .with_slot("preview.result")
+                .with_anchor("preview.result")
+                .with_order(2),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::port_rail("rail.outputs")
+                .with_label("Outputs")
+                .with_slot("ports.outputs")
+                .with_anchor("rail.outputs")
+                .with_lane("ports")
+                .with_order(3),
+        )
+        .default_data(json!({
+            "title": "Mix",
+            "summary": "Blend two color streams",
+            "ports": {
+                "inputs": ["vec4 a", "vec4 b"],
+                "outputs": ["vec4 result"]
+            },
+            "config": {
+                "factor": {
+                    "type": "float",
+                    "default": 0.5
+                }
+            },
+            "preview": {
+                "result": "gradient"
             }
         }))
         .build()
@@ -577,6 +824,7 @@ fn erd_fixture() -> NodeKitFixture {
                     "foreign_key": "plan_id"
                 },
                 "meta": { "cardinality": "1:N" },
+                "metrics": { "rows": "42k" },
                 "actions": { "table": ["Add column", "Inspect relation"] }
             })),
         )
@@ -592,6 +840,7 @@ fn erd_fixture() -> NodeKitFixture {
                         "foreign_key": "customer_id"
                     },
                     "meta": { "cardinality": "1:N" },
+                    "metrics": { "rows": "94k" },
                     "actions": { "table": ["Add column", "Inspect relation"] }
                 })),
         )
@@ -611,6 +860,7 @@ fn erd_fixture() -> NodeKitFixture {
                     "foreign_key": "order_id"
                 },
                 "meta": { "cardinality": "1:N" },
+                "metrics": { "rows": "320k" },
                 "actions": { "table": ["Add column", "Inspect relation"] }
             })),
         )
@@ -627,6 +877,59 @@ fn erd_fixture() -> NodeKitFixture {
                 .with_data(json!({ "label": "1:N" })),
         )
         .expect_counts(3, 2)
+}
+
+fn shader_fixture() -> NodeKitFixture {
+    NodeKitFixture::new("shader.material_mix", "Material mix")
+        .with_description("A compact shader graph with typed rails and preview slots.")
+        .node(
+            NodeKitFixtureNode::new(
+                "texture",
+                "demo.shader.texture_sample",
+                CanvasPoint {
+                    x: -240.0,
+                    y: -60.0,
+                },
+            )
+            .with_data(json!({
+                "title": "Albedo",
+                "summary": "Texture sample",
+                "ports": {
+                    "inputs": ["vec2 uv"],
+                    "outputs": ["vec4 color"]
+                },
+                "preview": {
+                    "texture": "checker"
+                }
+            })),
+        )
+        .node(
+            NodeKitFixtureNode::new("mix", "demo.shader.mix", CanvasPoint { x: 80.0, y: -60.0 })
+                .with_data(json!({
+                    "title": "Mix",
+                    "summary": "Blend albedo with tint",
+                    "ports": {
+                        "inputs": ["vec4 albedo", "vec4 tint"],
+                        "outputs": ["vec4 result"]
+                    },
+                    "config": {
+                        "factor": {
+                            "type": "float",
+                            "default": 0.5
+                        }
+                    },
+                    "preview": {
+                        "result": "gradient"
+                    }
+                })),
+        )
+        .edge(
+            NodeKitFixtureEdge::new("texture", "mix", EdgeKind::Data)
+                .with_from_port("color")
+                .with_to_port("a")
+                .with_data(json!({ "label": "vec4" })),
+        )
+        .expect_counts(2, 1)
 }
 
 fn mind_map_fixture() -> NodeKitFixture {
@@ -699,6 +1002,13 @@ fn data_input(key: &str) -> PortDecl {
 
 fn data_output(key: &str) -> PortDecl {
     PortDecl::new(key, PortDirection::Out, PortKind::Data, PortCapacity::Multi).with_label(key)
+}
+
+fn shader_vec(width: u8) -> TypeDesc {
+    TypeDesc::Opaque {
+        key: format!("shader.vec{width}"),
+        params: Vec::new(),
+    }
 }
 
 fn exec_input(key: &str) -> PortDecl {

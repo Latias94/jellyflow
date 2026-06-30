@@ -1,11 +1,12 @@
 use crate::runtime::binding::{
     BindingEndpointResolution, BindingEndpointResolutionStatus, BindingQueryOptions,
 };
-use crate::runtime::measurement::NodeMeasurement;
+use crate::runtime::measurement::{MeasuredSurfaceAnchor, NodeMeasurement};
 use crate::runtime::tests::fixtures::{GraphFixtureUpdateExt, make_store};
 use jellyflow_core::core::{
-    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasSize, Graph, GraphBuilder, GraphId,
-    GraphLocalBindingTarget, Node, NodeId, NodeKindKey, SourceAnchor,
+    Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder,
+    GraphId, GraphLocalBindingTarget, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection,
+    PortId, PortKey, PortKind, SourceAnchor,
 };
 use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
@@ -49,6 +50,83 @@ fn binding_query_resolves_node_anchor_from_runtime_measurement() {
     assert!(matches!(
         resolved.target.resolution,
         BindingEndpointResolution::Source
+    ));
+}
+
+#[test]
+fn binding_query_resolves_port_anchor_from_semantic_measurement_anchor() {
+    let node = NodeId::from_u128(11);
+    let port = PortId::from_u128(12);
+    let binding = BindingId::from_u128(13);
+    let mut graph = GraphBuilder::new(GraphId::from_u128(11));
+    graph.insert_node(
+        node,
+        Node {
+            pos: CanvasPoint { x: 10.0, y: 20.0 },
+            ports: vec![port],
+            ..node_fixture()
+        },
+    );
+    graph.insert_port(
+        port,
+        Port {
+            node,
+            key: PortKey::new("prompt"),
+            dir: PortDirection::In,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        },
+    );
+    graph.insert_binding(
+        binding,
+        Binding {
+            subject: BindingEndpoint::graph_local(GraphLocalBindingTarget::Port { id: port }),
+            target: BindingEndpoint::source(SourceAnchor::new(
+                "source.pdf",
+                serde_json::json!({ "page": 1 }),
+            )),
+            kind: Some("excerpt".to_string()),
+            meta: serde_json::Value::Null,
+        },
+    );
+    let mut store = make_store(graph);
+
+    store
+        .report_node_measurement(
+            NodeMeasurement::new(node)
+                .with_revision(3)
+                .with_size(Some(CanvasSize {
+                    width: 120.0,
+                    height: 80.0,
+                }))
+                .with_anchors([MeasuredSurfaceAnchor::new(
+                    "field.prompt.input",
+                    CanvasRect {
+                        origin: CanvasPoint { x: 0.0, y: 30.0 },
+                        size: CanvasSize {
+                            width: 10.0,
+                            height: 20.0,
+                        },
+                    },
+                    crate::runtime::geometry::HandlePosition::Left,
+                )
+                .with_port_key("prompt")]),
+        )
+        .expect("node measurement");
+
+    let query = store.binding_query();
+    let resolved = query.binding(binding).expect("binding");
+    assert!(matches!(
+        resolved.subject.resolution,
+        BindingEndpointResolution::PortAnchor {
+            node: resolved_node,
+            point,
+        } if resolved_node == node && point == CanvasPoint { x: 10.0, y: 60.0 }
     ));
 }
 
