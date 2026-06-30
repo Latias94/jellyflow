@@ -460,7 +460,7 @@ filter command is recorded in
 | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Optional headless layout engines and custom layout registry. |
 | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Headless store, rules, schema/profile pipeline, interaction planners, geometry, rendering reads, XyFlow projections, and conformance fixtures. |
 | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | Immediate-mode egui adapter with a demo app, canvas, palette, toolbar, and inspector. |
-| [`jellyflow-open-gpui`](crates/jellyflow-open-gpui) | Retained Open GPUI adapter boundary for node surface projection, measurement publication, and capability facts. |
+| [`jellyflow-open-gpui`](crates/jellyflow-open-gpui) | Retained Open GPUI adapter boundary for semantic projection, controls, repeatables, actions, inspector plans, product fixture gates, measurement publication, and capability facts. |
 | [`jellyflow-proof`](crates/jellyflow-proof) | Workspace proof crate for a second adapter boundary and semantic-surface reuse. |
 
 ## Links

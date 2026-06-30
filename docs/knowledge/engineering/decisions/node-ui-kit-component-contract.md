@@ -59,11 +59,13 @@ Adapters own:
 - `jellyflow-open-gpui` is now the first-class retained GPUI adapter boundary in the Jellyflow
   workspace. It owns GPUI adapter capability facts and view-space measurement conversion without
   moving GPUI widget types into runtime/core.
-- GPUI proves adapter-local component projection: rendering and runtime measurement now share
-  `NodeSurfaceComponentLayout`, so slot, repeatable, and anchor rects are derived from the same
-  local component model. It consumes control, repeatable, action, menu, inspector, and blackboard
-  descriptors locally, but this is still a projection-layout proof, not yet a true GPUI layout-pass
-  bounds callback.
+- GPUI now has a first-class adapter crate plus an open-gpui consumer fixture. The adapter crate
+  maps controls, repeatables, actions, menus, inspector plans, product fixture regression gates, and
+  measurement conversion locally. The open-gpui `canvas-jellyflow` example consumes that boundary as
+  a visual/manual smoke fixture.
+- GPUI still reports layout measurement conservatively. Projection fallback can prove clipping,
+  controls, repeatables, menus, inspector state, and product fixture geometry, but it is not a true
+  GPUI layout-pass bounds callback.
 - `jellyflow-proof` proves component-tree shape plus runtime measurement integration, including
   dynamic child remeasurement. It intentionally avoids Dioxus or widget types.
 
@@ -79,9 +81,10 @@ Adapters own:
 - egui geometry regression gates for Dify-style workflow, Shader/Blueprint, ERD, and mind-map
   product shapes;
 - GPUI projection capability reporting that explicitly avoids claiming full layout-pass
-  measurement.
+  measurement;
 - a `jellyflow-open-gpui` crate boundary for the retained GPUI adapter, with projection fallback
-  versus layout-pass capability reporting and test helpers.
+  versus layout-pass capability reporting, descriptor-driven controls/actions/inspector plans, and
+  product fixture regression gates.
 
 # Remaining Contract Gaps
 
@@ -89,11 +92,12 @@ Adapters own:
 - adapter capability coverage for keyboard accessibility, focus order, screen-reader labels, and
   framework-specific widget behavior;
 - a real GPUI layout-pass measurement hook before claiming full retained-view geometry parity.
-- broader adapter-native visual automation for GPUI and future Dioxus beyond projection geometry.
+- broader adapter-native visual automation for GPUI and future Dioxus beyond deterministic fixture
+  geometry.
 
 # Roadmap
 
-P2 should promote GPUI from projection-layout proof to retained layout-pass measurement by
+P2 should promote GPUI from projection fallback to retained layout-pass measurement by
 collecting actual component bounds from open-gpui canvas overlays or element layout callbacks,
 converting those host bounds through `jellyflow-open-gpui`, and reporting the resulting facts
 through `NodeInternalsController`.
@@ -121,4 +125,4 @@ graduate from projection fallback to full retained-view geometry evidence.
 - [egui bridge](../../../../crates/jellyflow-egui/src/bridge.rs)
 - [Open GPUI adapter crate](../../../../crates/jellyflow-open-gpui/src/lib.rs)
 - [jellyflow-proof tests](../../../../crates/jellyflow-proof/tests/proof.rs)
-- [GPUI canvas-jellyflow proof](../../../../repo-ref/open-gpui/examples/canvas-jellyflow/src/main.rs)
+- [GPUI canvas-jellyflow fixture](../../../../repo-ref/open-gpui/examples/canvas-jellyflow/src/main.rs)
