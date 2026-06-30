@@ -13,7 +13,10 @@ use jellyflow::{
 };
 use serde_json::Value;
 
-use crate::OpenGpuiMeasurementMode;
+use crate::{
+    OpenGpuiMeasurementMode, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
+    measured_repeatable_item_anchors, measured_repeatable_item_slots, repeatable_item_projection,
+};
 
 const NODE_SURFACE_CHROME_HEIGHT: f32 = 78.0;
 const NODE_SURFACE_SLOT_ROW_HEIGHT: f32 = 26.0;
@@ -23,6 +26,7 @@ const NODE_SURFACE_SLOT_ROW_HEIGHT: f32 = 26.0;
 pub struct OpenGpuiNodeSurfaceLayout {
     pub slots: Vec<OpenGpuiNodeSurfaceSlotLayout>,
     pub repeatables: Vec<OpenGpuiRepeatableSurfaceLayout>,
+    pub repeatable_items: Vec<OpenGpuiRepeatableItemLayout>,
     pub measurement_mode: OpenGpuiMeasurementMode,
 }
 
@@ -30,6 +34,16 @@ impl OpenGpuiNodeSurfaceLayout {
     pub fn new(
         slots: Vec<(NodeSurfaceSlotProjection, Option<NodeSurfaceSlotDescriptor>)>,
         repeatables: Vec<OpenGpuiRepeatableSurfaceProjection>,
+        node_size: CanvasSize,
+        slot_limit: usize,
+    ) -> Self {
+        Self::with_repeatable_items(slots, repeatables, Vec::new(), node_size, slot_limit)
+    }
+
+    pub fn with_repeatable_items(
+        slots: Vec<(NodeSurfaceSlotProjection, Option<NodeSurfaceSlotDescriptor>)>,
+        repeatables: Vec<OpenGpuiRepeatableSurfaceProjection>,
+        repeatable_items: Vec<OpenGpuiRepeatableItemProjection>,
         node_size: CanvasSize,
         slot_limit: usize,
     ) -> Self {
@@ -47,11 +61,25 @@ impl OpenGpuiNodeSurfaceLayout {
             )
             .collect::<Vec<_>>();
         let slot_count = slots.len();
+        let item_start_index = slot_count;
+        let repeatable_items = repeatable_items
+            .into_iter()
+            .enumerate()
+            .map(|(index, projection)| {
+                let row_index = item_start_index + index;
+                OpenGpuiRepeatableItemLayout {
+                    rect: slot_row_rect(row_index, node_size),
+                    anchor_rect: slot_anchor_rect(row_index, node_size),
+                    projection,
+                }
+            })
+            .collect::<Vec<_>>();
+        let summary_start_index = item_start_index + repeatable_items.len();
         let repeatables = repeatables
             .into_iter()
             .enumerate()
             .map(|(index, projection)| {
-                let row_index = slot_count + index;
+                let row_index = summary_start_index + index;
                 OpenGpuiRepeatableSurfaceLayout {
                     rect: slot_row_rect(row_index, node_size),
                     anchor_rect: slot_anchor_rect(row_index, node_size),
@@ -62,6 +90,7 @@ impl OpenGpuiNodeSurfaceLayout {
         Self {
             slots,
             repeatables,
+            repeatable_items,
             measurement_mode: OpenGpuiMeasurementMode::ProjectionFallback,
         }
     }
@@ -134,6 +163,36 @@ pub fn projected_node_surface_component_layout(
     )
 }
 
+/// Build graph-aware projection fallback layout with stable repeatable item rows.
+pub fn projected_node_surface_graph_layout(
+    descriptor: &NodeKindViewDescriptor,
+    node: &Node,
+    graph: &Graph,
+    node_id: &NodeId,
+    node_size: CanvasSize,
+) -> OpenGpuiNodeSurfaceLayout {
+    let slots = descriptor
+        .surface_slots_projection(&node.data, None, 1.0)
+        .into_iter()
+        .filter(|slot| {
+            descriptor
+                .surface_slot(&slot.key)
+                .is_some_and(|descriptor_slot| descriptor_slot.is_visible())
+        })
+        .map(|slot| {
+            let descriptor_slot = descriptor.surface_slot(&slot.key).cloned();
+            (slot, descriptor_slot)
+        })
+        .collect();
+    OpenGpuiNodeSurfaceLayout::with_repeatable_items(
+        slots,
+        repeatable_surface_projection(descriptor, &node.data),
+        repeatable_item_projection(descriptor, node, graph, node_id),
+        node_size,
+        usize::MAX,
+    )
+}
+
 /// Build a projection fallback measurement for one node.
 pub fn project_node_measurement(
     id: &NodeId,
@@ -145,7 +204,7 @@ pub fn project_node_measurement(
         width: 228.0,
         height: 168.0,
     });
-    let layout = projected_node_surface_component_layout(descriptor, node, node_size);
+    let layout = projected_node_surface_graph_layout(descriptor, node, graph, id, node_size);
     let slots = measured_surface_slots(&layout);
     let anchors = measured_surface_anchors(descriptor, graph, id, &layout);
 
@@ -192,6 +251,7 @@ pub fn measured_surface_slots(layout: &OpenGpuiNodeSurfaceLayout) -> Vec<Measure
         MeasuredSurfaceSlot::new(repeatable.projection.key.clone(), repeatable.rect)
             .with_visibility(NodeSurfaceSlotVisibility::Visible)
     }));
+    slots.extend(measured_repeatable_item_slots(&layout.repeatable_items));
     slots
 }
 
@@ -230,6 +290,7 @@ pub fn measured_surface_anchors(
                 })
                 .collect::<Vec<_>>()
         })
+        .chain(measured_repeatable_item_anchors(&layout.repeatable_items))
         .collect()
 }
 
@@ -401,6 +462,42 @@ mod tests {
         assert!(measurement.anchors.iter().any(|anchor| {
             anchor.anchor == "field.completion"
                 && anchor.port_key == Some(PortKey::new("completion"))
+        }));
+    }
+
+    #[test]
+    fn projection_measurement_builds_repeatable_item_slots_and_dynamic_port_anchors() {
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let descriptor = registry
+            .view_descriptor(&NodeKindKey::new("demo.shader.mix"))
+            .expect("builtin shader mix descriptor");
+        let mut store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(2)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let outcome = store
+            .apply_create_node_from_schema(
+                &registry,
+                CreateNodeRequest::new(NodeKindKey::new("demo.shader.mix"), CanvasPoint::default()),
+            )
+            .expect("create builtin shader mix node");
+        let node_id = outcome.node_id();
+        let node = store.graph().nodes().get(&node_id).expect("created node");
+
+        let measurement = project_node_measurement(&node_id, node, store.graph(), &descriptor);
+
+        assert!(
+            measurement
+                .slots
+                .iter()
+                .any(|slot| slot.key == "rail.inputs.a")
+        );
+        assert!(measurement.anchors.iter().any(|anchor| {
+            anchor.anchor == "rail.inputs.a" && anchor.port_key == Some(PortKey::new("a"))
+        }));
+        assert!(measurement.anchors.iter().any(|anchor| {
+            anchor.anchor == "rail.inputs.factor" && anchor.port_key == Some(PortKey::new("factor"))
         }));
     }
 }

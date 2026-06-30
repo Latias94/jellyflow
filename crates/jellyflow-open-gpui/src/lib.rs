@@ -10,6 +10,7 @@ pub mod adapter;
 pub mod controls;
 pub mod measurement;
 pub mod projection;
+pub mod repeatable;
 pub mod testing;
 
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
@@ -27,6 +28,13 @@ pub use projection::{
     OpenGpuiNodeSurfaceLayout, OpenGpuiNodeSurfaceSlotLayout, OpenGpuiRepeatableSurfaceLayout,
     OpenGpuiRepeatableSurfaceProjection, measured_surface_anchors, measured_surface_slots,
     project_node_measurement, projected_node_surface_component_layout,
-    repeatable_surface_projection, semantic_component_priority, slot_anchor_rect,
-    slot_projection_visibility, slot_row_rect, slot_row_y,
+    projected_node_surface_graph_layout, repeatable_surface_projection,
+    semantic_component_priority, slot_anchor_rect, slot_projection_visibility, slot_row_rect,
+    slot_row_y,
+};
+pub use repeatable::{
+    OpenGpuiDynamicPortPolicy, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
+    OpenGpuiRepeatablePortDiagnostic, measured_repeatable_item_anchors,
+    measured_repeatable_item_slots, repeatable_item_control_count, repeatable_item_label,
+    repeatable_item_projection, repeatable_port_diagnostics,
 };
