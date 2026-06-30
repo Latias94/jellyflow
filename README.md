@@ -16,8 +16,8 @@ store, schema/profile pipeline, renderer-neutral interaction planners, layout en
 adapter conformance fixtures for node graph editors.
 
 The headless crates are extracted from Fret, but they do not depend on Fret UI, renderer, platform,
-windowing, DOM, React, wgpu, or egui crates. Product-specific rendering and input binding stay in
-adapter crates such as `jellyflow-egui`.
+windowing, DOM, React, wgpu, GPUI, or egui crates. Product-specific rendering and input binding stay
+in adapter crates such as `jellyflow-egui` and `jellyflow-open-gpui`.
 
 ## Choose Your Entry Point
 
@@ -28,6 +28,7 @@ adapter crates such as `jellyflow-egui`.
 | Drive headless graph interaction behavior | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Store dispatch, policy, schema/profile hooks, selection, delete, drag, resize, viewport, geometry, XyFlow-style projections, and conformance fixtures. |
 | Add automatic layout without renderer dependencies | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Built-in `dugong`, tidy tree, radial mind-map, and freeform mind-map engines, plus custom engine registration. |
 | Embed an immediate-mode native graph editor | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | `eframe` adapter with a palette, toolbar, inspector, canvas rendering, pointer input, and demo app. |
+| Build the retained GPUI adapter | [`jellyflow-open-gpui`](crates/jellyflow-open-gpui) | First-class Open GPUI adapter boundary for semantic surfaces, measurement publication, and capability reporting. |
 | Prove a second adapter boundary | [`jellyflow-proof`](crates/jellyflow-proof) | Workspace proof crate that reuses the semantic surface and headless store without depending on egui. |
 | Start a renderer integration | [`templates/headless-adapter`](templates/headless-adapter) | Copyable external adapter skeleton with conformance checks before renderer smoke tests. |
 
@@ -214,6 +215,9 @@ Custom node checklist:
   placement keys, default data, layout hints, and adapter chrome descriptors.
 - Keep toolkit widgets adapter-local. egui, GPUI, Dioxus, DOM, and other hosts map the same
   `renderer_key` and slot descriptors to their own components.
+- Treat `jellyflow-open-gpui` as the mature retained-adapter target for this stage. It owns GPUI
+  adapter contracts and measurement conversion, while the `repo-ref/open-gpui` example stays a
+  consumer and visual fixture.
 - Report measurements after rendering rich internals. Slot, anchor, handle, node-size, density, and
   invalidation facts are the bridge that keeps handles, edges, hit tests, and resize previews aligned
   with real UI.
@@ -437,6 +441,9 @@ assets before publishing.
   adding another behavior layer.
 - `jellyflow-egui` owns the immediate-mode egui adapter surface and depends on the facade instead of
   the lower-level crates directly.
+- `jellyflow-open-gpui` owns the retained Open GPUI adapter boundary for this stage. It keeps
+  toolkit widget types out of runtime/core and reports projection fallback honestly until the GPUI
+  host publishes real layout-pass bounds.
 - `fret-node` remains the Fret adapter and compatibility facade in the Fret repository.
 
 This repository was created by a history-preserving path-filtered extraction from Fret. The source
@@ -453,6 +460,7 @@ filter command is recorded in
 | [`jellyflow-layout`](https://crates.io/crates/jellyflow-layout) | Optional headless layout engines and custom layout registry. |
 | [`jellyflow-runtime`](https://crates.io/crates/jellyflow-runtime) | Headless store, rules, schema/profile pipeline, interaction planners, geometry, rendering reads, XyFlow projections, and conformance fixtures. |
 | [`jellyflow-egui`](https://crates.io/crates/jellyflow-egui) | Immediate-mode egui adapter with a demo app, canvas, palette, toolbar, and inspector. |
+| [`jellyflow-open-gpui`](crates/jellyflow-open-gpui) | Retained Open GPUI adapter boundary for node surface projection, measurement publication, and capability facts. |
 | [`jellyflow-proof`](crates/jellyflow-proof) | Workspace proof crate for a second adapter boundary and semantic-surface reuse. |
 
 ## Links

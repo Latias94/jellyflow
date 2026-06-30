@@ -1841,6 +1841,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyflow-open-gpui"
+version = "0.3.0"
+dependencies = [
+ "jellyflow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jellyflow-proof"
 version = "0.3.0"
 dependencies = [

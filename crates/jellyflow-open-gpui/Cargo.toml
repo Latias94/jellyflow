@@ -1,0 +1,22 @@
+[package]
+name = "jellyflow-open-gpui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/jellyflow-open-gpui"
+readme = "README.md"
+publish = false
+description = "Open GPUI adapter boundary for Jellyflow node graphs."
+keywords = ["gpui", "graph", "node-graph", "adapter"]
+categories = ["gui", "visualization"]
+
+[dependencies]
+jellyflow.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

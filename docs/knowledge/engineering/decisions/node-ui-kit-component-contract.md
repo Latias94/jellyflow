@@ -56,6 +56,9 @@ Adapters own:
   slots, anchors, and invalidates data, resize, zoom, and component-state changes. It now maps
   authoring controls, repeatable rows, node actions, dropped-wire menus, and inspector descriptors
   to adapter-local egui widgets or panels.
+- `jellyflow-open-gpui` is now the first-class retained GPUI adapter boundary in the Jellyflow
+  workspace. It owns GPUI adapter capability facts and view-space measurement conversion without
+  moving GPUI widget types into runtime/core.
 - GPUI proves adapter-local component projection: rendering and runtime measurement now share
   `NodeSurfaceComponentLayout`, so slot, repeatable, and anchor rects are derived from the same
   local component model. It consumes control, repeatable, action, menu, inspector, and blackboard
@@ -77,6 +80,8 @@ Adapters own:
   product shapes;
 - GPUI projection capability reporting that explicitly avoids claiming full layout-pass
   measurement.
+- a `jellyflow-open-gpui` crate boundary for the retained GPUI adapter, with projection fallback
+  versus layout-pass capability reporting and test helpers.
 
 # Remaining Contract Gaps
 
@@ -89,8 +94,9 @@ Adapters own:
 # Roadmap
 
 P2 should promote GPUI from projection-layout proof to retained layout-pass measurement by
-collecting actual component bounds from open-gpui canvas overlays or element layout callbacks and
-reporting those bounds through `NodeInternalsController`.
+collecting actual component bounds from open-gpui canvas overlays or element layout callbacks,
+converting those host bounds through `jellyflow-open-gpui`, and reporting the resulting facts
+through `NodeInternalsController`.
 
 P2 should deepen visual and interaction regression suites per adapter. egui now has code-level
 geometry gates plus a gallery snapshot path; GPUI still needs a real layout-pass hook before it can
@@ -113,5 +119,6 @@ graduate from projection fallback to full retained-view geometry evidence.
 - [Node UI Capability Parity Plan](../../../plans/2026-06-29-001-feat-node-ui-capability-parity-plan.md)
 - [Runtime measurement contract](../../../../crates/jellyflow-runtime/src/runtime/measurement.rs)
 - [egui bridge](../../../../crates/jellyflow-egui/src/bridge.rs)
+- [Open GPUI adapter crate](../../../../crates/jellyflow-open-gpui/src/lib.rs)
 - [jellyflow-proof tests](../../../../crates/jellyflow-proof/tests/proof.rs)
 - [GPUI canvas-jellyflow proof](../../../../repo-ref/open-gpui/examples/canvas-jellyflow/src/main.rs)
