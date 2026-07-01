@@ -1,7 +1,22 @@
 use jellyflow::{
-    core::{CanvasPoint, PortKey},
+    NodeGraphEditorConfig, NodeGraphViewState,
+    core::NodeGraphConnectionMode,
     runtime::{
-        runtime::connection::ConnectionHandleRef,
+        DispatchError,
+        rules::{
+            ConnectPlan, Diagnostic, plan_connect_typed_with_mode_and_policy,
+            plan_connect_with_mode_and_policy,
+        },
+        runtime::create_node::CREATE_NODE_TRANSACTION_LABEL,
+    },
+};
+use jellyflow::{
+    NodeGraphStore,
+    core::{
+        CanvasPoint, Graph, GraphTransaction, NodeId, NodeKindKey, PortDirection, PortId, PortKey,
+    },
+    runtime::{
+        runtime::connection::{CONNECT_EDGE_TRANSACTION_LABEL, ConnectionHandleRef},
         schema::{
             ActionIntent, ActionTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor,
             NodeKindViewDescriptor, NodeRegistry,
@@ -116,6 +131,42 @@ pub struct OpenGpuiDroppedWireInsertPlan {
     pub pointer: CanvasPoint,
 }
 
+/// Atomic transaction plan for applying a dropped-wire insert selection.
+#[derive(Debug, Clone)]
+pub struct OpenGpuiDroppedWireInsertTransactionPlan {
+    pub insert: OpenGpuiDroppedWireInsertPlan,
+    pub node_id: NodeId,
+    pub target_port: PortId,
+    pub transaction: GraphTransaction,
+}
+
+/// Result of committing a dropped-wire insert through the store.
+#[derive(Debug, Clone)]
+pub struct OpenGpuiDroppedWireInsertOutcome {
+    pub plan: OpenGpuiDroppedWireInsertTransactionPlan,
+    pub dispatch: jellyflow::DispatchOutcome,
+}
+
+/// Failure path for dropped-wire insert planning or dispatch.
+#[derive(Debug, thiserror::Error)]
+pub enum OpenGpuiDroppedWireInsertError {
+    #[error("dropped-wire action is not dispatchable: {action_key}")]
+    MissingOrDisabledAction { action_key: String },
+    #[error("node kind schema not found: {node_kind}")]
+    MissingSchema { node_kind: String },
+    #[error("source handle is missing from graph: {port:?}")]
+    MissingSourcePort { port: PortId },
+    #[error("no compatible target port found for node kind {node_kind}")]
+    NoCompatibleTargetPort {
+        node_kind: String,
+        diagnostics: Vec<Diagnostic>,
+    },
+    #[error("insert transaction did not apply to scratch graph: {0}")]
+    ScratchApply(String),
+    #[error(transparent)]
+    Dispatch(#[from] DispatchError),
+}
+
 /// Build a menu plan from one descriptor and the actions declared on the same node kind.
 pub fn project_menu(
     descriptor: &NodeKindViewDescriptor,
@@ -228,6 +279,152 @@ pub fn plan_dropped_wire_insert(
         source,
         pointer,
     })
+}
+
+/// Plans the atomic graph mutation behind a dropped-wire insert selection.
+///
+/// The adapter creates a schema node and then asks Jellyflow's existing connection rules to choose
+/// a valid source-to-new-node connection. The returned transaction contains both the create-node
+/// ops and the accepted connection ops, so a rejected connection cannot leave an orphan node.
+pub fn plan_dropped_wire_insert_transaction(
+    graph: &Graph,
+    registry: &NodeRegistry,
+    menu: &OpenGpuiMenuPlan,
+    action_key: &str,
+    source: ConnectionHandleRef,
+    pointer: CanvasPoint,
+    mode: NodeGraphConnectionMode,
+) -> Result<OpenGpuiDroppedWireInsertTransactionPlan, OpenGpuiDroppedWireInsertError> {
+    let insert = plan_dropped_wire_insert(menu, action_key, source, pointer).ok_or_else(|| {
+        OpenGpuiDroppedWireInsertError::MissingOrDisabledAction {
+            action_key: action_key.to_owned(),
+        }
+    })?;
+    let node_kind = NodeKindKey::new(insert.node_kind.clone());
+    let instantiation = registry
+        .instantiate_node(&node_kind, pointer)
+        .map_err(|_| OpenGpuiDroppedWireInsertError::MissingSchema {
+            node_kind: insert.node_kind.clone(),
+        })?;
+    let candidate_ports =
+        dropped_wire_target_port_candidates(graph, &insert.source, &instantiation.ports)?;
+    let create_ops = instantiation.clone().into_ops();
+    let mut scratch = graph.clone();
+    GraphTransaction::from_ops(create_ops.clone())
+        .with_label(CREATE_NODE_TRANSACTION_LABEL)
+        .apply_to(&mut scratch)
+        .map_err(|error| OpenGpuiDroppedWireInsertError::ScratchApply(error.to_string()))?;
+
+    let interaction_store = NodeGraphStore::new(
+        graph.clone(),
+        NodeGraphViewState::default(),
+        NodeGraphEditorConfig::default(),
+    );
+    let interaction = interaction_store.resolved_interaction_state();
+    let mut diagnostics = Vec::new();
+
+    for candidate in candidate_ports {
+        let connect_plan = plan_dropped_wire_connection(
+            &scratch,
+            insert.source.port,
+            candidate,
+            mode,
+            &interaction,
+        );
+        if connect_plan.is_reject() {
+            diagnostics.extend(connect_plan.diagnostics().iter().cloned());
+            continue;
+        }
+        if connect_plan.ops().is_empty() {
+            continue;
+        }
+
+        let mut ops = create_ops;
+        ops.extend(connect_plan.into_ops());
+        return Ok(OpenGpuiDroppedWireInsertTransactionPlan {
+            insert,
+            node_id: instantiation.node_id,
+            target_port: candidate,
+            transaction: GraphTransaction::from_ops(ops).with_label(format!(
+                "{CREATE_NODE_TRANSACTION_LABEL} + {CONNECT_EDGE_TRANSACTION_LABEL}"
+            )),
+        });
+    }
+
+    Err(OpenGpuiDroppedWireInsertError::NoCompatibleTargetPort {
+        node_kind: insert.node_kind,
+        diagnostics,
+    })
+}
+
+/// Commits a dropped-wire insert selection through the normal Jellyflow store dispatch path.
+pub fn apply_dropped_wire_insert(
+    store: &mut NodeGraphStore,
+    registry: &NodeRegistry,
+    menu: &OpenGpuiMenuPlan,
+    action_key: &str,
+    source: ConnectionHandleRef,
+    pointer: CanvasPoint,
+    mode: NodeGraphConnectionMode,
+) -> Result<OpenGpuiDroppedWireInsertOutcome, OpenGpuiDroppedWireInsertError> {
+    let plan = plan_dropped_wire_insert_transaction(
+        store.graph(),
+        registry,
+        menu,
+        action_key,
+        source,
+        pointer,
+        mode,
+    )?;
+    let dispatch = store.dispatch_transaction(&plan.transaction)?;
+    Ok(OpenGpuiDroppedWireInsertOutcome { plan, dispatch })
+}
+
+fn dropped_wire_target_port_candidates(
+    graph: &Graph,
+    source: &ConnectionHandleRef,
+    ports: &[(PortId, jellyflow::core::Port)],
+) -> Result<Vec<PortId>, OpenGpuiDroppedWireInsertError> {
+    if !graph.ports().contains_key(&source.port) {
+        return Err(OpenGpuiDroppedWireInsertError::MissingSourcePort { port: source.port });
+    }
+    let opposite_direction = match source.direction {
+        PortDirection::In => PortDirection::Out,
+        PortDirection::Out => PortDirection::In,
+    };
+    Ok(ports
+        .iter()
+        .filter_map(|(id, port)| (port.dir == opposite_direction).then_some(*id))
+        .collect())
+}
+
+fn plan_dropped_wire_connection(
+    graph: &Graph,
+    source: PortId,
+    target: PortId,
+    mode: NodeGraphConnectionMode,
+    interaction: &jellyflow::runtime::io::NodeGraphInteractionState,
+) -> ConnectPlan {
+    let has_typed_endpoint = |port_id: PortId| {
+        graph
+            .ports()
+            .get(&port_id)
+            .is_some_and(|port| port.ty.is_some())
+    };
+    if has_typed_endpoint(source) || has_typed_endpoint(target) {
+        let mut compat = jellyflow::core::DefaultTypeCompatibility;
+        return plan_connect_typed_with_mode_and_policy(
+            graph,
+            source,
+            target,
+            mode,
+            interaction,
+            |graph, port| graph.ports().get(&port).and_then(|port| port.ty.clone()),
+            &mut compat,
+        );
+    }
+
+    plan_connect_with_mode_and_policy(graph, source, target, mode, interaction)
 }
 
 fn sorted_actions_for_surface(
@@ -354,10 +551,12 @@ fn shortcut_label(shortcut: &jellyflow::runtime::schema::ActionShortcut) -> Stri
 mod tests {
     use super::*;
     use jellyflow::{
+        NodeGraphStore,
         core::{CanvasPoint, NodeId, PortDirection, PortId},
+        runtime::io::{NodeGraphEditorConfig, NodeGraphViewState},
         runtime::schema::{
             ActionAvailability, MenuDescriptor, MenuSurface, NodeKitRegistry, NodeRegistry,
-            NodeSchema,
+            NodeSchema, PortDecl,
         },
     };
 
@@ -465,6 +664,150 @@ mod tests {
                 .iter()
                 .all(|action| action.key != "action.insert.llm")
         );
+    }
+
+    #[test]
+    fn dropped_wire_insert_transaction_creates_node_and_connects_source_atomically() {
+        let mut registry = NodeRegistry::new();
+        registry.register(
+            NodeSchema::builder("demo.source_out", "Source")
+                .port(PortDecl::data_output("out"))
+                .action(NodeActionDescriptor::new(
+                    "action.insert.target",
+                    "Insert target",
+                    ActionTarget::DroppedWire {
+                        source_port_key: Some("out".to_owned()),
+                    },
+                    ActionIntent::InsertNode {
+                        node_kind: "demo.target_in".to_owned(),
+                    },
+                ))
+                .build(),
+        );
+        registry.register(
+            NodeSchema::builder("demo.target_in", "Target")
+                .port(PortDecl::data_input("in"))
+                .build(),
+        );
+        let mut store = NodeGraphStore::new(
+            jellyflow::core::Graph::new(jellyflow::core::GraphId::from_u128(1)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let source = store
+            .apply_create_node_from_schema(
+                &registry,
+                jellyflow::runtime::runtime::create_node::CreateNodeRequest::new(
+                    jellyflow::core::NodeKindKey::new("demo.source_out"),
+                    CanvasPoint { x: 0.0, y: 0.0 },
+                ),
+            )
+            .expect("source node creates");
+        let source_node = source.node_id();
+        let source_port = source.port_ids().next().expect("source output exists");
+        let handle = ConnectionHandleRef::new(source_node, source_port, PortDirection::Out);
+        let menu = project_dropped_wire_menu(
+            &registry,
+            handle,
+            Some(&PortKey::new("out")),
+            CanvasPoint { x: 240.0, y: 96.0 },
+        );
+
+        let outcome = apply_dropped_wire_insert(
+            &mut store,
+            &registry,
+            &menu,
+            "action.insert.target",
+            handle,
+            CanvasPoint { x: 240.0, y: 96.0 },
+            jellyflow::core::NodeGraphConnectionMode::Strict,
+        )
+        .expect("dropped-wire insert should commit");
+
+        assert_eq!(outcome.plan.insert.node_kind, "demo.target_in");
+        assert!(store.graph().nodes().contains_key(&outcome.plan.node_id));
+        assert_eq!(store.graph().edges().len(), 1);
+        assert_eq!(
+            outcome.dispatch.committed().label(),
+            Some("create node + connect edge")
+        );
+        assert!(matches!(
+            outcome.dispatch.committed().ops(),
+            [
+                jellyflow::core::GraphOp::AddNode { .. },
+                jellyflow::core::GraphOp::AddPort { .. },
+                jellyflow::core::GraphOp::SetNodePorts { .. },
+                jellyflow::core::GraphOp::AddEdge { .. },
+            ]
+        ));
+    }
+
+    #[test]
+    fn dropped_wire_insert_rejection_leaves_graph_unchanged() {
+        let mut registry = NodeRegistry::new();
+        registry.register(
+            NodeSchema::builder("demo.source_out", "Source")
+                .port(PortDecl::data_output("out"))
+                .action(NodeActionDescriptor::new(
+                    "action.insert.bad",
+                    "Insert bad",
+                    ActionTarget::DroppedWire {
+                        source_port_key: Some("out".to_owned()),
+                    },
+                    ActionIntent::InsertNode {
+                        node_kind: "demo.inputless".to_owned(),
+                    },
+                ))
+                .build(),
+        );
+        registry.register(
+            NodeSchema::builder("demo.inputless", "Inputless")
+                .port(PortDecl::data_output("out"))
+                .build(),
+        );
+        let mut store = NodeGraphStore::new(
+            jellyflow::core::Graph::new(jellyflow::core::GraphId::from_u128(2)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let source = store
+            .apply_create_node_from_schema(
+                &registry,
+                jellyflow::runtime::runtime::create_node::CreateNodeRequest::new(
+                    jellyflow::core::NodeKindKey::new("demo.source_out"),
+                    CanvasPoint::default(),
+                ),
+            )
+            .expect("source creates");
+        let source_port = source.port_ids().next().expect("source port exists");
+        let before_nodes = store.graph().nodes().len();
+        let before_ports = store.graph().ports().len();
+        let handle = ConnectionHandleRef::new(source.node_id(), source_port, PortDirection::Out);
+        let menu = project_dropped_wire_menu(
+            &registry,
+            handle,
+            Some(&PortKey::new("out")),
+            CanvasPoint { x: 64.0, y: 96.0 },
+        );
+
+        let error = apply_dropped_wire_insert(
+            &mut store,
+            &registry,
+            &menu,
+            "action.insert.bad",
+            handle,
+            CanvasPoint { x: 64.0, y: 96.0 },
+            jellyflow::core::NodeGraphConnectionMode::Strict,
+        )
+        .expect_err("inputless insert should be rejected before dispatch");
+
+        assert!(matches!(
+            error,
+            OpenGpuiDroppedWireInsertError::NoCompatibleTargetPort { .. }
+        ));
+        assert_eq!(store.graph().nodes().len(), before_nodes);
+        assert_eq!(store.graph().ports().len(), before_ports);
+        assert!(store.graph().edges().is_empty());
     }
 
     #[test]
