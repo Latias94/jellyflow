@@ -930,6 +930,21 @@ fn shader_texture_sample_schema() -> NodeSchema {
 }
 
 fn shader_mix_schema() -> NodeSchema {
+    let shader_properties =
+        NodeRepeatableCollectionDescriptor::new("shader.properties", "properties", "id")
+            .with_item_template_slot(
+                NodeSurfaceSlotDescriptor::field_row("property")
+                    .with_label("Property")
+                    .with_slot("properties")
+                    .with_control(
+                        NodeControlDescriptor::text_input("control.property.name")
+                            .with_label("Name")
+                            .with_binding(NodeControlBinding::data_path("name")),
+                    ),
+            )
+            .with_anchor_rule(NodeRepeatableAnchorRule::new("property", "property"))
+            .with_add_action("action.shader_property.add");
+
     NodeSchema::builder("demo.shader.mix", "Mix")
         .category(["Shader", "Blueprint"])
         .keywords(["shader", "mix", "lerp", "blueprint"])
@@ -1043,6 +1058,7 @@ fn shader_mix_schema() -> NodeSchema {
                 .with_remove_action("action.shader_input.remove")
                 .with_reorder_action("action.shader_input.reorder"),
         )
+        .repeatable_collection(shader_properties.clone())
         .action(
             NodeActionDescriptor::new(
                 "action.shader_input.add",
@@ -1102,19 +1118,7 @@ fn shader_mix_schema() -> NodeSchema {
             BlackboardDescriptor::new(
                 "blackboard.shader.properties",
                 "Shader properties",
-                NodeRepeatableCollectionDescriptor::new("shader.properties", "properties", "id")
-                    .with_item_template_slot(
-                        NodeSurfaceSlotDescriptor::field_row("property")
-                            .with_label("Property")
-                            .with_slot("properties")
-                            .with_control(
-                                NodeControlDescriptor::text_input("control.property.name")
-                                    .with_label("Name")
-                                    .with_binding(NodeControlBinding::data_path("name")),
-                            ),
-                    )
-                    .with_anchor_rule(NodeRepeatableAnchorRule::new("property", "property"))
-                    .with_add_action("action.shader_property.add"),
+                shader_properties,
             )
             .with_action_key("action.shader_property.add"),
         )
