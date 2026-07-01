@@ -17,9 +17,9 @@ use crate::{
     OpenGpuiAuthoringOutcome, OpenGpuiControlEditPlan, OpenGpuiControlEventValue,
     OpenGpuiControlPlan, OpenGpuiDroppedWireInsertPlan, OpenGpuiMeasurementId, OpenGpuiMenuPlan,
     OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
-    OpenGpuiRepeatableSurfaceLayout, OpenGpuiRepeatableSurfaceProjection, plan_dropped_wire_insert,
-    project_actions_for_surface, project_dropped_wire_menu, project_menu, project_slot_controls,
-    repeatable_item_projection, repeatable_surface_projection,
+    OpenGpuiRepeatableSurfaceLayout, OpenGpuiRepeatableSurfaceProjection, element_ids,
+    plan_dropped_wire_insert, project_actions_for_surface, project_dropped_wire_menu, project_menu,
+    project_slot_controls, repeatable_item_projection, repeatable_surface_projection,
 };
 
 /// Registration metadata for one Open GPUI custom node renderer.
@@ -40,6 +40,9 @@ impl OpenGpuiNodeRendererRegistration {
         }
     }
 }
+
+pub type OpenGpuiNodeRendererTable<Services, Output> =
+    BTreeMap<String, Box<dyn for<'a> Fn(&OpenGpuiNodeRendererHostContext<'a, Services>) -> Output>>;
 
 /// Adapter-local registry for deciding whether a semantic renderer key has a GPUI host renderer.
 #[derive(Debug, Clone, Default)]
@@ -129,6 +132,58 @@ impl OpenGpuiNodeRendererRegistry {
             }
         }
     }
+
+    pub fn render_with_host<Services, Output, Fallback>(
+        &self,
+        context: &OpenGpuiNodeRendererContext,
+        services: &Services,
+        custom_renderers: &OpenGpuiNodeRendererTable<Services, Output>,
+        fallback: Fallback,
+    ) -> OpenGpuiNodeRendererOutput<Output>
+    where
+        Fallback: for<'a> FnOnce(
+            &OpenGpuiNodeRendererHostContext<'a, Services>,
+            OpenGpuiNodeRendererFallback,
+        ) -> Output,
+    {
+        match self.resolve(context) {
+            OpenGpuiNodeRendererResolution::Custom(registration) => {
+                if let Some(renderer) = custom_renderers.get(&registration.renderer_key) {
+                    let host_context =
+                        OpenGpuiNodeRendererHostContext::custom(context, services, &registration);
+                    OpenGpuiNodeRendererOutput {
+                        output: renderer(&host_context),
+                        source: OpenGpuiNodeRendererOutputSource::Custom(registration),
+                    }
+                } else {
+                    let fallback_reason = OpenGpuiNodeRendererFallback {
+                        renderer_key: registration.renderer_key,
+                        reason: OpenGpuiNodeRendererFallbackReason::MissingHostRenderer,
+                    };
+                    let host_context = OpenGpuiNodeRendererHostContext::for_fallback(
+                        context,
+                        services,
+                        &fallback_reason,
+                    );
+                    OpenGpuiNodeRendererOutput {
+                        output: fallback(&host_context, fallback_reason.clone()),
+                        source: OpenGpuiNodeRendererOutputSource::Fallback(fallback_reason),
+                    }
+                }
+            }
+            OpenGpuiNodeRendererResolution::Fallback(fallback_reason) => {
+                let host_context = OpenGpuiNodeRendererHostContext::for_fallback(
+                    context,
+                    services,
+                    &fallback_reason,
+                );
+                OpenGpuiNodeRendererOutput {
+                    output: fallback(&host_context, fallback_reason.clone()),
+                    source: OpenGpuiNodeRendererOutputSource::Fallback(fallback_reason),
+                }
+            }
+        }
+    }
 }
 
 /// Result of resolving a semantic renderer key against the adapter-local registry.
@@ -166,6 +221,167 @@ pub struct OpenGpuiNodeRendererOutput<Output> {
 pub enum OpenGpuiNodeRendererOutputSource {
     Custom(OpenGpuiNodeRendererRegistration),
     Fallback(OpenGpuiNodeRendererFallback),
+}
+
+/// Host-owned services plus semantic renderer context for one resolved node renderer.
+///
+/// The services type is generic so Open GPUI hosts can pass local dispatch handles,
+/// measurement collectors, weak entities, or test markers without this adapter crate importing
+/// concrete widget or event-loop types.
+#[derive(Debug)]
+pub struct OpenGpuiNodeRendererHostContext<'a, Services> {
+    semantic: &'a OpenGpuiNodeRendererContext,
+    services: &'a Services,
+    registration: Option<&'a OpenGpuiNodeRendererRegistration>,
+    fallback: Option<&'a OpenGpuiNodeRendererFallback>,
+}
+
+impl<'a, Services> OpenGpuiNodeRendererHostContext<'a, Services> {
+    pub fn new(
+        semantic: &'a OpenGpuiNodeRendererContext,
+        services: &'a Services,
+        registration: Option<&'a OpenGpuiNodeRendererRegistration>,
+        fallback: Option<&'a OpenGpuiNodeRendererFallback>,
+    ) -> Self {
+        Self {
+            semantic,
+            services,
+            registration,
+            fallback,
+        }
+    }
+
+    fn custom(
+        semantic: &'a OpenGpuiNodeRendererContext,
+        services: &'a Services,
+        registration: &'a OpenGpuiNodeRendererRegistration,
+    ) -> Self {
+        Self::new(semantic, services, Some(registration), None)
+    }
+
+    fn for_fallback(
+        semantic: &'a OpenGpuiNodeRendererContext,
+        services: &'a Services,
+        fallback: &'a OpenGpuiNodeRendererFallback,
+    ) -> Self {
+        Self::new(semantic, services, None, Some(fallback))
+    }
+
+    pub fn semantic(&self) -> &'a OpenGpuiNodeRendererContext {
+        self.semantic
+    }
+
+    pub fn services(&self) -> &'a Services {
+        self.services
+    }
+
+    pub fn registration(&self) -> Option<&'a OpenGpuiNodeRendererRegistration> {
+        self.registration
+    }
+
+    pub fn fallback(&self) -> Option<&'a OpenGpuiNodeRendererFallback> {
+        self.fallback
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.semantic.node_id
+    }
+
+    pub fn renderer_key(&self) -> &str {
+        &self.semantic.renderer_key
+    }
+
+    pub fn surface_slots(&self) -> &[NodeSurfaceSlotProjection] {
+        &self.semantic.surface_slots
+    }
+
+    pub fn repeatables(&self) -> &[OpenGpuiRepeatableSurfaceLayout] {
+        &self.semantic.repeatables
+    }
+
+    pub fn repeatable_items(&self) -> &[OpenGpuiRepeatableItemLayout] {
+        &self.semantic.repeatable_items
+    }
+
+    pub fn action_menus(&self) -> &[OpenGpuiMenuPlan] {
+        &self.semantic.action_menus
+    }
+
+    pub fn toolbar_menu(&self) -> &OpenGpuiMenuPlan {
+        &self.semantic.toolbar_menu
+    }
+
+    pub fn slot_measurement_id(&self, slot_key: impl Into<String>) -> OpenGpuiMeasurementId {
+        self.semantic.slot_measurement_id(slot_key)
+    }
+
+    pub fn control_measurement_id(
+        &self,
+        slot_key: impl AsRef<str>,
+        control_key: impl Into<String>,
+    ) -> OpenGpuiMeasurementId {
+        self.semantic.control_measurement_id(slot_key, control_key)
+    }
+
+    pub fn repeatable_item_measurement_id(
+        &self,
+        slot_key: impl Into<String>,
+        item_id: impl Into<String>,
+    ) -> OpenGpuiMeasurementId {
+        self.semantic
+            .repeatable_item_measurement_id(slot_key, item_id)
+    }
+
+    pub fn anchor_measurement_id(&self, anchor_key: impl Into<String>) -> OpenGpuiMeasurementId {
+        self.semantic.anchor_measurement_id(anchor_key)
+    }
+
+    pub fn control_element_id(
+        &self,
+        control_scope: impl AsRef<str>,
+        control_key: impl AsRef<str>,
+        index: usize,
+    ) -> String {
+        element_ids::open_gpui_control_element_id(
+            self.semantic.node_id,
+            control_scope,
+            control_key,
+            index,
+        )
+    }
+
+    pub fn action_button_element_id(
+        &self,
+        menu_key: impl AsRef<str>,
+        action_key: impl AsRef<str>,
+        index: usize,
+    ) -> String {
+        element_ids::open_gpui_action_button_element_id(
+            Some(self.semantic.node_id),
+            menu_key,
+            action_key,
+            index,
+        )
+    }
+
+    pub fn action_menu_element_id(
+        &self,
+        menu_key: impl AsRef<str>,
+        id_suffix: impl AsRef<str>,
+    ) -> String {
+        element_ids::open_gpui_action_menu_element_id(
+            Some(self.semantic.node_id),
+            menu_key,
+            id_suffix,
+        )
+    }
+
+    pub fn chrome_fallback_button_element_id(&self) -> String {
+        element_ids::open_gpui_chrome_fallback_button_element_id(
+            self.semantic.node_id,
+            &self.semantic.node_kind,
+        )
+    }
 }
 
 /// Renderer-neutral state that host-side GPUI node renderers commonly need.
@@ -595,6 +811,118 @@ mod tests {
             |context, fallback| format!("fallback:{}:{:?}", context.renderer_key, fallback.reason),
         );
         assert_eq!(output.output, "fallback:decision-card:MissingHostRenderer");
+    }
+
+    #[test]
+    fn renderer_facade_passes_semantic_context_ids_and_host_services() {
+        #[derive(Debug)]
+        struct HostServices {
+            marker: &'static str,
+        }
+
+        let registry = OpenGpuiNodeRendererRegistry::new().with_renderer("shader-card", "Shader");
+        let context = renderer_context("demo.shader.mix");
+        let services = HostServices {
+            marker: "layout-pass",
+        };
+        let mut renderers: OpenGpuiNodeRendererTable<HostServices, String> = BTreeMap::new();
+        renderers.insert(
+            "shader-card".to_owned(),
+            Box::new(|host| {
+                assert_eq!(host.services().marker, "layout-pass");
+                assert_eq!(
+                    host.registration()
+                        .map(|registration| registration.label.as_str()),
+                    Some("Shader")
+                );
+                assert!(!host.surface_slots().is_empty());
+                assert!(!host.repeatables().is_empty());
+                assert!(!host.repeatable_items().is_empty());
+
+                format!(
+                    "custom:{}:{}:{}:{}:{}:{}:{}",
+                    host.renderer_key(),
+                    host.surface_slots().len(),
+                    host.repeatables().len(),
+                    host.repeatable_items().len(),
+                    host.toolbar_menu().key,
+                    host.slot_measurement_id("shader.inputs").element_id(),
+                    host.control_element_id("shader.inputs", "control.name", 0)
+                )
+            }),
+        );
+
+        let output =
+            registry.render_with_host(&context, &services, &renderers, |host, fallback| {
+                format!("fallback:{}:{:?}", host.renderer_key(), fallback.reason)
+            });
+
+        assert!(output.output.starts_with("custom:shader-card:"));
+        assert!(output.output.contains(":jellyflow-node:"));
+        assert!(output.output.contains(":jellyflow-control:"));
+        assert!(matches!(
+            output.source,
+            OpenGpuiNodeRendererOutputSource::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn renderer_facade_reports_missing_host_and_unregistered_fallbacks() {
+        #[derive(Debug)]
+        struct HostServices {
+            marker: &'static str,
+        }
+
+        let context = renderer_context("demo.llm");
+        let services = HostServices { marker: "host" };
+        let renderers: OpenGpuiNodeRendererTable<HostServices, String> = BTreeMap::new();
+        let registry =
+            OpenGpuiNodeRendererRegistry::new().with_renderer("decision-card", "Decision");
+
+        let missing_host =
+            registry.render_with_host(&context, &services, &renderers, |host, fallback| {
+                assert_eq!(host.services().marker, "host");
+                assert_eq!(host.fallback(), Some(&fallback));
+                format!("fallback:{}:{:?}", host.renderer_key(), fallback.reason)
+            });
+        assert_eq!(
+            missing_host.output,
+            "fallback:decision-card:MissingHostRenderer"
+        );
+        assert!(matches!(
+            missing_host.source,
+            OpenGpuiNodeRendererOutputSource::Fallback(OpenGpuiNodeRendererFallback {
+                reason: OpenGpuiNodeRendererFallbackReason::MissingHostRenderer,
+                ..
+            })
+        ));
+
+        let mut unknown = context.clone();
+        unknown.renderer_key = "unknown-card".to_owned();
+        let unregistered =
+            registry.render_with_host(&unknown, &services, &renderers, |host, fallback| {
+                assert_eq!(
+                    host.chrome_fallback_button_element_id(),
+                    format!(
+                        "jellyflow-chrome-run-fallback:{}:{}",
+                        host.node_id().0,
+                        host.semantic().node_kind
+                    )
+                );
+                assert_eq!(host.fallback(), Some(&fallback));
+                format!("fallback:{}:{:?}", host.renderer_key(), fallback.reason)
+            });
+        assert_eq!(
+            unregistered.output,
+            "fallback:unknown-card:UnregisteredRenderer"
+        );
+        assert!(matches!(
+            unregistered.source,
+            OpenGpuiNodeRendererOutputSource::Fallback(OpenGpuiNodeRendererFallback {
+                reason: OpenGpuiNodeRendererFallbackReason::UnregisteredRenderer,
+                ..
+            })
+        ));
     }
 
     fn renderer_context(kind: &str) -> OpenGpuiNodeRendererContext {

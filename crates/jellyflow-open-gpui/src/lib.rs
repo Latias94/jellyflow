@@ -10,6 +10,7 @@ pub mod actions;
 pub mod adapter;
 pub mod authoring;
 pub mod controls;
+pub mod element_ids;
 pub mod inspector;
 mod json_binding;
 pub mod measurement;
@@ -39,6 +40,20 @@ pub use controls::{
     plan_control_edit, primitive_for_kind, project_control, project_slot_controls,
     support_for_primitive,
 };
+pub use element_ids::{
+    open_gpui_action_button_element_id, open_gpui_action_menu_element_id,
+    open_gpui_action_summary_element_id, open_gpui_blackboard_item_element_id,
+    open_gpui_blackboard_status_element_id, open_gpui_chrome_fallback_button_element_id,
+    open_gpui_control_element_id, open_gpui_custom_action_missing_element_id,
+    open_gpui_custom_renderer_badge_element_id, open_gpui_custom_repeatables_badge_element_id,
+    open_gpui_custom_slots_badge_element_id, open_gpui_node_element_scope,
+    open_gpui_repeatable_add_action_element_id, open_gpui_repeatable_collection_element_id,
+    open_gpui_repeatable_item_element_id, open_gpui_repeatable_remove_action_element_id,
+    open_gpui_repeatable_reorder_action_element_id, open_gpui_slot_action_button_element_id,
+    open_gpui_slot_action_label_element_id, open_gpui_slot_badge_element_id,
+    open_gpui_slot_preview_progress_element_id, open_gpui_slot_status_label_element_id,
+    open_gpui_slot_value_element_id,
+};
 pub use inspector::{
     OpenGpuiInspectorPlan, OpenGpuiInspectorSurface, OpenGpuiInspectorTargetBounds,
     OpenGpuiInspectorTargetSource, plan_inspector_control_edit, project_inspector,
@@ -60,10 +75,10 @@ pub use projection::{
 };
 pub use renderer::{
     OpenGpuiNodeRendererContext, OpenGpuiNodeRendererFallback, OpenGpuiNodeRendererFallbackReason,
-    OpenGpuiNodeRendererOutput, OpenGpuiNodeRendererOutputSource, OpenGpuiNodeRendererRegistration,
-    OpenGpuiNodeRendererRegistry, OpenGpuiNodeRendererResolution, OpenGpuiNodeRendererState,
-    open_gpui_node_renderer_context, open_gpui_renderer_repeatable_items,
-    open_gpui_renderer_repeatable_surfaces,
+    OpenGpuiNodeRendererHostContext, OpenGpuiNodeRendererOutput, OpenGpuiNodeRendererOutputSource,
+    OpenGpuiNodeRendererRegistration, OpenGpuiNodeRendererRegistry, OpenGpuiNodeRendererResolution,
+    OpenGpuiNodeRendererState, OpenGpuiNodeRendererTable, open_gpui_node_renderer_context,
+    open_gpui_renderer_repeatable_items, open_gpui_renderer_repeatable_surfaces,
 };
 pub use repeatable::{
     OpenGpuiDynamicPortPolicy, OpenGpuiRepeatableActionPlan, OpenGpuiRepeatableEditError,
