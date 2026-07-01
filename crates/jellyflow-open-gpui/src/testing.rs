@@ -18,6 +18,7 @@ use jellyflow::{
         },
     },
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     OpenGpuiActionSurface, OpenGpuiAdapter, OpenGpuiControlPrimitive, OpenGpuiDynamicPortPolicy,
@@ -51,12 +52,278 @@ pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdap
 }
 
 /// A builtin product shape that GPUI adapter regression gates must keep covering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenGpuiProductFixtureKind {
     DifyWorkflow,
     ShaderBlueprint,
     ErdTable,
     MindMap,
+}
+
+/// Product family covered by one Open GPUI gallery fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiProductFixtureFamily {
+    Workflow,
+    ShaderGraph,
+    Erd,
+    MindMap,
+}
+
+/// Widget-free catalog entry for one product-shaped Open GPUI gallery fixture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiProductFixtureCase {
+    pub id: String,
+    pub kind: OpenGpuiProductFixtureKind,
+    pub family: OpenGpuiProductFixtureFamily,
+    pub kit_key: String,
+    pub fixture_key: String,
+    pub expected_renderer_keys: BTreeSet<String>,
+    pub expected_capabilities: BTreeSet<String>,
+}
+
+/// Host-side source used to render one product surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiHostRendererSource {
+    ProductRenderer,
+    DescriptorFallback,
+    MissingHostRenderer,
+    UnregisteredRenderer,
+}
+
+/// Structured capability gap collected by an Open GPUI host report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiHostCapabilityGap {
+    RendererFallback,
+    UnsupportedControl,
+    AdvancedControlStub,
+    MissingMeasuredRegion,
+    PartialOrHiddenRegion,
+    MissingDynamicPort,
+}
+
+/// Host-level evidence for one rendered product node surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiHostSurfaceReportRow {
+    pub fixture_id: String,
+    pub fixture_kind: OpenGpuiProductFixtureKind,
+    pub family: OpenGpuiProductFixtureFamily,
+    pub node_kind: String,
+    pub renderer_key: String,
+    pub source: OpenGpuiHostRendererSource,
+    pub measured_slots: usize,
+    pub measured_anchors: usize,
+    pub unsupported_controls: BTreeSet<String>,
+    pub capability_gaps: BTreeSet<OpenGpuiHostCapabilityGap>,
+}
+
+impl OpenGpuiHostSurfaceReportRow {
+    pub fn new(
+        fixture: &OpenGpuiProductFixtureCase,
+        node_kind: impl Into<String>,
+        renderer_key: impl Into<String>,
+        source: OpenGpuiHostRendererSource,
+    ) -> Self {
+        let mut row = Self {
+            fixture_id: fixture.id.clone(),
+            fixture_kind: fixture.kind,
+            family: fixture.family,
+            node_kind: node_kind.into(),
+            renderer_key: renderer_key.into(),
+            source,
+            measured_slots: 0,
+            measured_anchors: 0,
+            unsupported_controls: BTreeSet::new(),
+            capability_gaps: BTreeSet::new(),
+        };
+        row.sync_source_gap();
+        row
+    }
+
+    pub fn with_measurement(mut self, measured_slots: usize, measured_anchors: usize) -> Self {
+        self.measured_slots = measured_slots;
+        self.measured_anchors = measured_anchors;
+        if measured_slots + measured_anchors == 0 {
+            self.capability_gaps
+                .insert(OpenGpuiHostCapabilityGap::MissingMeasuredRegion);
+        } else {
+            self.capability_gaps
+                .remove(&OpenGpuiHostCapabilityGap::MissingMeasuredRegion);
+        }
+        self
+    }
+
+    pub fn with_gap(mut self, gap: OpenGpuiHostCapabilityGap) -> Self {
+        self.capability_gaps.insert(gap);
+        self
+    }
+
+    pub fn with_unsupported_control(mut self, control_key: impl Into<String>) -> Self {
+        self.unsupported_controls.insert(control_key.into());
+        self.capability_gaps
+            .insert(OpenGpuiHostCapabilityGap::UnsupportedControl);
+        self
+    }
+
+    pub fn is_product_renderer(&self) -> bool {
+        self.source == OpenGpuiHostRendererSource::ProductRenderer
+    }
+
+    pub fn uses_renderer_fallback(&self) -> bool {
+        matches!(
+            self.source,
+            OpenGpuiHostRendererSource::DescriptorFallback
+                | OpenGpuiHostRendererSource::MissingHostRenderer
+                | OpenGpuiHostRendererSource::UnregisteredRenderer
+        )
+    }
+
+    fn sync_source_gap(&mut self) {
+        if self.uses_renderer_fallback() {
+            self.capability_gaps
+                .insert(OpenGpuiHostCapabilityGap::RendererFallback);
+        }
+    }
+}
+
+/// Host-level evidence for the real Open GPUI product gallery path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiHostSurfaceReport {
+    pub rows: Vec<OpenGpuiHostSurfaceReportRow>,
+}
+
+impl OpenGpuiHostSurfaceReport {
+    pub fn new(rows: impl IntoIterator<Item = OpenGpuiHostSurfaceReportRow>) -> Self {
+        Self {
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    pub fn push(&mut self, row: OpenGpuiHostSurfaceReportRow) {
+        self.rows.push(row);
+    }
+
+    pub fn rows_for_fixture(
+        &self,
+        fixture_id: &str,
+    ) -> impl Iterator<Item = &OpenGpuiHostSurfaceReportRow> {
+        self.rows
+            .iter()
+            .filter(move |row| row.fixture_id == fixture_id)
+    }
+
+    pub fn fallback_rows(&self) -> impl Iterator<Item = &OpenGpuiHostSurfaceReportRow> {
+        self.rows.iter().filter(|row| row.uses_renderer_fallback())
+    }
+}
+
+/// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
+pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
+    [
+        OpenGpuiProductFixtureKind::DifyWorkflow,
+        OpenGpuiProductFixtureKind::ShaderBlueprint,
+        OpenGpuiProductFixtureKind::ErdTable,
+        OpenGpuiProductFixtureKind::MindMap,
+    ]
+    .into_iter()
+    .map(OpenGpuiProductFixtureCase::from_kind)
+    .collect()
+}
+
+/// Assert that a host-level report is structurally valid and names all product cases.
+pub fn assert_host_surface_report_contract(report: &OpenGpuiHostSurfaceReport) {
+    assert!(
+        !report.rows.is_empty(),
+        "Open GPUI host surface report must contain rendered rows"
+    );
+    let catalog = product_fixture_catalog();
+    let fixture_ids = catalog
+        .iter()
+        .map(|fixture| fixture.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for fixture in &catalog {
+        assert!(
+            report.rows_for_fixture(&fixture.id).next().is_some(),
+            "host report is missing product fixture `{}`: {report:?}",
+            fixture.id
+        );
+    }
+    for row in &report.rows {
+        assert!(
+            fixture_ids.contains(row.fixture_id.as_str()),
+            "host report row uses unknown fixture id `{}`: {row:?}",
+            row.fixture_id
+        );
+        assert!(
+            !row.node_kind.is_empty(),
+            "host report row must name a node kind: {row:?}"
+        );
+        assert!(
+            !row.renderer_key.is_empty(),
+            "host report row must name a renderer key: {row:?}"
+        );
+        if row.uses_renderer_fallback() {
+            assert!(
+                row.capability_gaps
+                    .contains(&OpenGpuiHostCapabilityGap::RendererFallback),
+                "fallback renderer rows must carry RendererFallback gap: {row:?}"
+            );
+        }
+        if !row.unsupported_controls.is_empty() {
+            assert!(
+                row.capability_gaps
+                    .contains(&OpenGpuiHostCapabilityGap::UnsupportedControl),
+                "unsupported control rows must carry UnsupportedControl gap: {row:?}"
+            );
+        }
+        if row.measured_slots + row.measured_anchors == 0 {
+            assert!(
+                row.capability_gaps
+                    .contains(&OpenGpuiHostCapabilityGap::MissingMeasuredRegion),
+                "unmeasured rows must carry MissingMeasuredRegion gap: {row:?}"
+            );
+        }
+    }
+}
+
+/// Assert that every product fixture has at least one host product renderer row.
+pub fn assert_product_gallery_host_report_gates(report: &OpenGpuiHostSurfaceReport) {
+    assert_host_surface_report_contract(report);
+    for fixture in product_fixture_catalog() {
+        assert!(
+            report.rows_for_fixture(&fixture.id).any(|row| {
+                row.is_product_renderer()
+                    && fixture
+                        .expected_renderer_keys
+                        .contains(row.renderer_key.as_str())
+            }),
+            "fixture `{}` must be rendered by one of {:?}: {report:?}",
+            fixture.id,
+            fixture.expected_renderer_keys
+        );
+    }
+}
+
+impl OpenGpuiProductFixtureCase {
+    pub fn from_kind(kind: OpenGpuiProductFixtureKind) -> Self {
+        let spec = ProductFixtureSpec::for_kind(kind);
+        Self {
+            id: spec.id.to_owned(),
+            kind,
+            family: spec.family,
+            kit_key: spec.kit_key.to_owned(),
+            fixture_key: spec.fixture_key.to_owned(),
+            expected_renderer_keys: spec
+                .expected_renderer_keys
+                .iter()
+                .map(|key| (*key).to_owned())
+                .collect(),
+            expected_capabilities: spec
+                .expected_capabilities
+                .iter()
+                .map(|capability| (*capability).to_owned())
+                .collect(),
+        }
+    }
 }
 
 /// Adapter-level evidence collected for one builtin product fixture.
@@ -1212,28 +1479,66 @@ fn assert_rect_inside_node(rect: CanvasRect, size: CanvasSize, node_label: &str,
 }
 
 struct ProductFixtureSpec {
+    id: &'static str,
+    family: OpenGpuiProductFixtureFamily,
     kit_key: &'static str,
     fixture_key: &'static str,
+    expected_renderer_keys: &'static [&'static str],
+    expected_capabilities: &'static [&'static str],
 }
 
 impl ProductFixtureSpec {
     fn for_kind(kind: OpenGpuiProductFixtureKind) -> Self {
         match kind {
             OpenGpuiProductFixtureKind::DifyWorkflow => Self {
+                id: "workflow.review",
+                family: OpenGpuiProductFixtureFamily::Workflow,
                 kit_key: "workflow.automation",
                 fixture_key: "workflow.review",
+                expected_renderer_keys: &["decision-card"],
+                expected_capabilities: &[
+                    "controls",
+                    "actions",
+                    "repeatables",
+                    "inspector",
+                    "dropped-wire",
+                ],
             },
             OpenGpuiProductFixtureKind::ShaderBlueprint => Self {
+                id: "shader.material_mix",
+                family: OpenGpuiProductFixtureFamily::ShaderGraph,
                 kit_key: "shader.blueprint",
                 fixture_key: "shader.material_mix",
+                expected_renderer_keys: &["shader-card"],
+                expected_capabilities: &[
+                    "controls",
+                    "repeatables",
+                    "dynamic-ports",
+                    "blackboard",
+                    "invalid-hover",
+                ],
             },
             OpenGpuiProductFixtureKind::ErdTable => Self {
+                id: "erd.customer_orders",
+                family: OpenGpuiProductFixtureFamily::Erd,
                 kit_key: "erd.table",
                 fixture_key: "erd.customer_orders",
+                expected_renderer_keys: &["table-card"],
+                expected_capabilities: &[
+                    "controls",
+                    "repeatables",
+                    "dynamic-ports",
+                    "inspector",
+                    "resize",
+                ],
             },
             OpenGpuiProductFixtureKind::MindMap => Self {
+                id: "mind-map.strategy",
+                family: OpenGpuiProductFixtureFamily::MindMap,
                 kit_key: "mind-map.knowledge-canvas",
                 fixture_key: "mind-map.strategy",
+                expected_renderer_keys: &["topic-card", "source-card"],
+                expected_capabilities: &["controls", "preview", "shell", "actions"],
             },
         }
     }
@@ -1262,5 +1567,121 @@ mod tests {
     #[test]
     fn interaction_fixtures_cover_gpui_authoring_states() {
         assert_authoring_interaction_regression_gates();
+    }
+
+    #[test]
+    fn product_fixture_catalog_lists_stable_gallery_cases() {
+        let catalog = product_fixture_catalog();
+        assert_eq!(catalog.len(), 4);
+        assert!(catalog.iter().any(|fixture| {
+            fixture.id == "workflow.review"
+                && fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow
+                && fixture.family == OpenGpuiProductFixtureFamily::Workflow
+                && fixture.kit_key == "workflow.automation"
+                && fixture.expected_renderer_keys.contains("decision-card")
+        }));
+        assert!(catalog.iter().any(|fixture| {
+            fixture.id == "shader.material_mix"
+                && fixture.family == OpenGpuiProductFixtureFamily::ShaderGraph
+                && fixture.expected_renderer_keys.contains("shader-card")
+                && fixture.expected_capabilities.contains("dynamic-ports")
+        }));
+        assert!(catalog.iter().any(|fixture| {
+            fixture.id == "erd.customer_orders"
+                && fixture.family == OpenGpuiProductFixtureFamily::Erd
+                && fixture.expected_renderer_keys.contains("table-card")
+        }));
+        assert!(catalog.iter().any(|fixture| {
+            fixture.id == "mind-map.strategy"
+                && fixture.family == OpenGpuiProductFixtureFamily::MindMap
+                && fixture.expected_renderer_keys.contains("topic-card")
+                && fixture.expected_renderer_keys.contains("source-card")
+        }));
+
+        let encoded = serde_json::to_string(&catalog[0]).expect("catalog case serializes");
+        assert!(encoded.contains("workflow.review"));
+    }
+
+    #[test]
+    fn host_surface_report_contract_marks_fallback_and_gaps() {
+        let fixtures = product_fixture_catalog();
+        let mut report = OpenGpuiHostSurfaceReport::default();
+        for fixture in &fixtures {
+            let mut row = OpenGpuiHostSurfaceReportRow::new(
+                fixture,
+                format!("node.{}", fixture.id),
+                fixture
+                    .expected_renderer_keys
+                    .iter()
+                    .next()
+                    .expect("expected renderer")
+                    .clone(),
+                OpenGpuiHostRendererSource::ProductRenderer,
+            )
+            .with_measurement(2, 1);
+            if fixture.kind == OpenGpuiProductFixtureKind::ShaderBlueprint {
+                row = OpenGpuiHostSurfaceReportRow::new(
+                    fixture,
+                    "demo.shader.mix",
+                    "shader-card",
+                    OpenGpuiHostRendererSource::MissingHostRenderer,
+                )
+                .with_measurement(0, 0)
+                .with_unsupported_control("control.color");
+            }
+            report.push(row);
+        }
+
+        assert_host_surface_report_contract(&report);
+        let shader = report
+            .rows_for_fixture("shader.material_mix")
+            .next()
+            .expect("shader report row");
+        assert!(shader.uses_renderer_fallback());
+        assert!(
+            shader
+                .capability_gaps
+                .contains(&OpenGpuiHostCapabilityGap::RendererFallback)
+        );
+        assert!(
+            shader
+                .capability_gaps
+                .contains(&OpenGpuiHostCapabilityGap::UnsupportedControl)
+        );
+        assert!(
+            shader
+                .capability_gaps
+                .contains(&OpenGpuiHostCapabilityGap::MissingMeasuredRegion)
+        );
+        assert!(serde_json::to_string(&report).is_ok());
+    }
+
+    #[test]
+    fn strict_gallery_gate_rejects_product_renderer_fallbacks() {
+        let fixtures = product_fixture_catalog();
+        let report = OpenGpuiHostSurfaceReport::new(fixtures.iter().map(|fixture| {
+            OpenGpuiHostSurfaceReportRow::new(
+                fixture,
+                format!("node.{}", fixture.id),
+                fixture
+                    .expected_renderer_keys
+                    .iter()
+                    .next()
+                    .expect("expected renderer")
+                    .clone(),
+                if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
+                    OpenGpuiHostRendererSource::ProductRenderer
+                } else {
+                    OpenGpuiHostRendererSource::DescriptorFallback
+                },
+            )
+            .with_measurement(1, 1)
+        }));
+
+        let result = std::panic::catch_unwind(|| assert_product_gallery_host_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "strict gallery gate must fail while product renderers are missing"
+        );
     }
 }
