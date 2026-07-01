@@ -1,4 +1,8 @@
-use jellyflow::core::{Node, NodeId};
+use jellyflow::{
+    NodeGraphStore,
+    core::{Node, NodeId},
+    runtime::schema::NodeRegistry,
+};
 use serde_json::{Number, Value};
 
 use crate::{
@@ -93,6 +97,12 @@ pub enum OpenGpuiAuthoringSkipReason {
         action_key: String,
         reason: Option<String>,
     },
+    MissingNode {
+        node_id: String,
+    },
+    MissingNodeDescriptor {
+        node_kind: String,
+    },
 }
 
 impl OpenGpuiAuthoringController {
@@ -123,6 +133,31 @@ impl OpenGpuiAuthoringController {
             }
         };
         self.plan_control_value_edit(node_id, node, control, value)
+    }
+
+    pub fn plan_store_control_event(
+        &self,
+        store: &NodeGraphStore,
+        registry: &NodeRegistry,
+        node_id: NodeId,
+        control: &OpenGpuiControlPlan,
+        event: OpenGpuiControlEventValue,
+    ) -> Result<OpenGpuiAuthoringOutcome<OpenGpuiControlEditPlan>, String> {
+        let Some(node) = store.graph().nodes().get(&node_id) else {
+            return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                OpenGpuiAuthoringSkipReason::MissingNode {
+                    node_id: format!("{node_id:?}"),
+                },
+            ));
+        };
+        if registry.view_descriptor(&node.kind).is_none() {
+            return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                OpenGpuiAuthoringSkipReason::MissingNodeDescriptor {
+                    node_kind: node.kind.0.clone(),
+                },
+            ));
+        }
+        self.plan_control_event(node_id, node, control, event)
     }
 
     pub fn plan_control_value_edit(
@@ -395,12 +430,15 @@ fn json_number(value: f64, control_key: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
     use jellyflow::{
-        core::{CanvasPoint, CanvasSize, GraphOp, NodeKindKey},
+        NodeGraphStore,
+        core::{CanvasPoint, CanvasSize, Graph, GraphId, GraphOp, GraphTransaction, NodeKindKey},
         runtime::{
+            io::{NodeGraphEditorConfig, NodeGraphViewState},
+            runtime::create_node::CreateNodeRequest,
             runtime::measurement::NodeInternalsInvalidationReason,
             schema::{
                 ActionIntent, ActionTarget, InspectorTarget, MenuSurface, NodeControlBinding,
-                NodeControlDescriptor, NodeControlOption,
+                NodeControlDescriptor, NodeControlOption, NodeKitRegistry,
             },
         },
     };
@@ -643,6 +681,168 @@ mod tests {
             OpenGpuiAuthoringSkipReason::MissingSelectOption {
                 control_key: "control.mode".to_owned(),
                 option_key: "\"missing\"".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    fn store_control_events_read_current_store_before_planning_each_edit() {
+        let controller = OpenGpuiAuthoringController;
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let mut store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(10)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let outcome = store
+            .apply_create_node_from_schema(
+                &registry,
+                CreateNodeRequest::new(NodeKindKey::new("demo.llm"), CanvasPoint::default()),
+            )
+            .expect("create llm node");
+        let node_id = outcome.node_id();
+        let descriptor = registry
+            .view_descriptor(&NodeKindKey::new("demo.llm"))
+            .expect("llm descriptor");
+        let initial_node = store.graph().nodes().get(&node_id).expect("llm node");
+        let prompt_slot = descriptor
+            .surface_slot("field.prompt")
+            .expect("prompt slot");
+        let model_slot = descriptor.surface_slot("badge.model").expect("model slot");
+        let prompt = crate::project_slot_controls(&initial_node.data, prompt_slot)
+            .into_iter()
+            .find(|control| control.key == "control.prompt")
+            .expect("prompt control");
+        let model = crate::project_slot_controls(&initial_node.data, model_slot)
+            .into_iter()
+            .find(|control| control.key == "control.model")
+            .expect("model control");
+
+        let prompt_plan = controller
+            .plan_store_control_event(
+                &store,
+                &registry,
+                node_id,
+                &prompt,
+                OpenGpuiControlEventValue::Text("Keep this prompt".to_owned()),
+            )
+            .expect("prompt edit")
+            .into_plan()
+            .expect("prompt plan");
+        store
+            .dispatch_transaction(&prompt_plan.transaction)
+            .expect("prompt transaction");
+
+        let option = model
+            .options
+            .iter()
+            .find(|option| option.label == "GPT 4.1")
+            .expect("model option");
+        let model_plan = controller
+            .plan_store_control_event(
+                &store,
+                &registry,
+                node_id,
+                &model,
+                OpenGpuiControlEventValue::SelectOptionKey(control_option_key(option)),
+            )
+            .expect("model edit")
+            .into_plan()
+            .expect("model plan");
+        store
+            .dispatch_transaction(&model_plan.transaction)
+            .expect("model transaction");
+
+        let data = &store.graph().nodes().get(&node_id).expect("llm node").data;
+        assert_eq!(
+            data.pointer("/fields/prompt"),
+            Some(&json!("Keep this prompt"))
+        );
+        assert_eq!(data.pointer("/meta/model"), Some(&json!("gpt-4.1")));
+    }
+
+    #[test]
+    fn store_control_events_report_missing_node_and_descriptor() {
+        let controller = OpenGpuiAuthoringController;
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let empty_store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(11)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let control = project_control(
+            &json!({ "value": "old" }),
+            &NodeControlDescriptor::text_input("control.value")
+                .with_binding(NodeControlBinding::data_path("value")),
+            OpenGpuiControlProjectionContext::default(),
+        );
+        assert_skip_reason(
+            controller
+                .plan_store_control_event(
+                    &empty_store,
+                    &registry,
+                    NodeId::from_u128(99),
+                    &control,
+                    OpenGpuiControlEventValue::Text("new".to_owned()),
+                )
+                .expect("missing node"),
+            OpenGpuiAuthoringSkipReason::MissingNode {
+                node_id: format!("{:?}", NodeId::from_u128(99)),
+            },
+        );
+
+        let graph = Graph::new(GraphId::from_u128(12));
+        let node_id = NodeId::from_u128(12);
+        let mut store = NodeGraphStore::new(
+            graph,
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        store
+            .dispatch_transaction(&GraphTransaction::from_ops([GraphOp::AddNode {
+                id: node_id,
+                node: Node {
+                    kind: NodeKindKey::new("missing.kind"),
+                    kind_version: 1,
+                    pos: CanvasPoint::default(),
+                    origin: None,
+                    selectable: None,
+                    focusable: None,
+                    draggable: None,
+                    connectable: None,
+                    deletable: None,
+                    parent: None,
+                    extent: None,
+                    expand_parent: None,
+                    size: None,
+                    hidden: false,
+                    collapsed: false,
+                    ports: Vec::new(),
+                    data: json!({ "value": "old" }),
+                },
+            }]))
+            .expect("insert missing descriptor node");
+        assert_eq!(
+            store
+                .graph()
+                .nodes()
+                .get(&node_id)
+                .expect("inserted node")
+                .kind,
+            NodeKindKey::new("missing.kind")
+        );
+        assert_skip_reason(
+            controller
+                .plan_store_control_event(
+                    &store,
+                    &registry,
+                    node_id,
+                    &control,
+                    OpenGpuiControlEventValue::Text("new".to_owned()),
+                )
+                .expect("missing descriptor"),
+            OpenGpuiAuthoringSkipReason::MissingNodeDescriptor {
+                node_kind: "missing.kind".to_owned(),
             },
         );
     }
