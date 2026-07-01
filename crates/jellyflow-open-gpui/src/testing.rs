@@ -3,24 +3,32 @@
 use std::collections::BTreeSet;
 
 use jellyflow::{
-    core::{CanvasRect, CanvasSize, Node, NodeId, NodeKindKey, PortKey},
+    core::{
+        CanvasRect, CanvasSize, DefaultTypeCompatibility, Graph, GraphBuilder, GraphId, GraphOp,
+        Node, NodeId, NodeKindKey, PortId, PortKey,
+    },
     runtime::{
         runtime::{
             conformance::{ConformanceCapabilityKind, ConformanceSupportLevel},
-            measurement::NodeMeasurement,
+            measurement::{MeasuredSurfaceSlot, NodeMeasurement},
         },
-        schema::{NodeKindViewDescriptor, NodeKitKey, NodeKitRegistry, NodeRegistry},
+        schema::{
+            NodeKindViewDescriptor, NodeKitContentDensity, NodeKitKey, NodeKitRegistry,
+            NodeRegistry,
+        },
     },
 };
 
 use crate::{
-    OpenGpuiActionSurface, OpenGpuiAdapter, OpenGpuiControlPrimitive, OpenGpuiInspectorSurface,
-    OpenGpuiMeasuredRegion, OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage,
-    OpenGpuiMeasurementId, OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout,
+    OpenGpuiActionSurface, OpenGpuiAdapter, OpenGpuiControlPrimitive, OpenGpuiDynamicPortPolicy,
+    OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource, OpenGpuiMeasuredRegion,
+    OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
+    OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableActionPlan,
     OpenGpuiRepeatablePortDiagnostic, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
-    layout_pass_measurement_from_regions, measured_surface_anchors, primitive_for_kind,
-    project_actions_for_surface, project_node_measurement, project_slot_controls,
-    projected_node_surface_graph_layout, repeatable_item_projection, repeatable_port_diagnostics,
+    layout_pass_measurement_from_regions, measured_surface_anchors, plan_repeatable_action,
+    primitive_for_kind, project_actions_for_surface, project_blackboards_for_descriptor,
+    project_node_measurement, project_slot_controls, projected_node_surface_graph_layout,
+    repeatable_item_projection, repeatable_port_diagnostics, resolve_inspector_target_bounds,
 };
 
 pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdapter) {
@@ -57,6 +65,9 @@ pub struct OpenGpuiProductFixtureReport {
     pub kind: OpenGpuiProductFixtureKind,
     pub kit_key: String,
     pub fixture_key: String,
+    pub density_modes: BTreeSet<&'static str>,
+    pub region_sources: BTreeSet<&'static str>,
+    pub resize_probe_count: usize,
     pub node_count: usize,
     pub measured_nodes: usize,
     pub slot_count: usize,
@@ -65,10 +76,24 @@ pub struct OpenGpuiProductFixtureReport {
     pub missing_dynamic_ports: Vec<OpenGpuiRepeatablePortDiagnostic>,
     pub actions: BTreeSet<String>,
     pub inspectors: BTreeSet<String>,
+    pub blackboards: BTreeSet<String>,
     pub control_primitives: BTreeSet<&'static str>,
     pub measured_control_regions: usize,
     pub measurement_mode: OpenGpuiMeasurementMode,
     pub measurement_coverage: OpenGpuiMeasurementCoverage,
+}
+
+/// Adapter-level evidence for user-facing authoring interaction paths.
+#[derive(Debug, Clone, Default)]
+pub struct OpenGpuiAuthoringInteractionReport {
+    pub dropped_wire_actions: BTreeSet<String>,
+    pub node_actions: BTreeSet<String>,
+    pub inspector_target_sources: BTreeSet<&'static str>,
+    pub inspector_actions: BTreeSet<String>,
+    pub blackboard_actions: BTreeSet<String>,
+    pub repeatable_mutations: BTreeSet<&'static str>,
+    pub invalid_hover_rejections: usize,
+    pub editable_control_regions: usize,
 }
 
 /// Build adapter-level regression evidence for one builtin product fixture.
@@ -85,6 +110,9 @@ pub fn product_fixture_report(
         kind,
         kit_key: spec.kit_key.to_owned(),
         fixture_key: spec.fixture_key.to_owned(),
+        density_modes: BTreeSet::new(),
+        region_sources: BTreeSet::new(),
+        resize_probe_count: 0,
         node_count: graph.nodes().len(),
         measured_nodes: 0,
         slot_count: 0,
@@ -93,6 +121,7 @@ pub fn product_fixture_report(
         missing_dynamic_ports: Vec::new(),
         actions: BTreeSet::new(),
         inspectors: BTreeSet::new(),
+        blackboards: BTreeSet::new(),
         control_primitives: BTreeSet::new(),
         measured_control_regions: 0,
         measurement_mode: OpenGpuiMeasurementMode::ProjectionFallback,
@@ -103,9 +132,12 @@ pub fn product_fixture_report(
         let Some(descriptor) = node_registry.view_descriptor(&node.kind) else {
             continue;
         };
+        collect_density_modes(&mut report, kit_registry.layout_hints_for_kind(&node.kind));
+        report.region_sources.insert("projection_fallback");
         let size = node_size(node);
         let layout = projected_node_surface_graph_layout(&descriptor, node, &graph, node_id, size);
         assert_layout_regions_inside_node(&layout, size, &descriptor.kind.0);
+        collect_resize_probe(&mut report, &descriptor, node, &graph, node_id, size);
         let measurement = project_node_measurement(node_id, node, &graph, &descriptor);
         assert_measurement_inside_node(&measurement, size, &descriptor.kind.0);
 
@@ -131,6 +163,12 @@ pub fn product_fixture_report(
                 .iter()
                 .map(|inspector| inspector.key.clone()),
         );
+        report.blackboards.extend(
+            descriptor
+                .blackboards
+                .iter()
+                .map(|blackboard| blackboard.key.clone()),
+        );
         collect_control_primitives(&mut report, &descriptor, node);
     }
 
@@ -151,6 +189,9 @@ pub fn layout_pass_product_fixture_report(
         kind,
         kit_key: spec.kit_key.to_owned(),
         fixture_key: spec.fixture_key.to_owned(),
+        density_modes: BTreeSet::new(),
+        region_sources: BTreeSet::new(),
+        resize_probe_count: 0,
         node_count: graph.nodes().len(),
         measured_nodes: 0,
         slot_count: 0,
@@ -159,6 +200,7 @@ pub fn layout_pass_product_fixture_report(
         missing_dynamic_ports: Vec::new(),
         actions: BTreeSet::new(),
         inspectors: BTreeSet::new(),
+        blackboards: BTreeSet::new(),
         control_primitives: BTreeSet::new(),
         measured_control_regions: 0,
         measurement_mode: OpenGpuiMeasurementMode::LayoutPass,
@@ -169,8 +211,10 @@ pub fn layout_pass_product_fixture_report(
         let Some(descriptor) = node_registry.view_descriptor(&node.kind) else {
             continue;
         };
+        collect_density_modes(&mut report, kit_registry.layout_hints_for_kind(&node.kind));
         let size = node_size(node);
         let layout = projected_node_surface_graph_layout(&descriptor, node, &graph, node_id, size);
+        collect_resize_probe(&mut report, &descriptor, node, &graph, node_id, size);
         let (regions, control_regions) = layout_pass_regions_for_node(node_id, node, &layout);
         let fallback_anchors = measured_surface_anchors(&descriptor, &graph, node_id, &layout);
         if regions.is_empty() && fallback_anchors.is_empty() {
@@ -193,6 +237,7 @@ pub fn layout_pass_product_fixture_report(
         report.anchor_count += measurement.anchors.len();
         report.measured_control_regions += control_regions;
         accumulate_coverage(&mut report.measurement_coverage, coverage);
+        sync_region_sources(&mut report);
 
         let repeatable_items = repeatable_item_projection(&descriptor, node, &graph, node_id);
         report.repeatable_item_count += repeatable_items.len();
@@ -208,6 +253,12 @@ pub fn layout_pass_product_fixture_report(
                 .iter()
                 .map(|inspector| inspector.key.clone()),
         );
+        report.blackboards.extend(
+            descriptor
+                .blackboards
+                .iter()
+                .map(|blackboard| blackboard.key.clone()),
+        );
         collect_control_primitives(&mut report, &descriptor, node);
     }
 
@@ -221,6 +272,8 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(workflow.node_count >= 4);
     assert!(workflow.measured_nodes >= 4);
     assert!(workflow.slot_count >= 1);
+    assert_density_and_resize_evidence(&workflow);
+    assert!(workflow.region_sources.contains("projection_fallback"));
     assert_eq!(
         workflow.measurement_mode,
         OpenGpuiMeasurementMode::ProjectionFallback
@@ -260,6 +313,8 @@ pub fn assert_product_fixture_regression_gates() {
         dify_layout.measurement_mode,
         OpenGpuiMeasurementMode::LayoutPass
     );
+    assert_density_and_resize_evidence(&dify_layout);
+    assert!(dify_layout.region_sources.contains("layout_pass"));
     assert!(dify_layout.measurement_coverage.is_full_layout_pass());
     assert_layout_pass_capability_requires_real_bounds(&OpenGpuiAdapter::layout_pass(
         dify_layout.measurement_coverage.clone(),
@@ -280,6 +335,7 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(shader.measured_nodes >= 2);
     assert!(shader.slot_count >= 6);
     assert!(shader.anchor_count >= 3);
+    assert_density_and_resize_evidence(&shader);
 
     let shader_node = schema_node_report(
         OpenGpuiProductFixtureKind::ShaderBlueprint,
@@ -290,6 +346,11 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(shader_node.anchor_count >= 3);
     assert!(shader_node.actions.contains("action.shader_input.add"));
     assert!(shader_node.actions.contains("action.shader_input.remove"));
+    assert!(
+        shader_node
+            .blackboards
+            .contains("blackboard.shader.properties")
+    );
     assert!(shader_node.control_primitives.contains("slider"));
     assert!(shader_node.control_primitives.contains("select"));
     assert!(shader_node.missing_dynamic_ports.is_empty());
@@ -302,6 +363,7 @@ pub fn assert_product_fixture_regression_gates() {
         "demo.shader.mix",
     )
     .expect("shader mix layout-pass schema");
+    assert_density_and_resize_evidence(&shader_node_layout);
     assert!(
         shader_node_layout
             .measurement_coverage
@@ -317,8 +379,10 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(erd.actions.contains("action.column.add"));
     assert!(erd.inspectors.contains("inspector.column.email"));
     assert!(erd.control_primitives.contains("text_input"));
+    assert_density_and_resize_evidence(&erd);
     let erd_layout = layout_pass_product_fixture_report(OpenGpuiProductFixtureKind::ErdTable)
         .expect("ERD layout-pass fixture");
+    assert_density_and_resize_evidence(&erd_layout);
     assert!(erd_layout.measurement_coverage.is_full_layout_pass());
     assert!(erd_layout.repeatable_item_count >= 3);
     assert!(erd_layout.measured_control_regions >= 3);
@@ -329,15 +393,67 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(mind.measured_nodes >= 3);
     assert!(mind.slot_count >= 3);
     assert!(mind.control_primitives.contains("text_input"));
+    assert_density_and_resize_evidence(&mind);
     let mind_layout = layout_pass_product_fixture_report(OpenGpuiProductFixtureKind::MindMap)
         .expect("mind-map layout-pass fixture");
+    assert_density_and_resize_evidence(&mind_layout);
     assert!(mind_layout.measurement_coverage.is_full_layout_pass());
     assert!(mind_layout.slot_count >= 3);
 }
 
 /// Assert that descriptor-driven interaction states exist for the GPUI adapter to render locally.
 pub fn assert_authoring_interaction_regression_gates() {
+    let report = authoring_interaction_report().expect("authoring interaction report");
+    assert!(
+        report.dropped_wire_actions.contains("action.insert.llm"),
+        "dropped-wire insert action must remain visible and dispatchable: {report:?}"
+    );
+    assert!(
+        report.node_actions.contains("action.llm.run"),
+        "node action dispatch evidence is missing: {report:?}"
+    );
+    assert!(
+        report
+            .inspector_target_sources
+            .is_superset(&BTreeSet::from(["measured", "fallback", "missing"])),
+        "inspector target evidence must cover measured/fallback/missing: {report:?}"
+    );
+    assert!(
+        report.inspector_actions.contains("action.column.remove"),
+        "repeatable item inspector action evidence is missing: {report:?}"
+    );
+    assert!(
+        report
+            .blackboard_actions
+            .contains("action.shader_property.add"),
+        "blackboard action dispatch evidence is missing: {report:?}"
+    );
+    assert!(
+        report.repeatable_mutations.is_superset(&BTreeSet::from([
+            "add",
+            "remove",
+            "reorder",
+            "edit",
+            "missing_dynamic_port",
+            "removed_port"
+        ])),
+        "repeatable mutation evidence must cover add/remove/reorder/edit and port lifecycle: {report:?}"
+    );
+    assert!(
+        report.invalid_hover_rejections >= 1,
+        "shader invalid hover must reject incompatible typed targets: {report:?}"
+    );
+    assert!(
+        report.editable_control_regions >= 3,
+        "editable in-node/inspector control evidence is missing: {report:?}"
+    );
+}
+
+/// Collect structured evidence for GPUI-local authoring interactions.
+pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionReport, String> {
     let registry = NodeKitRegistry::builtin().node_registry();
+    let kit_registry = NodeKitRegistry::builtin();
+    let mut report = OpenGpuiAuthoringInteractionReport::default();
     let llm = descriptor(&registry, "demo.llm");
     let dropped = crate::project_dropped_wire_menu(
         &registry,
@@ -349,11 +465,12 @@ pub fn assert_authoring_interaction_regression_gates() {
         Some(&PortKey::new("completion")),
         jellyflow::core::CanvasPoint { x: 320.0, y: 160.0 },
     );
-    assert!(
+    report.dropped_wire_actions.extend(
         dropped
             .actions
             .iter()
-            .any(|action| { action.key == "action.insert.llm" && action.dispatchable() })
+            .filter(|action| action.dispatchable())
+            .map(|action| action.key.clone()),
     );
 
     let node_menu = project_actions_for_surface(
@@ -362,12 +479,9 @@ pub fn assert_authoring_interaction_regression_gates() {
             node_kind: "demo.llm".to_owned(),
         },
     );
-    assert!(
-        node_menu
-            .actions
-            .iter()
-            .any(|action| action.key == "action.llm.run")
-    );
+    report
+        .node_actions
+        .extend(node_menu.actions.iter().map(|action| action.key.clone()));
 
     let inspectors = crate::project_inspectors_for_surface(
         &llm,
@@ -376,12 +490,93 @@ pub fn assert_authoring_interaction_regression_gates() {
             node_kind: "demo.llm".to_owned(),
         },
     );
-    assert!(inspectors.iter().any(|inspector| {
-        inspector.key == "inspector.llm"
-            && inspector
-                .editable_controls()
-                .any(|control| control.key == "inspector.model")
-    }));
+    report.editable_control_regions += inspectors
+        .iter()
+        .flat_map(|inspector| inspector.editable_controls())
+        .count();
+    report.editable_control_regions += llm
+        .surface_slots
+        .iter()
+        .flat_map(|slot| project_slot_controls(&llm.default_data, slot))
+        .filter(|control| control.is_editable())
+        .count();
+
+    let (table_descriptor, table_node_id, table_node, _table_graph) =
+        schema_node_graph("demo.table")?;
+    let column_inspector = crate::project_inspectors_for_surface(
+        &table_descriptor,
+        &table_node.data,
+        &OpenGpuiInspectorSurface::RepeatableItem {
+            collection_key: "table.columns".to_owned(),
+            item_id: "email".to_owned(),
+        },
+    )
+    .into_iter()
+    .find(|inspector| inspector.key == "inspector.column.email")
+    .ok_or_else(|| "missing table column inspector".to_owned())?;
+    report.inspector_actions.extend(
+        column_inspector
+            .action_menu
+            .actions
+            .iter()
+            .map(|action| action.key.clone()),
+    );
+    let measured = CanvasRect {
+        origin: jellyflow::core::CanvasPoint { x: 8.0, y: 52.0 },
+        size: CanvasSize {
+            width: 144.0,
+            height: 24.0,
+        },
+    };
+    let fallback = CanvasRect {
+        origin: jellyflow::core::CanvasPoint { x: 0.0, y: 0.0 },
+        size: CanvasSize {
+            width: 32.0,
+            height: 16.0,
+        },
+    };
+    let target_region_key = column_inspector
+        .target_region_key
+        .clone()
+        .ok_or_else(|| "column inspector missing target region".to_owned())?;
+    let measurement = NodeMeasurement::new(table_node_id)
+        .with_slots([MeasuredSurfaceSlot::new(target_region_key, measured)]);
+    for target in [
+        resolve_inspector_target_bounds(&column_inspector, Some(&measurement), Some(fallback)),
+        resolve_inspector_target_bounds(&column_inspector, None, Some(fallback)),
+        resolve_inspector_target_bounds(&column_inspector, None, None),
+    ] {
+        report
+            .inspector_target_sources
+            .insert(inspector_target_source_name(target.source));
+    }
+
+    let (shader_descriptor, shader_node_id, shader_node, shader_graph) =
+        schema_node_graph("demo.shader.mix")?;
+    report.blackboard_actions.extend(
+        project_blackboards_for_descriptor(&shader_descriptor, &shader_node.data)
+            .into_iter()
+            .flat_map(|blackboard| blackboard.action_menu.actions.into_iter())
+            .filter(|action| action.dispatchable())
+            .map(|action| action.key),
+    );
+    collect_repeatable_mutation_evidence(
+        &mut report,
+        &shader_descriptor,
+        shader_node_id,
+        &shader_node,
+        &shader_graph,
+    )?;
+    collect_repeatable_edit_evidence(
+        &mut report,
+        &table_descriptor,
+        table_node_id,
+        &table_node,
+        &_table_graph,
+    )?;
+    report.invalid_hover_rejections += shader_invalid_hover_rejections(&kit_registry)?;
+
+    Ok(report)
 }
 
 fn schema_node_report(
@@ -417,6 +612,9 @@ fn schema_node_report(
             .map(|manifest| manifest.key.0.clone())
             .unwrap_or_default(),
         fixture_key: kind.to_owned(),
+        density_modes: BTreeSet::new(),
+        region_sources: BTreeSet::from(["projection_fallback"]),
+        resize_probe_count: 0,
         node_count: 1,
         measured_nodes: 1,
         slot_count: measurement.slots.len(),
@@ -433,6 +631,11 @@ fn schema_node_report(
             .iter()
             .map(|inspector| inspector.key.clone())
             .collect(),
+        blackboards: descriptor
+            .blackboards
+            .iter()
+            .map(|blackboard| blackboard.key.clone())
+            .collect(),
         control_primitives: BTreeSet::new(),
         measured_control_regions: 0,
         measurement_mode: OpenGpuiMeasurementMode::ProjectionFallback,
@@ -447,6 +650,18 @@ fn schema_node_report(
             measured_anchors: measurement.anchors.len(),
         },
     };
+    collect_density_modes(
+        &mut report,
+        kit_registry.layout_hints_for_kind(&descriptor.kind),
+    );
+    collect_resize_probe(
+        &mut report,
+        &descriptor,
+        &node,
+        &graph,
+        &node_id,
+        node_size(&node),
+    );
     collect_control_primitives(&mut report, &descriptor, &node);
     Ok(report)
 }
@@ -488,6 +703,9 @@ fn layout_pass_schema_node_report(
             .map(|manifest| manifest.key.0.clone())
             .unwrap_or_default(),
         fixture_key: kind.to_owned(),
+        density_modes: BTreeSet::new(),
+        region_sources: BTreeSet::new(),
+        resize_probe_count: 0,
         node_count: 1,
         measured_nodes: 1,
         slot_count: measurement.slots.len(),
@@ -504,13 +722,192 @@ fn layout_pass_schema_node_report(
             .iter()
             .map(|inspector| inspector.key.clone())
             .collect(),
+        blackboards: descriptor
+            .blackboards
+            .iter()
+            .map(|blackboard| blackboard.key.clone())
+            .collect(),
         control_primitives: BTreeSet::new(),
         measured_control_regions: control_regions,
         measurement_mode: OpenGpuiMeasurementMode::LayoutPass,
         measurement_coverage: coverage,
     };
+    collect_density_modes(
+        &mut report,
+        kit_registry.layout_hints_for_kind(&descriptor.kind),
+    );
+    collect_resize_probe(
+        &mut report,
+        &descriptor,
+        &node,
+        &graph,
+        &node_id,
+        node_size(&node),
+    );
+    sync_region_sources(&mut report);
     collect_control_primitives(&mut report, &descriptor, &node);
     Ok(report)
+}
+
+fn schema_node_graph(kind: &str) -> Result<(NodeKindViewDescriptor, NodeId, Node, Graph), String> {
+    let registry = NodeKitRegistry::builtin().node_registry();
+    let descriptor = descriptor(&registry, kind);
+    let schema = registry
+        .get(&descriptor.kind)
+        .ok_or_else(|| format!("missing schema `{}`", descriptor.kind.0))?;
+    let instantiation = schema.instantiate(jellyflow::core::CanvasPoint::default());
+    let (node_id, node, ports) = instantiation.into_parts();
+    let mut graph_builder =
+        GraphBuilder::new(GraphId::from_u128(0x67_70_75_69)).with_node(node_id, node.clone());
+    for (port_id, port) in ports {
+        graph_builder = graph_builder.with_port(port_id, port);
+    }
+    Ok((descriptor, node_id, node, graph_builder.build_unchecked()))
+}
+
+fn collect_repeatable_mutation_evidence(
+    report: &mut OpenGpuiAuthoringInteractionReport,
+    descriptor: &NodeKindViewDescriptor,
+    node_id: NodeId,
+    node: &Node,
+    graph: &Graph,
+) -> Result<(), String> {
+    let add = plan_repeatable_action(
+        descriptor,
+        graph,
+        node_id,
+        node,
+        OpenGpuiRepeatableActionPlan::Add {
+            collection_key: "shader.inputs".to_owned(),
+            item: serde_json::json!({
+                "name": "Input 4",
+                "ty": "vec4",
+                "port": "input_4"
+            }),
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "shader repeatable add produced no plan".to_owned())?;
+    report.repeatable_mutations.insert("add");
+    if add.diagnostics.iter().any(|diagnostic| {
+        diagnostic.collection_key == "shader.inputs"
+            && diagnostic.item_id == "input_4"
+            && diagnostic.policy == OpenGpuiDynamicPortPolicy::MissingGraphPort
+    }) {
+        report.repeatable_mutations.insert("missing_dynamic_port");
+    }
+
+    let reorder = plan_repeatable_action(
+        descriptor,
+        graph,
+        node_id,
+        node,
+        OpenGpuiRepeatableActionPlan::Reorder {
+            collection_key: "shader.inputs".to_owned(),
+            item_id: "factor".to_owned(),
+            to_index: 0,
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "shader repeatable reorder produced no plan".to_owned())?;
+    if reorder.item_id.as_deref() == Some("factor") {
+        report.repeatable_mutations.insert("reorder");
+    }
+
+    let remove = plan_repeatable_action(
+        descriptor,
+        graph,
+        node_id,
+        node,
+        OpenGpuiRepeatableActionPlan::Remove {
+            collection_key: "shader.inputs".to_owned(),
+            item_id: "factor".to_owned(),
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "shader repeatable remove produced no plan".to_owned())?;
+    report.repeatable_mutations.insert("remove");
+    if remove
+        .transaction
+        .ops()
+        .iter()
+        .any(|op| matches!(op, GraphOp::RemovePort { .. }))
+    {
+        report.repeatable_mutations.insert("removed_port");
+    }
+
+    Ok(())
+}
+
+fn collect_repeatable_edit_evidence(
+    report: &mut OpenGpuiAuthoringInteractionReport,
+    descriptor: &NodeKindViewDescriptor,
+    node_id: NodeId,
+    node: &Node,
+    graph: &Graph,
+) -> Result<(), String> {
+    let edit = plan_repeatable_action(
+        descriptor,
+        graph,
+        node_id,
+        node,
+        OpenGpuiRepeatableActionPlan::Edit {
+            collection_key: "table.columns".to_owned(),
+            item_id: "email".to_owned(),
+            control_key: "control.column.name".to_owned(),
+            value: serde_json::json!("email_address"),
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "table repeatable edit produced no plan".to_owned())?;
+    if edit.item_id.as_deref() == Some("email") {
+        report.repeatable_mutations.insert("edit");
+    }
+    Ok(())
+}
+
+fn shader_invalid_hover_rejections(kit_registry: &NodeKitRegistry) -> Result<usize, String> {
+    let graph = kit_registry
+        .fixture_graph(&NodeKitKey::new("shader.blueprint"), "shader.material_mix")
+        .map_err(|error| error.to_string())?;
+    let texture = find_node_by_kind(&graph, "demo.shader.texture_sample")?;
+    let mix = find_node_by_kind(&graph, "demo.shader.mix")?;
+    let color = find_port_by_key(&graph, texture, "color")?;
+    let factor = find_port_by_key(&graph, mix, "factor")?;
+    let mut compatibility = DefaultTypeCompatibility;
+    let plan = jellyflow::runtime::rules::plan_connect_typed(
+        &graph,
+        color,
+        factor,
+        |graph, port| graph.ports().get(&port).and_then(|port| port.ty.clone()),
+        &mut compatibility,
+    );
+    Ok(usize::from(plan.is_reject()))
+}
+
+fn find_node_by_kind(graph: &Graph, kind: &str) -> Result<NodeId, String> {
+    graph
+        .nodes()
+        .iter()
+        .find_map(|(id, node)| (node.kind == NodeKindKey::new(kind)).then_some(*id))
+        .ok_or_else(|| format!("missing node kind `{kind}`"))
+}
+
+fn find_port_by_key(graph: &Graph, node_id: NodeId, key: &str) -> Result<PortId, String> {
+    let node = graph
+        .nodes()
+        .get(&node_id)
+        .ok_or_else(|| format!("missing node `{node_id:?}`"))?;
+    node.ports
+        .iter()
+        .copied()
+        .find(|port_id| {
+            graph
+                .ports()
+                .get(port_id)
+                .is_some_and(|port| port.key == PortKey::new(key))
+        })
+        .ok_or_else(|| format!("missing port `{key}` on `{node_id:?}`"))
 }
 
 fn layout_pass_regions_for_node(
@@ -621,6 +1018,97 @@ fn accumulate_coverage(
     target.duplicate_regions += coverage.duplicate_regions;
     target.measured_slots += coverage.measured_slots;
     target.measured_anchors += coverage.measured_anchors;
+}
+
+fn sync_region_sources(report: &mut OpenGpuiProductFixtureReport) {
+    if report.measurement_coverage.layout_pass_regions > 0 {
+        report.region_sources.insert("layout_pass");
+    }
+    if report.measurement_coverage.projection_fallback_regions > 0 {
+        report.region_sources.insert("projection_fallback");
+    }
+    if report.measurement_coverage.missing_regions > 0 {
+        report.region_sources.insert("missing");
+    }
+    if report.measurement_coverage.stale_regions > 0 {
+        report.region_sources.insert("stale");
+    }
+    if report.measurement_coverage.partial_regions > 0 {
+        report.region_sources.insert("partial");
+    }
+    if report.measurement_coverage.duplicate_regions > 0 {
+        report.region_sources.insert("duplicate");
+    }
+}
+
+fn collect_density_modes(
+    report: &mut OpenGpuiProductFixtureReport,
+    hints: Option<&jellyflow::runtime::schema::NodeKitLayoutHints>,
+) {
+    let hints = hints.cloned().unwrap_or_default();
+    for zoom in [
+        (hints.compact_zoom_min * 0.5).max(0.01),
+        (hints.compact_zoom_min + hints.full_zoom_min) * 0.5,
+        hints.full_zoom_min + 0.25,
+    ] {
+        report
+            .density_modes
+            .insert(density_name(hints.content_density_for_zoom(zoom)));
+    }
+}
+
+fn density_name(density: NodeKitContentDensity) -> &'static str {
+    match density {
+        NodeKitContentDensity::Compact => "compact",
+        NodeKitContentDensity::Regular => "regular",
+        NodeKitContentDensity::Full => "full",
+    }
+}
+
+fn collect_resize_probe(
+    report: &mut OpenGpuiProductFixtureReport,
+    descriptor: &NodeKindViewDescriptor,
+    node: &Node,
+    graph: &Graph,
+    node_id: &NodeId,
+    size: CanvasSize,
+) {
+    let resized = CanvasSize {
+        width: size.width + 96.0,
+        height: size.height + 64.0,
+    };
+    let resized_layout =
+        projected_node_surface_graph_layout(descriptor, node, graph, node_id, resized);
+    assert_layout_regions_inside_node(&resized_layout, resized, &descriptor.kind.0);
+    report.resize_probe_count += 1;
+}
+
+fn assert_density_and_resize_evidence(report: &OpenGpuiProductFixtureReport) {
+    assert!(
+        report
+            .density_modes
+            .is_superset(&BTreeSet::from(["compact", "regular", "full"])),
+        "{:?} fixture `{}` must cover compact/regular/full density modes: {:?}",
+        report.kind,
+        report.fixture_key,
+        report.density_modes
+    );
+    assert!(
+        report.resize_probe_count >= report.measured_nodes.max(1),
+        "{:?} fixture `{}` must include resize geometry probes: {} probes for {} measured nodes",
+        report.kind,
+        report.fixture_key,
+        report.resize_probe_count,
+        report.measured_nodes
+    );
+}
+
+fn inspector_target_source_name(source: OpenGpuiInspectorTargetSource) -> &'static str {
+    match source {
+        OpenGpuiInspectorTargetSource::Measured => "measured",
+        OpenGpuiInspectorTargetSource::Fallback => "fallback",
+        OpenGpuiInspectorTargetSource::Missing => "missing",
+    }
 }
 
 fn collect_control_primitives(
