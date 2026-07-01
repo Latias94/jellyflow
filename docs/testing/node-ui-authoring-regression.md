@@ -39,6 +39,10 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
 - Resize preview geometry must use the same renderer-minimum-size path as committed snapshots.
 - GPUI adapter-level gates now live in `jellyflow-open-gpui::testing`. The `canvas-jellyflow`
   example is a consumer/manual smoke surface, not the owner of product fixture regression logic.
+- Reusable Open GPUI authoring glue belongs in `jellyflow-open-gpui`: JSON binding, live-store
+  control planning, semantic repeatable action mapping, scoped element ids, and renderer host
+  context routing. `canvas-jellyflow` should only own concrete component construction, local
+  dispatch/focus/popup behavior, refresh notifications, and demo fixture defaults.
 - `OpenGpuiProductFixtureReport` is the hard structured gate for fixture breadth. It must report
   `compact`, `regular`, and `full` density coverage, resize probes, region source evidence, action
   descriptors, inspector descriptors, blackboard descriptors, control primitives, repeatable rows,
@@ -51,6 +55,10 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
   Projection fixture gates may prove clipping, controls, repeatables, menus, and inspector
   contracts, but they must keep capability reporting at `ProjectionFallback` or partial coverage
   unless every required region has live measured evidence.
+- Custom renderer tests should prove the adapter resolves registered renderers, reports
+  `MissingHostRenderer` and `UnregisteredRenderer` fallback reasons, and passes semantic slots,
+  repeatables, action menus, measurement ids, and host services without importing Open GPUI widgets
+  into runtime/core/layout.
 - Shell is still a review state layered on top of density and capability reports. The current
   headless density enum is `compact` / `regular` / `full`; do not claim a separate productized shell
   mode until the semantic contract publishes one.
