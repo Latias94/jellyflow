@@ -68,12 +68,34 @@ impl OpenGpuiNodeRendererRegistry {
         self
     }
 
+    pub fn register_many<I, K, L>(&mut self, renderers: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, L)>,
+        K: Into<String>,
+        L: Into<String>,
+    {
+        for (renderer_key, label) in renderers {
+            self.register(renderer_key, label);
+        }
+        self
+    }
+
     pub fn with_renderer(
         mut self,
         renderer_key: impl Into<String>,
         label: impl Into<String>,
     ) -> Self {
         self.register(renderer_key, label);
+        self
+    }
+
+    pub fn with_renderers<I, K, L>(mut self, renderers: I) -> Self
+    where
+        I: IntoIterator<Item = (K, L)>,
+        K: Into<String>,
+        L: Into<String>,
+    {
+        self.register_many(renderers);
         self
     }
 
