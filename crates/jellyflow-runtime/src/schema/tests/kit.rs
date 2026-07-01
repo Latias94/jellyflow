@@ -1,4 +1,6 @@
-use jellyflow_core::core::{EdgeKind, Graph, NodeId, NodeKindKey, PortId};
+use jellyflow_core::core::{
+    CanvasRect, CanvasSize, EdgeKind, Graph, Node, NodeId, NodeKindKey, PortId,
+};
 use jellyflow_core::types::{DefaultTypeCompatibility, TypeDesc};
 
 use crate::rules::plan_connect_typed;
@@ -504,4 +506,52 @@ fn builtin_mind_map_fixture_materializes_to_graph() {
             .values()
             .any(|node| node.kind == NodeKindKey::new("demo.source"))
     );
+}
+
+#[test]
+fn builtin_mind_map_fixture_materializes_non_overlapping_node_bounds() {
+    let graph = mind_map_knowledge_canvas_manifest()
+        .build_fixture_graph("mind-map.strategy")
+        .expect("mind map fixture graph");
+
+    let rects = graph
+        .nodes()
+        .iter()
+        .map(|(id, node)| (*id, node_default_rect(node)))
+        .collect::<Vec<_>>();
+
+    for (index, (left_id, left_rect)) in rects.iter().enumerate() {
+        for (right_id, right_rect) in rects.iter().skip(index + 1) {
+            assert_ne!(
+                left_rect.origin, right_rect.origin,
+                "mind map fixture nodes {left_id:?} and {right_id:?} share an origin"
+            );
+            assert!(
+                !rects_overlap(*left_rect, *right_rect),
+                "mind map fixture nodes {left_id:?} and {right_id:?} overlap: {left_rect:?} vs {right_rect:?}"
+            );
+        }
+    }
+}
+
+fn node_default_rect(node: &Node) -> CanvasRect {
+    CanvasRect {
+        origin: node.pos,
+        size: node.size.unwrap_or(CanvasSize {
+            width: 228.0,
+            height: 168.0,
+        }),
+    }
+}
+
+fn rects_overlap(left: CanvasRect, right: CanvasRect) -> bool {
+    let left_max_x = left.origin.x + left.size.width;
+    let left_max_y = left.origin.y + left.size.height;
+    let right_max_x = right.origin.x + right.size.width;
+    let right_max_y = right.origin.y + right.size.height;
+
+    left.origin.x < right_max_x
+        && left_max_x > right.origin.x
+        && left.origin.y < right_max_y
+        && left_max_y > right.origin.y
 }

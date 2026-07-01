@@ -83,3 +83,18 @@ under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`.
   mode until the semantic contract publishes one.
 - Screenshot export is a smoke/review aid, not a golden oracle. A platform without a headless
   renderer may skip the screenshot test, but structured host reports must still pass.
+- Open GPUI product gallery layout must apply adapter-local readable minimum sizes before using
+  full-density renderers. Silent clipping is a failed state: `OpenGpuiHostVisualInteractionReport`
+  rows must satisfy both `content_readable` and `content_within_node_bounds`.
+- Product fixture reports must include pairwise node-bounds overlap evidence. Dify, shader, ERD,
+  and mind-map fixtures should be authored against the adapter's readable size budgets so the
+  default launch is a valid review state, not a post-layout recovery case.
+- `canvas-jellyflow` must use actual `Bounds<Pixels>` from the Open GPUI canvas paint path for
+  input mapping and viewport sizing. Initial load and fixture switches may auto-fit once; later
+  resize after user interaction should preserve the current document center.
+- Node-internal event shielding is limited to real interactive controls. Product card headers,
+  shells, and passive display regions are drag surfaces; buttons, text inputs, menus, sliders, and
+  repeatable action controls may stop propagation locally.
+- Runtime builtin fixture coordinates may encode semantic example topology, but concrete widget
+  row heights, drag hitboxes, density fallbacks, and component event policy remain Open GPUI
+  adapter/example responsibilities.

@@ -1,5 +1,11 @@
 # Engineering Memory Update Log
 
+## 2026-07-02
+* **Open GPUI product-gallery UX plan**: Created `docs/plans/2026-07-02-001-fix-open-gpui-product-gallery-ux-plan.md` from native review feedback covering text clipping, box-select offset, shader/ERD dragging, resize top-sticking, reprojection resets, and mind-map initial overlap.
+* **Subagent findings consolidated**: Read-only probes agreed on three root causes: fixed product-card sizes plus absolute rows hid unreadable content, the example used inferred viewport/frame data instead of actual canvas bounds, and node overlay event shielding did not distinguish interactive controls from drag surfaces.
+* **Gallery UX implementation slice**: Tightened `jellyflow-open-gpui` visual gates around `content_readable` and node overlap, added adapter-local readable min-size budgets in the Open GPUI example, exposed actual canvas `Bounds<Pixels>` to the example, split control event shielding from drag surfaces, synced canvas transforms back into Jellyflow before reprojection, and spaced shader/ERD/mind-map fixtures against readable node budgets.
+* **Verification caveat**: Formatting, diff checks, root `cargo check`, Open GPUI `canvas-jellyflow` check, and the unreadable-content visual gate regression pass. Local `cargo test` binaries for runtime and the Open GPUI example can still hang after startup in this environment, so this remains the next verification issue before claiming the full plan gate green.
+
 ## 2026-06-19
 * **Initialization**: Created engineering wiki memory bundle.
 * **Decision capture**: Recorded the semantic-surface vs framework-adapter direction for Jellyflow UI.

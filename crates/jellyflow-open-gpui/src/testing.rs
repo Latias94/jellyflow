@@ -223,6 +223,7 @@ impl OpenGpuiHostSurfaceReport {
 pub enum OpenGpuiHostVisualInteractionGap {
     UnselectedContentHidden,
     ContentOverflow,
+    NodeBoundsOverlap,
     HandleOverlap,
     StaleMeasuredRegion,
     MissingRepeatableAnchor,
@@ -242,7 +243,7 @@ pub struct OpenGpuiHostVisualSurfaceRow {
     pub source: OpenGpuiHostRendererSource,
     pub selected: bool,
     pub content_visible: bool,
-    pub content_clipped: bool,
+    pub content_readable: bool,
     pub content_within_node_bounds: bool,
     pub handle_overlap_count: usize,
     pub stale_measured_regions: usize,
@@ -267,7 +268,7 @@ impl OpenGpuiHostVisualSurfaceRow {
             source,
             selected: false,
             content_visible: false,
-            content_clipped: false,
+            content_readable: false,
             content_within_node_bounds: false,
             handle_overlap_count: 0,
             stale_measured_regions: 0,
@@ -285,17 +286,17 @@ impl OpenGpuiHostVisualSurfaceRow {
     pub fn with_content_bounds(
         mut self,
         visible: bool,
-        clipped: bool,
+        readable: bool,
         within_node_bounds: bool,
     ) -> Self {
         self.content_visible = visible;
-        self.content_clipped = clipped;
+        self.content_readable = readable;
         self.content_within_node_bounds = within_node_bounds;
         if !visible && !self.selected {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::UnselectedContentHidden);
         }
-        if !clipped && !within_node_bounds {
+        if !readable || !within_node_bounds {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
         }
@@ -339,6 +340,7 @@ impl OpenGpuiHostVisualSurfaceRow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenGpuiHostVisualInteractionReport {
     pub rows: Vec<OpenGpuiHostVisualSurfaceRow>,
+    pub node_bounds_overlap_count: usize,
     pub invalid_hover_bounds_checked: bool,
     pub dropped_wire_menu_bounds_checked: bool,
     pub repeatable_edit_updates_anchors: bool,
@@ -359,6 +361,14 @@ impl OpenGpuiHostVisualInteractionReport {
         self.rows
             .iter()
             .filter(move |row| row.fixture_id == fixture_id)
+    }
+
+    pub fn add_node_bounds_overlap_count(&mut self, overlap_count: usize) {
+        self.node_bounds_overlap_count += overlap_count;
+        if overlap_count > 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::NodeBoundsOverlap);
+        }
     }
 
     pub fn mark_invalid_hover_bounds_checked(&mut self, inside_bounds: bool) {
@@ -519,8 +529,8 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
             "node-internal content must remain visible even when unselected: {row:?}"
         );
         assert!(
-            row.content_clipped || row.content_within_node_bounds,
-            "node-internal content must be clipped or stay inside the node body: {row:?}"
+            row.content_readable && row.content_within_node_bounds,
+            "node-internal content must satisfy readable size and stay inside the node body: {row:?}"
         );
         assert_eq!(
             row.handle_overlap_count, 0,
@@ -538,6 +548,10 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
         }
     }
 
+    assert_eq!(
+        report.node_bounds_overlap_count, 0,
+        "product fixture nodes must not initialize with overlapping bounds: {report:?}"
+    );
     assert!(
         report.invalid_hover_bounds_checked,
         "invalid hover feedback must be checked against measured handle bounds: {report:?}"
@@ -2364,6 +2378,38 @@ mod tests {
         assert!(
             result.is_err(),
             "strict gallery gate must fail while product renderers are missing"
+        );
+    }
+
+    #[test]
+    fn visual_gate_rejects_unreadable_product_content() {
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::ErdTable)
+            .expect("ERD fixture");
+        let mut report = OpenGpuiHostVisualInteractionReport::default();
+        report.push(
+            OpenGpuiHostVisualSurfaceRow::new(
+                &fixture,
+                "demo.table",
+                "table-card",
+                OpenGpuiHostRendererSource::ProductRenderer,
+            )
+            .with_content_bounds(true, false, true)
+            .with_handle_overlap_count(0)
+            .with_stale_measured_regions(0)
+            .with_repeatable_anchor_coverage(3, 3),
+        );
+        report.mark_invalid_hover_bounds_checked(true);
+        report.mark_dropped_wire_menu_bounds_checked(true);
+        report.mark_repeatable_edit_updates_anchors(true);
+        report.mark_edge_endpoints_follow_measured_handles(true);
+
+        let result =
+            std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "visual gate must fail when product content is present but below readable budget"
         );
     }
 }

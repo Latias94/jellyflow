@@ -1339,7 +1339,7 @@ fn erd_fixture() -> NodeKitFixture {
                 "customers",
                 "demo.table",
                 CanvasPoint {
-                    x: -240.0,
+                    x: -520.0,
                     y: -80.0,
                 },
             )
@@ -1363,7 +1363,7 @@ fn erd_fixture() -> NodeKitFixture {
             })),
         )
         .node(
-            NodeKitFixtureNode::new("orders", "demo.table", CanvasPoint { x: 20.0, y: -100.0 })
+            NodeKitFixtureNode::new("orders", "demo.table", CanvasPoint { x: 0.0, y: -100.0 })
                 .with_data(json!({
                     "title": "orders",
                     "summary": "id · customer_id · total",
@@ -1387,7 +1387,7 @@ fn erd_fixture() -> NodeKitFixture {
             NodeKitFixtureNode::new(
                 "order_items",
                 "demo.table",
-                CanvasPoint { x: 300.0, y: -80.0 },
+                CanvasPoint { x: 520.0, y: -80.0 },
             )
             .with_data(json!({
                 "title": "order_items",
@@ -1431,7 +1431,7 @@ fn shader_fixture() -> NodeKitFixture {
                 "texture",
                 "demo.shader.texture_sample",
                 CanvasPoint {
-                    x: -240.0,
+                    x: -320.0,
                     y: -60.0,
                 },
             )
@@ -1480,36 +1480,39 @@ fn mind_map_fixture() -> NodeKitFixture {
     NodeKitFixture::new("mind-map.strategy", "Strategy map")
         .with_description("A radial map showing topic, ideas, and source cards.")
         .node(
-            NodeKitFixtureNode::new("center", "demo.topic", CanvasPoint::default()).with_data(
-                json!({
+            NodeKitFixtureNode::new("center", "demo.topic", CanvasPoint { x: 0.0, y: 0.0 })
+                .with_data(json!({
                     "title": "Product strategy",
                     "summary": "MindNode-style radial map"
-                }),
-            ),
+                })),
         )
         .node(
-            NodeKitFixtureNode::new("users", "demo.idea", CanvasPoint::default()).with_data(
-                json!({
-                    "title": "Users",
-                    "summary": "Researchers, builders, editors"
-                }),
-            ),
+            NodeKitFixtureNode::new(
+                "users",
+                "demo.idea",
+                CanvasPoint {
+                    x: 320.0,
+                    y: -128.0,
+                },
+            )
+            .with_data(json!({
+                "title": "Users",
+                "summary": "Researchers, builders, editors"
+            })),
         )
         .node(
-            NodeKitFixtureNode::new("risks", "demo.idea", CanvasPoint::default()).with_data(
-                json!({
+            NodeKitFixtureNode::new("risks", "demo.idea", CanvasPoint { x: 320.0, y: 136.0 })
+                .with_data(json!({
                     "title": "Risks",
                     "summary": "Trust, scale, migration"
-                }),
-            ),
+                })),
         )
         .node(
-            NodeKitFixtureNode::new("sources", "demo.source", CanvasPoint::default()).with_data(
-                json!({
+            NodeKitFixtureNode::new("sources", "demo.source", CanvasPoint { x: -320.0, y: 24.0 })
+                .with_data(json!({
                     "title": "Source",
                     "summary": "Evidence card"
-                }),
-            ),
+                })),
         )
         .edge(
             NodeKitFixtureEdge::new("center", "users", EdgeKind::Data)
