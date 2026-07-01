@@ -64,8 +64,9 @@ pub use renderer::{
     open_gpui_renderer_repeatable_surfaces,
 };
 pub use repeatable::{
-    OpenGpuiDynamicPortPolicy, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
+    OpenGpuiDynamicPortPolicy, OpenGpuiRepeatableActionPlan, OpenGpuiRepeatableEditError,
+    OpenGpuiRepeatableEditPlan, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
     OpenGpuiRepeatablePortDiagnostic, measured_repeatable_item_anchors,
-    measured_repeatable_item_slots, repeatable_item_control_count, repeatable_item_label,
-    repeatable_item_projection, repeatable_port_diagnostics,
+    measured_repeatable_item_slots, plan_repeatable_action, repeatable_item_control_count,
+    repeatable_item_label, repeatable_item_projection, repeatable_port_diagnostics,
 };
