@@ -51,6 +51,12 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
   must cover dropped-wire insert actions, node actions, measured/fallback/missing inspector targets,
   repeatable add/remove/reorder/edit with dynamic-port lifecycle evidence, blackboard actions,
   invalid shader hover rejection, and editable control regions.
+- `OpenGpuiDynamicRepeatableLifecycleReport` is the hard structured gate for dynamic repeatable
+  honesty. Adding a shader input must either create graph port facts or report
+  `MissingGraphPort`; missing ports must not publish measured handles. Removing a bound shader
+  input must remove its graph port and incident edges. Reordering keeps item, slot, anchor, port,
+  and measured-row identity stable. ERD field edits refresh row data while staying downgraded when
+  graph ports are missing. Dify-style parameter rows remain display-only and never publish handles.
 - GPUI full measurement claims must be backed by Open GPUI `measured_element` layout-pass coverage.
   Projection fixture gates may prove clipping, controls, repeatables, menus, and inspector
   contracts, but they must keep capability reporting at `ProjectionFallback` or partial coverage

@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 
 use jellyflow::{
     core::{
-        CanvasRect, CanvasSize, DefaultTypeCompatibility, Graph, GraphBuilder, GraphId, GraphOp,
-        Node, NodeId, NodeKindKey, PortId, PortKey,
+        CanvasRect, CanvasSize, DefaultTypeCompatibility, Edge, EdgeId, EdgeKind, Graph,
+        GraphBuilder, GraphId, GraphOp, GraphTransaction, Node, NodeId, NodeKindKey, PortId,
+        PortKey,
     },
     runtime::{
         runtime::{
@@ -25,11 +26,12 @@ use crate::{
     OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource, OpenGpuiMeasuredRegion,
     OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
     OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableActionPlan,
-    OpenGpuiRepeatablePortDiagnostic, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
-    layout_pass_measurement_from_regions, measured_surface_anchors, plan_repeatable_action,
-    primitive_for_kind, project_actions_for_surface, project_blackboards_for_descriptor,
-    project_node_measurement, project_slot_controls, projected_node_surface_graph_layout,
-    repeatable_item_projection, repeatable_port_diagnostics, resolve_inspector_target_bounds,
+    OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic, OpenGpuiViewBounds,
+    OpenGpuiViewPoint, OpenGpuiViewSize, layout_pass_measurement_from_regions,
+    measured_surface_anchors, plan_repeatable_action, primitive_for_kind,
+    project_actions_for_surface, project_blackboards_for_descriptor, project_node_measurement,
+    project_slot_controls, projected_node_surface_graph_layout, repeatable_item_projection,
+    repeatable_port_diagnostics, resolve_inspector_target_bounds,
 };
 
 pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdapter) {
@@ -614,8 +616,52 @@ pub struct OpenGpuiAuthoringInteractionReport {
     pub inspector_actions: BTreeSet<String>,
     pub blackboard_actions: BTreeSet<String>,
     pub repeatable_mutations: BTreeSet<&'static str>,
+    pub dynamic_repeatable_lifecycle: OpenGpuiDynamicRepeatableLifecycleReport,
     pub invalid_hover_rejections: usize,
     pub editable_control_regions: usize,
+}
+
+/// Dynamic repeatable lifecycle gaps that must stay explicit in product-shaped nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OpenGpuiDynamicRepeatableLifecycleGap {
+    AddMissingPortPolicyAbsent,
+    AddPublishedFakeHandle,
+    RemoveKeptGraphPort,
+    RemoveKeptIncidentEdge,
+    RemoveKeptRepeatableAnchor,
+    ReorderChangedItemIdentity,
+    ReorderChangedAnchorIdentity,
+    ReorderChangedSlotIdentity,
+    ReorderChangedPortBinding,
+    ReorderMissingRowBounds,
+    EditKeptStaleLabel,
+    EditChangedItemIdentity,
+    EditPublishedFakeHandle,
+    DisplayOnlyPublishedHandle,
+}
+
+/// Structured evidence for add/remove/reorder/edit semantics on repeatable product rows.
+#[derive(Debug, Clone, Default)]
+pub struct OpenGpuiDynamicRepeatableLifecycleReport {
+    pub exercised_collections: BTreeSet<String>,
+    pub mutations: BTreeSet<&'static str>,
+    pub add_missing_port_diagnostics: usize,
+    pub add_created_graph_ports: usize,
+    pub add_fake_handle_count: usize,
+    pub remove_removed_graph_ports: usize,
+    pub remove_removed_incident_edges: usize,
+    pub remove_cleared_repeatable_anchor: bool,
+    pub reorder_preserved_item_identity: bool,
+    pub reorder_preserved_anchor_identity: bool,
+    pub reorder_preserved_slot_identity: bool,
+    pub reorder_preserved_port_binding: bool,
+    pub reorder_has_row_bounds: bool,
+    pub edit_refreshed_row_label: bool,
+    pub edit_preserved_item_identity: bool,
+    pub edit_missing_port_downgrade: bool,
+    pub display_only_rows_without_handles: usize,
+    pub display_only_fake_handle_count: usize,
+    pub gaps: BTreeSet<OpenGpuiDynamicRepeatableLifecycleGap>,
 }
 
 /// Build adapter-level regression evidence for one builtin product fixture.
@@ -961,6 +1007,7 @@ pub fn assert_authoring_interaction_regression_gates() {
         ])),
         "repeatable mutation evidence must cover add/remove/reorder/edit and port lifecycle: {report:?}"
     );
+    assert_dynamic_repeatable_lifecycle_report_gates(&report.dynamic_repeatable_lifecycle);
     assert!(
         report.invalid_hover_rejections >= 1,
         "shader invalid hover must reject incompatible typed targets: {report:?}"
@@ -968,6 +1015,77 @@ pub fn assert_authoring_interaction_regression_gates() {
     assert!(
         report.editable_control_regions >= 3,
         "editable in-node/inspector control evidence is missing: {report:?}"
+    );
+}
+
+/// Assert dynamic repeatable rows stay honest about graph ports, anchors, and row identity.
+pub fn assert_dynamic_repeatable_lifecycle_report_gates(
+    report: &OpenGpuiDynamicRepeatableLifecycleReport,
+) {
+    assert!(
+        report.exercised_collections.is_superset(&BTreeSet::from([
+            "shader.inputs".to_owned(),
+            "table.columns".to_owned(),
+            "llm.params".to_owned()
+        ])),
+        "dynamic repeatable lifecycle must cover shader, ERD, and Dify-like params: {report:?}"
+    );
+    assert!(
+        report
+            .mutations
+            .is_superset(&BTreeSet::from(["add", "remove", "reorder", "edit"])),
+        "dynamic repeatable lifecycle must cover add/remove/reorder/edit: {report:?}"
+    );
+    assert!(
+        report.add_created_graph_ports > 0 || report.add_missing_port_diagnostics > 0,
+        "repeatable add must either create graph port facts or emit missing-port diagnostics: {report:?}"
+    );
+    assert_eq!(
+        report.add_fake_handle_count, 0,
+        "repeatable add must not publish fake handles for missing graph ports: {report:?}"
+    );
+    assert!(
+        report.remove_removed_graph_ports > 0,
+        "repeatable remove must clear graph port facts for bound dynamic ports: {report:?}"
+    );
+    assert!(
+        report.remove_removed_incident_edges > 0,
+        "repeatable remove must clear incident edges for removed dynamic ports: {report:?}"
+    );
+    assert!(
+        report.remove_cleared_repeatable_anchor,
+        "repeatable remove must stop publishing removed item anchors: {report:?}"
+    );
+    assert!(
+        report.reorder_preserved_item_identity
+            && report.reorder_preserved_anchor_identity
+            && report.reorder_preserved_slot_identity
+            && report.reorder_preserved_port_binding,
+        "repeatable reorder must preserve item, anchor, slot, and port identity: {report:?}"
+    );
+    assert!(
+        report.reorder_has_row_bounds,
+        "repeatable reorder must keep measured row bounds attached to the stable item identity: {report:?}"
+    );
+    assert!(
+        report.edit_refreshed_row_label && report.edit_preserved_item_identity,
+        "repeatable edit must refresh row data without changing item identity: {report:?}"
+    );
+    assert!(
+        report.edit_missing_port_downgrade,
+        "ERD field edits must stay downgraded when graph ports are missing: {report:?}"
+    );
+    assert!(
+        report.display_only_rows_without_handles > 0,
+        "Dify-style display-only params must be exercised: {report:?}"
+    );
+    assert_eq!(
+        report.display_only_fake_handle_count, 0,
+        "display-only repeatable params must not publish handles: {report:?}"
+    );
+    assert!(
+        report.gaps.is_empty(),
+        "dynamic repeatable lifecycle report has unresolved gaps: {report:?}"
     );
 }
 
@@ -1073,8 +1191,7 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
             .insert(inspector_target_source_name(target.source));
     }
 
-    let (shader_descriptor, shader_node_id, shader_node, shader_graph) =
-        schema_node_graph("demo.shader.mix")?;
+    let (shader_descriptor, _, shader_node, _) = schema_node_graph("demo.shader.mix")?;
     report.blackboard_actions.extend(
         project_blackboards_for_descriptor(&shader_descriptor, &shader_node.data)
             .into_iter()
@@ -1082,20 +1199,28 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
             .filter(|action| action.dispatchable())
             .map(|action| action.key),
     );
-    collect_repeatable_mutation_evidence(
-        &mut report,
-        &shader_descriptor,
-        shader_node_id,
-        &shader_node,
-        &shader_graph,
-    )?;
-    collect_repeatable_edit_evidence(
-        &mut report,
-        &table_descriptor,
-        table_node_id,
-        &table_node,
-        &_table_graph,
-    )?;
+    report.dynamic_repeatable_lifecycle = dynamic_repeatable_lifecycle_report()?;
+    report.repeatable_mutations.extend(
+        report
+            .dynamic_repeatable_lifecycle
+            .mutations
+            .iter()
+            .copied(),
+    );
+    if report
+        .dynamic_repeatable_lifecycle
+        .add_missing_port_diagnostics
+        > 0
+    {
+        report.repeatable_mutations.insert("missing_dynamic_port");
+    }
+    if report
+        .dynamic_repeatable_lifecycle
+        .remove_removed_graph_ports
+        > 0
+    {
+        report.repeatable_mutations.insert("removed_port");
+    }
     report.invalid_hover_rejections += shader_invalid_hover_rejections(&kit_registry)?;
 
     Ok(report)
@@ -1287,18 +1412,30 @@ fn schema_node_graph(kind: &str) -> Result<(NodeKindViewDescriptor, NodeId, Node
     Ok((descriptor, node_id, node, graph_builder.build_unchecked()))
 }
 
-fn collect_repeatable_mutation_evidence(
-    report: &mut OpenGpuiAuthoringInteractionReport,
-    descriptor: &NodeKindViewDescriptor,
-    node_id: NodeId,
-    node: &Node,
-    graph: &Graph,
+/// Collect structured dynamic repeatable lifecycle evidence across product-shaped fixtures.
+pub fn dynamic_repeatable_lifecycle_report()
+-> Result<OpenGpuiDynamicRepeatableLifecycleReport, String> {
+    let mut report = OpenGpuiDynamicRepeatableLifecycleReport::default();
+    collect_shader_repeatable_lifecycle(&mut report)?;
+    collect_table_repeatable_lifecycle(&mut report)?;
+    collect_llm_param_lifecycle(&mut report)?;
+    finalize_dynamic_repeatable_lifecycle_report(&mut report);
+    Ok(report)
+}
+
+fn collect_shader_repeatable_lifecycle(
+    report: &mut OpenGpuiDynamicRepeatableLifecycleReport,
 ) -> Result<(), String> {
+    let (descriptor, node_id, node, graph) = schema_node_graph("demo.shader.mix")?;
+    report
+        .exercised_collections
+        .insert("shader.inputs".to_owned());
+
     let add = plan_repeatable_action(
-        descriptor,
-        graph,
+        &descriptor,
+        &graph,
         node_id,
-        node,
+        &node,
         OpenGpuiRepeatableActionPlan::Add {
             collection_key: "shader.inputs".to_owned(),
             item: serde_json::json!({
@@ -1310,20 +1447,51 @@ fn collect_repeatable_mutation_evidence(
     )
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "shader repeatable add produced no plan".to_owned())?;
-    report.repeatable_mutations.insert("add");
-    if add.diagnostics.iter().any(|diagnostic| {
-        diagnostic.collection_key == "shader.inputs"
-            && diagnostic.item_id == "input_4"
-            && diagnostic.policy == OpenGpuiDynamicPortPolicy::MissingGraphPort
-    }) {
-        report.repeatable_mutations.insert("missing_dynamic_port");
+    report.mutations.insert("add");
+    report.add_missing_port_diagnostics += add
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.collection_key == "shader.inputs"
+                && diagnostic.item_id == "input_4"
+                && diagnostic.port_key == PortKey::new("input_4")
+                && diagnostic.policy == OpenGpuiDynamicPortPolicy::MissingGraphPort
+        })
+        .count();
+    report.add_created_graph_ports += add
+        .transaction
+        .ops()
+        .iter()
+        .filter(|op| matches!(op, GraphOp::AddPort { .. }))
+        .count();
+
+    let mut added_graph = graph.clone();
+    add.transaction
+        .apply_to(&mut added_graph)
+        .map_err(|error| error.to_string())?;
+    let added_node = graph_node(&added_graph, node_id)?;
+    let added_items = repeatable_item_projection(&descriptor, added_node, &added_graph, &node_id);
+    let added_input = added_items
+        .iter()
+        .find(|item| item.collection_key == "shader.inputs" && item.item_id == "input_4")
+        .ok_or_else(|| "missing added shader input row".to_owned())?;
+    let added_measurement =
+        project_node_measurement(&node_id, added_node, &added_graph, &descriptor);
+    if added_input.dynamic_port_policy == OpenGpuiDynamicPortPolicy::MissingGraphPort
+        && (added_input.port_id.is_some()
+            || has_measured_anchor_for_port_key(&added_measurement, &PortKey::new("input_4")))
+    {
+        report.add_fake_handle_count += 1;
     }
 
+    let before_layout =
+        projected_node_surface_graph_layout(&descriptor, &node, &graph, &node_id, node_size(&node));
+    let before_factor = repeatable_layout_by_item(&before_layout, "shader.inputs", "factor")?;
     let reorder = plan_repeatable_action(
-        descriptor,
-        graph,
+        &descriptor,
+        &graph,
         node_id,
-        node,
+        &node,
         OpenGpuiRepeatableActionPlan::Reorder {
             collection_key: "shader.inputs".to_owned(),
             item_id: "factor".to_owned(),
@@ -1332,15 +1500,56 @@ fn collect_repeatable_mutation_evidence(
     )
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "shader repeatable reorder produced no plan".to_owned())?;
-    if reorder.item_id.as_deref() == Some("factor") {
-        report.repeatable_mutations.insert("reorder");
-    }
+    report.mutations.insert("reorder");
+    let mut reordered_graph = graph.clone();
+    reorder
+        .transaction
+        .apply_to(&mut reordered_graph)
+        .map_err(|error| error.to_string())?;
+    let reordered_node = graph_node(&reordered_graph, node_id)?;
+    let after_layout = projected_node_surface_graph_layout(
+        &descriptor,
+        reordered_node,
+        &reordered_graph,
+        &node_id,
+        node_size(reordered_node),
+    );
+    let after_factor = repeatable_layout_by_item(&after_layout, "shader.inputs", "factor")?;
+    report.reorder_preserved_item_identity = reorder.item_id.as_deref() == Some("factor")
+        && after_factor.projection.item_id == before_factor.projection.item_id
+        && after_factor.projection.item_index == 0;
+    report.reorder_preserved_anchor_identity =
+        after_factor.projection.anchor == before_factor.projection.anchor;
+    report.reorder_preserved_slot_identity =
+        after_factor.projection.slot_key == before_factor.projection.slot_key;
+    report.reorder_preserved_port_binding = after_factor.projection.port_key
+        == before_factor.projection.port_key
+        && after_factor.projection.port_id == before_factor.projection.port_id
+        && after_factor.projection.port_direction == before_factor.projection.port_direction
+        && after_factor.projection.dynamic_port_policy
+            == OpenGpuiDynamicPortPolicy::BoundToGraphPort;
+    report.reorder_has_row_bounds = after_factor.rect.size.width > 0.0
+        && after_factor.rect.size.height > 0.0
+        && after_factor.anchor_rect.size.width > 0.0
+        && after_factor.anchor_rect.size.height > 0.0;
+
+    let mut remove_graph = graph.clone();
+    let factor_port = find_port_by_key(&remove_graph, node_id, "factor")?;
+    let result_port = find_port_by_key(&remove_graph, node_id, "result")?;
+    let incident_edge_id = EdgeId::from_u128(0x67_70_75_69_06_00);
+    GraphTransaction::from_ops([GraphOp::AddEdge {
+        id: incident_edge_id,
+        edge: Edge::new(EdgeKind::Data, result_port, factor_port),
+    }])
+    .apply_to(&mut remove_graph)
+    .map_err(|error| error.to_string())?;
+    let remove_node = graph_node(&remove_graph, node_id)?;
 
     let remove = plan_repeatable_action(
-        descriptor,
-        graph,
+        &descriptor,
+        &remove_graph,
         node_id,
-        node,
+        remove_node,
         OpenGpuiRepeatableActionPlan::Remove {
             collection_key: "shader.inputs".to_owned(),
             item_id: "factor".to_owned(),
@@ -1348,31 +1557,61 @@ fn collect_repeatable_mutation_evidence(
     )
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "shader repeatable remove produced no plan".to_owned())?;
-    report.repeatable_mutations.insert("remove");
-    if remove
+    report.mutations.insert("remove");
+    report.remove_removed_graph_ports += remove
         .transaction
         .ops()
         .iter()
-        .any(|op| matches!(op, GraphOp::RemovePort { .. }))
-    {
-        report.repeatable_mutations.insert("removed_port");
-    }
+        .filter(|op| matches!(op, GraphOp::RemovePort { id, .. } if *id == factor_port))
+        .count();
+    report.remove_removed_incident_edges += remove
+        .transaction
+        .ops()
+        .iter()
+        .filter_map(|op| match op {
+            GraphOp::RemovePort { edges, .. } => Some(edges),
+            _ => None,
+        })
+        .flat_map(|edges| edges.iter())
+        .filter(|(edge_id, _)| *edge_id == incident_edge_id)
+        .count();
+
+    let mut removed_graph = remove_graph.clone();
+    remove
+        .transaction
+        .apply_to(&mut removed_graph)
+        .map_err(|error| error.to_string())?;
+    let removed_node = graph_node(&removed_graph, node_id)?;
+    let removed_items =
+        repeatable_item_projection(&descriptor, removed_node, &removed_graph, &node_id);
+    let removed_measurement =
+        project_node_measurement(&node_id, removed_node, &removed_graph, &descriptor);
+    report.remove_cleared_repeatable_anchor = !removed_items
+        .iter()
+        .any(|item| item.collection_key == "shader.inputs" && item.item_id == "factor")
+        && !removed_graph.ports().contains_key(&factor_port)
+        && !removed_graph.edges().contains_key(&incident_edge_id)
+        && !has_measured_anchor(&removed_measurement, "rail.inputs.factor");
 
     Ok(())
 }
 
-fn collect_repeatable_edit_evidence(
-    report: &mut OpenGpuiAuthoringInteractionReport,
-    descriptor: &NodeKindViewDescriptor,
-    node_id: NodeId,
-    node: &Node,
-    graph: &Graph,
+fn collect_table_repeatable_lifecycle(
+    report: &mut OpenGpuiDynamicRepeatableLifecycleReport,
 ) -> Result<(), String> {
+    let (descriptor, node_id, node, graph) = schema_node_graph("demo.table")?;
+    report
+        .exercised_collections
+        .insert("table.columns".to_owned());
+
+    let before_layout =
+        projected_node_surface_graph_layout(&descriptor, &node, &graph, &node_id, node_size(&node));
+    let before_email = repeatable_layout_by_item(&before_layout, "table.columns", "email")?;
     let edit = plan_repeatable_action(
-        descriptor,
-        graph,
+        &descriptor,
+        &graph,
         node_id,
-        node,
+        &node,
         OpenGpuiRepeatableActionPlan::Edit {
             collection_key: "table.columns".to_owned(),
             item_id: "email".to_owned(),
@@ -1382,10 +1621,198 @@ fn collect_repeatable_edit_evidence(
     )
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "table repeatable edit produced no plan".to_owned())?;
-    if edit.item_id.as_deref() == Some("email") {
-        report.repeatable_mutations.insert("edit");
+    report.mutations.insert("edit");
+
+    let mut edited_graph = graph.clone();
+    edit.transaction
+        .apply_to(&mut edited_graph)
+        .map_err(|error| error.to_string())?;
+    let edited_node = graph_node(&edited_graph, node_id)?;
+    let after_layout = projected_node_surface_graph_layout(
+        &descriptor,
+        edited_node,
+        &edited_graph,
+        &node_id,
+        node_size(edited_node),
+    );
+    let after_email = repeatable_layout_by_item(&after_layout, "table.columns", "email")?;
+    let edited_measurement =
+        project_node_measurement(&node_id, edited_node, &edited_graph, &descriptor);
+    report.edit_refreshed_row_label = after_email.projection.label == "email_address";
+    report.edit_preserved_item_identity = edit.item_id.as_deref() == Some("email")
+        && after_email.projection.item_id == before_email.projection.item_id
+        && after_email.projection.slot_key == before_email.projection.slot_key
+        && after_email.projection.anchor == before_email.projection.anchor
+        && after_email.rect == before_email.rect
+        && after_email.anchor_rect == before_email.anchor_rect;
+    report.edit_missing_port_downgrade = after_email.projection.dynamic_port_policy
+        == OpenGpuiDynamicPortPolicy::MissingGraphPort
+        && after_email.projection.port_id.is_none();
+    if after_email.projection.dynamic_port_policy == OpenGpuiDynamicPortPolicy::MissingGraphPort
+        && after_email
+            .projection
+            .port_key
+            .as_ref()
+            .is_some_and(|port_key| has_measured_anchor_for_port_key(&edited_measurement, port_key))
+    {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::EditPublishedFakeHandle);
+    }
+
+    Ok(())
+}
+
+fn collect_llm_param_lifecycle(
+    report: &mut OpenGpuiDynamicRepeatableLifecycleReport,
+) -> Result<(), String> {
+    let (descriptor, node_id, node, graph) = schema_node_graph("demo.llm")?;
+    report.exercised_collections.insert("llm.params".to_owned());
+
+    let add = plan_repeatable_action(
+        &descriptor,
+        &graph,
+        node_id,
+        &node,
+        OpenGpuiRepeatableActionPlan::Add {
+            collection_key: "llm.params".to_owned(),
+            item: serde_json::json!({
+                "name": "locale",
+                "value": "{{ customer.locale }}"
+            }),
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "llm param add produced no plan".to_owned())?;
+    let mut updated_graph = graph.clone();
+    add.transaction
+        .apply_to(&mut updated_graph)
+        .map_err(|error| error.to_string())?;
+    let updated_node = graph_node(&updated_graph, node_id)?;
+    let items = repeatable_item_projection(&descriptor, updated_node, &updated_graph, &node_id);
+    let locale = items
+        .iter()
+        .find(|item| item.collection_key == "llm.params" && item.item_id == "param_3")
+        .ok_or_else(|| "missing added llm param row".to_owned())?;
+    if locale.dynamic_port_policy == OpenGpuiDynamicPortPolicy::DisplayOnly
+        && locale.port_key.is_none()
+        && locale.port_id.is_none()
+    {
+        report.display_only_rows_without_handles += 1;
+    } else {
+        report.display_only_fake_handle_count += 1;
     }
     Ok(())
+}
+
+fn finalize_dynamic_repeatable_lifecycle_report(
+    report: &mut OpenGpuiDynamicRepeatableLifecycleReport,
+) {
+    if report.add_created_graph_ports == 0 && report.add_missing_port_diagnostics == 0 {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::AddMissingPortPolicyAbsent);
+    }
+    if report.add_fake_handle_count > 0 {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::AddPublishedFakeHandle);
+    }
+    if report.remove_removed_graph_ports == 0 {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::RemoveKeptGraphPort);
+    }
+    if report.remove_removed_incident_edges == 0 {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::RemoveKeptIncidentEdge);
+    }
+    if !report.remove_cleared_repeatable_anchor {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::RemoveKeptRepeatableAnchor);
+    }
+    if !report.reorder_preserved_item_identity {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::ReorderChangedItemIdentity);
+    }
+    if !report.reorder_preserved_anchor_identity {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::ReorderChangedAnchorIdentity);
+    }
+    if !report.reorder_preserved_slot_identity {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::ReorderChangedSlotIdentity);
+    }
+    if !report.reorder_preserved_port_binding {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::ReorderChangedPortBinding);
+    }
+    if !report.reorder_has_row_bounds {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::ReorderMissingRowBounds);
+    }
+    if !report.edit_refreshed_row_label {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::EditKeptStaleLabel);
+    }
+    if !report.edit_preserved_item_identity {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::EditChangedItemIdentity);
+    }
+    if !report.edit_missing_port_downgrade {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::EditPublishedFakeHandle);
+    }
+    if report.display_only_fake_handle_count > 0 || report.display_only_rows_without_handles == 0 {
+        report
+            .gaps
+            .insert(OpenGpuiDynamicRepeatableLifecycleGap::DisplayOnlyPublishedHandle);
+    }
+}
+
+fn graph_node(graph: &Graph, node_id: NodeId) -> Result<&Node, String> {
+    graph
+        .nodes()
+        .get(&node_id)
+        .ok_or_else(|| format!("missing node `{node_id:?}`"))
+}
+
+fn repeatable_layout_by_item<'a>(
+    layout: &'a OpenGpuiNodeSurfaceLayout,
+    collection_key: &str,
+    item_id: &str,
+) -> Result<&'a OpenGpuiRepeatableItemLayout, String> {
+    layout
+        .repeatable_items
+        .iter()
+        .find(|item| {
+            item.projection.collection_key == collection_key && item.projection.item_id == item_id
+        })
+        .ok_or_else(|| format!("missing repeatable item `{collection_key}:{item_id}`"))
+}
+
+fn has_measured_anchor(measurement: &NodeMeasurement, anchor_key: &str) -> bool {
+    measurement
+        .anchors
+        .iter()
+        .any(|anchor| anchor.anchor == anchor_key)
+}
+
+fn has_measured_anchor_for_port_key(measurement: &NodeMeasurement, port_key: &PortKey) -> bool {
+    measurement
+        .anchors
+        .iter()
+        .any(|anchor| anchor.port_key.as_ref() == Some(port_key))
 }
 
 fn shader_invalid_hover_rejections(kit_registry: &NodeKitRegistry) -> Result<usize, String> {
