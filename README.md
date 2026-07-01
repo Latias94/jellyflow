@@ -442,8 +442,9 @@ assets before publishing.
 - `jellyflow-egui` owns the immediate-mode egui adapter surface and depends on the facade instead of
   the lower-level crates directly.
 - `jellyflow-open-gpui` owns the retained Open GPUI adapter boundary for this stage. It keeps
-  toolkit widget types out of runtime/core and reports projection fallback honestly until the GPUI
-  host publishes real layout-pass bounds.
+  toolkit widget types out of runtime/core, consumes Open GPUI `measured_element` bounds through
+  the local host, and reports projection/partial coverage honestly whenever full layout-pass
+  evidence is not available.
 - `fret-node` remains the Fret adapter and compatibility facade in the Fret repository.
 
 This repository was created by a history-preserving path-filtered extraction from Fret. The source

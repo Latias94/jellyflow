@@ -47,9 +47,10 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
   must cover dropped-wire insert actions, node actions, measured/fallback/missing inspector targets,
   repeatable add/remove/reorder/edit with dynamic-port lifecycle evidence, blackboard actions,
   invalid shader hover rejection, and editable control regions.
-- GPUI full measurement claims must still be backed by the open-gpui element-bounds hook. Projection
-  fixture gates may prove clipping, controls, repeatables, menus, and inspector contracts, but they
-  must keep capability reporting at `ProjectionFallback`.
+- GPUI full measurement claims must be backed by Open GPUI `measured_element` layout-pass coverage.
+  Projection fixture gates may prove clipping, controls, repeatables, menus, and inspector
+  contracts, but they must keep capability reporting at `ProjectionFallback` or partial coverage
+  unless every required region has live measured evidence.
 - Shell is still a review state layered on top of density and capability reports. The current
   headless density enum is `compact` / `regular` / `full`; do not claim a separate productized shell
   mode until the semantic contract publishes one.

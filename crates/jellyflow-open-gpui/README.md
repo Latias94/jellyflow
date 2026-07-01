@@ -9,8 +9,9 @@ fixture gates, and layout reporting.
 
 Current capability reporting is deliberately conservative. Projection fallback
 can prove controls, repeatables, menus, inspector state, and product fixture
-geometry, but full layout-pass measurement is only valid when bounds come from
-the Open GPUI element-bounds hook.
+geometry, but full layout-pass measurement is only valid when coverage shows
+the required regions came from Open GPUI `measured_element` bounds without
+fallback, missing, stale, partial, or duplicate regions.
 
 ## Layout-Pass Measurement
 
@@ -43,4 +44,7 @@ Open GPUI-specific widgets and measurement plumbing stay in this crate and the
 The test helpers in `jellyflow_open_gpui::testing` cover Dify-style workflow
 nodes, shader/blueprint repeatables, ERD field rows, and mind-map shells. They
 keep projection fixture coverage separate from layout-pass fixture coverage, so
-a projection-only report cannot satisfy full layout-pass capability.
+a projection-only report cannot satisfy full layout-pass capability. The same
+helpers now expose structured authoring interaction evidence for dropped-wire
+insert actions, inspector target sources, repeatable add/remove/reorder/edit,
+blackboard actions, invalid hover rejection, and editable control regions.
