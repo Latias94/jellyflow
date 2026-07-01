@@ -8,6 +8,7 @@
 
 pub mod actions;
 pub mod adapter;
+pub mod authoring;
 pub mod controls;
 pub mod inspector;
 pub mod measurement;
@@ -22,6 +23,11 @@ pub use actions::{
     project_dropped_wire_menu, project_menu,
 };
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
+pub use authoring::{
+    OpenGpuiAuthoringController, OpenGpuiAuthoringOutcome, OpenGpuiAuthoringSkipReason,
+    OpenGpuiControlEventValue, control_option_key, control_option_value_key,
+    control_selected_option_key,
+};
 pub use controls::{
     OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
     OpenGpuiControlPrimitive, OpenGpuiControlProjectionContext, OpenGpuiControlSupport,
