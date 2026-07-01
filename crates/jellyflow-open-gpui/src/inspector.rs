@@ -10,7 +10,9 @@ use serde_json::Value;
 
 use crate::{
     OpenGpuiControlEditPlan, OpenGpuiControlPlan, OpenGpuiControlProjectionContext,
-    OpenGpuiMenuPlan, plan_control_edit, project_action, project_control,
+    OpenGpuiMenuPlan,
+    json_binding::{repeatable_item_id, semantic_json_lookup},
+    plan_control_edit, project_action, project_control,
 };
 
 /// Adapter-local inspector surface being resolved by GPUI view state.
@@ -433,37 +435,6 @@ fn repeatable_item_path<'a>(
             let current = repeatable_item_id(collection, item).unwrap_or_else(|| key.clone());
             (current == item_id).then(|| (format!("{}.{}", collection.item_source, key), item))
         }),
-        _ => None,
-    }
-}
-
-fn repeatable_item_id(
-    collection: &NodeRepeatableCollectionDescriptor,
-    item: &Value,
-) -> Option<String> {
-    semantic_json_lookup(item, &collection.item_id_path).and_then(json_scalar_to_string)
-}
-
-fn semantic_json_lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut cursor = value;
-    for segment in path.split('.') {
-        if segment.is_empty() {
-            continue;
-        }
-        cursor = match cursor {
-            Value::Object(map) => map.get(segment)?,
-            Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
-            _ => return None,
-        };
-    }
-    Some(cursor)
-}
-
-fn json_scalar_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
         _ => None,
     }
 }

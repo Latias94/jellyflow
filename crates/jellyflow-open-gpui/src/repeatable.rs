@@ -19,6 +19,11 @@ use jellyflow::{
 };
 use serde_json::Value;
 
+use crate::json_binding::{
+    json_scalar_to_stable_string, repeatable_item_id as semantic_repeatable_item_id,
+    semantic_json_lookup, set_bound_value, set_dot_path_value,
+};
+
 /// Dynamic-port support policy for one repeatable item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenGpuiDynamicPortPolicy {
@@ -501,21 +506,16 @@ fn plan_repeatable_item_control_edit(
             control_key: control_key.to_owned(),
         }
     })?;
-    match binding.source {
-        NodeControlBindingSource::DataPath | NodeControlBindingSource::Slot => {
-            set_dot_path_value(&mut items[index], &binding.path, value)
-                .map_err(OpenGpuiRepeatableEditError::InvalidEdit)?;
-        }
-        NodeControlBindingSource::JsonPointer => {
-            set_json_pointer_value(&mut items[index], &binding.path, value)
-                .map_err(OpenGpuiRepeatableEditError::InvalidEdit)?;
-        }
-        NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {
-            return Err(OpenGpuiRepeatableEditError::NonWritableControl {
-                control_key: control_key.to_owned(),
-            });
-        }
+    if matches!(
+        binding.source,
+        NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor
+    ) {
+        return Err(OpenGpuiRepeatableEditError::NonWritableControl {
+            control_key: control_key.to_owned(),
+        });
     }
+    set_bound_value(&mut items[index], binding, value)
+        .map_err(OpenGpuiRepeatableEditError::InvalidEdit)?;
     repeatable_data_plan(
         descriptor,
         graph,
@@ -608,18 +608,11 @@ fn repeatable_item_id(
     collection: &NodeRepeatableCollectionDescriptor,
     item: &Value,
 ) -> Result<String, OpenGpuiRepeatableEditError> {
-    let Some(raw) =
-        semantic_json_lookup(item, &collection.item_id_path).and_then(json_scalar_to_stable_string)
-    else {
-        return Err(OpenGpuiRepeatableEditError::InvalidItemId {
+    semantic_repeatable_item_id(collection, item).ok_or_else(|| {
+        OpenGpuiRepeatableEditError::InvalidItemId {
             collection_key: collection.key.clone(),
-        });
-    };
-    sanitize_repeatable_key(&raw)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| OpenGpuiRepeatableEditError::InvalidItemId {
-            collection_key: collection.key.clone(),
-        })
+        }
+    })
 }
 
 fn ensure_item_id(
@@ -684,129 +677,6 @@ fn repeatable_item_port_key(
         .and_then(|path| semantic_json_lookup(item, path))
         .and_then(json_scalar_to_stable_string)
         .map(PortKey::new)
-}
-
-fn semantic_json_lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut cursor = value;
-    for segment in path.split('.') {
-        if segment.is_empty() {
-            continue;
-        }
-        cursor = match cursor {
-            Value::Object(map) => map.get(segment)?,
-            Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
-            _ => return None,
-        };
-    }
-    Some(cursor)
-}
-
-fn json_scalar_to_stable_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn sanitize_repeatable_key(value: &str) -> Option<&str> {
-    (!value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
-    .then_some(value)
-}
-
-fn set_dot_path_value(value: &mut Value, path: &str, new_value: Value) -> Result<(), String> {
-    let segments = path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    if segments.is_empty() {
-        *value = new_value;
-        return Ok(());
-    }
-    set_path_segments(value, &segments, new_value)
-}
-
-fn set_json_pointer_value(
-    value: &mut Value,
-    pointer: &str,
-    new_value: Value,
-) -> Result<(), String> {
-    if pointer.is_empty() {
-        *value = new_value;
-        return Ok(());
-    }
-    let Some(pointer) = pointer.strip_prefix('/') else {
-        return Err(format!("json pointer `{pointer}` must start with `/`"));
-    };
-    let segments = pointer
-        .split('/')
-        .map(|segment| segment.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>();
-    let borrowed = segments.iter().map(String::as_str).collect::<Vec<_>>();
-    set_path_segments(value, &borrowed, new_value)
-}
-
-fn set_path_segments(value: &mut Value, segments: &[&str], new_value: Value) -> Result<(), String> {
-    let Some((segment, rest)) = segments.split_first() else {
-        *value = new_value;
-        return Ok(());
-    };
-    if rest.is_empty() {
-        match value {
-            Value::Object(map) => {
-                map.insert((*segment).to_owned(), new_value);
-                Ok(())
-            }
-            Value::Array(items) => {
-                let index = segment
-                    .parse::<usize>()
-                    .map_err(|_| format!("array path segment `{segment}` is not an index"))?;
-                let Some(slot) = items.get_mut(index) else {
-                    return Err(format!("array index `{index}` is out of bounds"));
-                };
-                *slot = new_value;
-                Ok(())
-            }
-            Value::Null => {
-                let mut map = serde_json::Map::new();
-                map.insert((*segment).to_owned(), new_value);
-                *value = Value::Object(map);
-                Ok(())
-            }
-            _ => Err(format!(
-                "cannot set path segment `{segment}` on scalar value"
-            )),
-        }
-    } else {
-        match value {
-            Value::Object(map) => {
-                let child = map
-                    .entry((*segment).to_owned())
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                set_path_segments(child, rest, new_value)
-            }
-            Value::Array(items) => {
-                let index = segment
-                    .parse::<usize>()
-                    .map_err(|_| format!("array path segment `{segment}` is not an index"))?;
-                let Some(child) = items.get_mut(index) else {
-                    return Err(format!("array index `{index}` is out of bounds"));
-                };
-                set_path_segments(child, rest, new_value)
-            }
-            Value::Null => {
-                *value = Value::Object(serde_json::Map::new());
-                set_path_segments(value, segments, new_value)
-            }
-            _ => Err(format!(
-                "cannot traverse path segment `{segment}` on scalar value"
-            )),
-        }
-    }
 }
 
 #[cfg(test)]

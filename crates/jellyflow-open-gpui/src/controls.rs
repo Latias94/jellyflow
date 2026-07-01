@@ -10,6 +10,11 @@ use jellyflow::{
 };
 use serde_json::Value;
 
+use crate::json_binding::{
+    field_row_slot_data_path, join_data_path, read_bound_value, semantic_json_lookup,
+    set_bound_value,
+};
+
 /// GPUI-local primitive family selected for a semantic control descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenGpuiControlPrimitive {
@@ -241,15 +246,7 @@ fn control_current_value<'a>(
         return control
             .binding
             .as_ref()
-            .and_then(|binding| match binding.source {
-                NodeControlBindingSource::DataPath | NodeControlBindingSource::Slot => {
-                    semantic_json_lookup(item_data, &binding.path)
-                }
-                NodeControlBindingSource::JsonPointer => item_data.pointer(&binding.path),
-                NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {
-                    None
-                }
-            })
+            .and_then(|binding| read_bound_value(item_data, binding, false))
             .or_else(|| {
                 control
                     .slot
@@ -261,19 +258,20 @@ fn control_current_value<'a>(
     if let Some(binding) = &control.binding {
         match binding.source {
             NodeControlBindingSource::DataPath => {
-                return semantic_json_lookup(node_data, &binding.path);
+                return read_bound_value(node_data, binding, false);
             }
             NodeControlBindingSource::Slot => {
-                if let Some(slot) = context.slot
-                    && slot.kind == NodeSurfaceSlotKind::FieldRow
-                    && let Some(fields) = node_data.get("fields").and_then(Value::as_object)
-                    && let Some(value) = fields.get(&binding.path)
-                {
-                    return Some(value);
-                }
-                return semantic_json_lookup(node_data, &binding.path);
+                return read_bound_value(
+                    node_data,
+                    binding,
+                    context
+                        .slot
+                        .is_some_and(|slot| slot.kind == NodeSurfaceSlotKind::FieldRow),
+                );
             }
-            NodeControlBindingSource::JsonPointer => return node_data.pointer(&binding.path),
+            NodeControlBindingSource::JsonPointer => {
+                return read_bound_value(node_data, binding, false);
+            }
             NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {}
         }
     }
@@ -326,7 +324,7 @@ fn control_write_binding(
         NodeControlBindingSource::Slot => {
             let path = if let Some(slot) = context.slot {
                 if slot.kind == NodeSurfaceSlotKind::FieldRow {
-                    join_data_path("fields", &binding.path)
+                    field_row_slot_data_path(&binding.path)
                 } else {
                     binding.path
                 }
@@ -344,133 +342,7 @@ fn set_bound_node_value(
     binding: &NodeControlBinding,
     value: Value,
 ) -> Result<(), String> {
-    match binding.source {
-        NodeControlBindingSource::DataPath | NodeControlBindingSource::Slot => {
-            set_dot_path_value(data, &binding.path, value)
-        }
-        NodeControlBindingSource::JsonPointer => set_json_pointer_value(data, &binding.path, value),
-        NodeControlBindingSource::GraphSymbol | NodeControlBindingSource::PortAnchor => {
-            Err(format!(
-                "binding source `{:?}` is not writable by the GPUI node adapter",
-                binding.source
-            ))
-        }
-    }
-}
-
-fn set_dot_path_value(value: &mut Value, path: &str, new_value: Value) -> Result<(), String> {
-    let segments = path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    if segments.is_empty() {
-        *value = new_value;
-        return Ok(());
-    }
-    set_path_segments(value, &segments, new_value)
-}
-
-fn set_json_pointer_value(
-    value: &mut Value,
-    pointer: &str,
-    new_value: Value,
-) -> Result<(), String> {
-    if pointer.is_empty() {
-        *value = new_value;
-        return Ok(());
-    }
-    let Some(pointer) = pointer.strip_prefix('/') else {
-        return Err(format!("json pointer `{pointer}` must start with `/`"));
-    };
-    let segments = pointer
-        .split('/')
-        .map(|segment| segment.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>();
-    let borrowed = segments.iter().map(String::as_str).collect::<Vec<_>>();
-    set_path_segments(value, &borrowed, new_value)
-}
-
-fn set_path_segments(value: &mut Value, segments: &[&str], new_value: Value) -> Result<(), String> {
-    let Some((segment, rest)) = segments.split_first() else {
-        *value = new_value;
-        return Ok(());
-    };
-
-    if rest.is_empty() {
-        match value {
-            Value::Object(map) => {
-                map.insert((*segment).to_owned(), new_value);
-                Ok(())
-            }
-            Value::Array(items) => {
-                let index = segment
-                    .parse::<usize>()
-                    .map_err(|_| format!("array path segment `{segment}` is not an index"))?;
-                let Some(slot) = items.get_mut(index) else {
-                    return Err(format!("array index `{index}` is out of bounds"));
-                };
-                *slot = new_value;
-                Ok(())
-            }
-            Value::Null => {
-                let mut map = serde_json::Map::new();
-                map.insert((*segment).to_owned(), new_value);
-                *value = Value::Object(map);
-                Ok(())
-            }
-            _ => Err(format!(
-                "cannot set path segment `{segment}` on scalar value"
-            )),
-        }
-    } else {
-        match value {
-            Value::Object(map) => {
-                let child = map
-                    .entry((*segment).to_owned())
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                set_path_segments(child, rest, new_value)
-            }
-            Value::Array(items) => {
-                let index = segment
-                    .parse::<usize>()
-                    .map_err(|_| format!("array path segment `{segment}` is not an index"))?;
-                let Some(child) = items.get_mut(index) else {
-                    return Err(format!("array index `{index}` is out of bounds"));
-                };
-                set_path_segments(child, rest, new_value)
-            }
-            Value::Null => {
-                *value = Value::Object(serde_json::Map::new());
-                set_path_segments(value, segments, new_value)
-            }
-            _ => Err(format!(
-                "cannot traverse path segment `{segment}` on scalar value"
-            )),
-        }
-    }
-}
-
-fn semantic_json_lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut cursor = value;
-    for segment in path.split('.') {
-        if segment.is_empty() {
-            continue;
-        }
-        cursor = match cursor {
-            Value::Object(map) => map.get(segment)?,
-            Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
-            _ => return None,
-        };
-    }
-    Some(cursor)
-}
-
-fn join_data_path(prefix: &str, suffix: &str) -> String {
-    if suffix.is_empty() {
-        prefix.to_owned()
-    } else {
-        format!("{prefix}.{suffix}")
-    }
+    set_bound_value(data, binding, value)
 }
 
 #[cfg(test)]

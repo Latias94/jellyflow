@@ -11,6 +11,7 @@ pub mod adapter;
 pub mod authoring;
 pub mod controls;
 pub mod inspector;
+mod json_binding;
 pub mod measurement;
 pub mod projection;
 pub mod renderer;
