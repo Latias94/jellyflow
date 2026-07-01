@@ -8,10 +8,10 @@ and semantic capability evidence that does not depend on GPU output.
 
 | Shape | Fixture | Required states | Hard evidence |
 | --- | --- | --- | --- |
-| Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation`, GPUI `demo.llm` schema probe | full, compact, shell review, resize, dropped-wire menu, inspector/action descriptors | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::interaction_fixtures_cover_gpui_authoring_states` |
-| Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint`, GPUI `demo.shader.mix` schema probe | typed port rails, config controls, preview, invalid hover, typed commit rejection, blackboard action | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report` |
-| ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table` | repeatable field rows, repeatable edit/remove/reorder, resize, slot bounds, handle-anchor proximity | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report` |
-| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas` | compact/full density, shell review, stable handles, graph-level visual coverage | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions` |
+| Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation`, GPUI `workflow.review` / `demo.llm` | full, compact, shell review, resize, dropped-wire menu, inspector/action descriptors, native prompt/model/temperature controls | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::interaction_fixtures_cover_gpui_authoring_states`, `canvas_example_collects_host_product_surface_report` |
+| Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint`, GPUI `shader.material_mix` / `demo.shader.mix` | typed port rails, config controls, dynamic input repeatables, missing-port diagnostics, invalid hover, typed commit rejection, blackboard action | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report`, `jellyflow-open-gpui::testing::dynamic_repeatable_lifecycle_report` |
+| ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table`, GPUI `erd.customer_orders` | repeatable field rows, repeatable edit/remove/reorder, resize, slot bounds, handle-anchor proximity, explicit missing-port downgrade | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report`, `jellyflow-open-gpui::testing::dynamic_repeatable_lifecycle_report` |
+| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas`, GPUI `mind-map.strategy` | compact/full density, shell review, stable handles, graph-level visual coverage, topic/source custom renderers | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `canvas-jellyflow::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips` |
 
 ## Commands
 
@@ -21,11 +21,13 @@ Run these as the focused authoring regression gate:
 cargo test -p jellyflow-egui --lib -- --nocapture
 cargo nextest run -p jellyflow-open-gpui --no-fail-fast
 cargo run -p jellyflow-egui --example gallery_snapshot -- target/jellyflow-egui-gallery
-RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow
+RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
 ```
 
 The broad plan gate still includes runtime, proof, template, examples, GPUI check, and format
 commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md`.
+Open GPUI screenshot smoke artifacts, when the local headless renderer supports capture, are written
+under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`.
 
 ## Adapter Rules
 
@@ -57,6 +59,17 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
   input must remove its graph port and incident edges. Reordering keeps item, slot, anchor, port,
   and measured-row identity stable. ERD field edits refresh row data while staying downgraded when
   graph ports are missing. Dify-style parameter rows remain display-only and never publish handles.
+- Open GPUI product renderers should be registered through `OpenGpuiNodeRendererRegistry` and
+  consumed via host-local renderer closures. `canvas-jellyflow` currently maps `decision-card`,
+  `shader-card`, `table-card`, `topic-card`, and `source-card` into native GPUI component trees.
+- The Open GPUI node component kit remains host-local. It can provide `TextInput`, `Textarea`,
+  `NumberInput`, `Select`, `Switch`, `Slider`, menu/action buttons, repeatable rows, event shielding,
+  and `measured_element` wrappers, but it must not move GPUI element types into runtime or
+  `jellyflow-open-gpui`.
+- Advanced controls are honest partial/stub states in this stage: code editor and color render as
+  partial badges; asset picker, variable picker, and port-binding picker render as disabled
+  stub/display controls. Tests should assert capability facts instead of pretending these are
+  complete product widgets.
 - GPUI full measurement claims must be backed by Open GPUI `measured_element` layout-pass coverage.
   Projection fixture gates may prove clipping, controls, repeatables, menus, and inspector
   contracts, but they must keep capability reporting at `ProjectionFallback` or partial coverage
@@ -68,3 +81,5 @@ commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.m
 - Shell is still a review state layered on top of density and capability reports. The current
   headless density enum is `compact` / `regular` / `full`; do not claim a separate productized shell
   mode until the semantic contract publishes one.
+- Screenshot export is a smoke/review aid, not a golden oracle. A platform without a headless
+  renderer may skip the screenshot test, but structured host reports must still pass.

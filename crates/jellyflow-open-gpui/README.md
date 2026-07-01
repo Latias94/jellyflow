@@ -46,6 +46,45 @@ visual policy. That split is intentional: Jellyflow provides the semantic and
 adapter authoring contract, while each Open GPUI app maps the contract into its
 own component tree.
 
+## Node Component Kit Recipe
+
+Open GPUI node-internal UI is now proven through a host-local component kit in
+`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`.
+That module is intentionally not a shared widget crate. It is the reference
+consumer for Open GPUI apps that want Dify-style cards, shader/material rows,
+ERD fields, or mind-map previews while keeping runtime descriptors headless.
+
+The minimal recipe is:
+
+1. Define the semantic node in runtime or a node kit. The descriptor should
+   publish slots, controls, repeatables, actions, anchors, and a renderer key.
+2. Register the renderer key with `OpenGpuiNodeRendererRegistry::with_renderer`
+   or `with_renderers`. In `canvas-jellyflow`, `demo_node_renderer_registry`
+   declares `decision-card`, `shader-card`, `table-card`, `topic-card`, and
+   `source-card`.
+3. Keep concrete Open GPUI renderers host-local. The example stores renderer
+   closures in `demo_custom_node_renderers` and resolves them through
+   `OpenGpuiNodeRendererRegistry::render_with_host`.
+4. In the renderer, read semantic data from
+   `OpenGpuiNodeRendererHostContext::semantic()` and compose real Open GPUI
+   elements through the local kit:
+   `render_control_plan`, `render_action_menu`,
+   `render_dispatch_action_button`, `repeatable_action_button`,
+   `render_node_internal_interaction_region`, and `render_measured_region`.
+5. Route edits through adapter plans instead of mutating captured widget state.
+   Controls use `OpenGpuiAuthoringController` against the live
+   `NodeGraphStore`; repeatables use `OpenGpuiRepeatableActionPlan` with
+   explicit host factories for product defaults.
+6. Wrap every visible slot, control, repeatable row, and handle anchor that can
+   drive ports, inspectors, or edge endpoints in `render_measured_region`.
+   Missing, stale, hidden, partial, or duplicate regions must downgrade the
+   capability report rather than claiming full layout-pass coverage.
+
+Native controls currently include text input, textarea, number input, select,
+multiselect-as-select, switch, and slider. Code editor and color controls render
+as partial badge states; asset picker, variable picker, and port-binding picker
+render as disabled stub/display states until a later Open GPUI product pass.
+
 ## Layout-Pass Measurement
 
 `canvas-jellyflow` is the live Open GPUI consumer. It renders node internals
@@ -81,4 +120,25 @@ a projection-only report cannot satisfy full layout-pass capability. The same
 helpers now expose structured authoring interaction evidence for dropped-wire
 insert actions, inspector target sources, repeatable add/remove/reorder/edit,
 blackboard actions, invalid hover rejection, editable control regions, scoped
-element ids, and renderer host-context routing.
+element ids, renderer host-context routing, product-gallery host rendering,
+visual interaction geometry, and dynamic repeatable port lifecycle honesty.
+
+The Open GPUI gallery lives in `repo-ref/open-gpui/examples/canvas-jellyflow`.
+Run it with:
+
+```sh
+cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml
+```
+
+The hard structured gate is:
+
+```sh
+cargo nextest run -p jellyflow-open-gpui --no-fail-fast
+RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+```
+
+The gallery also has a test-only screenshot smoke exporter. When the platform
+has a headless renderer, the bin tests write nonblank PNG review artifacts under
+`repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`. These screenshots are
+supporting evidence only; structured geometry, capability, and interaction
+reports remain the correctness gate.

@@ -3,19 +3,19 @@ type: "Current State"
 title: "Current Engineering State"
 description: "Short durable summary of the active engineering state."
 tags: ["engineering-memory"]
-timestamp: 2026-07-01T18:18:14+08:00
+timestamp: 2026-07-01T22:19:11+08:00
 status: "complete"
 ---
 
 # Current State
 
-- Goal: Prepare the next Open GPUI node component kit and product gallery implementation while preserving the headless semantic contract and adapter-local widget boundary.
+- Goal: Complete the Open GPUI node component kit and product gallery implementation while preserving the headless semantic contract and adapter-local widget boundary.
 - Branch: `feat/xyflow-product-surface`
-- Last verified: 2026-07-01 Open GPUI node component kit/product gallery plan passed `git diff --check`, heading review, and absolute-path scan. The prior Open GPUI authoring facade final verification passed after the review fix: main/open-gpui format and diff checks, `jellyflow-open-gpui` nextest (70 tests), runtime/egui/proof lib nextest (529 tests), runtime public-surface tests, proof integration tests, headless adapter template tests (22 tests), egui examples check, open-gpui measured-element nested-bounds test, GPUI canvas-jellyflow check/test (25 tests), and a short GPUI launch smoke that reached the running binary before manual interrupt. Existing open-gpui macOS `check-cfg` / `unused_unsafe` warnings remain out of scope.
+- Last verified: 2026-07-01 Open GPUI node component kit/product gallery final verification passed: main/open-gpui format and diff checks, `jellyflow-open-gpui` nextest (73 tests), runtime/egui/proof lib nextest (529 tests), runtime public-surface tests, proof integration tests, headless adapter template tests (22 tests), egui examples check, Open GPUI measured-element nested-bounds test, GPUI canvas-jellyflow check/test (28 tests), optional gallery screenshot smoke with four 2280x1300 PNGs, and a short GPUI launch smoke that reached a running binary before external termination. Existing open-gpui macOS `check-cfg` / `unused_unsafe` warnings remain out of scope.
 - Done: ADR 0003, ADR 0008, ADR 0009, follow-up plans, semantic slot schema, egui field-row slot rendering, decision-card rich rows, selection-mode regression tests, README/CHANGELOG updates, gallery visual review for automation-builder and ERD, runtime slot/anchor helpers, second-adapter proof crate, adapter conformance coverage for selection, geometry, viewport, and product fixtures, strategic confirmation that the seam should stay semantic rather than widget-based, a first-pass node-kit base design, builtin runtime node-kit manifests/fixtures, egui sample reuse of builtin kits, proof/template reuse of builtin kits, the canonical-kind-over-alias registry precedence fix, runtime field-row value projection that reads `data.fields[slot]` before ordinary JSON paths, the `open-gpui` canvas substrate check that confirmed gpui can start from the existing document / paint-model / overlay split, the `open-gpui` canvas-jellyflow proof refresh that now reads semantic descriptors from Jellyflow `NodeRegistry` while keeping `CanvasKindRegistry` on renderer policy only, the gpui overlay polish that made semantic node content always visible with zoom-aware slot reduction and tighter flex shrink constraints, the density/slot projection contract fix, a gpui example adapter-local slot-height cap so full-density semantic slots do not overfill fixed-height nodes, the removal of stale `semantic_overlay` canvas data so gpui proof has one semantic source of truth, the approved cleanup of obsolete local `gpui_docking` edits so `repo-ref/open-gpui` could fast-forward to `origin/main` at `8d018ce`, the main-repo node-kit boundary commit, commit `ce14140` in `repo-ref/open-gpui` for the gpui semantic node surface proof, the implementation-ready plan for node UI capability parity, runtime measurement/dynamic internals/geometry/connection/edge-route/chrome slices U1-U6, expanded U7 semantic slot recipes for Dify-style workflow, shader/blueprint, ERD, and knowledge canvas nodes, U8 egui shader graph and measured rich-node renderer hardening, U9 GPUI shader fixture and slot-anchor projection proof, U10 Dioxus-shaped proof, U11 product-shaped example gallery, U12 authoring/checklist documentation, the 2026-06-30 review-fix slice, the Node UI Authoring Contracts U1-U8 implementation, the Open GPUI Mature Adapter U1-U9 slices, the Open GPUI Layout-Pass Measurement plan and implementation, the Open GPUI Productized Authoring plan implementation, the Open GPUI Authoring Facade Cleanup U1-U5 implementation: adapter-local JSON binding (`8e8768e`), live-store control planning (`7394455`), semantic repeatable action dispatch (`c2ed930`), renderer host facade (`e201f37`), ownership docs (`179e4fb`), and scoped id hardening (`daaf27b`), with matching local `repo-ref/open-gpui` example commits through `653158d`; the new Open GPUI Node Component Kit and Product Gallery plan now defines the next implementation stage.
 - In progress: None.
 - Blocked: None.
-- Next action: Execute `docs/plans/2026-07-01-003-feat-open-gpui-node-component-kit-plan.md` with a new goal/ce-work run if the user approves implementation.
+- Next action: Decide the next Open GPUI maturity slice. The likely follow-up is to promote the host-local kit only after external Open GPUI app usage, or deepen product interactions around advanced controls, inspector/blackboard workflows, and stronger screenshot review ergonomics without changing the headless boundary.
 
 # Notes
 
@@ -27,6 +27,7 @@ status: "complete"
 - Review gate outcome: local code review found and fixed one real issue in the GPUI example: repeated identical layout-pass facts originally incremented `measurement_revision`, which would make `NodeGraphStore::report_node_measurement` report changed every frame. The fix reuses the existing revision when geometry is unchanged and fresh, while dirty/missing or changed geometry still bumps revision. A regression test covers the no-refresh path.
 - Open GPUI authoring facade cleanup refined ownership: `jellyflow-open-gpui` owns binding, live-store authoring planning, semantic repeatable action mapping, scoped element ids, renderer resolution/fallback, and generic host-context services; `canvas-jellyflow` owns concrete Open GPUI widgets, weak-entity dispatch, focus/popup behavior, demo defaults, visual layout, and refresh notifications.
 - Final review found and fixed one adapter-id issue: dynamic element-id segments are now escaped so semantic keys containing `:` cannot collide, and the custom renderer badge id is node scoped so multiple same-renderer nodes do not reuse the same local id.
+- Open GPUI node component kit implementation is complete through committed slices: `jellyflow-open-gpui` has product fixture catalogs, renderer preset/report contracts, host visual interaction gates, and dynamic repeatable lifecycle gates; `canvas-jellyflow` has a host-local `node_component_kit`, Dify/shader/ERD/mind-map product renderers, a switchable product gallery, repeatable port diagnostics, and optional screenshot smoke export. Runtime/core/layout remain free of GPUI widgets.
 
 # Citations
 
@@ -36,6 +37,7 @@ status: "complete"
 - [ADR 0008](../../adr/0008-semantic-surface-and-framework-adapter-boundary.md)
 - [ADR 0009](../../adr/0009-node-kit-and-adapter-local-mapping-boundary.md)
 - [Node UI Kit Component Contract](decisions/node-ui-kit-component-contract.md)
+- [Open GPUI Node Component Kit Decision](decisions/open-gpui-node-component-kit.md)
 - [Node UI Capability Parity Plan](../../plans/2026-06-29-001-feat-node-ui-capability-parity-plan.md)
 - [Node UI Authoring Contracts Plan](../../plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md)
 - [Open GPUI Mature Adapter Plan](../../plans/2026-06-30-002-feat-open-gpui-mature-adapter-plan.md)
