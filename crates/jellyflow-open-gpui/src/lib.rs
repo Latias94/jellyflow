@@ -19,11 +19,12 @@ pub mod testing;
 
 pub use actions::{
     OpenGpuiActionDispatchPlan, OpenGpuiActionPlan, OpenGpuiActionSurface,
-    OpenGpuiDroppedWireInsertError, OpenGpuiDroppedWireInsertOutcome,
-    OpenGpuiDroppedWireInsertPlan, OpenGpuiDroppedWireInsertTransactionPlan, OpenGpuiMenuPlan,
-    apply_dropped_wire_insert, plan_action_dispatch, plan_dropped_wire_insert,
-    plan_dropped_wire_insert_transaction, project_action, project_actions_for_surface,
-    project_dropped_wire_menu, project_menu,
+    OpenGpuiBlackboardItemPlan, OpenGpuiBlackboardPlan, OpenGpuiDroppedWireInsertError,
+    OpenGpuiDroppedWireInsertOutcome, OpenGpuiDroppedWireInsertPlan,
+    OpenGpuiDroppedWireInsertTransactionPlan, OpenGpuiMenuPlan, apply_dropped_wire_insert,
+    plan_action_dispatch, plan_dropped_wire_insert, plan_dropped_wire_insert_transaction,
+    project_action, project_actions_for_surface, project_blackboard,
+    project_blackboards_for_descriptor, project_dropped_wire_menu, project_menu,
 };
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
 pub use authoring::{

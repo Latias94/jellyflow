@@ -18,8 +18,9 @@ use jellyflow::{
     runtime::{
         runtime::connection::{CONNECT_EDGE_TRANSACTION_LABEL, ConnectionHandleRef},
         schema::{
-            ActionIntent, ActionTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor,
-            NodeKindViewDescriptor, NodeRegistry,
+            ActionIntent, ActionTarget, BlackboardDescriptor, MenuDescriptor, MenuSurface,
+            NodeActionDescriptor, NodeKindViewDescriptor, NodeRegistry,
+            NodeRepeatableItemProjection,
         },
     },
 };
@@ -112,6 +113,27 @@ impl OpenGpuiMenuPlan {
     pub fn enabled_actions(&self) -> impl Iterator<Item = &OpenGpuiActionPlan> {
         self.actions.iter().filter(|action| action.dispatchable())
     }
+}
+
+/// One item row shown in a GPUI-local blackboard panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenGpuiBlackboardItemPlan {
+    pub item_id: String,
+    pub item_index: usize,
+    pub label: String,
+    pub controls: usize,
+}
+
+/// Render plan for a graph-level GPUI blackboard panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenGpuiBlackboardPlan {
+    pub key: String,
+    pub label: String,
+    pub collection_key: String,
+    pub item_count: usize,
+    pub controls: usize,
+    pub items: Vec<OpenGpuiBlackboardItemPlan>,
+    pub action_menu: OpenGpuiMenuPlan,
 }
 
 /// Action dispatch plan emitted by local GPUI widgets.
@@ -229,6 +251,48 @@ pub fn project_dropped_wire_menu(
     }
 }
 
+/// Build GPUI-local blackboard panels from renderer-neutral descriptors.
+pub fn project_blackboards_for_descriptor(
+    descriptor: &NodeKindViewDescriptor,
+    node_data: &serde_json::Value,
+) -> Vec<OpenGpuiBlackboardPlan> {
+    descriptor
+        .blackboards
+        .iter()
+        .map(|blackboard| project_blackboard(descriptor, node_data, blackboard))
+        .collect()
+}
+
+/// Build one GPUI-local blackboard plan.
+pub fn project_blackboard(
+    descriptor: &NodeKindViewDescriptor,
+    node_data: &serde_json::Value,
+    blackboard: &BlackboardDescriptor,
+) -> OpenGpuiBlackboardPlan {
+    let items = blackboard
+        .collection
+        .item_projections(node_data)
+        .into_iter()
+        .map(project_blackboard_item)
+        .collect::<Vec<_>>();
+    let controls = blackboard
+        .collection
+        .item_template_slots
+        .iter()
+        .map(|slot| slot.controls.len())
+        .sum();
+
+    OpenGpuiBlackboardPlan {
+        key: blackboard.key.clone(),
+        label: blackboard.label.clone(),
+        collection_key: blackboard.collection.key.clone(),
+        item_count: items.len(),
+        controls,
+        items,
+        action_menu: blackboard_action_menu(descriptor, blackboard),
+    }
+}
+
 /// Convert one action descriptor into a GPUI-local render plan.
 pub fn project_action(action: &NodeActionDescriptor) -> OpenGpuiActionPlan {
     OpenGpuiActionPlan {
@@ -243,6 +307,71 @@ pub fn project_action(action: &NodeActionDescriptor) -> OpenGpuiActionPlan {
         danger: action.danger,
         icon_key: action.icon_key.clone(),
         shortcut: action.shortcut.as_ref().map(shortcut_label),
+    }
+}
+
+fn project_blackboard_item(item: NodeRepeatableItemProjection) -> OpenGpuiBlackboardItemPlan {
+    OpenGpuiBlackboardItemPlan {
+        item_id: item.item_id.clone(),
+        item_index: item.item_index,
+        label: blackboard_item_label(&item),
+        controls: item.slots.iter().map(|slot| slot.controls.len()).sum(),
+    }
+}
+
+fn blackboard_item_label(item: &NodeRepeatableItemProjection) -> String {
+    item.item_data
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            item.item_data
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or(item.item_id.as_str())
+        .to_owned()
+}
+
+fn blackboard_action_menu(
+    descriptor: &NodeKindViewDescriptor,
+    blackboard: &BlackboardDescriptor,
+) -> OpenGpuiMenuPlan {
+    let surface = OpenGpuiActionSurface::Blackboard {
+        blackboard_key: blackboard.key.clone(),
+    };
+    let mut action_keys = Vec::new();
+    for key in &blackboard.action_keys {
+        push_unique_action_key(&mut action_keys, key.clone());
+    }
+    if let Some(key) = &blackboard.collection.add_action {
+        push_unique_action_key(&mut action_keys, key.clone());
+    }
+    if let Some(key) = &blackboard.collection.remove_action {
+        push_unique_action_key(&mut action_keys, key.clone());
+    }
+    if let Some(key) = &blackboard.collection.reorder_action {
+        push_unique_action_key(&mut action_keys, key.clone());
+    }
+
+    let mut actions = action_keys
+        .iter()
+        .filter_map(|key| descriptor.action(key))
+        .filter(|action| action_matches_surface(action, &surface))
+        .map(project_action)
+        .collect::<Vec<_>>();
+    sort_action_plans(&mut actions);
+
+    OpenGpuiMenuPlan {
+        key: format!("blackboard.menu.{}", blackboard.key),
+        label: blackboard.label.clone(),
+        surface: MenuSurface::Blackboard,
+        actions,
+    }
+}
+
+fn push_unique_action_key(action_keys: &mut Vec<String>, action_key: String) {
+    if !action_keys.iter().any(|key| key == &action_key) {
+        action_keys.push(action_key);
     }
 }
 
@@ -664,6 +793,42 @@ mod tests {
                 .iter()
                 .all(|action| action.key != "action.insert.llm")
         );
+    }
+
+    #[test]
+    fn blackboard_projection_lists_items_and_dispatchable_actions() {
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let descriptor = registry
+            .view_descriptor(&jellyflow::core::NodeKindKey::new("demo.shader.mix"))
+            .expect("shader mix descriptor");
+
+        let blackboards = project_blackboards_for_descriptor(&descriptor, &descriptor.default_data);
+
+        let blackboard = blackboards
+            .iter()
+            .find(|blackboard| blackboard.key == "blackboard.shader.properties")
+            .expect("shader properties blackboard");
+        assert_eq!(blackboard.label, "Shader properties");
+        assert_eq!(blackboard.collection_key, "shader.properties");
+        assert_eq!(blackboard.item_count, 2);
+        assert!(blackboard.items.iter().any(|item| {
+            item.item_id == "base_color" && item.label == "Base Color" && item.controls == 1
+        }));
+        assert_eq!(blackboard.action_menu.surface, MenuSurface::Blackboard);
+        assert!(
+            blackboard
+                .action_menu
+                .actions
+                .iter()
+                .any(|action| action.key == "action.shader_property.add")
+        );
+        let dispatch = plan_action_dispatch(&blackboard.action_menu, "action.shader_property.add")
+            .expect("blackboard action dispatch");
+        assert!(matches!(
+            dispatch.target,
+            ActionTarget::Blackboard { blackboard_key }
+                if blackboard_key == "blackboard.shader.properties"
+        ));
     }
 
     #[test]
