@@ -1,14 +1,16 @@
 use jellyflow::{
     NodeGraphStore,
     core::{Node, NodeId},
-    runtime::schema::NodeRegistry,
+    runtime::schema::{ActionIntent, NodeRegistry},
 };
 use serde_json::{Number, Value};
 
 use crate::{
     OpenGpuiActionDispatchPlan, OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan,
     OpenGpuiControlPlan, OpenGpuiControlPrimitive, OpenGpuiControlSupport, OpenGpuiInspectorPlan,
-    OpenGpuiMenuPlan, plan_action_dispatch, plan_control_edit, plan_inspector_control_edit,
+    OpenGpuiMenuPlan, OpenGpuiRepeatableActionPlan, OpenGpuiRepeatableEditError,
+    OpenGpuiRepeatableEditPlan, plan_action_dispatch, plan_control_edit,
+    plan_inspector_control_edit, plan_repeatable_action,
 };
 
 /// Stateless adapter-local entry point for turning GPUI component events into semantic outcomes.
@@ -23,6 +25,14 @@ pub enum OpenGpuiControlEventValue {
     Bool(bool),
     Json(Value),
     SelectOptionKey(String),
+}
+
+/// Host hook context for creating product-specific default repeatable items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenGpuiRepeatableAddItemContext {
+    pub action_key: String,
+    pub collection_key: String,
+    pub item_count: usize,
 }
 
 /// Adapter authoring outcome. `Skipped` is explicit so GPUI callers do not infer intent from
@@ -102,6 +112,22 @@ pub enum OpenGpuiAuthoringSkipReason {
     },
     MissingNodeDescriptor {
         node_kind: String,
+    },
+    MissingActionNodeTarget {
+        action_key: String,
+    },
+    MissingRepeatableCollection {
+        action_key: String,
+        collection_key: String,
+    },
+    MissingRepeatableReorderTarget {
+        action_key: String,
+        collection_key: String,
+        item_id: String,
+    },
+    UnsupportedActionIntent {
+        action_key: String,
+        intent: ActionIntent,
     },
 }
 
@@ -347,6 +373,143 @@ impl OpenGpuiAuthoringController {
             }),
         }
     }
+
+    pub fn plan_repeatable_action_dispatch<F>(
+        &self,
+        store: &NodeGraphStore,
+        registry: &NodeRegistry,
+        node_id: Option<NodeId>,
+        dispatch: &OpenGpuiActionDispatchPlan,
+        mut add_item: F,
+    ) -> Result<OpenGpuiAuthoringOutcome<OpenGpuiRepeatableActionPlan>, String>
+    where
+        F: FnMut(&OpenGpuiRepeatableAddItemContext) -> Option<Value>,
+    {
+        match &dispatch.intent {
+            ActionIntent::AddRepeatableItem { collection_key } => {
+                let Some(node_id) = node_id else {
+                    return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                        OpenGpuiAuthoringSkipReason::MissingActionNodeTarget {
+                            action_key: dispatch.action_key.clone(),
+                        },
+                    ));
+                };
+                let Some((node, descriptor)) = current_node_descriptor(store, registry, node_id)?
+                else {
+                    return Ok(missing_node_or_descriptor_outcome(store, registry, node_id));
+                };
+                let Some(collection) = descriptor.repeatable_collection(collection_key) else {
+                    return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                        OpenGpuiAuthoringSkipReason::MissingRepeatableCollection {
+                            action_key: dispatch.action_key.clone(),
+                            collection_key: collection_key.clone(),
+                        },
+                    ));
+                };
+                let context = OpenGpuiRepeatableAddItemContext {
+                    action_key: dispatch.action_key.clone(),
+                    collection_key: collection_key.clone(),
+                    item_count: collection.item_projections(&node.data).len(),
+                };
+                let item = add_item(&context).unwrap_or_else(|| Value::Object(Default::default()));
+                Ok(OpenGpuiAuthoringOutcome::Planned(
+                    OpenGpuiRepeatableActionPlan::Add {
+                        collection_key: collection_key.clone(),
+                        item,
+                    },
+                ))
+            }
+            ActionIntent::RemoveRepeatableItem {
+                collection_key,
+                item_id,
+            } => {
+                let Some(node_id) = node_id else {
+                    return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                        OpenGpuiAuthoringSkipReason::MissingActionNodeTarget {
+                            action_key: dispatch.action_key.clone(),
+                        },
+                    ));
+                };
+                let Some((_node, descriptor)) = current_node_descriptor(store, registry, node_id)?
+                else {
+                    return Ok(missing_node_or_descriptor_outcome(store, registry, node_id));
+                };
+                if descriptor.repeatable_collection(collection_key).is_none() {
+                    return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                        OpenGpuiAuthoringSkipReason::MissingRepeatableCollection {
+                            action_key: dispatch.action_key.clone(),
+                            collection_key: collection_key.clone(),
+                        },
+                    ));
+                }
+                Ok(OpenGpuiAuthoringOutcome::Planned(
+                    OpenGpuiRepeatableActionPlan::Remove {
+                        collection_key: collection_key.clone(),
+                        item_id: item_id.clone(),
+                    },
+                ))
+            }
+            ActionIntent::ReorderRepeatableItem {
+                collection_key,
+                item_id,
+            } => {
+                if node_id.is_none() {
+                    return Ok(OpenGpuiAuthoringOutcome::Skipped(
+                        OpenGpuiAuthoringSkipReason::MissingActionNodeTarget {
+                            action_key: dispatch.action_key.clone(),
+                        },
+                    ));
+                }
+                Ok(OpenGpuiAuthoringOutcome::Skipped(
+                    OpenGpuiAuthoringSkipReason::MissingRepeatableReorderTarget {
+                        action_key: dispatch.action_key.clone(),
+                        collection_key: collection_key.clone(),
+                        item_id: item_id.clone(),
+                    },
+                ))
+            }
+            intent => Ok(OpenGpuiAuthoringOutcome::Skipped(
+                OpenGpuiAuthoringSkipReason::UnsupportedActionIntent {
+                    action_key: dispatch.action_key.clone(),
+                    intent: intent.clone(),
+                },
+            )),
+        }
+    }
+
+    pub fn apply_repeatable_action_to_store(
+        &self,
+        store: &mut NodeGraphStore,
+        registry: &NodeRegistry,
+        node_id: NodeId,
+        action: OpenGpuiRepeatableActionPlan,
+    ) -> Result<Option<OpenGpuiRepeatableEditPlan>, OpenGpuiRepeatableEditError> {
+        let node = store
+            .graph()
+            .nodes()
+            .get(&node_id)
+            .cloned()
+            .ok_or_else(|| {
+                OpenGpuiRepeatableEditError::InvalidEdit(format!("missing node {node_id:?}"))
+            })?;
+        let descriptor = registry.view_descriptor(&node.kind).ok_or_else(|| {
+            OpenGpuiRepeatableEditError::InvalidEdit(format!(
+                "missing descriptor for node kind `{}`",
+                node.kind.0
+            ))
+        })?;
+        let Some(plan) =
+            plan_repeatable_action(&descriptor, store.graph(), node_id, &node, action)?
+        else {
+            return Ok(None);
+        };
+
+        store
+            .dispatch_transaction(&plan.transaction)
+            .map_err(|error| OpenGpuiRepeatableEditError::InvalidEdit(error.to_string()))?;
+        store.invalidate_node_internals(plan.invalidation.clone());
+        Ok(Some(plan))
+    }
 }
 
 pub fn control_option_value_key(value: &Value) -> String {
@@ -424,6 +587,42 @@ fn json_number(value: f64, control_key: &str) -> Result<Value, String> {
     Number::from_f64(value)
         .map(Value::Number)
         .ok_or_else(|| format!("control `{control_key}` received a non-finite number"))
+}
+
+fn current_node_descriptor<'a>(
+    store: &'a NodeGraphStore,
+    registry: &NodeRegistry,
+    node_id: NodeId,
+) -> Result<Option<(&'a Node, jellyflow::runtime::schema::NodeKindViewDescriptor)>, String> {
+    let Some(node) = store.graph().nodes().get(&node_id) else {
+        return Ok(None);
+    };
+    let Some(descriptor) = registry.view_descriptor(&node.kind) else {
+        return Ok(None);
+    };
+    Ok(Some((node, descriptor)))
+}
+
+fn missing_node_or_descriptor_outcome<T>(
+    store: &NodeGraphStore,
+    registry: &NodeRegistry,
+    node_id: NodeId,
+) -> OpenGpuiAuthoringOutcome<T> {
+    let Some(node) = store.graph().nodes().get(&node_id) else {
+        return OpenGpuiAuthoringOutcome::Skipped(OpenGpuiAuthoringSkipReason::MissingNode {
+            node_id: format!("{node_id:?}"),
+        });
+    };
+    if registry.view_descriptor(&node.kind).is_none() {
+        return OpenGpuiAuthoringOutcome::Skipped(
+            OpenGpuiAuthoringSkipReason::MissingNodeDescriptor {
+                node_kind: node.kind.0.clone(),
+            },
+        );
+    }
+    OpenGpuiAuthoringOutcome::Skipped(OpenGpuiAuthoringSkipReason::MissingNode {
+        node_id: format!("{node_id:?}"),
+    })
 }
 
 #[cfg(test)]
@@ -843,6 +1042,223 @@ mod tests {
                 .expect("missing descriptor"),
             OpenGpuiAuthoringSkipReason::MissingNodeDescriptor {
                 node_kind: "missing.kind".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    fn repeatable_action_dispatch_maps_blackboard_add_and_applies_store_mutation() {
+        let controller = OpenGpuiAuthoringController;
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let mut store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(13)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let outcome = store
+            .apply_create_node_from_schema(
+                &registry,
+                CreateNodeRequest::new(NodeKindKey::new("demo.shader.mix"), CanvasPoint::default()),
+            )
+            .expect("create shader mix");
+        let node_id = outcome.node_id();
+        let descriptor = registry
+            .view_descriptor(&NodeKindKey::new("demo.shader.mix"))
+            .expect("shader descriptor");
+        let node = store.graph().nodes().get(&node_id).expect("shader node");
+        let blackboard = crate::project_blackboards_for_descriptor(&descriptor, &node.data)
+            .into_iter()
+            .find(|blackboard| blackboard.key == "blackboard.shader.properties")
+            .expect("shader properties blackboard");
+        let dispatch = controller
+            .plan_menu_action_dispatch(&blackboard.action_menu, "action.shader_property.add")
+            .into_plan()
+            .expect("blackboard add dispatch");
+
+        let mut fallback_calls = 0;
+        let fallback = controller
+            .plan_repeatable_action_dispatch(&store, &registry, Some(node_id), &dispatch, |_| {
+                fallback_calls += 1;
+                None
+            })
+            .expect("fallback repeatable action")
+            .into_plan()
+            .expect("fallback add plan");
+        assert_eq!(fallback_calls, 1);
+        assert_eq!(
+            fallback,
+            OpenGpuiRepeatableActionPlan::Add {
+                collection_key: "shader.properties".to_owned(),
+                item: json!({}),
+            }
+        );
+
+        let mut factory_calls = 0;
+        let repeatable = controller
+            .plan_repeatable_action_dispatch(
+                &store,
+                &registry,
+                Some(node_id),
+                &dispatch,
+                |context| {
+                    factory_calls += 1;
+                    assert_eq!(context.action_key, "action.shader_property.add");
+                    assert_eq!(context.collection_key, "shader.properties");
+                    assert_eq!(context.item_count, 2);
+                    Some(json!({ "name": "roughness" }))
+                },
+            )
+            .expect("repeatable action")
+            .into_plan()
+            .expect("repeatable add plan");
+        assert_eq!(factory_calls, 1);
+        let plan = controller
+            .apply_repeatable_action_to_store(&mut store, &registry, node_id, repeatable)
+            .expect("apply repeatable")
+            .expect("changed repeatable");
+        assert_eq!(plan.collection_key, "shader.properties");
+
+        let updated = store.graph().nodes().get(&node_id).expect("updated node");
+        let properties = updated.data["properties"]
+            .as_array()
+            .expect("shader properties");
+        assert_eq!(properties.len(), 3);
+        assert_eq!(properties[2]["id"], json!("propertie_3"));
+        assert_eq!(properties[2]["name"], json!("roughness"));
+    }
+
+    #[test]
+    fn repeatable_action_dispatch_maps_remove_by_item_id() {
+        let controller = OpenGpuiAuthoringController;
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let mut store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(14)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let outcome = store
+            .apply_create_node_from_schema(
+                &registry,
+                CreateNodeRequest::new(NodeKindKey::new("demo.shader.mix"), CanvasPoint::default()),
+            )
+            .expect("create shader mix");
+        let node_id = outcome.node_id();
+        let dispatch = OpenGpuiActionDispatchPlan {
+            action_key: "action.shader_input.remove".to_owned(),
+            target: ActionTarget::RepeatableItem {
+                collection_key: "shader.inputs".to_owned(),
+                item_id: "factor".to_owned(),
+            },
+            intent: ActionIntent::RemoveRepeatableItem {
+                collection_key: "shader.inputs".to_owned(),
+                item_id: "factor".to_owned(),
+            },
+        };
+
+        let repeatable = controller
+            .plan_repeatable_action_dispatch(&store, &registry, Some(node_id), &dispatch, |_| None)
+            .expect("repeatable remove")
+            .into_plan()
+            .expect("remove plan");
+        assert_eq!(
+            repeatable,
+            OpenGpuiRepeatableActionPlan::Remove {
+                collection_key: "shader.inputs".to_owned(),
+                item_id: "factor".to_owned(),
+            }
+        );
+        controller
+            .apply_repeatable_action_to_store(&mut store, &registry, node_id, repeatable)
+            .expect("apply remove")
+            .expect("changed remove");
+        let node = store.graph().nodes().get(&node_id).expect("updated node");
+        assert!(
+            node.data["dynamic_inputs"]
+                .as_array()
+                .expect("dynamic inputs")
+                .iter()
+                .all(|item| item["id"] != "factor")
+        );
+    }
+
+    #[test]
+    fn repeatable_action_dispatch_reports_skipped_outcomes() {
+        let controller = OpenGpuiAuthoringController;
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let mut store = NodeGraphStore::new(
+            Graph::new(GraphId::from_u128(15)),
+            NodeGraphViewState::default(),
+            NodeGraphEditorConfig::default(),
+        );
+        let outcome = store
+            .apply_create_node_from_schema(
+                &registry,
+                CreateNodeRequest::new(NodeKindKey::new("demo.shader.mix"), CanvasPoint::default()),
+            )
+            .expect("create shader mix");
+        let node_id = outcome.node_id();
+
+        let reorder = OpenGpuiActionDispatchPlan {
+            action_key: "action.shader_input.reorder".to_owned(),
+            target: ActionTarget::Node {
+                node_kind: "demo.shader.mix".to_owned(),
+            },
+            intent: ActionIntent::ReorderRepeatableItem {
+                collection_key: "shader.inputs".to_owned(),
+                item_id: "factor".to_owned(),
+            },
+        };
+        assert_skip_reason(
+            controller
+                .plan_repeatable_action_dispatch(&store, &registry, Some(node_id), &reorder, |_| {
+                    None
+                })
+                .expect("reorder skip"),
+            OpenGpuiAuthoringSkipReason::MissingRepeatableReorderTarget {
+                action_key: "action.shader_input.reorder".to_owned(),
+                collection_key: "shader.inputs".to_owned(),
+                item_id: "factor".to_owned(),
+            },
+        );
+
+        let add = OpenGpuiActionDispatchPlan {
+            action_key: "action.shader_input.add".to_owned(),
+            target: ActionTarget::Node {
+                node_kind: "demo.shader.mix".to_owned(),
+            },
+            intent: ActionIntent::AddRepeatableItem {
+                collection_key: "shader.inputs".to_owned(),
+            },
+        };
+        assert_skip_reason(
+            controller
+                .plan_repeatable_action_dispatch(&store, &registry, None, &add, |_| None)
+                .expect("missing target skip"),
+            OpenGpuiAuthoringSkipReason::MissingActionNodeTarget {
+                action_key: "action.shader_input.add".to_owned(),
+            },
+        );
+
+        let unsupported = OpenGpuiActionDispatchPlan {
+            action_key: "action.run".to_owned(),
+            target: ActionTarget::Node {
+                node_kind: "demo.shader.mix".to_owned(),
+            },
+            intent: ActionIntent::RunNode,
+        };
+        assert_skip_reason(
+            controller
+                .plan_repeatable_action_dispatch(
+                    &store,
+                    &registry,
+                    Some(node_id),
+                    &unsupported,
+                    |_| None,
+                )
+                .expect("unsupported skip"),
+            OpenGpuiAuthoringSkipReason::UnsupportedActionIntent {
+                action_key: "action.run".to_owned(),
+                intent: ActionIntent::RunNode,
             },
         );
     }

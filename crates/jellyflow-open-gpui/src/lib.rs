@@ -30,8 +30,8 @@ pub use actions::{
 pub use adapter::{OPEN_GPUI_ADAPTER_ID, OpenGpuiAdapter, OpenGpuiMeasurementMode};
 pub use authoring::{
     OpenGpuiAuthoringController, OpenGpuiAuthoringOutcome, OpenGpuiAuthoringSkipReason,
-    OpenGpuiControlEventValue, control_option_key, control_option_value_key,
-    control_selected_option_key,
+    OpenGpuiControlEventValue, OpenGpuiRepeatableAddItemContext, control_option_key,
+    control_option_value_key, control_selected_option_key,
 };
 pub use controls::{
     OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
