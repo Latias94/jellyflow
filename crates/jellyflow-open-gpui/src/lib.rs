@@ -13,6 +13,7 @@ pub mod controls;
 pub mod inspector;
 pub mod measurement;
 pub mod projection;
+pub mod renderer;
 pub mod repeatable;
 pub mod testing;
 
@@ -52,6 +53,13 @@ pub use projection::{
     projected_node_surface_graph_layout, repeatable_surface_projection,
     semantic_component_priority, slot_anchor_rect, slot_projection_visibility, slot_row_rect,
     slot_row_y,
+};
+pub use renderer::{
+    OpenGpuiNodeRendererContext, OpenGpuiNodeRendererFallback, OpenGpuiNodeRendererFallbackReason,
+    OpenGpuiNodeRendererOutput, OpenGpuiNodeRendererOutputSource, OpenGpuiNodeRendererRegistration,
+    OpenGpuiNodeRendererRegistry, OpenGpuiNodeRendererResolution, OpenGpuiNodeRendererState,
+    open_gpui_node_renderer_context, open_gpui_renderer_repeatable_items,
+    open_gpui_renderer_repeatable_surfaces,
 };
 pub use repeatable::{
     OpenGpuiDynamicPortPolicy, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
