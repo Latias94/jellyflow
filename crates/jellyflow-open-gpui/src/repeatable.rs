@@ -54,6 +54,7 @@ pub struct OpenGpuiRepeatableItemProjection {
     pub port_direction: Option<PortDirection>,
     pub dynamic_port_policy: OpenGpuiDynamicPortPolicy,
     pub controls: usize,
+    pub remove_disabled_reason: Option<String>,
     pub item_data: Value,
 }
 
@@ -164,10 +165,19 @@ pub fn repeatable_item_projection(
         .repeatable_collections
         .iter()
         .flat_map(|collection| {
+            let remove_disabled_reason = collection.remove_disabled_reason(&node.data);
             collection
                 .item_projections(&node.data)
                 .into_iter()
-                .map(|item| project_repeatable_item(collection, item, graph, node_id))
+                .map(move |item| {
+                    project_repeatable_item(
+                        collection,
+                        item,
+                        graph,
+                        node_id,
+                        remove_disabled_reason.clone(),
+                    )
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -304,6 +314,7 @@ fn project_repeatable_item(
     item: NodeRepeatableItemProjection,
     graph: &Graph,
     node_id: &NodeId,
+    remove_disabled_reason: Option<String>,
 ) -> OpenGpuiRepeatableItemProjection {
     let port_key = item.port_key.as_ref().map(|key| PortKey::new(key.clone()));
     let port = port_key
@@ -327,6 +338,7 @@ fn project_repeatable_item(
         port_direction: port.map(|(_, direction)| direction),
         dynamic_port_policy,
         controls: repeatable_item_control_count(&item),
+        remove_disabled_reason,
         item_data: item.item_data,
     }
 }
@@ -868,14 +880,22 @@ mod tests {
 
         let items = repeatable_item_projection(&descriptor, &node, store.graph(), &node_id);
         let diagnostics = repeatable_port_diagnostics(&items);
+        let input_items = items
+            .iter()
+            .filter(|item| item.collection_key == "shader.inputs")
+            .collect::<Vec<_>>();
+        let normal = input_items
+            .iter()
+            .find(|item| item.item_id == "normal")
+            .expect("normal dynamic shader input");
 
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].port_key, Some(PortKey::new("normal")));
+        assert_eq!(input_items.len(), 1);
+        assert_eq!(normal.port_key, Some(PortKey::new("normal")));
         assert_eq!(
-            items[0].dynamic_port_policy,
+            normal.dynamic_port_policy,
             OpenGpuiDynamicPortPolicy::MissingGraphPort
         );
-        assert!(items[0].port_id.is_none());
+        assert!(normal.port_id.is_none());
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].port_key, PortKey::new("normal"));
     }

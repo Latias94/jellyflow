@@ -126,6 +126,8 @@ pub struct OpenGpuiRepeatableSurfaceProjection {
     pub label: String,
     pub item_count: usize,
     pub controls: usize,
+    pub add_disabled_reason: Option<String>,
+    pub remove_disabled_reason: Option<String>,
 }
 
 /// Layout facts for one projected repeatable collection row.
@@ -233,6 +235,8 @@ pub fn repeatable_surface_projection(
                     .unwrap_or_else(|| collection.key.clone()),
                 item_count,
                 controls: repeatable_control_count(collection),
+                add_disabled_reason: collection.add_disabled_reason(data),
+                remove_disabled_reason: collection.remove_disabled_reason(data),
             }
         })
         .collect()
@@ -429,6 +433,43 @@ mod tests {
         );
         assert!(layout.slot_rect("field.prompt").is_some());
         assert!(layout.anchor_rect("field.completion").is_some());
+    }
+
+    #[test]
+    fn repeatable_surface_projection_reports_action_disabled_reasons() {
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let mut descriptor = registry
+            .view_descriptor(&NodeKindKey::new("demo.llm"))
+            .expect("builtin llm descriptor");
+        let collection_key = descriptor
+            .repeatable_collections
+            .first()
+            .expect("llm repeatable collection")
+            .key
+            .clone();
+        let item_count = descriptor.repeatable_collections[0]
+            .item_projections(&descriptor.default_data)
+            .len();
+        descriptor.repeatable_collections[0].min_items = Some(item_count);
+        descriptor.repeatable_collections[0].max_items = Some(item_count);
+
+        let projection = repeatable_surface_projection(&descriptor, &descriptor.default_data);
+        let repeatable = projection
+            .iter()
+            .find(|repeatable| repeatable.key == collection_key)
+            .expect("repeatable projection");
+        let expected_add = format!("Maximum of {item_count} items reached");
+        let expected_remove = format!("Minimum of {item_count} items required");
+
+        assert_eq!(repeatable.item_count, item_count);
+        assert_eq!(
+            repeatable.add_disabled_reason.as_deref(),
+            Some(expected_add.as_str())
+        );
+        assert_eq!(
+            repeatable.remove_disabled_reason.as_deref(),
+            Some(expected_remove.as_str())
+        );
     }
 
     #[test]

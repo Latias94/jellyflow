@@ -311,10 +311,10 @@ impl OpenGpuiNodeRendererContext {
 
     pub fn repeatable_item_measurement_id(
         &self,
-        collection_key: impl Into<String>,
+        slot_key: impl Into<String>,
         item_id: impl Into<String>,
     ) -> OpenGpuiMeasurementId {
-        OpenGpuiMeasurementId::repeatable_item(self.node_id, collection_key, item_id)
+        OpenGpuiMeasurementId::repeatable_item(self.node_id, slot_key, item_id)
     }
 
     pub fn anchor_measurement_id(&self, anchor_key: impl Into<String>) -> OpenGpuiMeasurementId {
@@ -545,13 +545,13 @@ mod tests {
         assert_eq!(
             context
                 .repeatable_item_measurement_id(
-                    factor.projection.collection_key.clone(),
+                    factor.projection.slot_key.clone(),
                     factor.projection.item_id.clone()
                 )
                 .element_id(),
             format!(
-                "jellyflow-node:{}:repeatable:shader.inputs:item:factor",
-                context.node_id.0
+                "jellyflow-node:{}:repeatable:{}:item:factor",
+                context.node_id.0, factor.projection.slot_key
             )
         );
         assert_eq!(
