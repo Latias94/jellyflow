@@ -216,6 +216,182 @@ impl OpenGpuiHostSurfaceReport {
     }
 }
 
+/// User-visible host regression gap collected from the concrete Open GPUI gallery path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiHostVisualInteractionGap {
+    UnselectedContentHidden,
+    ContentOverflow,
+    HandleOverlap,
+    StaleMeasuredRegion,
+    MissingRepeatableAnchor,
+    InvalidHoverOutOfBounds,
+    DroppedWireMenuOutOfBounds,
+    EdgeEndpointNotFollowingMeasuredHandle,
+}
+
+/// Host-level visual/layout evidence for one rendered product node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiHostVisualSurfaceRow {
+    pub fixture_id: String,
+    pub fixture_kind: OpenGpuiProductFixtureKind,
+    pub family: OpenGpuiProductFixtureFamily,
+    pub node_kind: String,
+    pub renderer_key: String,
+    pub source: OpenGpuiHostRendererSource,
+    pub selected: bool,
+    pub content_visible: bool,
+    pub content_clipped: bool,
+    pub content_within_node_bounds: bool,
+    pub handle_overlap_count: usize,
+    pub stale_measured_regions: usize,
+    pub repeatable_rows: usize,
+    pub repeatable_rows_with_anchors: usize,
+    pub gaps: BTreeSet<OpenGpuiHostVisualInteractionGap>,
+}
+
+impl OpenGpuiHostVisualSurfaceRow {
+    pub fn new(
+        fixture: &OpenGpuiProductFixtureCase,
+        node_kind: impl Into<String>,
+        renderer_key: impl Into<String>,
+        source: OpenGpuiHostRendererSource,
+    ) -> Self {
+        Self {
+            fixture_id: fixture.id.clone(),
+            fixture_kind: fixture.kind,
+            family: fixture.family,
+            node_kind: node_kind.into(),
+            renderer_key: renderer_key.into(),
+            source,
+            selected: false,
+            content_visible: false,
+            content_clipped: false,
+            content_within_node_bounds: false,
+            handle_overlap_count: 0,
+            stale_measured_regions: 0,
+            repeatable_rows: 0,
+            repeatable_rows_with_anchors: 0,
+            gaps: BTreeSet::new(),
+        }
+    }
+
+    pub fn with_selection(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn with_content_bounds(
+        mut self,
+        visible: bool,
+        clipped: bool,
+        within_node_bounds: bool,
+    ) -> Self {
+        self.content_visible = visible;
+        self.content_clipped = clipped;
+        self.content_within_node_bounds = within_node_bounds;
+        if !visible && !self.selected {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::UnselectedContentHidden);
+        }
+        if !clipped && !within_node_bounds {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        self
+    }
+
+    pub fn with_handle_overlap_count(mut self, overlap_count: usize) -> Self {
+        self.handle_overlap_count = overlap_count;
+        if overlap_count > 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::HandleOverlap);
+        }
+        self
+    }
+
+    pub fn with_stale_measured_regions(mut self, stale_regions: usize) -> Self {
+        self.stale_measured_regions = stale_regions;
+        if stale_regions > 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::StaleMeasuredRegion);
+        }
+        self
+    }
+
+    pub fn with_repeatable_anchor_coverage(
+        mut self,
+        repeatable_rows: usize,
+        repeatable_rows_with_anchors: usize,
+    ) -> Self {
+        self.repeatable_rows = repeatable_rows;
+        self.repeatable_rows_with_anchors = repeatable_rows_with_anchors;
+        if repeatable_rows > 0 && repeatable_rows_with_anchors == 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::MissingRepeatableAnchor);
+        }
+        self
+    }
+}
+
+/// Host-level visual and interaction evidence for the real Open GPUI gallery path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiHostVisualInteractionReport {
+    pub rows: Vec<OpenGpuiHostVisualSurfaceRow>,
+    pub invalid_hover_bounds_checked: bool,
+    pub dropped_wire_menu_bounds_checked: bool,
+    pub repeatable_edit_updates_anchors: bool,
+    pub edge_endpoints_follow_measured_handles: bool,
+    pub gaps: BTreeSet<OpenGpuiHostVisualInteractionGap>,
+}
+
+impl OpenGpuiHostVisualInteractionReport {
+    pub fn push(&mut self, row: OpenGpuiHostVisualSurfaceRow) {
+        self.gaps.extend(row.gaps.iter().copied());
+        self.rows.push(row);
+    }
+
+    pub fn rows_for_fixture(
+        &self,
+        fixture_id: &str,
+    ) -> impl Iterator<Item = &OpenGpuiHostVisualSurfaceRow> {
+        self.rows
+            .iter()
+            .filter(move |row| row.fixture_id == fixture_id)
+    }
+
+    pub fn mark_invalid_hover_bounds_checked(&mut self, inside_bounds: bool) {
+        self.invalid_hover_bounds_checked = inside_bounds;
+        if !inside_bounds {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::InvalidHoverOutOfBounds);
+        }
+    }
+
+    pub fn mark_dropped_wire_menu_bounds_checked(&mut self, inside_bounds: bool) {
+        self.dropped_wire_menu_bounds_checked = inside_bounds;
+        if !inside_bounds {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::DroppedWireMenuOutOfBounds);
+        }
+    }
+
+    pub fn mark_repeatable_edit_updates_anchors(&mut self, updates_anchors: bool) {
+        self.repeatable_edit_updates_anchors = updates_anchors;
+        if !updates_anchors {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::MissingRepeatableAnchor);
+        }
+    }
+
+    pub fn mark_edge_endpoints_follow_measured_handles(&mut self, follows_handles: bool) {
+        self.edge_endpoints_follow_measured_handles = follows_handles;
+        if !follows_handles {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::EdgeEndpointNotFollowingMeasuredHandle);
+        }
+    }
+}
+
 /// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
 pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
     [
@@ -301,6 +477,85 @@ pub fn assert_product_gallery_host_report_gates(report: &OpenGpuiHostSurfaceRepo
             fixture.expected_renderer_keys
         );
     }
+}
+
+/// Assert concrete Open GPUI host-level visual/interaction gates.
+pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualInteractionReport) {
+    assert!(
+        !report.rows.is_empty(),
+        "Open GPUI host visual report must contain rendered product rows"
+    );
+    for fixture in product_fixture_catalog() {
+        assert!(
+            report.rows_for_fixture(&fixture.id).next().is_some(),
+            "visual report is missing product fixture `{}`: {report:?}",
+            fixture.id
+        );
+        assert!(
+            report.rows_for_fixture(&fixture.id).any(|row| {
+                row.source == OpenGpuiHostRendererSource::ProductRenderer
+                    && fixture
+                        .expected_renderer_keys
+                        .contains(row.renderer_key.as_str())
+            }),
+            "fixture `{}` must have a product renderer visual row: {report:?}",
+            fixture.id
+        );
+    }
+
+    for row in &report.rows {
+        assert!(
+            !row.node_kind.is_empty(),
+            "visual report row must name a node kind: {row:?}"
+        );
+        assert!(
+            !row.renderer_key.is_empty(),
+            "visual report row must name a renderer key: {row:?}"
+        );
+        assert!(
+            row.content_visible,
+            "node-internal content must remain visible even when unselected: {row:?}"
+        );
+        assert!(
+            row.content_clipped || row.content_within_node_bounds,
+            "node-internal content must be clipped or stay inside the node body: {row:?}"
+        );
+        assert_eq!(
+            row.handle_overlap_count, 0,
+            "controls/content must not overlap connection handle rails: {row:?}"
+        );
+        assert_eq!(
+            row.stale_measured_regions, 0,
+            "visual report must not carry stale measured regions: {row:?}"
+        );
+        if row.repeatable_rows > 0 {
+            assert!(
+                row.repeatable_rows_with_anchors > 0,
+                "repeatable rows need measured/fallback anchor evidence: {row:?}"
+            );
+        }
+    }
+
+    assert!(
+        report.invalid_hover_bounds_checked,
+        "invalid hover feedback must be checked against measured handle bounds: {report:?}"
+    );
+    assert!(
+        report.dropped_wire_menu_bounds_checked,
+        "dropped-wire menu bounds must be checked: {report:?}"
+    );
+    assert!(
+        report.repeatable_edit_updates_anchors,
+        "repeatable edits must update or downgrade anchor evidence: {report:?}"
+    );
+    assert!(
+        report.edge_endpoints_follow_measured_handles,
+        "edge endpoints must follow measured handle positions: {report:?}"
+    );
+    assert!(
+        report.gaps.is_empty(),
+        "host visual interaction report has unresolved gaps: {report:?}"
+    );
 }
 
 impl OpenGpuiProductFixtureCase {
