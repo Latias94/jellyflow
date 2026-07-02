@@ -42,7 +42,20 @@ cargo test -p jellyflow-runtime --test public_surface -- --nocapture
 cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
 ```
 
-Native review smoke remains a separate manual check:
+Native lifecycle smoke now has a structured Open GPUI test gate:
+
+```sh
+cargo test --manifest-path repo-ref/open-gpui/crates/gpui/Cargo.toml test_simulate_window_close_honors_last_window_quit_mode -- --nocapture
+cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders product_gallery_native_smoke -- --nocapture --test-threads=1
+```
+
+This gate uses `TestAppContext::simulate_window_close` to exercise the App-side window removal path
+that `QuitMode::LastWindowClosed` observes. The `canvas-jellyflow` smoke opens the real
+`JellyflowCanvasView`, verifies the product gallery is rendered, drags a product node without
+resetting sibling node positions, closes the last test window, and asserts that the test platform
+received an app quit request. A blank window report must fail the native smoke gate.
+
+Native review smoke remains a manual macOS launch check for the real windowing shell:
 
 ```sh
 cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow
@@ -50,9 +63,9 @@ cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.tom
 
 For that smoke, verify the product gallery launches, Dify/shader/ERD/mind-map nodes render with
 internal UI, nodes drag from headers/passive regions, wires and ports are visible, reconnect handles
-are reachable on selected edges, and closing the last macOS window exits. The example sets
-`QuitMode::LastWindowClosed`; if GUI automation is unavailable, record the manual or timed-launch
-limitation instead of treating it as a structured test pass.
+are reachable on selected edges, and closing the last macOS window exits. The structured test gate
+proves the Open GPUI close/quit contract; this manual launch is still useful for OS-shell behavior
+and visual review.
 
 ## Open GPUI Product Interaction Gates
 

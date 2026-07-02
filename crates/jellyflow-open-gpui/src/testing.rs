@@ -709,6 +709,142 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
     );
 }
 
+/// Native lifecycle gap collected by an Open GPUI product smoke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiNativeLifecycleGap {
+    ProductGalleryNotRendered,
+    ProductDragUnchecked,
+    LastWindowCloseUnchecked,
+    CloseAutomationSkipped,
+    LastWindowCloseRejected,
+    NoWindowBeforeClose,
+    WindowsRemainAfterClose,
+    QuitNotObserved,
+    CloseAutomationSkipReasonMissing,
+}
+
+/// Widget-free native lifecycle evidence for the Open GPUI product gallery.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiNativeLifecycleEvidence {
+    pub rendered_product_fixture_id: Option<String>,
+    pub rendered_product_node_count: usize,
+    pub product_drag_checked: bool,
+    pub last_window_close_attempted: bool,
+    pub initial_window_count: usize,
+    pub last_window_close_accepted: bool,
+    pub remaining_window_count: usize,
+    pub quit_observed: bool,
+    pub close_automation_skip_reason: Option<String>,
+    pub gaps: BTreeSet<OpenGpuiNativeLifecycleGap>,
+}
+
+impl OpenGpuiNativeLifecycleEvidence {
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        let mut evidence = Self::default();
+        evidence.mark_close_automation_skipped(reason);
+        evidence
+    }
+
+    pub fn mark_product_gallery_rendered(
+        &mut self,
+        fixture_id: impl Into<String>,
+        product_node_count: usize,
+    ) {
+        self.rendered_product_fixture_id = Some(fixture_id.into());
+        self.rendered_product_node_count = product_node_count;
+        self.sync_gaps();
+    }
+
+    pub fn mark_product_drag_checked(&mut self, checked: bool) {
+        self.product_drag_checked = checked;
+        self.sync_gaps();
+    }
+
+    pub fn mark_last_window_close(
+        &mut self,
+        initial_window_count: usize,
+        accepted: bool,
+        remaining_window_count: usize,
+        quit_observed: bool,
+    ) {
+        self.last_window_close_attempted = true;
+        self.initial_window_count = initial_window_count;
+        self.last_window_close_accepted = accepted;
+        self.remaining_window_count = remaining_window_count;
+        self.quit_observed = quit_observed;
+        self.close_automation_skip_reason = None;
+        self.sync_gaps();
+    }
+
+    pub fn mark_close_automation_skipped(&mut self, reason: impl Into<String>) {
+        self.last_window_close_attempted = false;
+        self.close_automation_skip_reason = Some(reason.into());
+        self.sync_gaps();
+    }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiNativeLifecycleGap> {
+        let mut gaps = BTreeSet::new();
+        if self
+            .rendered_product_fixture_id
+            .as_ref()
+            .is_none_or(|fixture| fixture.trim().is_empty())
+            || self.rendered_product_node_count == 0
+        {
+            gaps.insert(OpenGpuiNativeLifecycleGap::ProductGalleryNotRendered);
+        }
+        if !self.product_drag_checked {
+            gaps.insert(OpenGpuiNativeLifecycleGap::ProductDragUnchecked);
+        }
+
+        if let Some(reason) = &self.close_automation_skip_reason {
+            if reason.trim().is_empty() {
+                gaps.insert(OpenGpuiNativeLifecycleGap::CloseAutomationSkipReasonMissing);
+            } else {
+                gaps.insert(OpenGpuiNativeLifecycleGap::CloseAutomationSkipped);
+            }
+            return gaps;
+        }
+
+        if !self.last_window_close_attempted {
+            gaps.insert(OpenGpuiNativeLifecycleGap::LastWindowCloseUnchecked);
+            return gaps;
+        }
+        if self.initial_window_count == 0 {
+            gaps.insert(OpenGpuiNativeLifecycleGap::NoWindowBeforeClose);
+        }
+        if !self.last_window_close_accepted {
+            gaps.insert(OpenGpuiNativeLifecycleGap::LastWindowCloseRejected);
+        }
+        if self.remaining_window_count > 0 {
+            gaps.insert(OpenGpuiNativeLifecycleGap::WindowsRemainAfterClose);
+        }
+        if !self.quit_observed {
+            gaps.insert(OpenGpuiNativeLifecycleGap::QuitNotObserved);
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
+    }
+}
+
+pub fn assert_native_lifecycle_evidence_gates(evidence: &OpenGpuiNativeLifecycleEvidence) {
+    let gaps = evidence.computed_gaps();
+    assert!(
+        serde_json::to_string(evidence).is_ok(),
+        "native lifecycle evidence must stay serializable: {evidence:?}"
+    );
+    assert!(
+        gaps.is_empty(),
+        "native lifecycle evidence has unresolved gaps: {evidence:?}; computed gaps: {gaps:?}"
+    );
+    assert_eq!(
+        evidence.gaps, gaps,
+        "native lifecycle evidence must carry synchronized gaps: {evidence:?}"
+    );
+}
+
 /// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
 pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
     [
@@ -2801,6 +2937,42 @@ mod tests {
         assert!(
             result.is_err(),
             "product interaction hard gate must fail when previews fall back to direct lines"
+        );
+    }
+
+    #[test]
+    fn native_lifecycle_gate_accepts_product_gallery_close_evidence() {
+        let mut evidence = OpenGpuiNativeLifecycleEvidence::default();
+        evidence.mark_product_gallery_rendered("workflow.review", 4);
+        evidence.mark_product_drag_checked(true);
+        evidence.mark_last_window_close(1, true, 0, true);
+
+        assert_native_lifecycle_evidence_gates(&evidence);
+    }
+
+    #[test]
+    fn native_lifecycle_gate_rejects_blank_window_evidence() {
+        let mut evidence = OpenGpuiNativeLifecycleEvidence::default();
+        evidence.mark_last_window_close(1, true, 0, true);
+
+        let result = std::panic::catch_unwind(|| assert_native_lifecycle_evidence_gates(&evidence));
+        assert!(
+            result.is_err(),
+            "native lifecycle gate must reject evidence that never rendered product gallery content"
+        );
+    }
+
+    #[test]
+    fn native_lifecycle_gate_rejects_close_automation_skip() {
+        let mut evidence = OpenGpuiNativeLifecycleEvidence::default();
+        evidence.mark_product_gallery_rendered("workflow.review", 4);
+        evidence.mark_product_drag_checked(true);
+        evidence.mark_close_automation_skipped("test platform does not support close");
+
+        let result = std::panic::catch_unwind(|| assert_native_lifecycle_evidence_gates(&evidence));
+        assert!(
+            result.is_err(),
+            "native lifecycle gate must reject skipped close automation"
         );
     }
 
