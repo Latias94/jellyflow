@@ -9,6 +9,7 @@
 pub mod actions;
 pub mod adapter;
 pub mod authoring;
+pub mod connection;
 pub mod controls;
 pub mod element_ids;
 pub mod inspector;
@@ -34,6 +35,9 @@ pub use authoring::{
     OpenGpuiAuthoringController, OpenGpuiAuthoringOutcome, OpenGpuiAuthoringSkipReason,
     OpenGpuiControlEventValue, OpenGpuiRepeatableAddItemContext, control_option_key,
     control_option_value_key, control_selected_option_key,
+};
+pub use connection::{
+    OpenGpuiConnectionSyncError, OpenGpuiConnectionSyncRequest, plan_connection_sync_transaction,
 };
 pub use controls::{
     OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
