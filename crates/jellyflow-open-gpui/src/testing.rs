@@ -404,6 +404,135 @@ impl OpenGpuiHostVisualInteractionReport {
     }
 }
 
+/// User-visible interaction gap collected from the concrete Open GPUI gallery path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiHostProductInteractionGap {
+    DragSurfaceMissingFullPointerSequence,
+    ControlEventShieldingUnchecked,
+    PortHotspotPathMissing,
+    ToolSwitcherMissing,
+    ConnectFlowNotStoreSynced,
+    ReconnectAffordanceMissing,
+    DroppedWireGestureDetached,
+    RepeatableOverflowIndicatorMissing,
+}
+
+/// Characterization report for product-level Open GPUI interactions.
+///
+/// This report is intentionally allowed to contain gaps during characterization; later
+/// productization units can promote selected fields into hard gates.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiHostProductInteractionReport {
+    pub product_drag_surface_count: usize,
+    pub full_drag_pointer_sequence_checked: bool,
+    pub control_event_shielding_checked: bool,
+    pub port_hotspot_path_checked: bool,
+    pub tool_switcher_visible: bool,
+    pub connect_flow_store_synced: bool,
+    pub reconnect_affordance_visible: bool,
+    pub dropped_wire_gesture_connected: bool,
+    pub hidden_repeatable_overflow_count: usize,
+    pub repeatable_overflow_indicator_count: usize,
+    pub gaps: BTreeSet<OpenGpuiHostProductInteractionGap>,
+}
+
+impl OpenGpuiHostProductInteractionReport {
+    pub fn mark_drag_surface_coverage(
+        &mut self,
+        product_drag_surface_count: usize,
+        full_pointer_sequence_checked: bool,
+    ) {
+        self.product_drag_surface_count = product_drag_surface_count;
+        self.full_drag_pointer_sequence_checked = full_pointer_sequence_checked;
+        if product_drag_surface_count > 0 && !full_pointer_sequence_checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::DragSurfaceMissingFullPointerSequence);
+        }
+    }
+
+    pub fn mark_control_event_shielding_checked(&mut self, checked: bool) {
+        self.control_event_shielding_checked = checked;
+        if !checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ControlEventShieldingUnchecked);
+        }
+    }
+
+    pub fn mark_port_hotspot_path_checked(&mut self, checked: bool) {
+        self.port_hotspot_path_checked = checked;
+        if !checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
+        }
+    }
+
+    pub fn mark_tool_switcher_visible(&mut self, visible: bool) {
+        self.tool_switcher_visible = visible;
+        if !visible {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ToolSwitcherMissing);
+        }
+    }
+
+    pub fn mark_connect_flow_store_synced(&mut self, synced: bool) {
+        self.connect_flow_store_synced = synced;
+        if !synced {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ConnectFlowNotStoreSynced);
+        }
+    }
+
+    pub fn mark_reconnect_affordance_visible(&mut self, visible: bool) {
+        self.reconnect_affordance_visible = visible;
+        if !visible {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ReconnectAffordanceMissing);
+        }
+    }
+
+    pub fn mark_dropped_wire_gesture_connected(&mut self, connected: bool) {
+        self.dropped_wire_gesture_connected = connected;
+        if !connected {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::DroppedWireGestureDetached);
+        }
+    }
+
+    pub fn mark_repeatable_overflow(
+        &mut self,
+        hidden_overflow_count: usize,
+        visible_indicator_count: usize,
+    ) {
+        self.hidden_repeatable_overflow_count = hidden_overflow_count;
+        self.repeatable_overflow_indicator_count = visible_indicator_count;
+        if hidden_overflow_count > visible_indicator_count {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::RepeatableOverflowIndicatorMissing);
+        }
+    }
+}
+
+pub fn assert_product_interaction_characterization_report_contract(
+    report: &OpenGpuiHostProductInteractionReport,
+) {
+    assert!(
+        report.product_drag_surface_count > 0,
+        "product interaction report must cover at least one product renderer surface: {report:?}"
+    );
+    assert!(
+        report.hidden_repeatable_overflow_count >= report.repeatable_overflow_indicator_count,
+        "overflow counters must be internally consistent: {report:?}"
+    );
+    assert!(
+        !report.gaps.is_empty(),
+        "characterization should expose current product interaction gaps before hardening: {report:?}"
+    );
+    assert!(
+        serde_json::to_string(report).is_ok(),
+        "product interaction report must stay serializable: {report:?}"
+    );
+}
+
 /// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
 pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
     [
