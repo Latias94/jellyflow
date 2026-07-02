@@ -1596,7 +1596,7 @@ fn mind_map_fixture() -> NodeKitFixture {
                 "users",
                 "demo.idea",
                 CanvasPoint {
-                    x: 320.0,
+                    x: 432.0,
                     y: -128.0,
                 },
             )
@@ -1606,7 +1606,7 @@ fn mind_map_fixture() -> NodeKitFixture {
             })),
         )
         .node(
-            NodeKitFixtureNode::new("risks", "demo.idea", CanvasPoint { x: 320.0, y: 136.0 })
+            NodeKitFixtureNode::new("risks", "demo.idea", CanvasPoint { x: 432.0, y: 136.0 })
                 .with_data(json!({
                     "title": "Risks",
                     "summary": "Trust, scale, migration"

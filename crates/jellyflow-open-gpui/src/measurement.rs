@@ -67,6 +67,9 @@ pub enum OpenGpuiMeasuredRegionKind {
     Control { key: String, scope: Option<String> },
     RepeatableItem { key: String, item_id: String },
     Anchor { key: String },
+    Readable { key: String },
+    DragExclusion { key: String },
+    Overflow { key: String },
 }
 
 impl OpenGpuiMeasuredRegionKind {
@@ -75,7 +78,10 @@ impl OpenGpuiMeasuredRegionKind {
             Self::Slot { key }
             | Self::Control { key, .. }
             | Self::RepeatableItem { key, .. }
-            | Self::Anchor { key } => key,
+            | Self::Anchor { key }
+            | Self::Readable { key }
+            | Self::DragExclusion { key }
+            | Self::Overflow { key } => key,
         }
     }
 }
@@ -140,6 +146,27 @@ impl OpenGpuiMeasurementId {
         }
     }
 
+    pub fn readable(node: NodeId, key: impl Into<String>) -> Self {
+        Self {
+            node,
+            kind: OpenGpuiMeasuredRegionKind::Readable { key: key.into() },
+        }
+    }
+
+    pub fn drag_exclusion(node: NodeId, key: impl Into<String>) -> Self {
+        Self {
+            node,
+            kind: OpenGpuiMeasuredRegionKind::DragExclusion { key: key.into() },
+        }
+    }
+
+    pub fn overflow(node: NodeId, key: impl Into<String>) -> Self {
+        Self {
+            node,
+            kind: OpenGpuiMeasuredRegionKind::Overflow { key: key.into() },
+        }
+    }
+
     pub fn node(&self) -> NodeId {
         self.node
     }
@@ -168,6 +195,15 @@ impl OpenGpuiMeasurementId {
             }
             OpenGpuiMeasuredRegionKind::Anchor { key } => {
                 format!("jellyflow-node:{}:anchor:{key}", self.node.0)
+            }
+            OpenGpuiMeasuredRegionKind::Readable { key } => {
+                format!("jellyflow-node:{}:readable:{key}", self.node.0)
+            }
+            OpenGpuiMeasuredRegionKind::DragExclusion { key } => {
+                format!("jellyflow-node:{}:drag-exclusion:{key}", self.node.0)
+            }
+            OpenGpuiMeasuredRegionKind::Overflow { key } => {
+                format!("jellyflow-node:{}:overflow:{key}", self.node.0)
             }
         }
     }
@@ -358,7 +394,10 @@ fn measured_slot_from_region(
             key.clone(),
             context.node_local_rect(region.bounds),
         )),
-        OpenGpuiMeasuredRegionKind::Anchor { .. } => None,
+        OpenGpuiMeasuredRegionKind::Anchor { .. }
+        | OpenGpuiMeasuredRegionKind::Readable { .. }
+        | OpenGpuiMeasuredRegionKind::DragExclusion { .. }
+        | OpenGpuiMeasuredRegionKind::Overflow { .. } => None,
     }
 }
 
@@ -670,6 +709,9 @@ mod tests {
             OpenGpuiMeasurementId::control_in_slot(node, "field.prompt", "control.model");
         let item = OpenGpuiMeasurementId::repeatable_item(node, "shader.inputs", "factor");
         let anchor = OpenGpuiMeasurementId::anchor(node, "field.completion");
+        let readable = OpenGpuiMeasurementId::readable(node, "summary");
+        let drag_exclusion = OpenGpuiMeasurementId::drag_exclusion(node, "control.prompt");
+        let overflow = OpenGpuiMeasurementId::overflow(node, "table.columns");
 
         assert_eq!(slot.node(), node);
         assert_eq!(
@@ -703,10 +745,26 @@ mod tests {
             anchor.element_id(),
             format!("jellyflow-node:{}:anchor:field.completion", node.0)
         );
+        assert_eq!(
+            readable.element_id(),
+            format!("jellyflow-node:{}:readable:summary", node.0)
+        );
+        assert_eq!(
+            drag_exclusion.element_id(),
+            format!("jellyflow-node:{}:drag-exclusion:control.prompt", node.0)
+        );
+        assert_eq!(
+            overflow.element_id(),
+            format!("jellyflow-node:{}:overflow:table.columns", node.0)
+        );
         assert!(matches!(
             item.kind(),
             OpenGpuiMeasuredRegionKind::RepeatableItem { key, item_id }
                 if key == "shader.inputs" && item_id == "factor"
+        ));
+        assert!(matches!(
+            drag_exclusion.kind(),
+            OpenGpuiMeasuredRegionKind::DragExclusion { key } if key == "control.prompt"
         ));
     }
 
