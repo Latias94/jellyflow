@@ -620,6 +620,56 @@ pub fn assert_product_interaction_characterization_report_contract(
     );
 }
 
+/// Assert concrete Open GPUI product interaction gates for the productized gallery path.
+///
+/// This gate is intentionally stricter than the characterization contract above: it is the
+/// adapter-owned hard baseline that the concrete host report must satisfy after productization.
+pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInteractionReport) {
+    assert_product_interaction_characterization_report_contract(report);
+    assert!(
+        report.product_drag_surface_count >= product_fixture_catalog().len(),
+        "product interaction report must cover drag surfaces across all product fixture families: {report:?}"
+    );
+    assert!(
+        report.full_drag_pointer_sequence_checked,
+        "product drag surfaces must be covered by full down/move/up/cancel pointer sequences: {report:?}"
+    );
+    assert!(
+        report.control_event_shielding_checked,
+        "product controls must prove they do not start node drags: {report:?}"
+    );
+    assert!(
+        report.port_hotspot_path_checked,
+        "product ports must be reachable through the concrete host hotspot path: {report:?}"
+    );
+    assert!(
+        report.tool_switcher_visible,
+        "Open GPUI product UI must expose tool switching: {report:?}"
+    );
+    assert!(
+        report.connect_flow_store_synced,
+        "Connect gestures must synchronize through Jellyflow store transactions: {report:?}"
+    );
+    assert!(
+        report.reconnect_affordance_visible,
+        "Allowed edge reconnect/switch affordances must be visible: {report:?}"
+    );
+    assert!(
+        report.dropped_wire_gesture_connected,
+        "Dropped-wire insertion must be connected to a real connect-release gesture: {report:?}"
+    );
+    if report.hidden_repeatable_overflow_count > 0 {
+        assert!(
+            report.repeatable_overflow_indicator_count > 0,
+            "hidden repeatable overflow must have a visible indicator: {report:?}"
+        );
+    }
+    assert!(
+        report.gaps.is_empty(),
+        "product interaction report has unresolved gaps: {report:?}"
+    );
+}
+
 /// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
 pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
     [
@@ -2618,6 +2668,40 @@ mod tests {
         assert!(
             result.is_err(),
             "strict gallery gate must fail while product renderers are missing"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_accepts_productized_report() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_repeatable_overflow(3, 1);
+
+        assert_product_interaction_report_gates(&report);
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_unresolved_product_gaps() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(false);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_repeatable_overflow(3, 0);
+
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail while connect sync or overflow indicators are missing"
         );
     }
 

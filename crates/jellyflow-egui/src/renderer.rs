@@ -8,8 +8,8 @@ use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, Node, NodeId};
 use jellyflow::runtime::schema::{
     NodeControlBinding, NodeControlBindingSource, NodeControlDescriptor, NodeControlKind,
     NodeControlOptionSource, NodeControlValidationRule, NodeKindViewDescriptor,
-    NodeRepeatableCollectionDescriptor, NodeRepeatableItemProjection, NodeSurfaceSlotDescriptor,
-    NodeSurfaceSlotKind,
+    NodeRepeatableCollectionDescriptor, NodeRepeatableItemProjection, NodeSurfaceLayoutBudget,
+    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
 };
 
 /// Visual style mapped from an adapter-owned renderer key.
@@ -2089,6 +2089,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: Vec::new(),
             repeatable_collections: Vec::new(),
@@ -2193,6 +2194,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: vec![
                 NodeSurfaceSlotDescriptor::badge("badge.model")
@@ -2335,6 +2337,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: Vec::new(),
             repeatable_collections: vec![
@@ -2583,6 +2586,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: Vec::new(),
             repeatable_collections: Vec::new(),
@@ -2664,6 +2668,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: vec![
                 NodeSurfaceSlotDescriptor::field_row("field.prompt")
@@ -2786,6 +2791,7 @@ mod tests {
             category: Vec::new(),
             keywords: Vec::new(),
             default_size: None,
+            layout_budget: NodeSurfaceLayoutBudget::default(),
             ports: Vec::new(),
             surface_slots: vec![
                 NodeSurfaceSlotDescriptor::port_rail("rail.inputs")
