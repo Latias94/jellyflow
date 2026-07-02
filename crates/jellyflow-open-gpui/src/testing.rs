@@ -605,8 +605,14 @@ pub fn assert_product_interaction_characterization_report_contract(
         "overflow counters must be internally consistent: {report:?}"
     );
     assert!(
-        !report.gaps.is_empty(),
-        "characterization should expose current product interaction gaps before hardening: {report:?}"
+        report.full_drag_pointer_sequence_checked
+            || report.control_event_shielding_checked
+            || report.port_hotspot_path_checked
+            || report.tool_switcher_visible
+            || report.connect_flow_store_synced
+            || report.reconnect_affordance_visible
+            || report.dropped_wire_gesture_connected,
+        "product interaction report must expose at least one checked interaction fact: {report:?}"
     );
     assert!(
         serde_json::to_string(report).is_ok(),
