@@ -74,8 +74,9 @@ pub use measurement::{
     layout_pass_measurement_from_regions, open_gpui_measurement_regions_match,
 };
 pub use presets::{
+    OpenGpuiConnectionPreviewPolicyEvidence, OpenGpuiGraphAffordanceEvidence,
     OpenGpuiProductSurfacePreset, OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence,
-    OpenGpuiSurfaceStyleBudget,
+    OpenGpuiSurfaceStyleBudget, OpenGpuiWireRouteEvidence,
 };
 pub use projection::{
     OpenGpuiNodeSurfaceLayout, OpenGpuiNodeSurfaceSlotLayout, OpenGpuiRepeatableSurfaceLayout,

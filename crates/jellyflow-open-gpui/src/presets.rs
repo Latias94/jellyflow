@@ -102,6 +102,85 @@ pub struct OpenGpuiStyleBudgetEvidence {
     pub repeatable_row_height: u32,
 }
 
+/// Serializable route family evidence for product graph affordances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiWireRouteEvidence {
+    Straight,
+    Orthogonal,
+    Bezier,
+}
+
+/// Serializable preview policy evidence for in-progress connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiConnectionPreviewPolicyEvidence {
+    DirectLineFallback,
+    MirrorsCommittedRoute,
+}
+
+/// Widget-free evidence that a host exposes graph affordances with product budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiGraphAffordanceEvidence {
+    pub committed_wire_route: OpenGpuiWireRouteEvidence,
+    pub connection_preview_policy: OpenGpuiConnectionPreviewPolicyEvidence,
+    pub port_placement_budget: u32,
+    pub endpoint_hit_budget: u32,
+    pub reconnect_affordance_budget: u32,
+    pub drag_region_count: usize,
+    pub readable_layout_region_count: usize,
+}
+
+impl OpenGpuiGraphAffordanceEvidence {
+    pub fn for_renderer_key(renderer_key: &str, style: OpenGpuiSurfaceStyleBudget) -> Self {
+        let style = style.evidence();
+        let mut evidence = Self {
+            committed_wire_route: OpenGpuiWireRouteEvidence::Orthogonal,
+            connection_preview_policy:
+                OpenGpuiConnectionPreviewPolicyEvidence::MirrorsCommittedRoute,
+            port_placement_budget: 12,
+            endpoint_hit_budget: style.handle_hit_width,
+            reconnect_affordance_budget: style.edge_hit_width.max(style.handle_hit_width),
+            drag_region_count: 1,
+            readable_layout_region_count: 3,
+        };
+
+        match renderer_key {
+            "shader-card" => {
+                evidence.committed_wire_route = OpenGpuiWireRouteEvidence::Bezier;
+                evidence.port_placement_budget = 16;
+                evidence.drag_region_count = 2;
+                evidence.readable_layout_region_count = 5;
+            }
+            "table-card" => {
+                evidence.port_placement_budget = 14;
+                evidence.readable_layout_region_count = 6;
+            }
+            "topic-card" | "source-card" => {
+                evidence.drag_region_count = 2;
+                evidence.readable_layout_region_count = 4;
+            }
+            _ => {}
+        }
+
+        evidence
+    }
+
+    pub fn has_product_route_policy(self) -> bool {
+        self.committed_wire_route != OpenGpuiWireRouteEvidence::Straight
+            && self.connection_preview_policy
+                == OpenGpuiConnectionPreviewPolicyEvidence::MirrorsCommittedRoute
+    }
+
+    pub fn has_product_hit_budgets(self) -> bool {
+        self.port_placement_budget >= 12
+            && self.endpoint_hit_budget >= 20
+            && self.reconnect_affordance_budget >= 18
+    }
+
+    pub fn has_layout_region_evidence(self) -> bool {
+        self.drag_region_count > 0 && self.readable_layout_region_count > 0
+    }
+}
+
 /// Descriptor-derived product surface preset shared by host rendering and reports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenGpuiProductSurfacePreset {
@@ -115,11 +194,13 @@ pub struct OpenGpuiProductSurfacePreset {
     pub overflow_indicator: Option<NodeSurfaceOverflowIndicator>,
     pub density_priority: Vec<NodeKitContentDensity>,
     pub style: OpenGpuiSurfaceStyleBudget,
+    pub graph_affordance: OpenGpuiGraphAffordanceEvidence,
 }
 
 impl OpenGpuiProductSurfacePreset {
     pub fn from_descriptor(descriptor: &NodeKindViewDescriptor) -> Self {
         let layout_budget = &descriptor.layout_budget;
+        let style = OpenGpuiSurfaceStyleBudget::for_renderer_key(&descriptor.renderer_key);
         Self {
             renderer_key: descriptor.renderer_key.clone(),
             default_size: descriptor.default_size,
@@ -130,7 +211,11 @@ impl OpenGpuiProductSurfacePreset {
             repeatable_visible_items: layout_budget.repeatable_visible_items,
             overflow_indicator: layout_budget.overflow_indicator,
             density_priority: layout_budget.density_priority.clone(),
-            style: OpenGpuiSurfaceStyleBudget::for_renderer_key(&descriptor.renderer_key),
+            style,
+            graph_affordance: OpenGpuiGraphAffordanceEvidence::for_renderer_key(
+                &descriptor.renderer_key,
+                style,
+            ),
         }
     }
 
@@ -215,6 +300,9 @@ mod tests {
             preset.density_priority_labels(),
             ["full", "regular", "compact"]
         );
+        assert!(preset.graph_affordance.has_product_route_policy());
+        assert!(preset.graph_affordance.has_product_hit_budgets());
+        assert!(preset.graph_affordance.has_layout_region_evidence());
     }
 
     #[test]
@@ -225,5 +313,26 @@ mod tests {
         assert!(style.handle_hit_width >= 24);
         assert!(style.edge_hit_width >= style.edge_stroke_width);
         assert!(serde_json::to_string(&style).is_ok());
+    }
+
+    #[test]
+    fn graph_affordance_evidence_serializes_route_hit_and_layout_budgets() {
+        let evidence = OpenGpuiGraphAffordanceEvidence::for_renderer_key(
+            "shader-card",
+            OpenGpuiSurfaceStyleBudget::for_renderer_key("shader-card"),
+        );
+
+        assert_eq!(
+            evidence.committed_wire_route,
+            OpenGpuiWireRouteEvidence::Bezier
+        );
+        assert_eq!(
+            evidence.connection_preview_policy,
+            OpenGpuiConnectionPreviewPolicyEvidence::MirrorsCommittedRoute
+        );
+        assert!(evidence.has_product_route_policy());
+        assert!(evidence.has_product_hit_budgets());
+        assert!(evidence.has_layout_region_evidence());
+        assert!(serde_json::to_string(&evidence).is_ok());
     }
 }

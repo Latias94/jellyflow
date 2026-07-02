@@ -23,15 +23,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     OpenGpuiActionSurface, OpenGpuiAdapter, OpenGpuiControlPrimitive, OpenGpuiDynamicPortPolicy,
-    OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource, OpenGpuiMeasuredRegion,
-    OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
-    OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableActionPlan,
-    OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic, OpenGpuiSizeEvidence,
-    OpenGpuiStyleBudgetEvidence, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
-    layout_pass_measurement_from_regions, measured_surface_anchors, plan_repeatable_action,
-    primitive_for_kind, project_actions_for_surface, project_blackboards_for_descriptor,
-    project_node_measurement, project_slot_controls, projected_node_surface_graph_layout,
-    repeatable_item_projection, repeatable_port_diagnostics, resolve_inspector_target_bounds,
+    OpenGpuiGraphAffordanceEvidence, OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource,
+    OpenGpuiMeasuredRegion, OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage,
+    OpenGpuiMeasurementId, OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout,
+    OpenGpuiRepeatableActionPlan, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic,
+    OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence, OpenGpuiViewBounds, OpenGpuiViewPoint,
+    OpenGpuiViewSize, layout_pass_measurement_from_regions, measured_surface_anchors,
+    plan_repeatable_action, primitive_for_kind, project_actions_for_surface,
+    project_blackboards_for_descriptor, project_node_measurement, project_slot_controls,
+    projected_node_surface_graph_layout, repeatable_item_projection, repeatable_port_diagnostics,
+    resolve_inspector_target_bounds,
 };
 
 pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdapter) {
@@ -490,6 +491,9 @@ impl OpenGpuiHostVisualInteractionReport {
 pub enum OpenGpuiHostProductInteractionGap {
     DragSurfaceMissingFullPointerSequence,
     ControlEventShieldingUnchecked,
+    GraphAffordanceHitBudgetMissing,
+    GraphAffordanceLayoutEvidenceMissing,
+    GraphAffordanceRoutePolicyMissing,
     PortHotspotPathMissing,
     ToolSwitcherMissing,
     ConnectFlowNotStoreSynced,
@@ -512,6 +516,7 @@ pub struct OpenGpuiHostProductInteractionReport {
     pub connect_flow_store_synced: bool,
     pub reconnect_affordance_visible: bool,
     pub dropped_wire_gesture_connected: bool,
+    pub graph_affordance_evidence: Option<OpenGpuiGraphAffordanceEvidence>,
     pub hidden_repeatable_overflow_count: usize,
     pub repeatable_overflow_indicator_count: usize,
     pub gaps: BTreeSet<OpenGpuiHostProductInteractionGap>,
@@ -579,6 +584,22 @@ impl OpenGpuiHostProductInteractionReport {
         }
     }
 
+    pub fn mark_graph_affordance_evidence(&mut self, evidence: OpenGpuiGraphAffordanceEvidence) {
+        self.graph_affordance_evidence = Some(evidence);
+        if !evidence.has_product_route_policy() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::GraphAffordanceRoutePolicyMissing);
+        }
+        if !evidence.has_product_hit_budgets() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::GraphAffordanceHitBudgetMissing);
+        }
+        if !evidence.has_layout_region_evidence() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::GraphAffordanceLayoutEvidenceMissing);
+        }
+    }
+
     pub fn mark_repeatable_overflow(
         &mut self,
         hidden_overflow_count: usize,
@@ -611,7 +632,8 @@ pub fn assert_product_interaction_characterization_report_contract(
             || report.tool_switcher_visible
             || report.connect_flow_store_synced
             || report.reconnect_affordance_visible
-            || report.dropped_wire_gesture_connected,
+            || report.dropped_wire_gesture_connected
+            || report.graph_affordance_evidence.is_some(),
         "product interaction report must expose at least one checked interaction fact: {report:?}"
     );
     assert!(
@@ -657,6 +679,23 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
     assert!(
         report.dropped_wire_gesture_connected,
         "Dropped-wire insertion must be connected to a real connect-release gesture: {report:?}"
+    );
+    let Some(graph_affordance) = report.graph_affordance_evidence else {
+        panic!(
+            "product interaction report must include widget-free graph affordance evidence: {report:?}"
+        );
+    };
+    assert!(
+        graph_affordance.has_product_route_policy(),
+        "committed wires and connection previews must use product route policy: {report:?}"
+    );
+    assert!(
+        graph_affordance.has_product_hit_budgets(),
+        "ports, endpoints, and reconnect handles must expose product hit budgets: {report:?}"
+    );
+    assert!(
+        graph_affordance.has_layout_region_evidence(),
+        "product graph affordance evidence must include drag and readable layout regions: {report:?}"
     );
     if report.hidden_repeatable_overflow_count > 0 {
         assert!(
@@ -2515,7 +2554,17 @@ impl ProductFixtureSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OpenGpuiMeasurementMode, OpenGpuiSurfaceStyleBudget};
+    use crate::{
+        OpenGpuiConnectionPreviewPolicyEvidence, OpenGpuiGraphAffordanceEvidence,
+        OpenGpuiMeasurementMode, OpenGpuiSurfaceStyleBudget,
+    };
+
+    fn productized_graph_affordance_evidence() -> OpenGpuiGraphAffordanceEvidence {
+        OpenGpuiGraphAffordanceEvidence::for_renderer_key(
+            "shader-card",
+            OpenGpuiSurfaceStyleBudget::for_renderer_key("shader-card"),
+        )
+    }
 
     #[test]
     fn helper_rejects_full_claim_without_layout_pass_mode() {
@@ -2681,6 +2730,7 @@ mod tests {
         report.mark_connect_flow_store_synced(true);
         report.mark_reconnect_affordance_visible(true);
         report.mark_dropped_wire_gesture_connected(true);
+        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(3, 1);
 
         assert_product_interaction_report_gates(&report);
@@ -2696,12 +2746,61 @@ mod tests {
         report.mark_connect_flow_store_synced(false);
         report.mark_reconnect_affordance_visible(true);
         report.mark_dropped_wire_gesture_connected(true);
+        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(3, 0);
 
         let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
         assert!(
             result.is_err(),
             "product interaction hard gate must fail while connect sync or overflow indicators are missing"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_missing_graph_affordance_evidence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_repeatable_overflow(0, 0);
+
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail until route, preview, port-hit, drag, and measurement affordance evidence is reported"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_direct_line_preview_fallback() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_dropped_wire_gesture_connected(true);
+
+        let mut evidence = productized_graph_affordance_evidence();
+        evidence.connection_preview_policy =
+            OpenGpuiConnectionPreviewPolicyEvidence::DirectLineFallback;
+        report.mark_graph_affordance_evidence(evidence);
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::GraphAffordanceRoutePolicyMissing)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail when previews fall back to direct lines"
         );
     }
 
