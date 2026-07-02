@@ -74,9 +74,9 @@ pub use measurement::{
     layout_pass_measurement_from_regions, open_gpui_measurement_regions_match,
 };
 pub use presets::{
-    OpenGpuiConnectionPreviewPolicyEvidence, OpenGpuiGraphAffordanceEvidence,
-    OpenGpuiProductSurfacePreset, OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence,
-    OpenGpuiSurfaceStyleBudget, OpenGpuiWireRouteEvidence,
+    OpenGpuiComponentFitBudget, OpenGpuiConnectionPreviewPolicyEvidence,
+    OpenGpuiGraphAffordanceEvidence, OpenGpuiProductSurfacePreset, OpenGpuiSizeEvidence,
+    OpenGpuiStyleBudgetEvidence, OpenGpuiSurfaceStyleBudget, OpenGpuiWireRouteEvidence,
 };
 pub use projection::{
     OpenGpuiNodeSurfaceLayout, OpenGpuiNodeSurfaceSlotLayout, OpenGpuiRepeatableSurfaceLayout,
@@ -101,3 +101,19 @@ pub use repeatable::{
     repeatable_item_label, repeatable_item_projection, repeatable_port_diagnostics,
 };
 pub use sync::{OpenGpuiNodeTransformSnapshot, plan_transform_sync_transaction};
+pub use testing::{
+    OpenGpuiComponentFitEvidence, OpenGpuiHostProductInteractionGap,
+    OpenGpuiHostProductInteractionReport, OpenGpuiHostRendererSource, OpenGpuiHostSurfaceReport,
+    OpenGpuiHostSurfaceReportRow, OpenGpuiHostVisualInteractionGap,
+    OpenGpuiHostVisualInteractionReport, OpenGpuiHostVisualSurfaceRow,
+    OpenGpuiNativeLifecycleEvidence, OpenGpuiNativeLifecycleGap, OpenGpuiProductFixtureCase,
+    OpenGpuiProductFixtureFamily, OpenGpuiProductFixtureKind, OpenGpuiReconnectSequenceEvidence,
+    OpenGpuiScreenshotFixtureEvidence, OpenGpuiScreenshotRegionEvidence,
+    OpenGpuiScreenshotRegionGap, OpenGpuiScreenshotRegionKind, OpenGpuiScreenshotRegionRect,
+    OpenGpuiScreenshotRegionReport, assert_host_surface_report_contract,
+    assert_host_visual_interaction_report_gates, assert_native_lifecycle_evidence_gates,
+    assert_product_gallery_host_report_gates,
+    assert_product_interaction_characterization_report_contract,
+    assert_product_interaction_report_gates, assert_screenshot_region_report_gates,
+    product_fixture_catalog,
+};

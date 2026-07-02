@@ -244,6 +244,8 @@ pub enum OpenGpuiHostVisualInteractionGap {
     DroppedWireMenuOutOfBounds,
     EdgeEndpointNotFollowingMeasuredHandle,
     ComponentFitEvidenceMissing,
+    ComponentFitEvidenceIncomplete,
+    ComponentOverflowIndicatorMissing,
 }
 
 /// Widget-free fit evidence for product node internals.
@@ -254,7 +256,9 @@ pub struct OpenGpuiComponentFitEvidence {
     pub repeatable_regions_checked: usize,
     pub compact_regions: usize,
     pub shell_regions: usize,
+    pub overflow_indicator_required_count: usize,
     pub overflow_indicator_count: usize,
+    pub overflow_indicator_missing_count: usize,
     pub clipped_text_regions: usize,
     pub clipped_control_regions: usize,
     pub hidden_repeatable_regions_without_indicator: usize,
@@ -264,6 +268,8 @@ impl OpenGpuiComponentFitEvidence {
     pub fn complete(self) -> bool {
         self.text_regions_checked > 0
             && self.control_regions_checked > 0
+            && self.overflow_indicator_count >= self.overflow_indicator_required_count
+            && self.overflow_indicator_missing_count == 0
             && self.clipped_text_regions == 0
             && self.clipped_control_regions == 0
             && self.hidden_repeatable_regions_without_indicator == 0
@@ -449,6 +455,12 @@ impl OpenGpuiHostVisualSurfaceRow {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
         }
+        if evidence.overflow_indicator_missing_count > 0
+            || evidence.overflow_indicator_count < evidence.overflow_indicator_required_count
+        {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing);
+        }
         self
     }
 
@@ -474,6 +486,84 @@ impl OpenGpuiHostVisualSurfaceRow {
         }
         self
     }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiHostVisualInteractionGap> {
+        let mut gaps = BTreeSet::new();
+        if !self.content_visible && !self.selected {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::UnselectedContentHidden);
+        }
+        if !self.content_readable || !self.content_within_node_bounds {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if self
+            .actual_size
+            .zip(self.min_readable_size)
+            .is_some_and(|(actual, minimum)| !actual.contains(minimum))
+        {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::BelowReadableSize);
+            gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if self.text_overflow_count > 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
+            gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if self.clipped_control_count > 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
+            gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if self.handle_overlap_count > 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::HandleOverlap);
+        }
+        if self.stale_measured_regions > 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::StaleMeasuredRegion);
+        }
+        if self.repeatable_rows > 0 && self.repeatable_rows_with_anchors == 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::MissingRepeatableAnchor);
+        }
+        if self.hidden_repeatable_overflow_count > 0
+            && self.repeatable_overflow_indicator_count == 0
+        {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
+            gaps.insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
+        }
+        match self.component_fit_evidence {
+            Some(evidence) => {
+                if !evidence.complete() {
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceIncomplete);
+                }
+                if evidence.clipped_text_regions > 0 {
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+                }
+                if evidence.clipped_control_regions > 0 {
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+                }
+                if evidence.hidden_repeatable_regions_without_indicator > 0 {
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
+                    gaps.insert(
+                        OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing,
+                    );
+                }
+                if evidence.overflow_indicator_missing_count > 0
+                    || evidence.overflow_indicator_count
+                        < evidence.overflow_indicator_required_count
+                {
+                    gaps.insert(
+                        OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing,
+                    );
+                }
+            }
+            None => {
+                gaps.insert(OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceMissing);
+            }
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
+    }
 }
 
 /// Host-level visual and interaction evidence for the real Open GPUI gallery path.
@@ -490,8 +580,11 @@ pub struct OpenGpuiHostVisualInteractionReport {
 
 impl OpenGpuiHostVisualInteractionReport {
     pub fn push(&mut self, row: OpenGpuiHostVisualSurfaceRow) {
+        let mut row = row;
+        row.sync_gaps();
         self.gaps.extend(row.gaps.iter().copied());
         self.rows.push(row);
+        self.sync_gaps();
     }
 
     pub fn rows_for_fixture(
@@ -509,6 +602,7 @@ impl OpenGpuiHostVisualInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::NodeBoundsOverlap);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_invalid_hover_bounds_checked(&mut self, inside_bounds: bool) {
@@ -517,6 +611,7 @@ impl OpenGpuiHostVisualInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::InvalidHoverOutOfBounds);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_dropped_wire_menu_bounds_checked(&mut self, inside_bounds: bool) {
@@ -525,6 +620,7 @@ impl OpenGpuiHostVisualInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::DroppedWireMenuOutOfBounds);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_repeatable_edit_updates_anchors(&mut self, updates_anchors: bool) {
@@ -533,6 +629,7 @@ impl OpenGpuiHostVisualInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::MissingRepeatableAnchor);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_edge_endpoints_follow_measured_handles(&mut self, follows_handles: bool) {
@@ -541,6 +638,35 @@ impl OpenGpuiHostVisualInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::EdgeEndpointNotFollowingMeasuredHandle);
         }
+        self.sync_gaps();
+    }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiHostVisualInteractionGap> {
+        let mut gaps = self
+            .rows
+            .iter()
+            .flat_map(OpenGpuiHostVisualSurfaceRow::computed_gaps)
+            .collect::<BTreeSet<_>>();
+        if self.node_bounds_overlap_count > 0 {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::NodeBoundsOverlap);
+        }
+        if !self.invalid_hover_bounds_checked {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::InvalidHoverOutOfBounds);
+        }
+        if !self.dropped_wire_menu_bounds_checked {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::DroppedWireMenuOutOfBounds);
+        }
+        if !self.repeatable_edit_updates_anchors {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::MissingRepeatableAnchor);
+        }
+        if !self.edge_endpoints_follow_measured_handles {
+            gaps.insert(OpenGpuiHostVisualInteractionGap::EdgeEndpointNotFollowingMeasuredHandle);
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
     }
 }
 
@@ -616,6 +742,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::DragSurfaceMissingFullPointerSequence);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_control_event_shielding_checked(&mut self, checked: bool) {
@@ -624,6 +751,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ControlEventShieldingUnchecked);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_port_hotspot_path_checked(&mut self, checked: bool) {
@@ -632,6 +760,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_tool_switcher_visible(&mut self, visible: bool) {
@@ -640,6 +769,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ToolSwitcherMissing);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_connect_flow_store_synced(&mut self, synced: bool) {
@@ -648,6 +778,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ConnectFlowNotStoreSynced);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_reconnect_affordance_visible(&mut self, visible: bool) {
@@ -656,6 +787,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ReconnectAffordanceMissing);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_reconnect_sequence_evidence(
@@ -667,6 +799,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ReconnectSequenceIncomplete);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_dropped_wire_gesture_connected(&mut self, connected: bool) {
@@ -675,6 +808,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::DroppedWireGestureDetached);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_graph_affordance_evidence(&mut self, evidence: OpenGpuiGraphAffordanceEvidence) {
@@ -691,6 +825,7 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::GraphAffordanceLayoutEvidenceMissing);
         }
+        self.sync_gaps();
     }
 
     pub fn mark_repeatable_overflow(
@@ -704,6 +839,74 @@ impl OpenGpuiHostProductInteractionReport {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::RepeatableOverflowIndicatorMissing);
         }
+        self.sync_gaps();
+    }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiHostProductInteractionGap> {
+        let mut gaps = BTreeSet::new();
+        if self.product_drag_surface_count < product_fixture_catalog().len()
+            || !self.full_drag_pointer_sequence_checked
+        {
+            gaps.insert(OpenGpuiHostProductInteractionGap::DragSurfaceMissingFullPointerSequence);
+        }
+        if !self.control_event_shielding_checked {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ControlEventShieldingUnchecked);
+        }
+        if !self.port_hotspot_path_checked {
+            gaps.insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
+        }
+        if !self.tool_switcher_visible {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ToolSwitcherMissing);
+        }
+        if !self.connect_flow_store_synced {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ConnectFlowNotStoreSynced);
+        }
+        if !self.reconnect_affordance_visible {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ReconnectAffordanceMissing);
+        }
+        if !self
+            .reconnect_sequence_evidence
+            .is_some_and(OpenGpuiReconnectSequenceEvidence::complete)
+        {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ReconnectSequenceIncomplete);
+        }
+        if !self.dropped_wire_gesture_connected {
+            gaps.insert(OpenGpuiHostProductInteractionGap::DroppedWireGestureDetached);
+        }
+        match self.graph_affordance_evidence {
+            Some(evidence) => {
+                if !evidence.has_product_route_policy() {
+                    gaps.insert(
+                        OpenGpuiHostProductInteractionGap::GraphAffordanceRoutePolicyMissing,
+                    );
+                }
+                if !evidence.has_product_hit_budgets() {
+                    gaps.insert(OpenGpuiHostProductInteractionGap::GraphAffordanceHitBudgetMissing);
+                }
+                if !evidence.has_layout_region_evidence() {
+                    gaps.insert(
+                        OpenGpuiHostProductInteractionGap::GraphAffordanceLayoutEvidenceMissing,
+                    );
+                }
+            }
+            None => {
+                gaps.insert(OpenGpuiHostProductInteractionGap::GraphAffordanceRoutePolicyMissing);
+                gaps.insert(OpenGpuiHostProductInteractionGap::GraphAffordanceHitBudgetMissing);
+                gaps.insert(
+                    OpenGpuiHostProductInteractionGap::GraphAffordanceLayoutEvidenceMissing,
+                );
+            }
+        }
+        if self.hidden_repeatable_overflow_count > 0
+            && self.repeatable_overflow_indicator_count == 0
+        {
+            gaps.insert(OpenGpuiHostProductInteractionGap::RepeatableOverflowIndicatorMissing);
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
     }
 }
 
@@ -742,6 +945,7 @@ pub fn assert_product_interaction_characterization_report_contract(
 /// adapter-owned hard baseline that the concrete host report must satisfy after productization.
 pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInteractionReport) {
     assert_product_interaction_characterization_report_contract(report);
+    let gaps = report.computed_gaps();
     assert!(
         report.product_drag_surface_count >= product_fixture_catalog().len(),
         "product interaction report must cover drag surfaces across all product fixture families: {report:?}"
@@ -807,8 +1011,12 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
         );
     }
     assert!(
-        report.gaps.is_empty(),
-        "product interaction report has unresolved gaps: {report:?}"
+        gaps.is_empty(),
+        "product interaction report has unresolved gaps: {report:?}; computed gaps: {gaps:?}"
+    );
+    assert_eq!(
+        report.gaps, gaps,
+        "product interaction report must carry synchronized gaps: {report:?}"
     );
 }
 
@@ -1282,6 +1490,7 @@ pub fn assert_product_gallery_host_report_gates(report: &OpenGpuiHostSurfaceRepo
 
 /// Assert concrete Open GPUI host-level visual/interaction gates.
 pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualInteractionReport) {
+    let gaps = report.computed_gaps();
     assert!(
         !report.rows.is_empty(),
         "Open GPUI host visual report must contain rendered product rows"
@@ -1365,8 +1574,12 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
         "edge endpoints must follow measured handle positions: {report:?}"
     );
     assert!(
-        report.gaps.is_empty(),
-        "host visual interaction report has unresolved gaps: {report:?}"
+        gaps.is_empty(),
+        "host visual interaction report has unresolved gaps: {report:?}; computed gaps: {gaps:?}"
+    );
+    assert_eq!(
+        report.gaps, gaps,
+        "host visual interaction report must carry synchronized gaps: {report:?}"
     );
 }
 
@@ -3234,6 +3447,36 @@ mod tests {
     }
 
     #[test]
+    fn product_interaction_gate_derives_gaps_from_report_fields() {
+        let report = OpenGpuiHostProductInteractionReport {
+            product_drag_surface_count: product_fixture_catalog().len(),
+            full_drag_pointer_sequence_checked: true,
+            control_event_shielding_checked: true,
+            port_hotspot_path_checked: true,
+            tool_switcher_visible: true,
+            connect_flow_store_synced: true,
+            reconnect_affordance_visible: false,
+            reconnect_sequence_evidence: Some(complete_reconnect_sequence_evidence()),
+            dropped_wire_gesture_connected: true,
+            graph_affordance_evidence: Some(productized_graph_affordance_evidence()),
+            hidden_repeatable_overflow_count: 0,
+            repeatable_overflow_indicator_count: 0,
+            gaps: BTreeSet::new(),
+        };
+
+        assert!(
+            report
+                .computed_gaps()
+                .contains(&OpenGpuiHostProductInteractionGap::ReconnectAffordanceMissing)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must derive missing reconnect affordance gaps from fields"
+        );
+    }
+
+    #[test]
     fn product_interaction_gate_rejects_unresolved_product_gaps() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
@@ -3477,7 +3720,9 @@ mod tests {
                 repeatable_regions_checked: 3,
                 compact_regions: 1,
                 shell_regions: 0,
+                overflow_indicator_required_count: 0,
                 overflow_indicator_count: 1,
+                overflow_indicator_missing_count: 0,
                 clipped_text_regions: 2,
                 clipped_control_regions: 0,
                 hidden_repeatable_regions_without_indicator: 0,
@@ -3488,11 +3733,140 @@ mod tests {
         report.mark_repeatable_edit_updates_anchors(true);
         report.mark_edge_endpoints_follow_measured_handles(true);
 
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing)
+        );
         let result =
             std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
         assert!(
             result.is_err(),
             "visual gate must fail when product content is present but below readable budget"
+        );
+    }
+
+    #[test]
+    fn visual_gate_rejects_component_overflow_without_indicator() {
+        let mut report = OpenGpuiHostVisualInteractionReport::default();
+        for fixture in product_fixture_catalog() {
+            let renderer_key = fixture
+                .expected_renderer_keys
+                .iter()
+                .next()
+                .expect("expected renderer")
+                .clone();
+            let component_fit = if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
+                OpenGpuiComponentFitEvidence {
+                    text_regions_checked: 2,
+                    control_regions_checked: 1,
+                    repeatable_regions_checked: 1,
+                    compact_regions: 1,
+                    shell_regions: 0,
+                    overflow_indicator_required_count: 1,
+                    overflow_indicator_count: 0,
+                    overflow_indicator_missing_count: 1,
+                    clipped_text_regions: 0,
+                    clipped_control_regions: 0,
+                    hidden_repeatable_regions_without_indicator: 0,
+                }
+            } else {
+                OpenGpuiComponentFitEvidence {
+                    text_regions_checked: 2,
+                    control_regions_checked: 1,
+                    repeatable_regions_checked: 1,
+                    compact_regions: 0,
+                    shell_regions: 0,
+                    overflow_indicator_required_count: 0,
+                    overflow_indicator_count: 0,
+                    overflow_indicator_missing_count: 0,
+                    clipped_text_regions: 0,
+                    clipped_control_regions: 0,
+                    hidden_repeatable_regions_without_indicator: 0,
+                }
+            };
+            report.push(
+                OpenGpuiHostVisualSurfaceRow::new(
+                    &fixture,
+                    "demo.node",
+                    renderer_key,
+                    OpenGpuiHostRendererSource::ProductRenderer,
+                )
+                .with_content_bounds(true, true, true)
+                .with_readability_budget(
+                    OpenGpuiSizeEvidence {
+                        width: 520,
+                        height: 360,
+                    },
+                    Some(OpenGpuiSizeEvidence {
+                        width: 340,
+                        height: 288,
+                    }),
+                )
+                .with_handle_overlap_count(0)
+                .with_stale_measured_regions(0)
+                .with_repeatable_anchor_coverage(1, 1)
+                .with_repeatable_overflow(0, 0)
+                .with_component_fit_evidence(component_fit),
+            );
+        }
+        report.mark_invalid_hover_bounds_checked(true);
+        report.mark_dropped_wire_menu_bounds_checked(true);
+        report.mark_repeatable_edit_updates_anchors(true);
+        report.mark_edge_endpoints_follow_measured_handles(true);
+
+        let result =
+            std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "visual gate must fail when compact/shell content hides text without an overflow affordance"
+        );
+    }
+
+    #[test]
+    fn visual_gate_rejects_missing_component_fit_evidence() {
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow)
+            .expect("Dify fixture");
+        let mut report = OpenGpuiHostVisualInteractionReport::default();
+        report.push(
+            OpenGpuiHostVisualSurfaceRow::new(
+                &fixture,
+                "demo.decision",
+                "decision-card",
+                OpenGpuiHostRendererSource::ProductRenderer,
+            )
+            .with_content_bounds(true, true, true)
+            .with_readability_budget(
+                OpenGpuiSizeEvidence {
+                    width: 440,
+                    height: 340,
+                },
+                Some(OpenGpuiSizeEvidence {
+                    width: 420,
+                    height: 330,
+                }),
+            )
+            .with_handle_overlap_count(0)
+            .with_stale_measured_regions(0)
+            .with_repeatable_anchor_coverage(0, 0),
+        );
+        report.mark_invalid_hover_bounds_checked(true);
+        report.mark_dropped_wire_menu_bounds_checked(true);
+        report.mark_repeatable_edit_updates_anchors(true);
+        report.mark_edge_endpoints_follow_measured_handles(true);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceMissing)
+        );
+        let result =
+            std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "visual gate must fail when product rows omit component fit evidence"
         );
     }
 }

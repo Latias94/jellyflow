@@ -102,6 +102,59 @@ pub struct OpenGpuiStyleBudgetEvidence {
     pub repeatable_row_height: u32,
 }
 
+/// Widget-free budgets for host-local component fit evidence.
+///
+/// The host still owns concrete GPUI layout and widgets. These numbers keep the
+/// evidence thresholds reviewable from the adapter crate instead of scattering
+/// magic constants through the example.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiComponentFitBudget {
+    pub content_horizontal_padding: u32,
+    pub text_region_height: u32,
+    pub control_region_height: u32,
+    pub full_text_line_budget: usize,
+    pub compact_text_line_budget: usize,
+}
+
+impl OpenGpuiComponentFitBudget {
+    pub fn for_renderer_key(
+        renderer_key: &str,
+        style: OpenGpuiSurfaceStyleBudget,
+        slot_line_budget: Option<usize>,
+        control_line_budget: Option<usize>,
+    ) -> Self {
+        let full_text_line_budget = slot_line_budget.unwrap_or(2).max(1);
+        let compact_text_line_budget = control_line_budget
+            .or(slot_line_budget)
+            .unwrap_or(1)
+            .max(1)
+            .min(full_text_line_budget);
+        let mut budget = Self {
+            content_horizontal_padding: 20,
+            text_region_height: style.control_row_height.round().max(1.0) as u32,
+            control_region_height: style.control_row_height.round().max(1.0) as u32,
+            full_text_line_budget,
+            compact_text_line_budget,
+        };
+
+        match renderer_key {
+            "source-card" => {
+                budget.text_region_height = budget.text_region_height.max(40);
+            }
+            "shader-card" | "table-card" => {
+                budget.control_region_height = budget.control_region_height.max(34);
+            }
+            _ => {}
+        }
+
+        budget
+    }
+
+    pub fn available_content_width(self, size: CanvasSize) -> f32 {
+        (size.width - self.content_horizontal_padding as f32).max(1.0)
+    }
+}
+
 /// Serializable route family evidence for product graph affordances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenGpuiWireRouteEvidence {
@@ -195,12 +248,19 @@ pub struct OpenGpuiProductSurfacePreset {
     pub density_priority: Vec<NodeKitContentDensity>,
     pub style: OpenGpuiSurfaceStyleBudget,
     pub graph_affordance: OpenGpuiGraphAffordanceEvidence,
+    pub component_fit_budget: OpenGpuiComponentFitBudget,
 }
 
 impl OpenGpuiProductSurfacePreset {
     pub fn from_descriptor(descriptor: &NodeKindViewDescriptor) -> Self {
         let layout_budget = &descriptor.layout_budget;
         let style = OpenGpuiSurfaceStyleBudget::for_renderer_key(&descriptor.renderer_key);
+        let component_fit_budget = OpenGpuiComponentFitBudget::for_renderer_key(
+            &descriptor.renderer_key,
+            style,
+            layout_budget.slot_line_budget,
+            layout_budget.control_line_budget,
+        );
         Self {
             renderer_key: descriptor.renderer_key.clone(),
             default_size: descriptor.default_size,
@@ -216,6 +276,7 @@ impl OpenGpuiProductSurfacePreset {
                 &descriptor.renderer_key,
                 style,
             ),
+            component_fit_budget,
         }
     }
 
@@ -303,6 +364,9 @@ mod tests {
         assert!(preset.graph_affordance.has_product_route_policy());
         assert!(preset.graph_affordance.has_product_hit_budgets());
         assert!(preset.graph_affordance.has_layout_region_evidence());
+        assert_eq!(preset.component_fit_budget.content_horizontal_padding, 20);
+        assert!(preset.component_fit_budget.control_region_height >= 32);
+        assert!(serde_json::to_string(&preset.component_fit_budget).is_ok());
     }
 
     #[test]
