@@ -14,6 +14,7 @@ pub mod element_ids;
 pub mod inspector;
 mod json_binding;
 pub mod measurement;
+pub mod presets;
 pub mod projection;
 pub mod renderer;
 pub mod repeatable;
@@ -64,6 +65,10 @@ pub use measurement::{
     OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
     OpenGpuiMeasurementSource, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
     layout_pass_measurement_from_regions,
+};
+pub use presets::{
+    OpenGpuiProductSurfacePreset, OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence,
+    OpenGpuiSurfaceStyleBudget,
 };
 pub use projection::{
     OpenGpuiNodeSurfaceLayout, OpenGpuiNodeSurfaceSlotLayout, OpenGpuiRepeatableSurfaceLayout,

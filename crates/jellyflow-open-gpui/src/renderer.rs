@@ -16,10 +16,11 @@ use crate::{
     OpenGpuiActionDispatchPlan, OpenGpuiActionSurface, OpenGpuiAuthoringController,
     OpenGpuiAuthoringOutcome, OpenGpuiControlEditPlan, OpenGpuiControlEventValue,
     OpenGpuiControlPlan, OpenGpuiDroppedWireInsertPlan, OpenGpuiMeasurementId, OpenGpuiMenuPlan,
-    OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatableItemProjection,
-    OpenGpuiRepeatableSurfaceLayout, OpenGpuiRepeatableSurfaceProjection, element_ids,
-    plan_dropped_wire_insert, project_actions_for_surface, project_dropped_wire_menu, project_menu,
-    project_slot_controls, repeatable_item_projection, repeatable_surface_projection,
+    OpenGpuiNodeSurfaceLayout, OpenGpuiProductSurfacePreset, OpenGpuiRepeatableItemLayout,
+    OpenGpuiRepeatableItemProjection, OpenGpuiRepeatableSurfaceLayout,
+    OpenGpuiRepeatableSurfaceProjection, element_ids, plan_dropped_wire_insert,
+    project_actions_for_surface, project_dropped_wire_menu, project_menu, project_slot_controls,
+    repeatable_item_projection, repeatable_surface_projection,
 };
 
 /// Registration metadata for one Open GPUI custom node renderer.
@@ -430,6 +431,7 @@ pub struct OpenGpuiNodeRendererContext {
     pub node_size: CanvasSize,
     pub node_data: Value,
     pub surface_projection: NodeSurfaceProjection,
+    pub surface_preset: OpenGpuiProductSurfacePreset,
     pub surface_slots: Vec<NodeSurfaceSlotProjection>,
     pub slot_descriptors: Vec<NodeSurfaceSlotDescriptor>,
     pub surface_layout: OpenGpuiNodeSurfaceLayout,
@@ -455,6 +457,7 @@ impl OpenGpuiNodeRendererContext {
     ) -> Self {
         let repeatables = repeatable_surface_projection(descriptor, &node.data);
         let repeatable_items = repeatable_item_projection(descriptor, node, graph, &node_id);
+        let surface_preset = OpenGpuiProductSurfacePreset::from_descriptor(descriptor);
         let surface_layout = OpenGpuiNodeSurfaceLayout::with_repeatable_items(
             surface_slots
                 .iter()
@@ -506,6 +509,7 @@ impl OpenGpuiNodeRendererContext {
             node_size,
             node_data: node.data.clone(),
             surface_projection,
+            surface_preset,
             surface_slots,
             slot_descriptors: descriptor.surface_slots.clone(),
             repeatables: surface_layout.repeatables.clone(),

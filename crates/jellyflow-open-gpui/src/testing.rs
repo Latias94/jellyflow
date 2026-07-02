@@ -26,12 +26,12 @@ use crate::{
     OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource, OpenGpuiMeasuredRegion,
     OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
     OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout, OpenGpuiRepeatableActionPlan,
-    OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic, OpenGpuiViewBounds,
-    OpenGpuiViewPoint, OpenGpuiViewSize, layout_pass_measurement_from_regions,
-    measured_surface_anchors, plan_repeatable_action, primitive_for_kind,
-    project_actions_for_surface, project_blackboards_for_descriptor, project_node_measurement,
-    project_slot_controls, projected_node_surface_graph_layout, repeatable_item_projection,
-    repeatable_port_diagnostics, resolve_inspector_target_bounds,
+    OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic, OpenGpuiSizeEvidence,
+    OpenGpuiStyleBudgetEvidence, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    layout_pass_measurement_from_regions, measured_surface_anchors, plan_repeatable_action,
+    primitive_for_kind, project_actions_for_surface, project_blackboards_for_descriptor,
+    project_node_measurement, project_slot_controls, projected_node_surface_graph_layout,
+    repeatable_item_projection, repeatable_port_diagnostics, resolve_inspector_target_bounds,
 };
 
 pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdapter) {
@@ -114,6 +114,7 @@ pub struct OpenGpuiHostSurfaceReportRow {
     pub source: OpenGpuiHostRendererSource,
     pub measured_slots: usize,
     pub measured_anchors: usize,
+    pub style_budget: Option<OpenGpuiStyleBudgetEvidence>,
     pub unsupported_controls: BTreeSet<String>,
     pub capability_gaps: BTreeSet<OpenGpuiHostCapabilityGap>,
 }
@@ -134,6 +135,7 @@ impl OpenGpuiHostSurfaceReportRow {
             source,
             measured_slots: 0,
             measured_anchors: 0,
+            style_budget: None,
             unsupported_controls: BTreeSet::new(),
             capability_gaps: BTreeSet::new(),
         };
@@ -151,6 +153,11 @@ impl OpenGpuiHostSurfaceReportRow {
             self.capability_gaps
                 .remove(&OpenGpuiHostCapabilityGap::MissingMeasuredRegion);
         }
+        self
+    }
+
+    pub fn with_style_budget(mut self, style_budget: OpenGpuiStyleBudgetEvidence) -> Self {
+        self.style_budget = Some(style_budget);
         self
     }
 
@@ -227,6 +234,11 @@ pub enum OpenGpuiHostVisualInteractionGap {
     HandleOverlap,
     StaleMeasuredRegion,
     MissingRepeatableAnchor,
+    BelowReadableSize,
+    TextOverflow,
+    ControlClipping,
+    HiddenRepeatableOverflow,
+    RepeatableOverflowIndicatorMissing,
     InvalidHoverOutOfBounds,
     DroppedWireMenuOutOfBounds,
     EdgeEndpointNotFollowingMeasuredHandle,
@@ -245,10 +257,16 @@ pub struct OpenGpuiHostVisualSurfaceRow {
     pub content_visible: bool,
     pub content_readable: bool,
     pub content_within_node_bounds: bool,
+    pub actual_size: Option<OpenGpuiSizeEvidence>,
+    pub min_readable_size: Option<OpenGpuiSizeEvidence>,
+    pub text_overflow_count: usize,
+    pub clipped_control_count: usize,
     pub handle_overlap_count: usize,
     pub stale_measured_regions: usize,
     pub repeatable_rows: usize,
     pub repeatable_rows_with_anchors: usize,
+    pub hidden_repeatable_overflow_count: usize,
+    pub repeatable_overflow_indicator_count: usize,
     pub gaps: BTreeSet<OpenGpuiHostVisualInteractionGap>,
 }
 
@@ -270,10 +288,16 @@ impl OpenGpuiHostVisualSurfaceRow {
             content_visible: false,
             content_readable: false,
             content_within_node_bounds: false,
+            actual_size: None,
+            min_readable_size: None,
+            text_overflow_count: 0,
+            clipped_control_count: 0,
             handle_overlap_count: 0,
             stale_measured_regions: 0,
             repeatable_rows: 0,
             repeatable_rows_with_anchors: 0,
+            hidden_repeatable_overflow_count: 0,
+            repeatable_overflow_indicator_count: 0,
             gaps: BTreeSet::new(),
         }
     }
@@ -303,11 +327,68 @@ impl OpenGpuiHostVisualSurfaceRow {
         self
     }
 
+    pub fn with_readability_budget(
+        mut self,
+        actual_size: OpenGpuiSizeEvidence,
+        min_readable_size: Option<OpenGpuiSizeEvidence>,
+    ) -> Self {
+        self.actual_size = Some(actual_size);
+        self.min_readable_size = min_readable_size;
+        if min_readable_size.is_some_and(|minimum| !actual_size.contains(minimum)) {
+            self.content_readable = false;
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::BelowReadableSize);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        self
+    }
+
+    pub fn with_text_overflow_count(mut self, overflow_count: usize) -> Self {
+        self.text_overflow_count = overflow_count;
+        if overflow_count > 0 {
+            self.content_readable = false;
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        self
+    }
+
+    pub fn with_control_clipping_count(mut self, clipping_count: usize) -> Self {
+        self.clipped_control_count = clipping_count;
+        if clipping_count > 0 {
+            self.content_readable = false;
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        self
+    }
+
     pub fn with_handle_overlap_count(mut self, overlap_count: usize) -> Self {
         self.handle_overlap_count = overlap_count;
         if overlap_count > 0 {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::HandleOverlap);
+        }
+        self
+    }
+
+    pub fn with_repeatable_overflow(
+        mut self,
+        hidden_overflow_count: usize,
+        visible_indicator_count: usize,
+    ) -> Self {
+        self.hidden_repeatable_overflow_count = hidden_overflow_count;
+        self.repeatable_overflow_indicator_count = visible_indicator_count;
+        if hidden_overflow_count > 0 && visible_indicator_count == 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
         }
         self
     }
@@ -505,7 +586,7 @@ impl OpenGpuiHostProductInteractionReport {
     ) {
         self.hidden_repeatable_overflow_count = hidden_overflow_count;
         self.repeatable_overflow_indicator_count = visible_indicator_count;
-        if hidden_overflow_count > visible_indicator_count {
+        if hidden_overflow_count > 0 && visible_indicator_count == 0 {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::RepeatableOverflowIndicatorMissing);
         }
@@ -597,6 +678,12 @@ pub fn assert_host_surface_report_contract(report: &OpenGpuiHostSurfaceReport) {
                 row.capability_gaps
                     .contains(&OpenGpuiHostCapabilityGap::MissingMeasuredRegion),
                 "unmeasured rows must carry MissingMeasuredRegion gap: {row:?}"
+            );
+        }
+        if row.is_product_renderer() {
+            assert!(
+                row.style_budget.is_some(),
+                "product renderer rows must expose adapter style budget facts: {row:?}"
             );
         }
     }
@@ -2372,7 +2459,7 @@ impl ProductFixtureSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OpenGpuiMeasurementMode;
+    use crate::{OpenGpuiMeasurementMode, OpenGpuiSurfaceStyleBudget};
 
     #[test]
     fn helper_rejects_full_claim_without_layout_pass_mode() {
@@ -2443,7 +2530,17 @@ mod tests {
                     .clone(),
                 OpenGpuiHostRendererSource::ProductRenderer,
             )
-            .with_measurement(2, 1);
+            .with_measurement(2, 1)
+            .with_style_budget(
+                OpenGpuiSurfaceStyleBudget::for_renderer_key(
+                    fixture
+                        .expected_renderer_keys
+                        .iter()
+                        .next()
+                        .expect("expected renderer"),
+                )
+                .evidence(),
+            );
             if fixture.kind == OpenGpuiProductFixtureKind::ShaderBlueprint {
                 row = OpenGpuiHostSurfaceReportRow::new(
                     fixture,
@@ -2485,7 +2582,12 @@ mod tests {
     fn strict_gallery_gate_rejects_product_renderer_fallbacks() {
         let fixtures = product_fixture_catalog();
         let report = OpenGpuiHostSurfaceReport::new(fixtures.iter().map(|fixture| {
-            OpenGpuiHostSurfaceReportRow::new(
+            let source = if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
+                OpenGpuiHostRendererSource::ProductRenderer
+            } else {
+                OpenGpuiHostRendererSource::DescriptorFallback
+            };
+            let mut row = OpenGpuiHostSurfaceReportRow::new(
                 fixture,
                 format!("node.{}", fixture.id),
                 fixture
@@ -2494,13 +2596,16 @@ mod tests {
                     .next()
                     .expect("expected renderer")
                     .clone(),
-                if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
-                    OpenGpuiHostRendererSource::ProductRenderer
-                } else {
-                    OpenGpuiHostRendererSource::DescriptorFallback
-                },
+                source,
             )
-            .with_measurement(1, 1)
+            .with_measurement(1, 1);
+            if source == OpenGpuiHostRendererSource::ProductRenderer {
+                let renderer_key = row.renderer_key.clone();
+                row = row.with_style_budget(
+                    OpenGpuiSurfaceStyleBudget::for_renderer_key(&renderer_key).evidence(),
+                );
+            }
+            row
         }));
 
         let result = std::panic::catch_unwind(|| assert_product_gallery_host_report_gates(&report));
@@ -2525,6 +2630,17 @@ mod tests {
                 OpenGpuiHostRendererSource::ProductRenderer,
             )
             .with_content_bounds(true, false, true)
+            .with_readability_budget(
+                OpenGpuiSizeEvidence {
+                    width: 220,
+                    height: 160,
+                },
+                Some(OpenGpuiSizeEvidence {
+                    width: 372,
+                    height: 292,
+                }),
+            )
+            .with_text_overflow_count(2)
             .with_handle_overlap_count(0)
             .with_stale_measured_regions(0)
             .with_repeatable_anchor_coverage(3, 3),
