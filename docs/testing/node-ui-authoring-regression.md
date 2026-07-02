@@ -11,7 +11,7 @@ and semantic capability evidence that does not depend on GPU output.
 | Dify-style workflow | `SampleGraphKind::AutomationBuilder`, builtin `workflow.automation`, GPUI `workflow.review` / `demo.llm` | full, compact, shell review, resize, dropped-wire menu, inspector/action descriptors, native prompt/model/temperature controls | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, `dropped_wire_menu_is_backed_by_authoring_action_descriptors`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::interaction_fixtures_cover_gpui_authoring_states`, `jellyflow-open-gpui::testing::assert_product_interaction_report_gates`, `canvas_example_collects_host_product_surface_report` |
 | Shader / Blueprint | `SampleGraphKind::ShaderGraph`, builtin `shader.blueprint`, GPUI `shader.material_mix` / `demo.shader.mix` | typed port rails, config controls, dynamic input repeatables, missing-port diagnostics, invalid hover, typed commit rejection, blackboard action | `shader_graph_typed_ports_reject_incompatible_hover_and_commit`, `shader_sample_rejects_incompatible_typed_connections_through_default_store_path`, `authoring_interaction_states_have_regression_fixtures`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report`, `jellyflow-open-gpui::testing::dynamic_repeatable_lifecycle_report`, `jellyflow-open-gpui::testing::assert_product_interaction_report_gates` |
 | ERD / data model | `SampleGraphKind::Erd`, builtin `erd.table`, GPUI `erd.customer_orders` | repeatable field rows, repeatable edit/remove/reorder, resize, slot bounds, handle-anchor proximity, explicit missing-port downgrade | `rich_node_resize_keeps_regions_and_handles_aligned`, `erd_snapshot_reports_semantic_region_measurements_to_runtime`, `erd_snapshot_places_table_handles_on_field_anchor_regions`, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::authoring_interaction_report`, `jellyflow-open-gpui::testing::dynamic_repeatable_lifecycle_report`, `jellyflow-open-gpui::testing::assert_product_interaction_report_gates` |
-| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas`, GPUI `mind-map.strategy` | compact/full density, shell review, stable handles, graph-level visual coverage, topic/source custom renderers | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::assert_product_interaction_report_gates`, `canvas-jellyflow::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips` |
+| Mind map / knowledge canvas | `SampleGraphKind::MindMap`, builtin `mind-map.knowledge-canvas`, GPUI `mind-map.strategy` | compact/full density, shell review, stable handles, graph-level visual coverage, topic/source custom renderers | `product_shape_snapshots_keep_authoring_regions_inside_nodes`, `density_modes_have_regression_coverage_for_rich_nodes`, gallery snapshot output, `jellyflow-open-gpui::testing::product_fixtures_cover_gpui_authoring_regressions`, `jellyflow-open-gpui::testing::assert_product_interaction_report_gates`, `jellyflow-open-gpui::testing::assert_screenshot_region_report_gates`, `canvas-jellyflow::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips` |
 
 ## Commands
 
@@ -27,7 +27,8 @@ cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.to
 The broad plan gate still includes runtime, proof, template, examples, GPUI check, and format
 commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md`.
 Open GPUI screenshot smoke artifacts, when the local headless renderer supports capture, are written
-under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`.
+under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`. The exporter now pairs those PNGs
+with coarse product-region evidence for node bodies, node-internal UI, wire paths, and port areas.
 
 For the Open GPUI canvas/node-UI foundation gate, run the broader set:
 
@@ -54,6 +55,17 @@ that `QuitMode::LastWindowClosed` observes. The `canvas-jellyflow` smoke opens t
 `JellyflowCanvasView`, verifies the product gallery is rendered, drags a product node without
 resetting sibling node positions, closes the last test window, and asserts that the test platform
 received an app quit request. A blank window report must fail the native smoke gate.
+
+Screenshot smoke now has a structured region-evidence gate:
+
+```sh
+cargo test -p jellyflow-open-gpui screenshot_region -- --nocapture
+cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders screenshot -- --nocapture --test-threads=1
+```
+
+`OpenGpuiScreenshotRegionReport` distinguishes skipped capture, blank/single-color captures,
+missing product fixtures, missing ROI categories, and blank ROI categories. Screenshot files remain
+review aids; the hard claim is the serializable adapter evidence, not pixel-golden image equality.
 
 Native review smoke remains a manual macOS launch check for the real windowing shell:
 
@@ -91,9 +103,12 @@ manual review are aids for diagnosing what a failure looks like; they are not th
   must have a visible indicator. It also requires `OpenGpuiGraphAffordanceEvidence`: committed wires
   and previews must share product route policy, direct-line preview fallback is rejected, port and
   reconnect hit budgets must be large enough, and drag/readable layout regions must be reported.
+- `assert_screenshot_region_report_gates` protects screenshot usefulness without turning PNGs into
+  pixel goldens: every product fixture capture must be nonblank and must include present node-body,
+  node-internal UI, wire-path, and port-area ROI evidence.
 - `product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips` is a smoke/review aid. It may
   skip when Open GPUI has no headless renderer; when it writes files, every product fixture must
-  produce a nonblank PNG.
+  produce a nonblank PNG and a passing `OpenGpuiScreenshotRegionReport`.
 
 ## Canvas Node UI Foundation Gates
 
@@ -112,9 +127,9 @@ These gates cover the product feel gap that screenshot review previously caught 
   adaptive layout tests. `AdaptiveNodeLayoutStack` downgrades regions before overflow, repeatable
   lists reserve overflow indicator height, and product renderer tests assert reduced cards stay
   inside node bounds.
-- Screenshot smoke is intentionally weaker than the structured gates. It proves nonblank review
-  artifacts can be generated for product families when supported, but it is not a pixel-golden
-  oracle.
+- Screenshot smoke is intentionally weaker than geometry and interaction gates. It proves review
+  artifacts and coarse product regions can be generated for product families when supported, but it
+  is not a pixel-golden oracle.
 
 ## Adapter Rules
 

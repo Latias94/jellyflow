@@ -845,6 +845,245 @@ pub fn assert_native_lifecycle_evidence_gates(evidence: &OpenGpuiNativeLifecycle
     );
 }
 
+/// Coarse screenshot region categories used by product gallery visual smoke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiScreenshotRegionKind {
+    NodeBody,
+    NodeInternalUi,
+    WirePath,
+    PortArea,
+    FeedbackOverlay,
+}
+
+/// Pixel-space rectangle sampled from a rendered screenshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiScreenshotRegionRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl OpenGpuiScreenshotRegionRect {
+    pub fn is_positive(self) -> bool {
+        self.width > 0 && self.height > 0
+    }
+}
+
+/// Coarse evidence for one screenshot ROI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiScreenshotRegionEvidence {
+    pub kind: OpenGpuiScreenshotRegionKind,
+    pub rect: OpenGpuiScreenshotRegionRect,
+    pub non_transparent_pixels: usize,
+    pub distinct_rgba_samples: usize,
+}
+
+impl OpenGpuiScreenshotRegionEvidence {
+    pub fn new(
+        kind: OpenGpuiScreenshotRegionKind,
+        rect: OpenGpuiScreenshotRegionRect,
+        non_transparent_pixels: usize,
+        distinct_rgba_samples: usize,
+    ) -> Self {
+        Self {
+            kind,
+            rect,
+            non_transparent_pixels,
+            distinct_rgba_samples,
+        }
+    }
+
+    pub fn is_present(&self) -> bool {
+        self.rect.is_positive()
+            && self.non_transparent_pixels > 0
+            && self.distinct_rgba_samples >= 2
+    }
+}
+
+/// Screenshot region gap reported by the adapter smoke gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiScreenshotRegionGap {
+    ScreenshotSkipped,
+    ScreenshotBlankOrSingleColor,
+    MissingFixture,
+    RequiredRegionMissing(OpenGpuiScreenshotRegionKind),
+    RequiredRegionBlank(OpenGpuiScreenshotRegionKind),
+}
+
+/// Per-fixture screenshot evidence. This stays widget-free so hosts can map any renderer into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiScreenshotFixtureEvidence {
+    pub fixture_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub non_transparent_pixels: usize,
+    pub distinct_rgba_samples: usize,
+    pub regions: Vec<OpenGpuiScreenshotRegionEvidence>,
+    pub skipped_reason: Option<String>,
+    pub gaps: BTreeSet<OpenGpuiScreenshotRegionGap>,
+}
+
+impl OpenGpuiScreenshotFixtureEvidence {
+    pub fn captured(
+        fixture_id: impl Into<String>,
+        width: u32,
+        height: u32,
+        non_transparent_pixels: usize,
+        distinct_rgba_samples: usize,
+    ) -> Self {
+        let mut evidence = Self {
+            fixture_id: fixture_id.into(),
+            width,
+            height,
+            non_transparent_pixels,
+            distinct_rgba_samples,
+            regions: Vec::new(),
+            skipped_reason: None,
+            gaps: BTreeSet::new(),
+        };
+        evidence.sync_gaps();
+        evidence
+    }
+
+    pub fn skipped(fixture_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        let mut evidence = Self {
+            fixture_id: fixture_id.into(),
+            width: 0,
+            height: 0,
+            non_transparent_pixels: 0,
+            distinct_rgba_samples: 0,
+            regions: Vec::new(),
+            skipped_reason: Some(reason.into()),
+            gaps: BTreeSet::new(),
+        };
+        evidence.sync_gaps();
+        evidence
+    }
+
+    pub fn push_region(&mut self, region: OpenGpuiScreenshotRegionEvidence) {
+        self.regions.push(region);
+        self.sync_gaps();
+    }
+
+    pub fn has_region(&self, kind: OpenGpuiScreenshotRegionKind) -> bool {
+        self.regions
+            .iter()
+            .any(|region| region.kind == kind && region.is_present())
+    }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiScreenshotRegionGap> {
+        let mut gaps = BTreeSet::new();
+        if self
+            .skipped_reason
+            .as_ref()
+            .is_some_and(|reason| !reason.trim().is_empty())
+        {
+            gaps.insert(OpenGpuiScreenshotRegionGap::ScreenshotSkipped);
+            return gaps;
+        }
+        if self.width == 0
+            || self.height == 0
+            || self.non_transparent_pixels == 0
+            || self.distinct_rgba_samples < 2
+        {
+            gaps.insert(OpenGpuiScreenshotRegionGap::ScreenshotBlankOrSingleColor);
+        }
+        for kind in [
+            OpenGpuiScreenshotRegionKind::NodeBody,
+            OpenGpuiScreenshotRegionKind::NodeInternalUi,
+            OpenGpuiScreenshotRegionKind::WirePath,
+            OpenGpuiScreenshotRegionKind::PortArea,
+        ] {
+            match self.regions.iter().find(|region| region.kind == kind) {
+                Some(region) if region.is_present() => {}
+                Some(_) => {
+                    gaps.insert(OpenGpuiScreenshotRegionGap::RequiredRegionBlank(kind));
+                }
+                None => {
+                    gaps.insert(OpenGpuiScreenshotRegionGap::RequiredRegionMissing(kind));
+                }
+            }
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
+    }
+}
+
+/// Screenshot region evidence for a product gallery export run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiScreenshotRegionReport {
+    pub fixtures: Vec<OpenGpuiScreenshotFixtureEvidence>,
+    pub skipped_reason: Option<String>,
+    pub gaps: BTreeSet<OpenGpuiScreenshotRegionGap>,
+}
+
+impl OpenGpuiScreenshotRegionReport {
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        let mut report = Self {
+            fixtures: Vec::new(),
+            skipped_reason: Some(reason.into()),
+            gaps: BTreeSet::new(),
+        };
+        report.sync_gaps();
+        report
+    }
+
+    pub fn push_fixture(&mut self, fixture: OpenGpuiScreenshotFixtureEvidence) {
+        self.fixtures.push(fixture);
+        self.sync_gaps();
+    }
+
+    pub fn fixture(&self, fixture_id: &str) -> Option<&OpenGpuiScreenshotFixtureEvidence> {
+        self.fixtures
+            .iter()
+            .find(|fixture| fixture.fixture_id == fixture_id)
+    }
+
+    pub fn computed_gaps(&self) -> BTreeSet<OpenGpuiScreenshotRegionGap> {
+        let mut gaps = BTreeSet::new();
+        if self
+            .skipped_reason
+            .as_ref()
+            .is_some_and(|reason| !reason.trim().is_empty())
+        {
+            gaps.insert(OpenGpuiScreenshotRegionGap::ScreenshotSkipped);
+            return gaps;
+        }
+        for fixture in product_fixture_catalog() {
+            let Some(evidence) = self.fixture(&fixture.id) else {
+                gaps.insert(OpenGpuiScreenshotRegionGap::MissingFixture);
+                continue;
+            };
+            gaps.extend(evidence.computed_gaps());
+        }
+        gaps
+    }
+
+    fn sync_gaps(&mut self) {
+        self.gaps = self.computed_gaps();
+    }
+}
+
+pub fn assert_screenshot_region_report_gates(report: &OpenGpuiScreenshotRegionReport) {
+    let gaps = report.computed_gaps();
+    assert!(
+        serde_json::to_string(report).is_ok(),
+        "screenshot region report must stay serializable: {report:?}"
+    );
+    assert!(
+        gaps.is_empty(),
+        "screenshot region report has unresolved gaps: {report:?}; computed gaps: {gaps:?}"
+    );
+    assert_eq!(
+        report.gaps, gaps,
+        "screenshot region report must carry synchronized gaps: {report:?}"
+    );
+}
+
 /// Stable widget-free product fixture catalog used by Open GPUI gallery/report tests.
 pub fn product_fixture_catalog() -> Vec<OpenGpuiProductFixtureCase> {
     [
@@ -2973,6 +3212,75 @@ mod tests {
         assert!(
             result.is_err(),
             "native lifecycle gate must reject skipped close automation"
+        );
+    }
+
+    #[test]
+    fn screenshot_region_gate_accepts_every_product_region() {
+        let mut report = OpenGpuiScreenshotRegionReport::default();
+        for fixture in product_fixture_catalog() {
+            let mut evidence =
+                OpenGpuiScreenshotFixtureEvidence::captured(fixture.id, 1140, 650, 4096, 8);
+            for kind in [
+                OpenGpuiScreenshotRegionKind::NodeBody,
+                OpenGpuiScreenshotRegionKind::NodeInternalUi,
+                OpenGpuiScreenshotRegionKind::WirePath,
+                OpenGpuiScreenshotRegionKind::PortArea,
+            ] {
+                evidence.push_region(OpenGpuiScreenshotRegionEvidence::new(
+                    kind,
+                    OpenGpuiScreenshotRegionRect {
+                        x: 8,
+                        y: 8,
+                        width: 64,
+                        height: 48,
+                    },
+                    1024,
+                    8,
+                ));
+            }
+            report.push_fixture(evidence);
+        }
+
+        assert_screenshot_region_report_gates(&report);
+    }
+
+    #[test]
+    fn screenshot_region_gate_rejects_missing_or_single_color_regions() {
+        let mut report = OpenGpuiScreenshotRegionReport::default();
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .next()
+            .expect("product fixture");
+        let mut evidence =
+            OpenGpuiScreenshotFixtureEvidence::captured(fixture.id, 1140, 650, 4096, 8);
+        evidence.push_region(OpenGpuiScreenshotRegionEvidence::new(
+            OpenGpuiScreenshotRegionKind::NodeBody,
+            OpenGpuiScreenshotRegionRect {
+                x: 8,
+                y: 8,
+                width: 64,
+                height: 48,
+            },
+            1024,
+            1,
+        ));
+        report.push_fixture(evidence);
+
+        let result = std::panic::catch_unwind(|| assert_screenshot_region_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "screenshot region gate must reject single-color or incomplete ROI evidence"
+        );
+    }
+
+    #[test]
+    fn screenshot_region_gate_rejects_skipped_capture() {
+        let report = OpenGpuiScreenshotRegionReport::skipped("headless renderer unavailable");
+        let result = std::panic::catch_unwind(|| assert_screenshot_region_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "screenshot region gate must reject skipped capture as hard evidence"
         );
     }
 
