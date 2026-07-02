@@ -36,9 +36,6 @@ pub struct OpenGpuiSurfaceStyleBudget {
     pub handle_hit_width: f32,
     pub edge_stroke_width: f32,
     pub edge_hit_width: f32,
-    pub row_height: f32,
-    pub control_row_height: f32,
-    pub repeatable_row_height: f32,
 }
 
 impl Default for OpenGpuiSurfaceStyleBudget {
@@ -48,9 +45,6 @@ impl Default for OpenGpuiSurfaceStyleBudget {
             handle_hit_width: 22.0,
             edge_stroke_width: 2.0,
             edge_hit_width: 18.0,
-            row_height: 26.0,
-            control_row_height: 34.0,
-            repeatable_row_height: 34.0,
         }
     }
 }
@@ -65,12 +59,10 @@ impl OpenGpuiSurfaceStyleBudget {
                 budget.edge_hit_width = 24.0;
             }
             "table-card" => {
-                budget.row_height = 30.0;
                 budget.handle_hit_width = 24.0;
             }
             "topic-card" | "source-card" => {
                 budget.edge_hit_width = 20.0;
-                budget.control_row_height = 32.0;
             }
             _ => {}
         }
@@ -83,9 +75,6 @@ impl OpenGpuiSurfaceStyleBudget {
             handle_hit_width: self.handle_hit_width.round() as u32,
             edge_stroke_width: self.edge_stroke_width.round() as u32,
             edge_hit_width: self.edge_hit_width.round() as u32,
-            row_height: self.row_height.round() as u32,
-            control_row_height: self.control_row_height.round() as u32,
-            repeatable_row_height: self.repeatable_row_height.round() as u32,
         }
     }
 }
@@ -97,9 +86,6 @@ pub struct OpenGpuiStyleBudgetEvidence {
     pub handle_hit_width: u32,
     pub edge_stroke_width: u32,
     pub edge_hit_width: u32,
-    pub row_height: u32,
-    pub control_row_height: u32,
-    pub repeatable_row_height: u32,
 }
 
 /// Serializable route family evidence for product graph affordances.

@@ -212,5 +212,6 @@ These gates cover the product feel gap that screenshot review previously caught 
   shells, and passive display regions are drag surfaces; buttons, text inputs, menus, sliders, and
   repeatable action controls may stop propagation locally.
 - Runtime builtin fixture coordinates may encode semantic example topology, but concrete widget
-  row heights, drag hitboxes, density fallbacks, and component event policy remain Open GPUI
-  adapter/example responsibilities.
+  row heights, density fallbacks, and component event policy remain Open GPUI host/example
+  responsibilities. Adapter-level evidence is limited to graph-owned hitboxes, measured internals,
+  and explicit host reports.

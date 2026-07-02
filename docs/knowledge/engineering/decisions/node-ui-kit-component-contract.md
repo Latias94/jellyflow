@@ -71,7 +71,7 @@ Adapters own:
   adaptive layout stack primitives, component composition helpers, event shielding, and measured
   wrappers; runtime and `jellyflow-open-gpui` only see semantic descriptors, preset budgets, and
   report facts. The current mature Open GPUI path also gates native lifecycle, screenshot ROI,
-  graph affordances, reconnect sequences, and component fit through widget-free evidence.
+  graph affordances, reconnect sequences, and measured internals through widget-free evidence.
 - `jellyflow-proof` proves component-tree shape plus runtime measurement integration, including
   dynamic child remeasurement. It intentionally avoids Dioxus or widget types.
 
@@ -96,9 +96,9 @@ Adapters own:
   coverage;
 - host-local adaptive Open GPUI layout primitives for product renderers, including full/compact/shell
   degradation and repeatable overflow indicator budgeting.
-- Open GPUI component fit evidence that records text/control/repeatable coverage, compact/shell
-  degradation, required and present overflow indicators, clipped text/controls, and hidden
-  repeatables without indicators.
+- Open GPUI measured internals evidence that records node-bound source, handle coverage,
+  readable-region coverage, drag-exclusion coverage, stale regions, and component-declared
+  overflow without guessing text/control fit.
 - Open GPUI reconnect sequence evidence that covers source/target endpoint switching, edge-id
   preservation, invalid rollback, empty drops, and recovery after a rejected reconnect.
 

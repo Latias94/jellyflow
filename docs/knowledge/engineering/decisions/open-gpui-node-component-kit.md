@@ -26,9 +26,9 @@ The current canvas/node-UI foundation adds one more boundary:
   preview route policy, pointer capture, drag threshold behavior, connection release events,
   reconnect handles, invalid-target feedback, and hit-test geometry. It must not depend on
   Jellyflow.
-- `jellyflow-open-gpui` owns widget-free Open GPUI evidence and presets: surface style budgets,
-  readable sizes, component fit budgets, graph affordance evidence, native lifecycle evidence,
-  product interaction reports, and regression gates.
+- `jellyflow-open-gpui` owns widget-free Open GPUI evidence and presets: graph-affordance style
+  facts, readable sizes, measured internals evidence, graph affordance evidence, native lifecycle
+  evidence, product interaction reports, and regression gates.
 - `canvas-jellyflow` owns concrete Open GPUI components and host-local layout primitives:
   `AdaptiveNodeLayoutStack`, repeatable overflow planning, renderer-specific component placement,
   focus/menu state, weak-entity dispatch, and native product gallery composition.
