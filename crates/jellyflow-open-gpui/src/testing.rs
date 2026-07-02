@@ -243,40 +243,62 @@ pub enum OpenGpuiHostVisualInteractionGap {
     InvalidHoverOutOfBounds,
     DroppedWireMenuOutOfBounds,
     EdgeEndpointNotFollowingMeasuredHandle,
-    ComponentFitEvidenceMissing,
-    ComponentFitEvidenceIncomplete,
-    ComponentOverflowIndicatorMissing,
+    MeasuredInternalsEvidenceMissing,
+    MeasuredInternalsEvidenceIncomplete,
+    MeasuredInternalsProjectionFallback,
+    ComponentDeclaredOverflowMissing,
 }
 
-/// Widget-free fit evidence for product node internals.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenGpuiComponentFitEvidence {
-    pub text_regions_checked: usize,
-    pub control_regions_checked: usize,
-    pub repeatable_regions_checked: usize,
-    pub compact_regions: usize,
-    pub shell_regions: usize,
-    pub overflow_indicator_required_count: usize,
-    pub overflow_indicator_count: usize,
-    pub overflow_indicator_missing_count: usize,
-    pub clipped_text_regions: usize,
-    pub clipped_control_regions: usize,
-    pub hidden_repeatable_regions_without_indicator: usize,
+/// Source used for node-internal bounds in host visual evidence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OpenGpuiMeasuredInternalsSource {
+    LayoutPass,
+    CanvasDocument,
+    ProjectionFallback,
+    #[default]
+    Missing,
 }
 
-impl OpenGpuiComponentFitEvidence {
-    pub fn complete(self) -> bool {
-        self.text_regions_checked > 0
-            && self.control_regions_checked > 0
-            && self.overflow_indicator_count >= self.overflow_indicator_required_count
-            && self.overflow_indicator_missing_count == 0
-            && self.clipped_text_regions == 0
-            && self.clipped_control_regions == 0
-            && self.hidden_repeatable_regions_without_indicator == 0
+impl OpenGpuiMeasuredInternalsSource {
+    pub fn is_hard_evidence(self) -> bool {
+        matches!(self, Self::LayoutPass | Self::CanvasDocument)
     }
 
-    pub fn degraded_region_count(self) -> usize {
-        self.compact_regions + self.shell_regions
+    pub fn is_projection_fallback(self) -> bool {
+        matches!(self, Self::ProjectionFallback)
+    }
+}
+
+/// Widget-free coverage evidence for measured product node internals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiMeasuredInternalsEvidence {
+    pub node_bounds_source: OpenGpuiMeasuredInternalsSource,
+    pub node_bounds_present: bool,
+    pub handle_bounds_present: bool,
+    pub measured_handle_count: usize,
+    pub projected_handle_count: usize,
+    pub readable_region_count: usize,
+    pub drag_exclusion_region_count: usize,
+    pub stale_region_count: usize,
+    pub component_declared_overflow_count: usize,
+    pub missing_required_overflow_count: usize,
+}
+
+impl OpenGpuiMeasuredInternalsEvidence {
+    pub fn complete(self) -> bool {
+        self.node_bounds_source.is_hard_evidence()
+            && self.node_bounds_present
+            && self.handle_bounds_present
+            && self.measured_handle_count > 0
+            && self.projected_handle_count == 0
+            && self.readable_region_count > 0
+            && self.drag_exclusion_region_count > 0
+            && self.stale_region_count == 0
+            && self.missing_required_overflow_count == 0
+    }
+
+    pub fn uses_projection_fallback(self) -> bool {
+        self.node_bounds_source.is_projection_fallback() || self.projected_handle_count > 0
     }
 }
 
@@ -303,7 +325,7 @@ pub struct OpenGpuiHostVisualSurfaceRow {
     pub repeatable_rows_with_anchors: usize,
     pub hidden_repeatable_overflow_count: usize,
     pub repeatable_overflow_indicator_count: usize,
-    pub component_fit_evidence: Option<OpenGpuiComponentFitEvidence>,
+    pub measured_internals_evidence: Option<OpenGpuiMeasuredInternalsEvidence>,
     pub gaps: BTreeSet<OpenGpuiHostVisualInteractionGap>,
 }
 
@@ -335,7 +357,7 @@ impl OpenGpuiHostVisualSurfaceRow {
             repeatable_rows_with_anchors: 0,
             hidden_repeatable_overflow_count: 0,
             repeatable_overflow_indicator_count: 0,
-            component_fit_evidence: None,
+            measured_internals_evidence: None,
             gaps: BTreeSet::new(),
         }
     }
@@ -431,35 +453,27 @@ impl OpenGpuiHostVisualSurfaceRow {
         self
     }
 
-    pub fn with_component_fit_evidence(mut self, evidence: OpenGpuiComponentFitEvidence) -> Self {
-        self.component_fit_evidence = Some(evidence);
-        if evidence.clipped_text_regions > 0 {
-            self.text_overflow_count += evidence.clipped_text_regions;
-            self.content_readable = false;
+    pub fn with_measured_internals_evidence(
+        mut self,
+        evidence: OpenGpuiMeasuredInternalsEvidence,
+    ) -> Self {
+        self.measured_internals_evidence = Some(evidence);
+        if evidence.stale_region_count > 0 {
+            self.stale_measured_regions += evidence.stale_region_count;
             self.gaps
-                .insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
-            self.gaps
-                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+                .insert(OpenGpuiHostVisualInteractionGap::StaleMeasuredRegion);
         }
-        if evidence.clipped_control_regions > 0 {
-            self.clipped_control_count += evidence.clipped_control_regions;
-            self.content_readable = false;
-            self.gaps
-                .insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
-            self.gaps
-                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
-        }
-        if evidence.hidden_repeatable_regions_without_indicator > 0 {
+        if evidence.missing_required_overflow_count > 0 {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
-        }
-        if evidence.overflow_indicator_missing_count > 0
-            || evidence.overflow_indicator_count < evidence.overflow_indicator_required_count
-        {
             self.gaps
-                .insert(OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing);
+                .insert(OpenGpuiHostVisualInteractionGap::ComponentDeclaredOverflowMissing);
+        }
+        if evidence.uses_projection_fallback() {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::MeasuredInternalsProjectionFallback);
         }
         self
     }
@@ -526,36 +540,28 @@ impl OpenGpuiHostVisualSurfaceRow {
             gaps.insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
             gaps.insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
         }
-        match self.component_fit_evidence {
+        match self.measured_internals_evidence {
             Some(evidence) => {
                 if !evidence.complete() {
-                    gaps.insert(OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceIncomplete);
+                    gaps.insert(
+                        OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete,
+                    );
                 }
-                if evidence.clipped_text_regions > 0 {
-                    gaps.insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
-                    gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+                if evidence.uses_projection_fallback() {
+                    gaps.insert(
+                        OpenGpuiHostVisualInteractionGap::MeasuredInternalsProjectionFallback,
+                    );
                 }
-                if evidence.clipped_control_regions > 0 {
-                    gaps.insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
-                    gaps.insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
-                }
-                if evidence.hidden_repeatable_regions_without_indicator > 0 {
+                if evidence.missing_required_overflow_count > 0 {
                     gaps.insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
                     gaps.insert(
                         OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing,
                     );
-                }
-                if evidence.overflow_indicator_missing_count > 0
-                    || evidence.overflow_indicator_count
-                        < evidence.overflow_indicator_required_count
-                {
-                    gaps.insert(
-                        OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing,
-                    );
+                    gaps.insert(OpenGpuiHostVisualInteractionGap::ComponentDeclaredOverflowMissing);
                 }
             }
             None => {
-                gaps.insert(OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceMissing);
+                gaps.insert(OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceMissing);
             }
         }
         gaps
@@ -1530,12 +1536,12 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
             row.content_readable && row.content_within_node_bounds,
             "node-internal content must satisfy readable size and stay inside the node body: {row:?}"
         );
-        let Some(component_fit) = row.component_fit_evidence else {
-            panic!("visual report row must include component fit evidence: {row:?}");
+        let Some(internals) = row.measured_internals_evidence else {
+            panic!("visual report row must include measured internals evidence: {row:?}");
         };
         assert!(
-            component_fit.complete(),
-            "node-internal text, controls, and repeatables must fit or publish explicit overflow/shell evidence: {row:?}"
+            internals.complete(),
+            "node-internal bounds, handles, readable regions, and component-declared overflow must have hard evidence: {row:?}"
         );
         assert_eq!(
             row.handle_overlap_count, 0,
@@ -3714,18 +3720,17 @@ mod tests {
             .with_handle_overlap_count(0)
             .with_stale_measured_regions(0)
             .with_repeatable_anchor_coverage(3, 3)
-            .with_component_fit_evidence(OpenGpuiComponentFitEvidence {
-                text_regions_checked: 2,
-                control_regions_checked: 1,
-                repeatable_regions_checked: 3,
-                compact_regions: 1,
-                shell_regions: 0,
-                overflow_indicator_required_count: 0,
-                overflow_indicator_count: 1,
-                overflow_indicator_missing_count: 0,
-                clipped_text_regions: 2,
-                clipped_control_regions: 0,
-                hidden_repeatable_regions_without_indicator: 0,
+            .with_measured_internals_evidence(OpenGpuiMeasuredInternalsEvidence {
+                node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+                node_bounds_present: true,
+                handle_bounds_present: true,
+                measured_handle_count: 2,
+                projected_handle_count: 0,
+                readable_region_count: 3,
+                drag_exclusion_region_count: 1,
+                stale_region_count: 0,
+                component_declared_overflow_count: 1,
+                missing_required_overflow_count: 0,
             }),
         );
         report.mark_invalid_hover_bounds_checked(true);
@@ -3733,11 +3738,6 @@ mod tests {
         report.mark_repeatable_edit_updates_anchors(true);
         report.mark_edge_endpoints_follow_measured_handles(true);
 
-        assert!(
-            report
-                .gaps
-                .contains(&OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceIncomplete)
-        );
         assert!(
             report
                 .gaps
@@ -3761,33 +3761,31 @@ mod tests {
                 .next()
                 .expect("expected renderer")
                 .clone();
-            let component_fit = if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
-                OpenGpuiComponentFitEvidence {
-                    text_regions_checked: 2,
-                    control_regions_checked: 1,
-                    repeatable_regions_checked: 1,
-                    compact_regions: 1,
-                    shell_regions: 0,
-                    overflow_indicator_required_count: 1,
-                    overflow_indicator_count: 0,
-                    overflow_indicator_missing_count: 1,
-                    clipped_text_regions: 0,
-                    clipped_control_regions: 0,
-                    hidden_repeatable_regions_without_indicator: 0,
+            let internals = if fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow {
+                OpenGpuiMeasuredInternalsEvidence {
+                    node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+                    node_bounds_present: true,
+                    handle_bounds_present: true,
+                    measured_handle_count: 2,
+                    projected_handle_count: 0,
+                    readable_region_count: 3,
+                    drag_exclusion_region_count: 1,
+                    stale_region_count: 0,
+                    component_declared_overflow_count: 0,
+                    missing_required_overflow_count: 1,
                 }
             } else {
-                OpenGpuiComponentFitEvidence {
-                    text_regions_checked: 2,
-                    control_regions_checked: 1,
-                    repeatable_regions_checked: 1,
-                    compact_regions: 0,
-                    shell_regions: 0,
-                    overflow_indicator_required_count: 0,
-                    overflow_indicator_count: 0,
-                    overflow_indicator_missing_count: 0,
-                    clipped_text_regions: 0,
-                    clipped_control_regions: 0,
-                    hidden_repeatable_regions_without_indicator: 0,
+                OpenGpuiMeasuredInternalsEvidence {
+                    node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+                    node_bounds_present: true,
+                    handle_bounds_present: true,
+                    measured_handle_count: 2,
+                    projected_handle_count: 0,
+                    readable_region_count: 3,
+                    drag_exclusion_region_count: 1,
+                    stale_region_count: 0,
+                    component_declared_overflow_count: 0,
+                    missing_required_overflow_count: 0,
                 }
             };
             report.push(
@@ -3812,7 +3810,7 @@ mod tests {
                 .with_stale_measured_regions(0)
                 .with_repeatable_anchor_coverage(1, 1)
                 .with_repeatable_overflow(0, 0)
-                .with_component_fit_evidence(component_fit),
+                .with_measured_internals_evidence(internals),
             );
         }
         report.mark_invalid_hover_bounds_checked(true);
@@ -3820,6 +3818,11 @@ mod tests {
         report.mark_repeatable_edit_updates_anchors(true);
         report.mark_edge_endpoints_follow_measured_handles(true);
 
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostVisualInteractionGap::ComponentDeclaredOverflowMissing)
+        );
         let result =
             std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
         assert!(
@@ -3829,7 +3832,7 @@ mod tests {
     }
 
     #[test]
-    fn visual_gate_rejects_missing_component_fit_evidence() {
+    fn visual_gate_rejects_missing_measured_internals_evidence() {
         let fixture = product_fixture_catalog()
             .into_iter()
             .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow)
@@ -3865,13 +3868,90 @@ mod tests {
         assert!(
             report
                 .gaps
-                .contains(&OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceMissing)
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceMissing)
         );
         let result =
             std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
         assert!(
             result.is_err(),
-            "visual gate must fail when product rows omit component fit evidence"
+            "visual gate must fail when product rows omit measured internals evidence"
+        );
+    }
+
+    #[test]
+    fn visual_gate_rejects_projection_fallback_internals_as_hard_evidence() {
+        let mut report = OpenGpuiHostVisualInteractionReport::default();
+        for fixture in product_fixture_catalog() {
+            let renderer_key = fixture
+                .expected_renderer_keys
+                .iter()
+                .next()
+                .expect("expected renderer")
+                .clone();
+            let node_bounds_source = if fixture.kind == OpenGpuiProductFixtureKind::ShaderBlueprint
+            {
+                OpenGpuiMeasuredInternalsSource::ProjectionFallback
+            } else {
+                OpenGpuiMeasuredInternalsSource::CanvasDocument
+            };
+            let projected_handle_count = usize::from(
+                node_bounds_source == OpenGpuiMeasuredInternalsSource::ProjectionFallback,
+            );
+            let measured_handle_count = if projected_handle_count > 0 { 0 } else { 2 };
+
+            report.push(
+                OpenGpuiHostVisualSurfaceRow::new(
+                    &fixture,
+                    "demo.node",
+                    renderer_key,
+                    OpenGpuiHostRendererSource::ProductRenderer,
+                )
+                .with_content_bounds(true, true, true)
+                .with_readability_budget(
+                    OpenGpuiSizeEvidence {
+                        width: 520,
+                        height: 360,
+                    },
+                    Some(OpenGpuiSizeEvidence {
+                        width: 340,
+                        height: 288,
+                    }),
+                )
+                .with_handle_overlap_count(0)
+                .with_stale_measured_regions(0)
+                .with_repeatable_anchor_coverage(1, 1)
+                .with_repeatable_overflow(0, 0)
+                .with_measured_internals_evidence(
+                    OpenGpuiMeasuredInternalsEvidence {
+                        node_bounds_source,
+                        node_bounds_present: true,
+                        handle_bounds_present: true,
+                        measured_handle_count,
+                        projected_handle_count,
+                        readable_region_count: 3,
+                        drag_exclusion_region_count: 1,
+                        stale_region_count: 0,
+                        component_declared_overflow_count: 0,
+                        missing_required_overflow_count: 0,
+                    },
+                ),
+            );
+        }
+        report.mark_invalid_hover_bounds_checked(true);
+        report.mark_dropped_wire_menu_bounds_checked(true);
+        report.mark_repeatable_edit_updates_anchors(true);
+        report.mark_edge_endpoints_follow_measured_handles(true);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsProjectionFallback)
+        );
+        let result =
+            std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "visual gate must reject projection fallback internals as product proof"
         );
     }
 }

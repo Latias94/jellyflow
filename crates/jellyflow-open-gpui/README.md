@@ -131,12 +131,13 @@ capture, reconnect handles, and connection release events belong to
 `repo-ref/open-gpui/crates/canvas`. This crate only defines the Jellyflow adapter
 contract and report gates.
 
-The host-local product renderer layer now uses adaptive layout primitives from
-`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`.
-`AdaptiveNodeLayoutStack` and repeatable-list planning let Dify, shader, ERD,
-topic, and source cards degrade from full to compact to shell regions before
-text or controls clip. These primitives remain Open GPUI host code, not runtime
-widgets and not a shared cross-framework component crate.
+The host-local product renderer layer may use layout primitives from
+`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`, but
+those primitives are product component code. They can decide how Dify, shader,
+ERD, topic, and source cards degrade, clamp, or reveal overflow, while the
+adapter only consumes explicit measured internals and component-declared
+overflow. Jellyflow does not expose a shared cross-framework widget crate or an
+arbitrary text/control fit oracle.
 
 ## Native UX Evidence
 
@@ -146,12 +147,13 @@ gallery rendered real Jellyflow content, that product node dragging was checked,
 and that the closest available Open GPUI last-window-close path observes quit.
 Skipped close automation and blank-window smokes fail the hard gate.
 
-`OpenGpuiComponentFitBudget` lives in `OpenGpuiProductSurfacePreset` so hosts do
-not scatter text/control fit thresholds. `canvas-jellyflow` maps that widget-free
-budget into local Open GPUI layout and reports `OpenGpuiComponentFitEvidence`.
-The visual gate rejects clipped text, clipped controls, missing fit evidence,
-hidden repeatables without indicators, and required overflow indicators that are
-not present.
+`OpenGpuiMeasuredInternalsEvidence` is the hard visual proof for product node
+internals. It records node-bound source, handle coverage, readable-region
+coverage, drag-exclusion coverage, stale regions, and component-declared
+overflow. The visual gate rejects missing or incomplete measured internals,
+projection fallback used as hard proof, hidden repeatables without explicit
+overflow declaration, stale regions, and endpoints that do not follow measured
+handles.
 
 `OpenGpuiReconnectSequenceEvidence` proves selected-edge reconnect is actionable,
 not only visible. The product interaction gate requires source and target endpoint

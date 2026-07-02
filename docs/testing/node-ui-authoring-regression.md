@@ -100,9 +100,10 @@ manual review are aids for diagnosing what a failure looks like; they are not th
   must remain visible when unselected, satisfy readable budgets, stay inside node bounds, avoid
   handle overlap, use fresh measured regions, keep repeatable anchors, avoid initial node overlap,
   bound invalid-hover and dropped-wire UI, keep edge endpoints tied to measured handles, and include
-  `OpenGpuiComponentFitEvidence` for text/control/repeatable fit. Component fit evidence records
-  full/compact/shell degradation, required and present overflow indicators, clipped text/controls,
-  and hidden repeatables without indicators.
+  `OpenGpuiMeasuredInternalsEvidence`. Measured internals evidence records node-bound source,
+  handle coverage, readable-region coverage, drag-exclusion coverage, stale regions, and explicit
+  component-declared overflow. It does not estimate text/control fit from line counts, character
+  widths, or preset row heights.
 - `assert_product_interaction_report_gates` protects concrete product interactions: product cards
   need full drag pointer sequences, controls must be event-shielded, ports must be reachable through
   the host hotspot path, Select/Pan/Connect tooling must be visible, connect/reconnect/dropped-wire
@@ -132,12 +133,10 @@ These gates cover the product feel gap that screenshot review previously caught 
 - Port and reconnect UX is protected by visible hotspot/reconnect evidence. The host must report
   reachable port hotspots, selected-edge reconnect affordances, store-synced reconnect outcomes, and
   invalid-target rollback without repeated planning errors.
-- Node-internal UI readability is protected by both runtime readable-size budgets and host-local
-  adaptive layout tests. `AdaptiveNodeLayoutStack` downgrades regions before overflow, repeatable
-  lists reserve overflow indicator height, and product renderer tests assert reduced cards stay
-  inside node bounds. `OpenGpuiProductSurfacePreset::component_fit_budget` keeps text/control
-  evidence thresholds in the adapter preset, while `canvas-jellyflow` maps those budgets into local
-  Open GPUI component layout.
+- Node-internal UI readability is protected by runtime readable-size hints, host-local component
+  layout tests, and measured internals evidence. Product renderers may downgrade or clamp their own
+  UI and may report explicit overflow, but adapter gates must not infer arbitrary text/control fit
+  from preset thresholds.
 - Screenshot smoke is intentionally weaker than geometry and interaction gates. It proves review
   artifacts and coarse product regions can be generated for product families when supported, but it
   is not a pixel-golden oracle.

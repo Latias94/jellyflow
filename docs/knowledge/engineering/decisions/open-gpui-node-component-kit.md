@@ -76,10 +76,11 @@ only mature native product surface in this stage.
   route policy where applicable, connection previews that mirror committed route policy, port and
   reconnect hit budgets, drag-region coverage, readable layout-region coverage, and repeatable
   overflow indicators.
-- Product node internals are also explicit report data. `OpenGpuiProductSurfacePreset` publishes a
-  widget-free `component_fit_budget`, while the Open GPUI host maps it into local component layout
-  and reports `OpenGpuiComponentFitEvidence` for text/control/repeatable fit, compact/shell
-  degradation, required overflow indicators, clipping, and hidden repeatable overflow.
+- Product node internals are explicit measured/report data, not adapter-owned fit estimates. The
+  Open GPUI host reports `OpenGpuiMeasuredInternalsEvidence` for node bounds, handle coverage,
+  readable regions, drag-excluded regions, stale regions, and component-declared overflow. Product
+  components may use local layout strategies, but adapter gates must not guess arbitrary
+  text/control fit.
 - Product renderers should use adaptive host-local layout plans rather than fixed absolute rows.
   Full density, compact density, and shell fallback are Open GPUI rendering decisions; runtime only
   publishes semantic budgets and overflow intent.
