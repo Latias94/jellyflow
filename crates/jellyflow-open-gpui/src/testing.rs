@@ -3736,7 +3736,12 @@ mod tests {
         assert!(
             report
                 .gaps
-                .contains(&OpenGpuiHostVisualInteractionGap::ComponentOverflowIndicatorMissing)
+                .contains(&OpenGpuiHostVisualInteractionGap::ComponentFitEvidenceIncomplete)
+        );
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostVisualInteractionGap::TextOverflow)
         );
         let result =
             std::panic::catch_unwind(|| assert_host_visual_interaction_report_gates(&report));
