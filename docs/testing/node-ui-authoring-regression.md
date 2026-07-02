@@ -21,13 +21,38 @@ Run these as the focused authoring regression gate:
 cargo test -p jellyflow-egui --lib -- --nocapture
 cargo nextest run -p jellyflow-open-gpui --no-fail-fast
 cargo run -p jellyflow-egui --example gallery_snapshot -- target/jellyflow-egui-gallery
-RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
 ```
 
 The broad plan gate still includes runtime, proof, template, examples, GPUI check, and format
 commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md`.
 Open GPUI screenshot smoke artifacts, when the local headless renderer supports capture, are written
 under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`.
+
+For the Open GPUI canvas/node-UI foundation gate, run the broader set:
+
+```sh
+cargo fmt --all -- --check
+cargo fmt --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml -- --check
+git diff --check
+git -C repo-ref/open-gpui diff --check
+cargo nextest run -p jellyflow-open-gpui --no-fail-fast
+cargo nextest run -p jellyflow-runtime -p jellyflow-egui -p jellyflow-proof --lib --no-fail-fast
+cargo test -p jellyflow-runtime --test public_surface -- --nocapture
+cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+```
+
+Native review smoke remains a separate manual check:
+
+```sh
+cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow
+```
+
+For that smoke, verify the product gallery launches, Dify/shader/ERD/mind-map nodes render with
+internal UI, nodes drag from headers/passive regions, wires and ports are visible, reconnect handles
+are reachable on selected edges, and closing the last macOS window exits. The example sets
+`QuitMode::LastWindowClosed`; if GUI automation is unavailable, record the manual or timed-launch
+limitation instead of treating it as a structured test pass.
 
 ## Open GPUI Product Interaction Gates
 
@@ -50,10 +75,33 @@ manual review are aids for diagnosing what a failure looks like; they are not th
   need full drag pointer sequences, controls must be event-shielded, ports must be reachable through
   the host hotspot path, Select/Pan/Connect tooling must be visible, connect/reconnect/dropped-wire
   gestures must synchronize through Jellyflow store transactions, and hidden repeatable overflow
-  must have a visible indicator.
+  must have a visible indicator. It also requires `OpenGpuiGraphAffordanceEvidence`: committed wires
+  and previews must share product route policy, direct-line preview fallback is rejected, port and
+  reconnect hit budgets must be large enough, and drag/readable layout regions must be reported.
 - `product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips` is a smoke/review aid. It may
   skip when Open GPUI has no headless renderer; when it writes files, every product fixture must
   produce a nonblank PNG.
+
+## Canvas Node UI Foundation Gates
+
+These gates cover the product feel gap that screenshot review previously caught too late.
+
+- Drag feel is protected by full pointer sequence evidence plus the real
+  `canvas_view_keeps_drag_state_while_syncing_product_surface_moves` path: syncing node transforms
+  into `NodeGraphStore` must not rebuild the editor in a way that drops active drag state.
+- Wire style is protected at two levels. Generic Open GPUI canvas tests cover route geometry,
+  previews, hit testing, and reconnect release events; `jellyflow-open-gpui` reports whether the
+  product host uses route policy evidence instead of direct-line preview fallback.
+- Port and reconnect UX is protected by visible hotspot/reconnect evidence. The host must report
+  reachable port hotspots, selected-edge reconnect affordances, store-synced reconnect outcomes, and
+  invalid-target rollback without repeated planning errors.
+- Node-internal UI readability is protected by both runtime readable-size budgets and host-local
+  adaptive layout tests. `AdaptiveNodeLayoutStack` downgrades regions before overflow, repeatable
+  lists reserve overflow indicator height, and product renderer tests assert reduced cards stay
+  inside node bounds.
+- Screenshot smoke is intentionally weaker than the structured gates. It proves nonblank review
+  artifacts can be generated for product families when supported, but it is not a pixel-golden
+  oracle.
 
 ## Adapter Rules
 
@@ -112,6 +160,10 @@ manual review are aids for diagnosing what a failure looks like; they are not th
 - Open GPUI product gallery layout must apply adapter-local readable minimum sizes before using
   full-density renderers. Silent clipping is a failed state: `OpenGpuiHostVisualInteractionReport`
   rows must satisfy both `content_readable` and `content_within_node_bounds`.
+- Open GPUI product renderers should derive region placement from host-local adaptive layout plans,
+  not fixed absolute row constants. Full/compact/shell degradation is a renderer policy; runtime
+  supplies semantic density and overflow intent, and `jellyflow-open-gpui` reports the resulting
+  evidence without owning widgets.
 - Product fixture reports must include pairwise node-bounds overlap evidence. Dify, shader, ERD,
   and mind-map fixtures should be authored against the adapter's readable size budgets so the
   default launch is a valid review state, not a post-layout recovery case.

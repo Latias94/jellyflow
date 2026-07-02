@@ -57,15 +57,19 @@ Adapters own:
   authoring controls, repeatable rows, node actions, dropped-wire menus, and inspector descriptors
   to adapter-local egui widgets or panels.
 - `jellyflow-open-gpui` is now the first-class retained GPUI adapter boundary in the Jellyflow
-  workspace. It owns GPUI adapter capability facts and view-space measurement conversion without
-  moving GPUI widget types into runtime/core.
+  workspace. It owns GPUI adapter capability facts, view-space measurement conversion, authoring
+  plans, scoped ids, product fixture gates, and widget-free graph affordance evidence without moving
+  GPUI widget types into runtime/core.
 - GPUI now has a first-class adapter crate plus an open-gpui consumer fixture. The adapter crate
-  maps controls, repeatables, actions, menus, inspector plans, product fixture regression gates, and
-  measurement conversion locally. The open-gpui `canvas-jellyflow` example consumes that boundary as
-  a visual/manual smoke fixture.
-- GPUI still reports layout measurement conservatively. Projection fallback can prove clipping,
-  controls, repeatables, menus, inspector state, and product fixture geometry, but it is not a true
-  GPUI layout-pass bounds callback.
+  maps controls, repeatables, actions, menus, inspector plans, product fixture regression gates,
+  graph affordance reports, and measurement conversion locally. The open-gpui `canvas-jellyflow`
+  example consumes that boundary as the native product gallery and manual smoke surface.
+- Open GPUI layout-pass evidence is coverage-gated. Live `measured_element` bounds can support
+  layout-pass capability when all required regions are present and fresh; projection fallback
+  remains the honest downgrade for initial, dirty, hidden, partial, duplicate, or missing bounds.
+- The current Open GPUI product renderer foundation is host-local: `node_component_kit` owns
+  adaptive layout stack primitives, component composition helpers, event shielding, and measured
+  wrappers; runtime and `jellyflow-open-gpui` only see semantic descriptors and report facts.
 - `jellyflow-proof` proves component-tree shape plus runtime measurement integration, including
   dynamic child remeasurement. It intentionally avoids Dioxus or widget types.
 
@@ -85,26 +89,36 @@ Adapters own:
 - a `jellyflow-open-gpui` crate boundary for the retained GPUI adapter, with projection fallback
   versus layout-pass capability reporting, descriptor-driven controls/actions/inspector plans, and
   product fixture regression gates.
+- graph affordance evidence for Open GPUI committed route family, preview-route parity, port
+  placement budget, endpoint/reconnect hit budget, drag-region coverage, and readable layout-region
+  coverage;
+- host-local adaptive Open GPUI layout primitives for product renderers, including full/compact/shell
+  degradation and repeatable overflow indicator budgeting.
 
 # Remaining Contract Gaps
 
 - diagnostics bound to slots, fields, ports, and chrome, not only commit-time edge errors;
 - adapter capability coverage for keyboard accessibility, focus order, screen-reader labels, and
   framework-specific widget behavior;
-- a real GPUI layout-pass measurement hook before claiming full retained-view geometry parity.
+- pixel-golden or ROI-based visual regression for GPUI beyond screenshot smoke and structured
+  geometry reports;
 - broader adapter-native visual automation for GPUI and future Dioxus beyond deterministic fixture
   geometry.
+- mature egui and Dioxus parity for the new Open GPUI canvas interaction foundation. The current
+  stage intentionally validates shared contracts through egui/proof without promising equivalent
+  graph-tool UX in those adapters.
 
 # Roadmap
 
-P2 should promote GPUI from projection fallback to retained layout-pass measurement by
-collecting actual component bounds from open-gpui canvas overlays or element layout callbacks,
-converting those host bounds through `jellyflow-open-gpui`, and reporting the resulting facts
-through `NodeInternalsController`.
+P2 should extract only the Open GPUI pieces that have survived real host use: generic canvas
+interaction primitives belong in `repo-ref/open-gpui/crates/canvas`, widget-free adapter contracts
+belong in `jellyflow-open-gpui`, and concrete node component composition should remain host-local
+until more Open GPUI apps create reuse pressure.
 
-P2 should deepen visual and interaction regression suites per adapter. egui now has code-level
-geometry gates plus a gallery snapshot path; GPUI still needs a real layout-pass hook before it can
-graduate from projection fallback to full retained-view geometry evidence.
+P2 should deepen visual and interaction regression suites per adapter. egui has code-level geometry
+gates plus a gallery snapshot path; GPUI now has structured product reports and screenshot smoke, but
+still needs pixel/ROI review automation, accessibility/focus-order gates, and more native edge-label
+or graph-toolbar coverage.
 
 # Consequences
 

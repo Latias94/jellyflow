@@ -111,6 +111,33 @@ data as full layout-pass support. Runtime/core/layout crates remain toolkit-free
 Open GPUI-specific widgets and measurement plumbing stay in this crate and the
 `repo-ref/open-gpui/examples/canvas-jellyflow` consumer fixture.
 
+## Graph Affordance Evidence
+
+Open GPUI graph interaction polish is also reported through widget-free evidence.
+`OpenGpuiGraphAffordanceEvidence` records:
+
+- committed wire route family (`Orthogonal` or `Bezier` for product routes);
+- whether connection previews mirror committed route policy instead of falling
+  back to direct lines;
+- port placement, endpoint hit, and reconnect affordance budgets;
+- drag-region coverage for product nodes;
+- readable layout-region coverage for node-internal UI.
+
+`assert_product_interaction_report_gates` fails if this evidence is missing, if
+previews use `DirectLineFallback`, if port/reconnect budgets are too small, or if
+hidden repeatable rows have no visible overflow indicator. The concrete canvas
+implementation still lives in Open GPUI: route geometry, hit testing, pointer
+capture, reconnect handles, and connection release events belong to
+`repo-ref/open-gpui/crates/canvas`. This crate only defines the Jellyflow adapter
+contract and report gates.
+
+The host-local product renderer layer now uses adaptive layout primitives from
+`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`.
+`AdaptiveNodeLayoutStack` and repeatable-list planning let Dify, shader, ERD,
+topic, and source cards degrade from full to compact to shell regions before
+text or controls clip. These primitives remain Open GPUI host code, not runtime
+widgets and not a shared cross-framework component crate.
+
 ## Product Gates
 
 The test helpers in `jellyflow_open_gpui::testing` cover Dify-style workflow
@@ -122,6 +149,9 @@ insert actions, inspector target sources, repeatable add/remove/reorder/edit,
 blackboard actions, invalid hover rejection, editable control regions, scoped
 element ids, renderer host-context routing, product-gallery host rendering,
 visual interaction geometry, and dynamic repeatable port lifecycle honesty.
+They also require graph affordance evidence for product route/preview policy,
+port and reconnect hit budgets, drag-region coverage, and readable adaptive
+layout coverage.
 
 The Open GPUI gallery lives in `repo-ref/open-gpui/examples/canvas-jellyflow`.
 Run it with:
@@ -134,7 +164,7 @@ The hard structured gate is:
 
 ```sh
 cargo nextest run -p jellyflow-open-gpui --no-fail-fast
-RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
 ```
 
 The gallery also has a test-only screenshot smoke exporter. When the platform

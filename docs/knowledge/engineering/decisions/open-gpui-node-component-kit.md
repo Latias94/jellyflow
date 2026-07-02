@@ -20,6 +20,18 @@ into adapter plans, scoped ids, renderer host contexts, authoring outcomes, and 
 The Open GPUI host maps those plans into concrete components, focus behavior, popup/menu state,
 event shielding, measured regions, and product renderer composition.
 
+The current canvas/node-UI foundation adds one more boundary:
+
+- `repo-ref/open-gpui/crates/canvas` owns generic graph UX primitives such as route-aware wires,
+  preview route policy, pointer capture, drag threshold behavior, connection release events,
+  reconnect handles, invalid-target feedback, and hit-test geometry. It must not depend on
+  Jellyflow.
+- `jellyflow-open-gpui` owns widget-free Open GPUI evidence and presets: surface style budgets,
+  readable sizes, graph affordance evidence, product interaction reports, and regression gates.
+- `canvas-jellyflow` owns concrete Open GPUI components and host-local layout primitives:
+  `AdaptiveNodeLayoutStack`, repeatable overflow planning, renderer-specific component placement,
+  focus/menu state, weak-entity dispatch, and native product gallery composition.
+
 # Context
 
 The target experience is Rust-native custom node internals: Dify-style workflow cards, shader or
@@ -30,6 +42,10 @@ proof/template adapters, and future hosts.
 Open GPUI is the first mature adapter target because the local fork now exposes the component and
 test hooks needed for a native retained UI proof. The product gallery uses host renderer keys
 `decision-card`, `shader-card`, `table-card`, `topic-card`, and `source-card`.
+
+This decision does not claim mature egui or Dioxus parity for the new graph interaction layer.
+Those adapters continue to validate the shared headless contracts, while the Open GPUI path is the
+only mature native product surface in this stage.
 
 # Alternatives
 
@@ -55,6 +71,13 @@ test hooks needed for a native retained UI proof. The product gallery uses host 
   facts or report `MissingGraphPort`; renderers must not publish fake fresh handles.
 - Structured reports are the release gate. Screenshots are optional smoke/review artifacts under
   `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`, not pixel-golden correctness oracles.
+- Product graph affordances are now explicit report data. A host must prove non-straight committed
+  route policy where applicable, connection previews that mirror committed route policy, port and
+  reconnect hit budgets, drag-region coverage, readable layout-region coverage, and repeatable
+  overflow indicators.
+- Product renderers should use adaptive host-local layout plans rather than fixed absolute rows.
+  Full density, compact density, and shell fallback are Open GPUI rendering decisions; runtime only
+  publishes semantic budgets and overflow intent.
 
 # Citations
 
@@ -63,3 +86,4 @@ test hooks needed for a native retained UI proof. The product gallery uses host 
 - [jellyflow-open-gpui README](../../../../crates/jellyflow-open-gpui/README.md)
 - [canvas-jellyflow node component kit](../../../../repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs)
 - [canvas-jellyflow product renderers](../../../../repo-ref/open-gpui/examples/canvas-jellyflow/src/product_renderers.rs)
+- [Open GPUI Canvas Node UI Foundations Plan](../../../plans/2026-07-02-003-feat-open-gpui-canvas-node-ui-foundations-plan.md)
