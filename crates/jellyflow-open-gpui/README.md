@@ -138,6 +138,26 @@ topic, and source cards degrade from full to compact to shell regions before
 text or controls clip. These primitives remain Open GPUI host code, not runtime
 widgets and not a shared cross-framework component crate.
 
+## Native UX Evidence
+
+Native polish is gated with structured reports before screenshots or manual
+review are considered. `OpenGpuiNativeLifecycleEvidence` proves that the product
+gallery rendered real Jellyflow content, that product node dragging was checked,
+and that the closest available Open GPUI last-window-close path observes quit.
+Skipped close automation and blank-window smokes fail the hard gate.
+
+`OpenGpuiComponentFitBudget` lives in `OpenGpuiProductSurfacePreset` so hosts do
+not scatter text/control fit thresholds. `canvas-jellyflow` maps that widget-free
+budget into local Open GPUI layout and reports `OpenGpuiComponentFitEvidence`.
+The visual gate rejects clipped text, clipped controls, missing fit evidence,
+hidden repeatables without indicators, and required overflow indicators that are
+not present.
+
+`OpenGpuiReconnectSequenceEvidence` proves selected-edge reconnect is actionable,
+not only visible. The product interaction gate requires source and target endpoint
+switches, edge-id preservation, invalid rollback, empty reconnect drop reporting,
+and a second gesture after rejection without stale planning noise.
+
 ## Product Gates
 
 The test helpers in `jellyflow_open_gpui::testing` cover Dify-style workflow
@@ -157,7 +177,7 @@ The Open GPUI gallery lives in `repo-ref/open-gpui/examples/canvas-jellyflow`.
 Run it with:
 
 ```sh
-cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml
+cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow
 ```
 
 The hard structured gate is:

@@ -92,17 +92,26 @@ manual review are aids for diagnosing what a failure looks like; they are not th
   hover rejection, editable controls, and repeatable add/remove/reorder/edit lifecycle evidence.
 - `assert_product_gallery_host_report_gates` protects host renderer coverage: each product fixture
   must be served by its expected Open GPUI product renderer instead of descriptor fallback.
+- `assert_native_lifecycle_evidence_gates` protects the native smoke claim: the real product gallery
+  must render, a product node drag must be checked, and the closest available Open GPUI last-window
+  close path must observe app quit. A blank window or skipped close automation is not accepted as a
+  hard pass.
 - `assert_host_visual_interaction_report_gates` protects visual/layout facts: node-internal content
   must remain visible when unselected, satisfy readable budgets, stay inside node bounds, avoid
   handle overlap, use fresh measured regions, keep repeatable anchors, avoid initial node overlap,
-  bound invalid-hover and dropped-wire UI, and keep edge endpoints tied to measured handles.
+  bound invalid-hover and dropped-wire UI, keep edge endpoints tied to measured handles, and include
+  `OpenGpuiComponentFitEvidence` for text/control/repeatable fit. Component fit evidence records
+  full/compact/shell degradation, required and present overflow indicators, clipped text/controls,
+  and hidden repeatables without indicators.
 - `assert_product_interaction_report_gates` protects concrete product interactions: product cards
   need full drag pointer sequences, controls must be event-shielded, ports must be reachable through
   the host hotspot path, Select/Pan/Connect tooling must be visible, connect/reconnect/dropped-wire
-  gestures must synchronize through Jellyflow store transactions, and hidden repeatable overflow
-  must have a visible indicator. It also requires `OpenGpuiGraphAffordanceEvidence`: committed wires
-  and previews must share product route policy, direct-line preview fallback is rejected, port and
-  reconnect hit budgets must be large enough, and drag/readable layout regions must be reported.
+  gestures must synchronize through Jellyflow store transactions, and reconnect evidence must cover
+  source endpoint switching, target endpoint switching, invalid rollback, empty drops, and a second
+  gesture after rejection. Hidden repeatable overflow must have a visible indicator. The gate also
+  requires `OpenGpuiGraphAffordanceEvidence`: committed wires and previews must share product route
+  policy, direct-line preview fallback is rejected, port and reconnect hit budgets must be large
+  enough, and drag/readable layout regions must be reported.
 - `assert_screenshot_region_report_gates` protects screenshot usefulness without turning PNGs into
   pixel goldens: every product fixture capture must be nonblank and must include present node-body,
   node-internal UI, wire-path, and port-area ROI evidence.
@@ -126,7 +135,9 @@ These gates cover the product feel gap that screenshot review previously caught 
 - Node-internal UI readability is protected by both runtime readable-size budgets and host-local
   adaptive layout tests. `AdaptiveNodeLayoutStack` downgrades regions before overflow, repeatable
   lists reserve overflow indicator height, and product renderer tests assert reduced cards stay
-  inside node bounds.
+  inside node bounds. `OpenGpuiProductSurfacePreset::component_fit_budget` keeps text/control
+  evidence thresholds in the adapter preset, while `canvas-jellyflow` maps those budgets into local
+  Open GPUI component layout.
 - Screenshot smoke is intentionally weaker than geometry and interaction gates. It proves review
   artifacts and coarse product regions can be generated for product families when supported, but it
   is not a pixel-golden oracle.

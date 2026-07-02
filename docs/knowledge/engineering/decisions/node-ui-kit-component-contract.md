@@ -69,7 +69,9 @@ Adapters own:
   remains the honest downgrade for initial, dirty, hidden, partial, duplicate, or missing bounds.
 - The current Open GPUI product renderer foundation is host-local: `node_component_kit` owns
   adaptive layout stack primitives, component composition helpers, event shielding, and measured
-  wrappers; runtime and `jellyflow-open-gpui` only see semantic descriptors and report facts.
+  wrappers; runtime and `jellyflow-open-gpui` only see semantic descriptors, preset budgets, and
+  report facts. The current mature Open GPUI path also gates native lifecycle, screenshot ROI,
+  graph affordances, reconnect sequences, and component fit through widget-free evidence.
 - `jellyflow-proof` proves component-tree shape plus runtime measurement integration, including
   dynamic child remeasurement. It intentionally avoids Dioxus or widget types.
 
@@ -94,13 +96,18 @@ Adapters own:
   coverage;
 - host-local adaptive Open GPUI layout primitives for product renderers, including full/compact/shell
   degradation and repeatable overflow indicator budgeting.
+- Open GPUI component fit evidence that records text/control/repeatable coverage, compact/shell
+  degradation, required and present overflow indicators, clipped text/controls, and hidden
+  repeatables without indicators.
+- Open GPUI reconnect sequence evidence that covers source/target endpoint switching, edge-id
+  preservation, invalid rollback, empty drops, and recovery after a rejected reconnect.
 
 # Remaining Contract Gaps
 
 - diagnostics bound to slots, fields, ports, and chrome, not only commit-time edge errors;
 - adapter capability coverage for keyboard accessibility, focus order, screen-reader labels, and
   framework-specific widget behavior;
-- pixel-golden or ROI-based visual regression for GPUI beyond screenshot smoke and structured
+- pixel-golden visual regression for GPUI beyond screenshot smoke, ROI evidence, and structured
   geometry reports;
 - broader adapter-native visual automation for GPUI and future Dioxus beyond deterministic fixture
   geometry.

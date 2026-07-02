@@ -27,7 +27,8 @@ The current canvas/node-UI foundation adds one more boundary:
   reconnect handles, invalid-target feedback, and hit-test geometry. It must not depend on
   Jellyflow.
 - `jellyflow-open-gpui` owns widget-free Open GPUI evidence and presets: surface style budgets,
-  readable sizes, graph affordance evidence, product interaction reports, and regression gates.
+  readable sizes, component fit budgets, graph affordance evidence, native lifecycle evidence,
+  product interaction reports, and regression gates.
 - `canvas-jellyflow` owns concrete Open GPUI components and host-local layout primitives:
   `AdaptiveNodeLayoutStack`, repeatable overflow planning, renderer-specific component placement,
   focus/menu state, weak-entity dispatch, and native product gallery composition.
@@ -75,6 +76,10 @@ only mature native product surface in this stage.
   route policy where applicable, connection previews that mirror committed route policy, port and
   reconnect hit budgets, drag-region coverage, readable layout-region coverage, and repeatable
   overflow indicators.
+- Product node internals are also explicit report data. `OpenGpuiProductSurfacePreset` publishes a
+  widget-free `component_fit_budget`, while the Open GPUI host maps it into local component layout
+  and reports `OpenGpuiComponentFitEvidence` for text/control/repeatable fit, compact/shell
+  degradation, required overflow indicators, clipping, and hidden repeatable overflow.
 - Product renderers should use adaptive host-local layout plans rather than fixed absolute rows.
   Full density, compact density, and shell fallback are Open GPUI rendering decisions; runtime only
   publishes semantic budgets and overflow intent.
