@@ -417,12 +417,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.llm",
             CanvasSize {
-                width: 292.0,
-                height: 246.0,
+                width: 340.0,
+                height: 288.0,
             },
             CanvasSize {
-                width: 320.0,
-                height: 270.0,
+                width: 364.0,
+                height: 312.0,
             },
             Some(3),
             Some(4),
@@ -431,12 +431,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.table",
             CanvasSize {
-                width: 372.0,
-                height: 292.0,
+                width: 420.0,
+                height: 330.0,
             },
             CanvasSize {
-                width: 396.0,
-                height: 316.0,
+                width: 448.0,
+                height: 356.0,
             },
             Some(4),
             Some(4),
@@ -445,12 +445,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.shader.texture_sample",
             CanvasSize {
-                width: 324.0,
-                height: 244.0,
+                width: 360.0,
+                height: 272.0,
             },
             CanvasSize {
-                width: 348.0,
-                height: 260.0,
+                width: 384.0,
+                height: 296.0,
             },
             Some(3),
             Some(3),
@@ -459,12 +459,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.shader.mix",
             CanvasSize {
-                width: 324.0,
-                height: 244.0,
+                width: 360.0,
+                height: 272.0,
             },
             CanvasSize {
-                width: 360.0,
-                height: 268.0,
+                width: 392.0,
+                height: 300.0,
             },
             Some(3),
             Some(3),
@@ -473,12 +473,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.topic",
             CanvasSize {
-                width: 278.0,
-                height: 190.0,
+                width: 320.0,
+                height: 220.0,
             },
             CanvasSize {
-                width: 300.0,
-                height: 204.0,
+                width: 344.0,
+                height: 240.0,
             },
             None,
             Some(3),
@@ -487,12 +487,12 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
         (
             "demo.source",
             CanvasSize {
-                width: 286.0,
-                height: 190.0,
+                width: 328.0,
+                height: 220.0,
             },
             CanvasSize {
-                width: 312.0,
-                height: 204.0,
+                width: 352.0,
+                height: 240.0,
             },
             None,
             Some(3),

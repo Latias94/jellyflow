@@ -225,12 +225,12 @@ fn workflow_llm_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 292.0,
-                height: 246.0,
+                width: 340.0,
+                height: 288.0,
             },
             CanvasSize {
-                width: 320.0,
-                height: 270.0,
+                width: 364.0,
+                height: 312.0,
             },
             4,
             3,
@@ -690,12 +690,12 @@ fn erd_table_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 372.0,
-                height: 292.0,
+                width: 420.0,
+                height: 330.0,
             },
             CanvasSize {
-                width: 396.0,
-                height: 316.0,
+                width: 448.0,
+                height: 356.0,
             },
             4,
             2,
@@ -923,12 +923,12 @@ fn shader_texture_sample_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 324.0,
-                height: 244.0,
+                width: 360.0,
+                height: 272.0,
             },
             CanvasSize {
-                width: 348.0,
-                height: 260.0,
+                width: 384.0,
+                height: 296.0,
             },
             3,
             2,
@@ -1021,12 +1021,12 @@ fn shader_mix_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 324.0,
-                height: 244.0,
+                width: 360.0,
+                height: 272.0,
             },
             CanvasSize {
-                width: 360.0,
-                height: 268.0,
+                width: 392.0,
+                height: 300.0,
             },
             3,
             2,
@@ -1241,12 +1241,12 @@ fn mind_topic_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 278.0,
-                height: 190.0,
+                width: 320.0,
+                height: 220.0,
             },
             CanvasSize {
-                width: 300.0,
-                height: 204.0,
+                width: 344.0,
+                height: 240.0,
             },
             3,
             2,
@@ -1318,12 +1318,12 @@ fn source_card_schema() -> NodeSchema {
         })
         .layout_budget(product_layout_budget(
             CanvasSize {
-                width: 286.0,
-                height: 190.0,
+                width: 328.0,
+                height: 220.0,
             },
             CanvasSize {
-                width: 312.0,
-                height: 204.0,
+                width: 352.0,
+                height: 240.0,
             },
             3,
             2,
@@ -1613,7 +1613,7 @@ fn mind_map_fixture() -> NodeKitFixture {
                 })),
         )
         .node(
-            NodeKitFixtureNode::new("sources", "demo.source", CanvasPoint { x: -320.0, y: 24.0 })
+            NodeKitFixtureNode::new("sources", "demo.source", CanvasPoint { x: -420.0, y: 24.0 })
                 .with_data(json!({
                     "title": "Source",
                     "summary": "Evidence card"

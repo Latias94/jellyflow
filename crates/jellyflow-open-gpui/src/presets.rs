@@ -194,8 +194,8 @@ mod tests {
         assert_eq!(
             preset.min_readable_size,
             Some(CanvasSize {
-                width: 292.0,
-                height: 246.0,
+                width: 340.0,
+                height: 288.0,
             })
         );
         assert_eq!(preset.repeatable_visible_items, Some(3));

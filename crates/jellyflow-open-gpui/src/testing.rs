@@ -2642,8 +2642,8 @@ mod tests {
                     height: 160,
                 },
                 Some(OpenGpuiSizeEvidence {
-                    width: 372,
-                    height: 292,
+                    width: 420,
+                    height: 330,
                 }),
             )
             .with_text_overflow_count(2)
