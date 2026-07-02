@@ -1,9 +1,21 @@
-use jellyflow::runtime::runtime::conformance::{
-    ConformanceCapabilityClaim, ConformanceCapabilityKind, ConformanceCapabilityMatrix,
-    ConformanceSupportLevel,
+use jellyflow::{
+    core::{Graph, GraphTransaction, NodeGraphConnectionMode},
+    runtime::{
+        io::NodeGraphInteractionState,
+        runtime::conformance::{
+            ConformanceCapabilityClaim, ConformanceCapabilityKind, ConformanceCapabilityMatrix,
+            ConformanceSupportLevel,
+        },
+        schema::NodeKindViewDescriptor,
+    },
 };
 
-use crate::OpenGpuiMeasurementCoverage;
+use crate::{
+    OpenGpuiConnectionSyncError, OpenGpuiConnectionSyncRequest, OpenGpuiMeasurementCoverage,
+    OpenGpuiNodeTransformSnapshot, OpenGpuiProductSurfacePreset,
+    connection::plan_connection_sync_transactions as plan_connection_sync_transaction_batch,
+    sync::plan_transform_sync_transaction as plan_host_transform_sync_transaction,
+};
 
 /// Stable adapter identifier used in conformance reports.
 pub const OPEN_GPUI_ADAPTER_ID: &str = "open-gpui";
@@ -45,6 +57,31 @@ impl OpenGpuiAdapter {
 
     pub fn measurement_coverage(&self) -> Option<&OpenGpuiMeasurementCoverage> {
         self.measurement_coverage.as_ref()
+    }
+
+    pub fn product_surface_preset(
+        &self,
+        descriptor: &NodeKindViewDescriptor,
+    ) -> OpenGpuiProductSurfacePreset {
+        OpenGpuiProductSurfacePreset::from_descriptor(descriptor)
+    }
+
+    pub fn plan_transform_sync_transaction(
+        &self,
+        graph: &Graph,
+        snapshots: impl IntoIterator<Item = OpenGpuiNodeTransformSnapshot>,
+    ) -> GraphTransaction {
+        plan_host_transform_sync_transaction(graph, snapshots)
+    }
+
+    pub fn plan_connection_sync_transactions(
+        &self,
+        graph: &Graph,
+        requests: impl IntoIterator<Item = OpenGpuiConnectionSyncRequest>,
+        mode: NodeGraphConnectionMode,
+        interaction: &NodeGraphInteractionState,
+    ) -> Result<Vec<GraphTransaction>, OpenGpuiConnectionSyncError> {
+        plan_connection_sync_transaction_batch(graph, requests, mode, interaction)
     }
 
     fn layout_pass_support_level(&self) -> ConformanceSupportLevel {
@@ -124,6 +161,10 @@ impl Default for OpenGpuiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jellyflow::{
+        core::{CanvasPoint, GraphBuilder, GraphId, Node, NodeId, NodeKindKey},
+        runtime::schema::NodeKitRegistry,
+    };
 
     #[test]
     fn capability_matrix_keeps_projection_fallback_honest() {
@@ -185,5 +226,52 @@ mod tests {
             ConformanceCapabilityKind::LayoutPassMeasurement,
             ConformanceSupportLevel::Full
         ));
+    }
+
+    #[test]
+    fn adapter_facade_exposes_product_preset_and_transform_sync_planner() {
+        let adapter = OpenGpuiAdapter::default();
+        let registry = NodeKitRegistry::builtin().node_registry();
+        let descriptor = registry
+            .view_descriptor(&NodeKindKey::new("demo.llm"))
+            .expect("builtin descriptor should exist");
+        let preset = adapter.product_surface_preset(&descriptor);
+        assert_eq!(preset.renderer_key, "decision-card");
+
+        let node_id = NodeId::from_u128(1);
+        let graph = GraphBuilder::new(GraphId::from_u128(1))
+            .with_node(node_id, node_at(10.0, 20.0))
+            .build_unchecked();
+        let transaction = adapter.plan_transform_sync_transaction(
+            &graph,
+            [OpenGpuiNodeTransformSnapshot::new(
+                node_id,
+                CanvasPoint { x: 40.0, y: 60.0 },
+            )],
+        );
+
+        assert_eq!(transaction.len(), 1);
+    }
+
+    fn node_at(x: f32, y: f32) -> Node {
+        Node {
+            kind: NodeKindKey::new("demo.node"),
+            kind_version: 1,
+            pos: CanvasPoint { x, y },
+            origin: None,
+            selectable: None,
+            focusable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: None,
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::Value::Null,
+        }
     }
 }

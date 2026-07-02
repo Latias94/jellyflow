@@ -19,6 +19,7 @@ pub mod presets;
 pub mod projection;
 pub mod renderer;
 pub mod repeatable;
+pub mod sync;
 pub mod testing;
 
 pub use actions::{
@@ -38,6 +39,7 @@ pub use authoring::{
 };
 pub use connection::{
     OpenGpuiConnectionSyncError, OpenGpuiConnectionSyncRequest, plan_connection_sync_transaction,
+    plan_connection_sync_transactions,
 };
 pub use controls::{
     OpenGpuiControlEditPlan, OpenGpuiControlOptionPlan, OpenGpuiControlPlan,
@@ -67,8 +69,9 @@ pub use inspector::{
 pub use measurement::{
     OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
     OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
-    OpenGpuiMeasurementSource, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
-    layout_pass_measurement_from_regions,
+    OpenGpuiMeasurementRevisionDecision, OpenGpuiMeasurementSource, OpenGpuiViewBounds,
+    OpenGpuiViewPoint, OpenGpuiViewSize, assign_layout_pass_measurement_revision,
+    layout_pass_measurement_from_regions, open_gpui_measurement_regions_match,
 };
 pub use presets::{
     OpenGpuiProductSurfacePreset, OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence,
@@ -96,3 +99,4 @@ pub use repeatable::{
     measured_repeatable_item_slots, plan_repeatable_action, repeatable_item_control_count,
     repeatable_item_label, repeatable_item_projection, repeatable_port_diagnostics,
 };
+pub use sync::{OpenGpuiNodeTransformSnapshot, plan_transform_sync_transaction};

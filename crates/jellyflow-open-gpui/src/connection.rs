@@ -1,6 +1,7 @@
 use jellyflow::{
     core::{
-        DefaultTypeCompatibility, EdgeId, Graph, GraphTransaction, NodeGraphConnectionMode, PortId,
+        ApplyError, DefaultTypeCompatibility, EdgeId, Graph, GraphTransaction,
+        NodeGraphConnectionMode, PortId,
     },
     runtime::{
         io::NodeGraphInteractionState,
@@ -47,6 +48,8 @@ pub enum OpenGpuiConnectionSyncError {
     ReconnectRejected { diagnostics: Vec<Diagnostic> },
     #[error("delete edge was rejected")]
     DeleteRejected { diagnostics: Vec<Diagnostic> },
+    #[error("planned connection sync transaction failed to apply to scratch graph")]
+    ScratchApplyFailed { source: ApplyError },
 }
 
 /// Plans one host-observed connection edit through Jellyflow's runtime rules.
@@ -78,6 +81,38 @@ pub fn plan_connection_sync_transaction(
             plan_connection_delete_transaction(graph, edge, interaction)
         }
     }
+}
+
+/// Plans a sequence of host-observed connection edits against an advancing scratch graph.
+///
+/// This lets hosts batch document diffs without reimplementing Jellyflow policy ordering: a new
+/// host edge can be connected and then reconnected in the same sync pass, while every step still
+/// goes through runtime connect/reconnect/delete rules.
+pub fn plan_connection_sync_transactions(
+    graph: &Graph,
+    requests: impl IntoIterator<Item = OpenGpuiConnectionSyncRequest>,
+    mode: NodeGraphConnectionMode,
+    interaction: &NodeGraphInteractionState,
+) -> Result<Vec<GraphTransaction>, OpenGpuiConnectionSyncError> {
+    let mut scratch = graph.clone();
+    let mut transactions = Vec::new();
+
+    for request in requests {
+        let Some(transaction) =
+            plan_connection_sync_transaction(&scratch, request, mode, interaction)?
+        else {
+            continue;
+        };
+        if transaction.is_empty() {
+            continue;
+        }
+        transaction
+            .apply_to(&mut scratch)
+            .map_err(|source| OpenGpuiConnectionSyncError::ScratchApplyFailed { source })?;
+        transactions.push(transaction);
+    }
+
+    Ok(transactions)
 }
 
 fn plan_connection_insert_transaction(
@@ -254,6 +289,7 @@ mod tests {
     struct ConnectionFixture {
         graph: Graph,
         out_a: PortId,
+        out_d: PortId,
         in_c: PortId,
         edge_ab: EdgeId,
     }
@@ -262,9 +298,11 @@ mod tests {
         let a = NodeId::from_u128(1);
         let b = NodeId::from_u128(2);
         let c = NodeId::from_u128(3);
+        let d = NodeId::from_u128(4);
         let out_a = PortId::from_u128(10);
         let in_b = PortId::from_u128(20);
         let in_c = PortId::from_u128(30);
+        let out_d = PortId::from_u128(40);
         let edge_ab = EdgeId::from_u128(100);
         let mut graph = Graph::new(GraphId::from_u128(1));
         GraphTransaction::from_ops([
@@ -280,6 +318,10 @@ mod tests {
                 id: c,
                 node: node_with_ports([in_c]),
             },
+            GraphOp::AddNode {
+                id: d,
+                node: node_with_ports([out_d]),
+            },
             GraphOp::AddPort {
                 id: out_a,
                 port: port(a, "out", jellyflow::core::PortDirection::Out),
@@ -292,6 +334,10 @@ mod tests {
                 id: in_c,
                 port: port(c, "in", jellyflow::core::PortDirection::In),
             },
+            GraphOp::AddPort {
+                id: out_d,
+                port: port(d, "out", jellyflow::core::PortDirection::Out),
+            },
             GraphOp::AddEdge {
                 id: edge_ab,
                 edge: Edge::new(EdgeKind::Data, out_a, in_b),
@@ -302,8 +348,51 @@ mod tests {
         ConnectionFixture {
             graph,
             out_a,
+            out_d,
             in_c,
             edge_ab,
+        }
+    }
+
+    #[test]
+    fn connection_sync_batch_applies_each_step_to_scratch_graph() {
+        let fixture = connection_fixture();
+        let requested_edge = EdgeId::from_u128(901);
+        let transactions = plan_connection_sync_transactions(
+            &fixture.graph,
+            [
+                OpenGpuiConnectionSyncRequest::Connect {
+                    source: fixture.out_a,
+                    target: fixture.in_c,
+                    edge: Some(requested_edge),
+                },
+                OpenGpuiConnectionSyncRequest::Reconnect {
+                    edge: requested_edge,
+                    endpoint: EdgeEndpoint::From,
+                    new_port: fixture.out_d,
+                },
+            ],
+            NodeGraphConnectionMode::Strict,
+            &NodeGraphInteractionState::default(),
+        )
+        .expect("batch connect then reconnect should plan");
+
+        assert_eq!(transactions.len(), 2);
+        match transactions[0].ops() {
+            [GraphOp::AddEdge { id, edge }] => {
+                assert_eq!(*id, requested_edge);
+                assert_eq!(edge.from, fixture.out_a);
+                assert_eq!(edge.to, fixture.in_c);
+            }
+            ops => panic!("expected first transaction to add edge, got {ops:?}"),
+        }
+        match transactions[1].ops() {
+            [GraphOp::SetEdgeEndpoints { id, to, .. }] => {
+                assert_eq!(*id, requested_edge);
+                assert_eq!(to.from, fixture.out_d);
+                assert_eq!(to.to, fixture.in_c);
+            }
+            ops => panic!("expected second transaction to reconnect new edge, got {ops:?}"),
         }
     }
 

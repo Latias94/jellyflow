@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
 use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
 use jellyflow::runtime::runtime::measurement::{
-    MeasuredSurfaceAnchor, MeasuredSurfaceSlot, NodeMeasurement,
+    MeasuredSurfaceAnchor, MeasuredSurfaceSlot, NodeMeasurement, NodeMeasurementStatus,
 };
 
 /// A point reported by open-gpui in view-space pixels.
@@ -493,6 +493,57 @@ pub fn layout_pass_measurement_from_regions(
     (measurement, coverage)
 }
 
+/// Result of assigning a stable layout-pass measurement revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenGpuiMeasurementRevisionDecision {
+    Reused { revision: u64 },
+    Advanced { revision: u64 },
+}
+
+/// Reuses a fresh revision for identical node internals or advances `next_revision`.
+///
+/// Hosts call this after converting GPUI layout-pass bounds into a [`NodeMeasurement`]. Keeping
+/// this policy here prevents every Open GPUI surface from reimplementing stale/fresh comparison
+/// rules and avoids unnecessary handle invalidation when layout bounds did not change.
+pub fn assign_layout_pass_measurement_revision(
+    status: NodeMeasurementStatus,
+    existing: Option<&NodeMeasurement>,
+    measurement: &mut NodeMeasurement,
+    next_revision: &mut u64,
+) -> OpenGpuiMeasurementRevisionDecision {
+    if status.is_fresh()
+        && let Some(existing) = existing
+        && open_gpui_measurement_regions_match(existing, measurement)
+    {
+        measurement.revision = existing.revision;
+        return OpenGpuiMeasurementRevisionDecision::Reused {
+            revision: existing.revision,
+        };
+    }
+
+    let floor = existing
+        .map(|measurement| measurement.revision)
+        .unwrap_or(0);
+    *next_revision = (*next_revision).max(floor).saturating_add(1);
+    measurement.revision = *next_revision;
+    OpenGpuiMeasurementRevisionDecision::Advanced {
+        revision: *next_revision,
+    }
+}
+
+/// Compares the region-bearing parts of two node-internal measurements.
+pub fn open_gpui_measurement_regions_match(
+    left: &NodeMeasurement,
+    right: &NodeMeasurement,
+) -> bool {
+    left.node == right.node
+        && left.density == right.density
+        && left.size == right.size
+        && left.handles == right.handles
+        && left.slots == right.slots
+        && left.anchors == right.anchors
+}
+
 fn has_live_anchor_region(
     regions: &[OpenGpuiMeasuredRegion],
     anchor: &MeasuredSurfaceAnchor,
@@ -844,5 +895,68 @@ mod tests {
         assert_eq!(coverage.missing_regions, 1);
         assert_eq!(coverage.duplicate_regions, 1);
         assert!(!coverage.is_full_layout_pass());
+    }
+
+    #[test]
+    fn identical_fresh_layout_pass_measurement_reuses_revision() {
+        let node = NodeId::from_u128(77);
+        let mut next_revision = 12;
+        let mut measurement = NodeMeasurement::new(node)
+            .with_revision(0)
+            .with_size(Some(CanvasSize {
+                width: 220.0,
+                height: 160.0,
+            }))
+            .with_anchors([MeasuredSurfaceAnchor::new(
+                "field.prompt",
+                CanvasRect {
+                    origin: CanvasPoint { x: 0.0, y: 24.0 },
+                    size: CanvasSize {
+                        width: 16.0,
+                        height: 18.0,
+                    },
+                },
+                HandlePosition::Left,
+            )]);
+        let existing = measurement.clone().with_revision(12);
+
+        let decision = assign_layout_pass_measurement_revision(
+            NodeMeasurementStatus::Fresh { revision: 12 },
+            Some(&existing),
+            &mut measurement,
+            &mut next_revision,
+        );
+
+        assert_eq!(
+            decision,
+            OpenGpuiMeasurementRevisionDecision::Reused { revision: 12 }
+        );
+        assert_eq!(measurement.revision, 12);
+        assert_eq!(next_revision, 12);
+    }
+
+    #[test]
+    fn dirty_layout_pass_measurement_advances_revision_even_when_regions_match() {
+        let node = NodeId::from_u128(78);
+        let mut next_revision = 12;
+        let mut measurement = NodeMeasurement::new(node).with_revision(0);
+        let existing = measurement.clone().with_revision(12);
+
+        let decision = assign_layout_pass_measurement_revision(
+            NodeMeasurementStatus::Dirty {
+                revision: 12,
+                reason: jellyflow::runtime::runtime::measurement::NodeInternalsInvalidationReason::DataChanged,
+            },
+            Some(&existing),
+            &mut measurement,
+            &mut next_revision,
+        );
+
+        assert_eq!(
+            decision,
+            OpenGpuiMeasurementRevisionDecision::Advanced { revision: 13 }
+        );
+        assert_eq!(measurement.revision, 13);
+        assert_eq!(next_revision, 13);
     }
 }
