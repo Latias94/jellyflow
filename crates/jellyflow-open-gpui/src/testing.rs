@@ -498,8 +498,31 @@ pub enum OpenGpuiHostProductInteractionGap {
     ToolSwitcherMissing,
     ConnectFlowNotStoreSynced,
     ReconnectAffordanceMissing,
+    ReconnectSequenceIncomplete,
     DroppedWireGestureDetached,
     RepeatableOverflowIndicatorMissing,
+}
+
+/// Widget-free proof that selected-edge reconnect gestures are not just visible but actionable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiReconnectSequenceEvidence {
+    pub source_endpoint_switch_store_synced: bool,
+    pub target_endpoint_switch_store_synced: bool,
+    pub compatible_reconnect_preserves_edge_id: bool,
+    pub invalid_reconnect_rolls_back_projection: bool,
+    pub empty_reconnect_reports_drop: bool,
+    pub second_gesture_after_rejection_clears_planning_error: bool,
+}
+
+impl OpenGpuiReconnectSequenceEvidence {
+    pub fn complete(self) -> bool {
+        self.source_endpoint_switch_store_synced
+            && self.target_endpoint_switch_store_synced
+            && self.compatible_reconnect_preserves_edge_id
+            && self.invalid_reconnect_rolls_back_projection
+            && self.empty_reconnect_reports_drop
+            && self.second_gesture_after_rejection_clears_planning_error
+    }
 }
 
 /// Characterization report for product-level Open GPUI interactions.
@@ -515,6 +538,7 @@ pub struct OpenGpuiHostProductInteractionReport {
     pub tool_switcher_visible: bool,
     pub connect_flow_store_synced: bool,
     pub reconnect_affordance_visible: bool,
+    pub reconnect_sequence_evidence: Option<OpenGpuiReconnectSequenceEvidence>,
     pub dropped_wire_gesture_connected: bool,
     pub graph_affordance_evidence: Option<OpenGpuiGraphAffordanceEvidence>,
     pub hidden_repeatable_overflow_count: usize,
@@ -576,6 +600,17 @@ impl OpenGpuiHostProductInteractionReport {
         }
     }
 
+    pub fn mark_reconnect_sequence_evidence(
+        &mut self,
+        evidence: OpenGpuiReconnectSequenceEvidence,
+    ) {
+        self.reconnect_sequence_evidence = Some(evidence);
+        if !evidence.complete() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ReconnectSequenceIncomplete);
+        }
+    }
+
     pub fn mark_dropped_wire_gesture_connected(&mut self, connected: bool) {
         self.dropped_wire_gesture_connected = connected;
         if !connected {
@@ -632,6 +667,7 @@ pub fn assert_product_interaction_characterization_report_contract(
             || report.tool_switcher_visible
             || report.connect_flow_store_synced
             || report.reconnect_affordance_visible
+            || report.reconnect_sequence_evidence.is_some()
             || report.dropped_wire_gesture_connected
             || report.graph_affordance_evidence.is_some(),
         "product interaction report must expose at least one checked interaction fact: {report:?}"
@@ -675,6 +711,15 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
     assert!(
         report.reconnect_affordance_visible,
         "Allowed edge reconnect/switch affordances must be visible: {report:?}"
+    );
+    let Some(reconnect_sequence) = report.reconnect_sequence_evidence else {
+        panic!(
+            "product interaction report must include full reconnect endpoint sequence evidence: {report:?}"
+        );
+    };
+    assert!(
+        reconnect_sequence.complete(),
+        "source/target reconnect, invalid rollback, empty drop, and second-gesture recovery must be covered: {report:?}"
     );
     assert!(
         report.dropped_wire_gesture_connected,
@@ -2941,6 +2986,17 @@ mod tests {
         )
     }
 
+    fn complete_reconnect_sequence_evidence() -> OpenGpuiReconnectSequenceEvidence {
+        OpenGpuiReconnectSequenceEvidence {
+            source_endpoint_switch_store_synced: true,
+            target_endpoint_switch_store_synced: true,
+            compatible_reconnect_preserves_edge_id: true,
+            invalid_reconnect_rolls_back_projection: true,
+            empty_reconnect_reports_drop: true,
+            second_gesture_after_rejection_clears_planning_error: true,
+        }
+    }
+
     #[test]
     fn helper_rejects_full_claim_without_layout_pass_mode() {
         let adapter = OpenGpuiAdapter::projection_fallback();
@@ -3104,6 +3160,7 @@ mod tests {
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
         report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
         report.mark_dropped_wire_gesture_connected(true);
         report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(3, 1);
@@ -3120,6 +3177,7 @@ mod tests {
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(false);
         report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
         report.mark_dropped_wire_gesture_connected(true);
         report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(3, 0);
@@ -3140,6 +3198,7 @@ mod tests {
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
         report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
         report.mark_dropped_wire_gesture_connected(true);
         report.mark_repeatable_overflow(0, 0);
 
@@ -3159,6 +3218,7 @@ mod tests {
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
         report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
         report.mark_dropped_wire_gesture_connected(true);
 
         let mut evidence = productized_graph_affordance_evidence();
@@ -3176,6 +3236,39 @@ mod tests {
         assert!(
             result.is_err(),
             "product interaction hard gate must fail when previews fall back to direct lines"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_incomplete_reconnect_sequence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(OpenGpuiReconnectSequenceEvidence {
+            source_endpoint_switch_store_synced: true,
+            target_endpoint_switch_store_synced: false,
+            compatible_reconnect_preserves_edge_id: true,
+            invalid_reconnect_rolls_back_projection: true,
+            empty_reconnect_reports_drop: true,
+            second_gesture_after_rejection_clears_planning_error: true,
+        });
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::ReconnectSequenceIncomplete)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail until both endpoint switches and recovery paths are covered"
         );
     }
 
