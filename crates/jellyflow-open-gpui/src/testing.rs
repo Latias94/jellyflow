@@ -243,6 +243,35 @@ pub enum OpenGpuiHostVisualInteractionGap {
     InvalidHoverOutOfBounds,
     DroppedWireMenuOutOfBounds,
     EdgeEndpointNotFollowingMeasuredHandle,
+    ComponentFitEvidenceMissing,
+}
+
+/// Widget-free fit evidence for product node internals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiComponentFitEvidence {
+    pub text_regions_checked: usize,
+    pub control_regions_checked: usize,
+    pub repeatable_regions_checked: usize,
+    pub compact_regions: usize,
+    pub shell_regions: usize,
+    pub overflow_indicator_count: usize,
+    pub clipped_text_regions: usize,
+    pub clipped_control_regions: usize,
+    pub hidden_repeatable_regions_without_indicator: usize,
+}
+
+impl OpenGpuiComponentFitEvidence {
+    pub fn complete(self) -> bool {
+        self.text_regions_checked > 0
+            && self.control_regions_checked > 0
+            && self.clipped_text_regions == 0
+            && self.clipped_control_regions == 0
+            && self.hidden_repeatable_regions_without_indicator == 0
+    }
+
+    pub fn degraded_region_count(self) -> usize {
+        self.compact_regions + self.shell_regions
+    }
 }
 
 /// Host-level visual/layout evidence for one rendered product node.
@@ -268,6 +297,7 @@ pub struct OpenGpuiHostVisualSurfaceRow {
     pub repeatable_rows_with_anchors: usize,
     pub hidden_repeatable_overflow_count: usize,
     pub repeatable_overflow_indicator_count: usize,
+    pub component_fit_evidence: Option<OpenGpuiComponentFitEvidence>,
     pub gaps: BTreeSet<OpenGpuiHostVisualInteractionGap>,
 }
 
@@ -299,6 +329,7 @@ impl OpenGpuiHostVisualSurfaceRow {
             repeatable_rows_with_anchors: 0,
             hidden_repeatable_overflow_count: 0,
             repeatable_overflow_indicator_count: 0,
+            component_fit_evidence: None,
             gaps: BTreeSet::new(),
         }
     }
@@ -386,6 +417,33 @@ impl OpenGpuiHostVisualSurfaceRow {
         self.hidden_repeatable_overflow_count = hidden_overflow_count;
         self.repeatable_overflow_indicator_count = visible_indicator_count;
         if hidden_overflow_count > 0 && visible_indicator_count == 0 {
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::RepeatableOverflowIndicatorMissing);
+        }
+        self
+    }
+
+    pub fn with_component_fit_evidence(mut self, evidence: OpenGpuiComponentFitEvidence) -> Self {
+        self.component_fit_evidence = Some(evidence);
+        if evidence.clipped_text_regions > 0 {
+            self.text_overflow_count += evidence.clipped_text_regions;
+            self.content_readable = false;
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::TextOverflow);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if evidence.clipped_control_regions > 0 {
+            self.clipped_control_count += evidence.clipped_control_regions;
+            self.content_readable = false;
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ControlClipping);
+            self.gaps
+                .insert(OpenGpuiHostVisualInteractionGap::ContentOverflow);
+        }
+        if evidence.hidden_repeatable_regions_without_indicator > 0 {
             self.gaps
                 .insert(OpenGpuiHostVisualInteractionGap::HiddenRepeatableOverflow);
             self.gaps
@@ -1262,6 +1320,13 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
         assert!(
             row.content_readable && row.content_within_node_bounds,
             "node-internal content must satisfy readable size and stay inside the node body: {row:?}"
+        );
+        let Some(component_fit) = row.component_fit_evidence else {
+            panic!("visual report row must include component fit evidence: {row:?}");
+        };
+        assert!(
+            component_fit.complete(),
+            "node-internal text, controls, and repeatables must fit or publish explicit overflow/shell evidence: {row:?}"
         );
         assert_eq!(
             row.handle_overlap_count, 0,
@@ -3405,7 +3470,18 @@ mod tests {
             .with_text_overflow_count(2)
             .with_handle_overlap_count(0)
             .with_stale_measured_regions(0)
-            .with_repeatable_anchor_coverage(3, 3),
+            .with_repeatable_anchor_coverage(3, 3)
+            .with_component_fit_evidence(OpenGpuiComponentFitEvidence {
+                text_regions_checked: 2,
+                control_regions_checked: 1,
+                repeatable_regions_checked: 3,
+                compact_regions: 1,
+                shell_regions: 0,
+                overflow_indicator_count: 1,
+                clipped_text_regions: 2,
+                clipped_control_regions: 0,
+                hidden_repeatable_regions_without_indicator: 0,
+            }),
         );
         report.mark_invalid_hover_bounds_checked(true);
         report.mark_dropped_wire_menu_bounds_checked(true);
