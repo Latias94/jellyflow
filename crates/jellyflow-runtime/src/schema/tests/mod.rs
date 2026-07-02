@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeSchema};
+use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeSchema, NodeSurfaceLayoutBudget};
 use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
 
 mod builder;
@@ -52,6 +52,7 @@ fn demo_add_schema(latest_kind_version: u32, kind_aliases: Vec<&str>) -> NodeSch
         keywords: Vec::new(),
         renderer_key: None,
         default_size: None,
+        layout_budget: NodeSurfaceLayoutBudget::default(),
         ports: Vec::new(),
         surface_slots: Vec::new(),
         repeatable_collections: Vec::new(),

@@ -11,7 +11,8 @@ use crate::schema::kit::{
     mind_map_knowledge_canvas_manifest, shader_blueprint_manifest, workflow_automation_manifest,
 };
 use crate::schema::{
-    NodeActionDescriptor, NodeRepeatableCollectionDescriptor, NodeSurfaceSlotKind,
+    NodeActionDescriptor, NodeRepeatableCollectionDescriptor, NodeSurfaceOverflowIndicator,
+    NodeSurfaceSlotKind,
 };
 
 #[test]
@@ -407,6 +408,135 @@ fn kit_layout_hints_drive_density_thresholds() {
         hints.content_density_for_zoom(0.95),
         NodeKitContentDensity::Full
     );
+}
+
+#[test]
+fn builtin_product_kits_expose_readable_layout_budgets() {
+    let registry = builtin_node_kits();
+    let cases = [
+        (
+            "demo.llm",
+            CanvasSize {
+                width: 292.0,
+                height: 246.0,
+            },
+            CanvasSize {
+                width: 320.0,
+                height: 270.0,
+            },
+            Some(3),
+            Some(4),
+            Some(3),
+        ),
+        (
+            "demo.table",
+            CanvasSize {
+                width: 372.0,
+                height: 292.0,
+            },
+            CanvasSize {
+                width: 396.0,
+                height: 316.0,
+            },
+            Some(4),
+            Some(4),
+            Some(2),
+        ),
+        (
+            "demo.shader.texture_sample",
+            CanvasSize {
+                width: 324.0,
+                height: 244.0,
+            },
+            CanvasSize {
+                width: 348.0,
+                height: 260.0,
+            },
+            Some(3),
+            Some(3),
+            Some(2),
+        ),
+        (
+            "demo.shader.mix",
+            CanvasSize {
+                width: 324.0,
+                height: 244.0,
+            },
+            CanvasSize {
+                width: 360.0,
+                height: 268.0,
+            },
+            Some(3),
+            Some(3),
+            Some(2),
+        ),
+        (
+            "demo.topic",
+            CanvasSize {
+                width: 278.0,
+                height: 190.0,
+            },
+            CanvasSize {
+                width: 300.0,
+                height: 204.0,
+            },
+            None,
+            Some(3),
+            Some(2),
+        ),
+        (
+            "demo.source",
+            CanvasSize {
+                width: 286.0,
+                height: 190.0,
+            },
+            CanvasSize {
+                width: 312.0,
+                height: 204.0,
+            },
+            None,
+            Some(3),
+            Some(2),
+        ),
+    ];
+
+    for (
+        kind,
+        min_readable_size,
+        preferred_size,
+        repeatable_visible_items,
+        slot_line_budget,
+        control_line_budget,
+    ) in cases
+    {
+        let recipe = registry
+            .recipe_for_kind(&NodeKindKey::new(kind))
+            .expect("builtin product recipe");
+        let budget = &recipe.layout_budget;
+
+        assert_eq!(budget.min_readable_size, Some(min_readable_size), "{kind}");
+        assert_eq!(budget.preferred_size, Some(preferred_size), "{kind}");
+        assert_eq!(
+            budget.repeatable_visible_items, repeatable_visible_items,
+            "{kind}"
+        );
+        assert_eq!(budget.slot_line_budget, slot_line_budget, "{kind}");
+        assert_eq!(budget.control_line_budget, control_line_budget, "{kind}");
+        assert_eq!(
+            budget.overflow_indicator,
+            Some(NodeSurfaceOverflowIndicator::Count),
+            "{kind}"
+        );
+        assert_eq!(
+            budget.density_priority.as_slice(),
+            &[
+                NodeKitContentDensity::Full,
+                NodeKitContentDensity::Regular,
+                NodeKitContentDensity::Compact,
+            ],
+            "{kind}"
+        );
+    }
 }
 
 fn find_node(graph: &Graph, kind: &str) -> NodeId {

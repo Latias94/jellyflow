@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::{
-    NodeKitFixture, NodeKitFixtureEdge, NodeKitFixtureNode, NodeKitLayoutHints, NodeKitManifest,
-    NodeKitRegistry,
+    NodeKitContentDensity, NodeKitFixture, NodeKitFixtureEdge, NodeKitFixtureNode,
+    NodeKitLayoutHints, NodeKitManifest, NodeKitRegistry,
 };
 use crate::schema::{
     ActionIntent, ActionTarget, BlackboardDescriptor, InspectorDescriptor, InspectorTarget,
@@ -10,7 +10,8 @@ use crate::schema::{
     NodeControlBinding, NodeControlDescriptor, NodeControlEditability, NodeControlOption,
     NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
     NodeControlValidationRule, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
-    NodeSchema, NodeSurfaceSlotDescriptor, PortDecl, PortViewDescriptor,
+    NodeSchema, NodeSurfaceLayoutBudget, NodeSurfaceOverflowIndicator, NodeSurfaceSlotDescriptor,
+    PortDecl, PortViewDescriptor,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, PortCapacity,
@@ -113,6 +114,32 @@ pub fn mind_map_knowledge_canvas_manifest() -> NodeKitManifest {
         .fixture(mind_map_fixture())
 }
 
+fn product_layout_budget(
+    min_readable_size: CanvasSize,
+    preferred_size: CanvasSize,
+    slot_line_budget: usize,
+    control_line_budget: usize,
+    repeatable_visible_items: Option<usize>,
+) -> NodeSurfaceLayoutBudget {
+    let budget = NodeSurfaceLayoutBudget::default()
+        .with_min_readable_size(min_readable_size)
+        .with_preferred_size(preferred_size)
+        .with_slot_line_budget(slot_line_budget)
+        .with_control_line_budget(control_line_budget)
+        .with_overflow_indicator(NodeSurfaceOverflowIndicator::Count)
+        .with_density_priority([
+            NodeKitContentDensity::Full,
+            NodeKitContentDensity::Regular,
+            NodeKitContentDensity::Compact,
+        ]);
+
+    if let Some(items) = repeatable_visible_items {
+        budget.with_repeatable_visible_items(items)
+    } else {
+        budget
+    }
+}
+
 fn workflow_trigger_schema() -> NodeSchema {
     NodeSchema::builder("demo.trigger", "Trigger")
         .category(["Automation", "Workflow"])
@@ -196,6 +223,19 @@ fn workflow_llm_schema() -> NodeSchema {
             width: 228.0,
             height: 196.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 292.0,
+                height: 246.0,
+            },
+            CanvasSize {
+                width: 320.0,
+                height: 270.0,
+            },
+            4,
+            3,
+            Some(3),
+        ))
         .port(exec_input("in").on_left().with_view_group("exec"))
         .port(exec_output("out").on_right().with_view_group("exec"))
         .port(
@@ -648,6 +688,19 @@ fn erd_table_schema() -> NodeSchema {
             width: 226.0,
             height: 186.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 372.0,
+                height: 292.0,
+            },
+            CanvasSize {
+                width: 396.0,
+                height: 316.0,
+            },
+            4,
+            2,
+            Some(4),
+        ))
         .port(
             data_input("fk")
                 .with_label("foreign key")
@@ -868,6 +921,19 @@ fn shader_texture_sample_schema() -> NodeSchema {
             width: 224.0,
             height: 156.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 324.0,
+                height: 244.0,
+            },
+            CanvasSize {
+                width: 348.0,
+                height: 260.0,
+            },
+            3,
+            2,
+            Some(3),
+        ))
         .port(
             data_input("uv")
                 .with_label("UV")
@@ -953,6 +1019,19 @@ fn shader_mix_schema() -> NodeSchema {
             width: 224.0,
             height: 168.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 324.0,
+                height: 244.0,
+            },
+            CanvasSize {
+                width: 360.0,
+                height: 268.0,
+            },
+            3,
+            2,
+            Some(3),
+        ))
         .port(
             data_input("a")
                 .with_label("A")
@@ -1160,6 +1239,19 @@ fn mind_topic_schema() -> NodeSchema {
             width: 210.0,
             height: 96.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 278.0,
+                height: 190.0,
+            },
+            CanvasSize {
+                width: 300.0,
+                height: 204.0,
+            },
+            3,
+            2,
+            None,
+        ))
         .port(input_port("in"))
         .port(output_port("out"))
         .surface_slot(
@@ -1224,6 +1316,19 @@ fn source_card_schema() -> NodeSchema {
             width: 210.0,
             height: 92.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 286.0,
+                height: 190.0,
+            },
+            CanvasSize {
+                width: 312.0,
+                height: 204.0,
+            },
+            3,
+            2,
+            None,
+        ))
         .port(output_port("out"))
         .surface_slot(
             NodeSurfaceSlotDescriptor::header("header.main")

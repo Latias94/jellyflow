@@ -26,9 +26,10 @@ use jellyflow_runtime::schema::{
     NodeControlDescriptor, NodeControlEditability, NodeControlKind, NodeControlOption,
     NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
     NodeControlValidationRule, NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor,
-    NodeRegistry, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor, NodeSchema,
-    NodeSchemaBuilder, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility,
-    PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeKitContentDensity, NodeRegistry, NodeRepeatableAnchorRule,
+    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSchemaBuilder, NodeSurfaceLayoutBudget,
+    NodeSurfaceOverflowIndicator, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 use jellyflow_runtime::{
     DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
@@ -144,6 +145,26 @@ fn explicit_modules_expose_their_owned_surfaces() {
                 width: 120.0,
                 height: 80.0,
             })
+            .layout_budget(
+                NodeSurfaceLayoutBudget::default()
+                    .with_min_readable_size(CanvasSize {
+                        width: 220.0,
+                        height: 160.0,
+                    })
+                    .with_preferred_size(CanvasSize {
+                        width: 260.0,
+                        height: 190.0,
+                    })
+                    .with_slot_line_budget(3)
+                    .with_control_line_budget(2)
+                    .with_repeatable_visible_items(4)
+                    .with_overflow_indicator(NodeSurfaceOverflowIndicator::Count)
+                    .with_density_priority([
+                        NodeKitContentDensity::Full,
+                        NodeKitContentDensity::Regular,
+                        NodeKitContentDensity::Compact,
+                    ]),
+            )
             .port(
                 PortDecl::data_input("source")
                     .with_label("Source")
@@ -259,6 +280,28 @@ fn explicit_modules_expose_their_owned_surfaces() {
     let view_descriptors = node_registry.view_descriptors();
     let _: &NodeKindViewDescriptor = &view_descriptors[0];
     assert_eq!(view_descriptors[0].renderer_key, "public.note");
+    assert_eq!(
+        view_descriptors[0].layout_budget.min_readable_size,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 160.0,
+        })
+    );
+    assert_eq!(
+        view_descriptors[0].layout_budget.overflow_indicator,
+        Some(NodeSurfaceOverflowIndicator::Count)
+    );
+    assert_eq!(
+        view_descriptors[0]
+            .layout_budget
+            .density_priority
+            .as_slice(),
+        &[
+            NodeKitContentDensity::Full,
+            NodeKitContentDensity::Regular,
+            NodeKitContentDensity::Compact,
+        ]
+    );
     assert_eq!(
         view_descriptors[0].surface_slots[0].kind,
         NodeSurfaceSlotKind::FieldRow

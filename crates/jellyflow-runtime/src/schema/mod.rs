@@ -24,9 +24,10 @@ pub use types::{
     NodeControlKind, NodeControlOption, NodeControlOptionSource, NodeControlPresentation,
     NodeControlValidation, NodeControlValidationRule, NodeInstantiation, NodeInstantiationError,
     NodeKindViewDescriptor, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
-    NodeRepeatableItemProjection, NodeSchema, NodeSchemaBuilder, NodeSurfaceProjection,
-    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotProjection,
-    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeRepeatableItemProjection, NodeSchema, NodeSchemaBuilder, NodeSurfaceLayoutBudget,
+    NodeSurfaceOverflowIndicator, NodeSurfaceProjection, NodeSurfaceSlotDescriptor,
+    NodeSurfaceSlotKind, NodeSurfaceSlotProjection, NodeSurfaceSlotVisibility, PortDecl,
+    PortHandleVisibility, PortViewDescriptor, PortViewSide,
 };
 
 #[cfg(test)]

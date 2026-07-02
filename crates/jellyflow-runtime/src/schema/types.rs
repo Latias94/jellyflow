@@ -17,6 +17,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn node_surface_layout_budget_is_empty(value: &NodeSurfaceLayoutBudget) -> bool {
+    value.is_empty()
+}
+
 /// Declares a port for a node kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortDecl {
@@ -705,6 +709,86 @@ impl NodeControlDescriptor {
 
     pub fn order_key(&self) -> i32 {
         self.order.unwrap_or(i32::MAX)
+    }
+}
+
+/// Renderer-neutral overflow affordance adapters should expose when content is capped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeSurfaceOverflowIndicator {
+    Summary,
+    Count,
+    Scroll,
+    Fade,
+}
+
+/// Semantic layout budget for readable node-internal product surfaces.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NodeSurfaceLayoutBudget {
+    /// Minimum logical node size needed before rendering full-density internals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_readable_size: Option<CanvasSize>,
+    /// Preferred logical node size for first render or resize suggestions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_size: Option<CanvasSize>,
+    /// Maximum logical text lines adapters should budget for ordinary slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_line_budget: Option<usize>,
+    /// Maximum logical text lines adapters should budget for controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_line_budget: Option<usize>,
+    /// Suggested visible repeatable item count before showing overflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeatable_visible_items: Option<usize>,
+    /// Semantic overflow affordance expected when content is capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow_indicator: Option<NodeSurfaceOverflowIndicator>,
+    /// Density tiers adapters should prefer when the full surface does not fit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub density_priority: Vec<NodeKitContentDensity>,
+}
+
+impl NodeSurfaceLayoutBudget {
+    pub fn with_min_readable_size(mut self, size: CanvasSize) -> Self {
+        self.min_readable_size = Some(size);
+        self
+    }
+
+    pub fn with_preferred_size(mut self, size: CanvasSize) -> Self {
+        self.preferred_size = Some(size);
+        self
+    }
+
+    pub fn with_slot_line_budget(mut self, lines: usize) -> Self {
+        self.slot_line_budget = Some(lines);
+        self
+    }
+
+    pub fn with_control_line_budget(mut self, lines: usize) -> Self {
+        self.control_line_budget = Some(lines);
+        self
+    }
+
+    pub fn with_repeatable_visible_items(mut self, items: usize) -> Self {
+        self.repeatable_visible_items = Some(items);
+        self
+    }
+
+    pub fn with_overflow_indicator(mut self, indicator: NodeSurfaceOverflowIndicator) -> Self {
+        self.overflow_indicator = Some(indicator);
+        self
+    }
+
+    pub fn with_density_priority(
+        mut self,
+        density_priority: impl IntoIterator<Item = NodeKitContentDensity>,
+    ) -> Self {
+        self.density_priority = density_priority.into_iter().collect();
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
     }
 }
 
@@ -1858,6 +1942,9 @@ pub struct NodeSchema {
     /// Default logical node size for adapters that need an initial rect before measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_size: Option<CanvasSize>,
+    /// Semantic readable-surface budget for adapter-local node internals.
+    #[serde(default, skip_serializing_if = "node_surface_layout_budget_is_empty")]
+    pub layout_budget: NodeSurfaceLayoutBudget,
 
     /// Declared ports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1975,6 +2062,7 @@ impl NodeSchema {
                 keywords: Vec::new(),
                 renderer_key: None,
                 default_size: None,
+                layout_budget: NodeSurfaceLayoutBudget::default(),
                 ports: Vec::new(),
                 surface_slots: Vec::new(),
                 repeatable_collections: Vec::new(),
@@ -2104,6 +2192,12 @@ impl NodeSchemaBuilder {
     /// Sets the fallback logical node size.
     pub fn default_size(mut self, size: CanvasSize) -> Self {
         self.schema.default_size = Some(size);
+        self
+    }
+
+    /// Sets the semantic readable-surface budget for adapter-local node internals.
+    pub fn layout_budget(mut self, budget: NodeSurfaceLayoutBudget) -> Self {
+        self.schema.layout_budget = budget;
         self
     }
 
@@ -2361,6 +2455,9 @@ pub struct NodeKindViewDescriptor {
     /// Default logical node size for initial adapter layout before measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_size: Option<CanvasSize>,
+    /// Semantic readable-surface budget for adapter-local node internals.
+    #[serde(default, skip_serializing_if = "node_surface_layout_budget_is_empty")]
+    pub layout_budget: NodeSurfaceLayoutBudget,
     /// Declared ports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortDecl>,
@@ -2402,6 +2499,7 @@ impl NodeKindViewDescriptor {
             category: schema.category.clone(),
             keywords: schema.keywords.clone(),
             default_size: schema.default_size,
+            layout_budget: schema.layout_budget.clone(),
             ports: schema.ports.clone(),
             surface_slots: schema.surface_slots.clone(),
             repeatable_collections: schema.repeatable_collections.clone(),

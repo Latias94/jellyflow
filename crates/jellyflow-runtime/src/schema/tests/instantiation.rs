@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use crate::schema::{
-    NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor,
+    NodeInstantiationError, NodeRegistry, NodeSchema, NodeSurfaceLayoutBudget, PortDecl,
+    PortViewDescriptor,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, GraphBuilder, NodeId, NodeKindKey, PortCapacity, PortDirection,
@@ -23,6 +24,7 @@ fn note_schema() -> NodeSchema {
             width: 180.0,
             height: 120.0,
         }),
+        layout_budget: NodeSurfaceLayoutBudget::default(),
         ports: vec![
             PortDecl {
                 key: PortKey::new("source"),

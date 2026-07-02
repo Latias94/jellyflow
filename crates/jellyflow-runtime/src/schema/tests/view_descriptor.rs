@@ -7,9 +7,10 @@ use crate::schema::{
     NodeControlBinding, NodeControlDescriptor, NodeControlEditability, NodeControlKind,
     NodeControlOption, NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
     NodeControlValidationRule, NodeKitContentDensity, NodeRegistry, NodeRepeatableAnchorRule,
-    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSurfaceProjection,
-    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl,
-    PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSurfaceLayoutBudget,
+    NodeSurfaceOverflowIndicator, NodeSurfaceProjection, NodeSurfaceSlotDescriptor,
+    NodeSurfaceSlotKind, NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility,
+    PortViewDescriptor, PortViewSide,
 };
 use jellyflow_core::core::{
     CanvasSize, NodeKindKey, PortCapacity, PortDirection, PortKey, PortKind,
@@ -31,6 +32,24 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
             width: 180.0,
             height: 120.0,
         }),
+        layout_budget: NodeSurfaceLayoutBudget::default()
+            .with_min_readable_size(CanvasSize {
+                width: 220.0,
+                height: 150.0,
+            })
+            .with_preferred_size(CanvasSize {
+                width: 240.0,
+                height: 180.0,
+            })
+            .with_slot_line_budget(3)
+            .with_control_line_budget(2)
+            .with_repeatable_visible_items(4)
+            .with_overflow_indicator(NodeSurfaceOverflowIndicator::Count)
+            .with_density_priority([
+                NodeKitContentDensity::Full,
+                NodeKitContentDensity::Regular,
+                NodeKitContentDensity::Compact,
+            ]),
         ports: vec![PortDecl {
             key: PortKey::new("source"),
             dir: PortDirection::In,
@@ -75,6 +94,7 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
         keywords: Vec::new(),
         renderer_key: None,
         default_size: None,
+        layout_budget: NodeSurfaceLayoutBudget::default(),
         ports: Vec::new(),
         surface_slots: Vec::new(),
         repeatable_collections: Vec::new(),
@@ -105,6 +125,22 @@ fn node_registry_view_descriptors_are_adapter_facing_and_deterministic() {
             width: 180.0,
             height: 120.0,
         })
+    );
+    assert_eq!(
+        descriptors[1].layout_budget.min_readable_size,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 150.0,
+        })
+    );
+    assert_eq!(descriptors[1].layout_budget.slot_line_budget, Some(3));
+    assert_eq!(
+        descriptors[1].layout_budget.repeatable_visible_items,
+        Some(4)
+    );
+    assert_eq!(
+        descriptors[1].layout_budget.overflow_indicator,
+        Some(NodeSurfaceOverflowIndicator::Count)
     );
     assert_eq!(descriptors[1].ports.len(), 1);
     assert_eq!(descriptors[1].ports[0].view.side, Some(PortViewSide::Left));
@@ -154,6 +190,78 @@ fn node_schema_deserializes_without_adapter_view_fields() {
 
     assert_eq!(descriptors[0].renderer_key, "demo.legacy");
     assert_eq!(descriptors[0].default_size, None);
+}
+
+#[test]
+fn node_surface_layout_budget_round_trips_without_framework_widgets() {
+    let budget = NodeSurfaceLayoutBudget::default()
+        .with_min_readable_size(CanvasSize {
+            width: 260.0,
+            height: 180.0,
+        })
+        .with_preferred_size(CanvasSize {
+            width: 320.0,
+            height: 220.0,
+        })
+        .with_slot_line_budget(4)
+        .with_control_line_budget(2)
+        .with_repeatable_visible_items(3)
+        .with_overflow_indicator(NodeSurfaceOverflowIndicator::Summary)
+        .with_density_priority([
+            NodeKitContentDensity::Full,
+            NodeKitContentDensity::Regular,
+            NodeKitContentDensity::Compact,
+        ]);
+    let schema = NodeSchema::builder("demo.layout", "Layout")
+        .default_size(CanvasSize {
+            width: 220.0,
+            height: 140.0,
+        })
+        .layout_budget(budget.clone())
+        .port(
+            PortDecl::data_input("source")
+                .with_view_anchor("field.source")
+                .with_view_order(1),
+        )
+        .surface_slot(
+            NodeSurfaceSlotDescriptor::field_row("field.source")
+                .with_anchor("field.source")
+                .with_slot("source"),
+        )
+        .build();
+
+    let encoded = serde_json::to_value(&schema).expect("serialize schema");
+    assert_eq!(encoded["layout_budget"]["slot_line_budget"], json!(4));
+    assert_eq!(
+        encoded["layout_budget"]["overflow_indicator"],
+        json!("summary")
+    );
+
+    let decoded: NodeSchema = serde_json::from_value(encoded).expect("deserialize schema");
+    assert_eq!(decoded.layout_budget, budget);
+    assert_eq!(
+        decoded.ports[0].view.anchor.as_deref(),
+        Some("field.source")
+    );
+    assert_eq!(
+        decoded.surface_slots[0].anchor.as_deref(),
+        Some("field.source")
+    );
+
+    let mut registry = NodeRegistry::new();
+    registry.register(decoded);
+    let descriptor = registry
+        .view_descriptor(&NodeKindKey::new("demo.layout"))
+        .expect("descriptor");
+    assert_eq!(descriptor.layout_budget, budget);
+    assert_eq!(
+        descriptor.ports[0].view.anchor.as_deref(),
+        Some("field.source")
+    );
+    assert_eq!(
+        descriptor.surface_slots[0].anchor.as_deref(),
+        Some("field.source")
+    );
 }
 
 #[test]

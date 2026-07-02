@@ -6,7 +6,8 @@ use crate::runtime::create_node::{
 };
 use crate::runtime::store::NodeGraphStore;
 use crate::schema::{
-    NodeInstantiationError, NodeRegistry, NodeSchema, PortDecl, PortViewDescriptor,
+    NodeInstantiationError, NodeRegistry, NodeSchema, NodeSurfaceLayoutBudget, PortDecl,
+    PortViewDescriptor,
 };
 use jellyflow_core::core::{
     CanvasPoint, CanvasSize, Graph, GraphId, NodeKindKey, PortCapacity, PortDirection, PortKey,
@@ -125,6 +126,7 @@ fn note_schema() -> NodeSchema {
             width: 160.0,
             height: 96.0,
         }),
+        layout_budget: NodeSurfaceLayoutBudget::default(),
         ports: vec![
             PortDecl {
                 key: PortKey::new("source"),
