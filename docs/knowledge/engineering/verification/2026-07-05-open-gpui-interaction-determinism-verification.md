@@ -10,7 +10,7 @@ git_branch: "feat/xyflow-product-surface"
 
 # Verified State
 
-The current slice passed the focused gates for generic canvas gesture behavior, `canvas-jellyflow` product interaction regressions, and the widget-free Open GPUI adapter report crate.
+The current slice passed the generic canvas gesture gate, the full selected `canvas-jellyflow` product interaction regression gate, and the widget-free Open GPUI adapter report crate gate.
 
 # Commands
 
@@ -27,7 +27,7 @@ The current slice passed the focused gates for generic canvas gesture behavior, 
 
 - `open-gpui-canvas` lib tests: 368/368 passed.
 - `jellyflow-open-gpui`: 109/109 passed.
-- `canvas-jellyflow` example tests: 80/80 passed, with the known PNG exporter test excluded.
+- `canvas-jellyflow` example tests: 81/81 passed, with the known PNG exporter test excluded.
 - Existing Open GPUI macOS `unexpected cfg cargo-clippy` warnings and example dead-code warnings remain out of scope for this slice.
 
 # Citations

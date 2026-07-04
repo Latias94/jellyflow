@@ -28,7 +28,7 @@ The Open GPUI interaction determinism plan has started implementation across the
 
 - U5-U7 are not complete: visible port marker vs hit-region evidence, richer invalid-hover/dropped-wire evidence, and full structured first-pointer reports still need another implementation slice.
 - `canvas-jellyflow` still carries intentionally public component-context methods that are unused by the example binary but remain useful as the host component seam; do not delete them without deciding to shrink that seam.
-- The latest diff-review subagent was still running when this progress note was written. Fold its findings into the next slice if it returns.
+- The latest diff-review subagent findings were folded into this slice before verification; the stale agent handle was interrupted after its conclusions had already been captured.
 
 # Citations
 
