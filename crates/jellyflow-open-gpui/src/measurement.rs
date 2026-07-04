@@ -457,6 +457,10 @@ pub struct OpenGpuiMeasurementCoverage {
     pub duplicate_regions: usize,
     pub measured_slots: usize,
     pub measured_anchors: usize,
+    pub readable_regions: usize,
+    pub control_regions: usize,
+    pub drag_exclusion_regions: usize,
+    pub overflow_regions: usize,
 }
 
 impl OpenGpuiMeasurementCoverage {
@@ -468,6 +472,10 @@ impl OpenGpuiMeasurementCoverage {
         let mut projection_fallback_regions = 0;
         let mut missing_regions = 0;
         let mut duplicate_regions = 0;
+        let mut readable_regions = 0;
+        let mut control_regions = 0;
+        let mut drag_exclusion_regions = 0;
+        let mut overflow_regions = 0;
         let mut seen = HashSet::new();
         for region in regions {
             if !region.bounds.is_positive_finite() {
@@ -482,6 +490,15 @@ impl OpenGpuiMeasurementCoverage {
                 OpenGpuiMeasurementSource::LayoutPass => layout_pass_regions += 1,
                 OpenGpuiMeasurementSource::ProjectionFallback => projection_fallback_regions += 1,
             }
+            match region.kind {
+                OpenGpuiMeasuredRegionKind::Readable { .. } => readable_regions += 1,
+                OpenGpuiMeasuredRegionKind::Control { .. } => control_regions += 1,
+                OpenGpuiMeasuredRegionKind::DragExclusion { .. } => drag_exclusion_regions += 1,
+                OpenGpuiMeasuredRegionKind::Overflow { .. } => overflow_regions += 1,
+                OpenGpuiMeasuredRegionKind::Slot { .. }
+                | OpenGpuiMeasuredRegionKind::RepeatableItem { .. }
+                | OpenGpuiMeasuredRegionKind::Anchor { .. } => {}
+            }
         }
 
         Self {
@@ -493,6 +510,10 @@ impl OpenGpuiMeasurementCoverage {
             duplicate_regions,
             measured_slots: measurement.slots.len(),
             measured_anchors: measurement.anchors.len(),
+            readable_regions,
+            control_regions,
+            drag_exclusion_regions,
+            overflow_regions,
         }
     }
 

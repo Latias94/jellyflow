@@ -195,6 +195,10 @@ mod tests {
             duplicate_regions: 0,
             measured_slots: 2,
             measured_anchors: 2,
+            readable_regions: 0,
+            control_regions: 0,
+            drag_exclusion_regions: 0,
+            overflow_regions: 0,
         })
         .capability_matrix();
 
@@ -215,6 +219,10 @@ mod tests {
             duplicate_regions: 0,
             measured_slots: 2,
             measured_anchors: 1,
+            readable_regions: 0,
+            control_regions: 0,
+            drag_exclusion_regions: 0,
+            overflow_regions: 0,
         })
         .capability_matrix();
 

@@ -278,7 +278,9 @@ pub struct OpenGpuiMeasuredInternalsEvidence {
     pub measured_handle_count: usize,
     pub projected_handle_count: usize,
     pub readable_region_count: usize,
+    pub control_region_count: usize,
     pub drag_exclusion_region_count: usize,
+    pub overflow_region_count: usize,
     pub stale_region_count: usize,
     pub component_declared_overflow_count: usize,
     pub missing_required_overflow_count: usize,
@@ -293,8 +295,13 @@ impl OpenGpuiMeasuredInternalsEvidence {
             && self.projected_handle_count == 0
             && self.readable_region_count > 0
             && self.drag_exclusion_region_count > 0
+            && self.overflow_region_count >= self.component_declared_overflow_count
             && self.stale_region_count == 0
             && self.missing_required_overflow_count == 0
+    }
+
+    pub fn complete_for_product_renderer(self) -> bool {
+        self.complete() && self.control_region_count > 0
     }
 
     pub fn uses_projection_fallback(self) -> bool {
@@ -542,7 +549,12 @@ impl OpenGpuiHostVisualSurfaceRow {
         }
         match self.measured_internals_evidence {
             Some(evidence) => {
-                if !evidence.complete() {
+                let complete = if self.source == OpenGpuiHostRendererSource::ProductRenderer {
+                    evidence.complete_for_product_renderer()
+                } else {
+                    evidence.complete()
+                };
+                if !complete {
                     gaps.insert(
                         OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete,
                     );
@@ -1539,8 +1551,13 @@ pub fn assert_host_visual_interaction_report_gates(report: &OpenGpuiHostVisualIn
         let Some(internals) = row.measured_internals_evidence else {
             panic!("visual report row must include measured internals evidence: {row:?}");
         };
+        let internals_complete = if row.source == OpenGpuiHostRendererSource::ProductRenderer {
+            internals.complete_for_product_renderer()
+        } else {
+            internals.complete()
+        };
         assert!(
-            internals.complete(),
+            internals_complete,
             "node-internal bounds, handles, readable regions, and component-declared overflow must have hard evidence: {row:?}"
         );
         assert_eq!(
@@ -2324,6 +2341,10 @@ fn schema_node_report(
             duplicate_regions: 0,
             measured_slots: measurement.slots.len(),
             measured_anchors: measurement.anchors.len(),
+            readable_regions: 0,
+            control_regions: 0,
+            drag_exclusion_regions: 0,
+            overflow_regions: 0,
         },
     };
     collect_density_modes(
@@ -3727,7 +3748,9 @@ mod tests {
                 measured_handle_count: 2,
                 projected_handle_count: 0,
                 readable_region_count: 3,
+                control_region_count: 1,
                 drag_exclusion_region_count: 1,
+                overflow_region_count: 1,
                 stale_region_count: 0,
                 component_declared_overflow_count: 1,
                 missing_required_overflow_count: 0,
@@ -3769,7 +3792,9 @@ mod tests {
                     measured_handle_count: 2,
                     projected_handle_count: 0,
                     readable_region_count: 3,
+                    control_region_count: 1,
                     drag_exclusion_region_count: 1,
+                    overflow_region_count: 0,
                     stale_region_count: 0,
                     component_declared_overflow_count: 0,
                     missing_required_overflow_count: 1,
@@ -3782,7 +3807,9 @@ mod tests {
                     measured_handle_count: 2,
                     projected_handle_count: 0,
                     readable_region_count: 3,
+                    control_region_count: 1,
                     drag_exclusion_region_count: 1,
+                    overflow_region_count: 0,
                     stale_region_count: 0,
                     component_declared_overflow_count: 0,
                     missing_required_overflow_count: 0,
@@ -3828,6 +3855,126 @@ mod tests {
         assert!(
             result.is_err(),
             "visual gate must fail when compact/shell content hides text without an overflow affordance"
+        );
+    }
+
+    #[test]
+    fn measured_internals_evidence_requires_control_regions() {
+        let evidence = OpenGpuiMeasuredInternalsEvidence {
+            node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+            node_bounds_present: true,
+            handle_bounds_present: true,
+            measured_handle_count: 2,
+            projected_handle_count: 0,
+            readable_region_count: 3,
+            control_region_count: 0,
+            drag_exclusion_region_count: 1,
+            overflow_region_count: 0,
+            stale_region_count: 0,
+            component_declared_overflow_count: 0,
+            missing_required_overflow_count: 0,
+        };
+
+        assert!(
+            evidence.complete(),
+            "control bounds are a product-renderer requirement layered on base internals evidence"
+        );
+        assert!(
+            !evidence.complete_for_product_renderer(),
+            "product internals must not be complete without measured control bounds"
+        );
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow)
+            .expect("Dify fixture");
+        let row = OpenGpuiHostVisualSurfaceRow::new(
+            &fixture,
+            "demo.decision",
+            "decision-card",
+            OpenGpuiHostRendererSource::ProductRenderer,
+        )
+        .with_content_bounds(true, true, true)
+        .with_measured_internals_evidence(evidence);
+
+        assert!(
+            row.computed_gaps()
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete)
+        );
+    }
+
+    #[test]
+    fn unregistered_renderer_measured_internals_do_not_require_control_regions() {
+        let evidence = OpenGpuiMeasuredInternalsEvidence {
+            node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+            node_bounds_present: true,
+            handle_bounds_present: true,
+            measured_handle_count: 2,
+            projected_handle_count: 0,
+            readable_region_count: 2,
+            control_region_count: 0,
+            drag_exclusion_region_count: 1,
+            overflow_region_count: 0,
+            stale_region_count: 0,
+            component_declared_overflow_count: 0,
+            missing_required_overflow_count: 0,
+        };
+
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow)
+            .expect("Dify fixture");
+        let row = OpenGpuiHostVisualSurfaceRow::new(
+            &fixture,
+            "demo.tool",
+            "task-card",
+            OpenGpuiHostRendererSource::UnregisteredRenderer,
+        )
+        .with_content_bounds(true, true, true)
+        .with_measured_internals_evidence(evidence);
+
+        assert!(
+            !row.computed_gaps()
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete)
+        );
+    }
+
+    #[test]
+    fn measured_internals_evidence_requires_measured_overflow_for_declared_overflow() {
+        let evidence = OpenGpuiMeasuredInternalsEvidence {
+            node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
+            node_bounds_present: true,
+            handle_bounds_present: true,
+            measured_handle_count: 2,
+            projected_handle_count: 0,
+            readable_region_count: 3,
+            control_region_count: 1,
+            drag_exclusion_region_count: 1,
+            overflow_region_count: 0,
+            stale_region_count: 0,
+            component_declared_overflow_count: 1,
+            missing_required_overflow_count: 0,
+        };
+
+        assert!(
+            !evidence.complete(),
+            "declared overflow affordances must have measured overflow bounds"
+        );
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::ShaderBlueprint)
+            .expect("shader fixture");
+        let row = OpenGpuiHostVisualSurfaceRow::new(
+            &fixture,
+            "demo.shader.mix",
+            "shader-card",
+            OpenGpuiHostRendererSource::ProductRenderer,
+        )
+        .with_content_bounds(true, true, true)
+        .with_measured_internals_evidence(evidence);
+
+        assert!(
+            row.computed_gaps()
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete)
         );
     }
 
@@ -3929,7 +4076,9 @@ mod tests {
                         measured_handle_count,
                         projected_handle_count,
                         readable_region_count: 3,
+                        control_region_count: 1,
                         drag_exclusion_region_count: 1,
+                        overflow_region_count: 0,
                         stale_region_count: 0,
                         component_declared_overflow_count: 0,
                         missing_required_overflow_count: 0,
