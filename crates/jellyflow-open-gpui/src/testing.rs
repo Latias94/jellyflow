@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use jellyflow::{
     core::{
-        CanvasPoint, CanvasRect, CanvasSize, DefaultTypeCompatibility, Edge, EdgeId, EdgeKind,
-        Graph, GraphBuilder, GraphId, GraphOp, GraphTransaction, Node, NodeId, NodeKindKey, PortId,
+        CanvasRect, CanvasSize, DefaultTypeCompatibility, Edge, EdgeId, EdgeKind, Graph,
+        GraphBuilder, GraphId, GraphOp, GraphTransaction, Node, NodeId, NodeKindKey, PortId,
         PortKey,
     },
     runtime::{
@@ -4340,7 +4340,7 @@ mod tests {
         let prompt_slot = MeasuredSurfaceSlot::new(
             "prompt",
             CanvasRect {
-                origin: CanvasPoint { x: 8.0, y: 12.0 },
+                origin: jellyflow::core::CanvasPoint { x: 8.0, y: 12.0 },
                 size: CanvasSize {
                     width: 120.0,
                     height: 24.0,
