@@ -85,12 +85,44 @@ multiselect-as-select, switch, and slider. Code editor and color controls render
 as partial badge states; asset picker, variable picker, and port-binding picker
 render as disabled stub/display states until a later Open GPUI product pass.
 
+## Adapter Maturity Boundary
+
+Open GPUI is the mature adapter target for the current stage. The mature surface
+is not a cross-framework widget library: it is the combination of semantic
+Jellyflow node kits, this crate's widget-free Open GPUI adapter contracts, and
+the concrete `canvas-jellyflow` Open GPUI consumer that maps those contracts to
+local components.
+
+The boundary is:
+
+- `jellyflow-runtime` owns semantic descriptors: slots, controls, repeatable
+  collections, anchors, action/menu/inspector/blackboard metadata, validation,
+  and measurement invalidation intent.
+- `jellyflow-open-gpui` owns adapter facts: renderer registration, stable ids,
+  authoring plans, measurement ids, coverage reports, product fixture reports,
+  graph affordance evidence, and hard regression gates.
+- `repo-ref/open-gpui/examples/canvas-jellyflow` owns concrete Open GPUI
+  widgets, focus/popup lifecycle, pointer shielding, `measured_element`
+  collection, local node component atoms, renderer layout, screenshots, and
+  native app lifecycle smoke tests.
+
+egui and Dioxus remain semantic-contract targets, not mature adapter peers for
+this Open GPUI product-polish stage. They should map Jellyflow's descriptors
+locally rather than importing Open GPUI component atoms or sharing a widget
+crate.
+
+Promote `node_component_kit` ideas out of the example only when they are proven
+by at least two real Open GPUI hosts, have stable focus/popup and pointer
+arbitration rules, preserve full layout-pass measurement coverage, and no longer
+depend on demo fixture copy or product-specific visual policy.
+
 ## Layout-Pass Measurement
 
 `canvas-jellyflow` is the live Open GPUI consumer. It renders node internals
 from Jellyflow semantic descriptors, wraps visible slots, controls, repeatable
-items, and anchors with Open GPUI `measured_element`, and reports those bounds
-into `OpenGpuiBoundsCollector` using stable `OpenGpuiMeasurementId` values.
+items, anchors, drag-exclusion surfaces, and overflow indicators with Open GPUI
+`measured_element`, and reports those bounds into `OpenGpuiBoundsCollector`
+using stable `OpenGpuiMeasurementId` values.
 
 `jellyflow-open-gpui` owns the reusable conversion contract:
 
@@ -110,6 +142,17 @@ the adapter must report projection/partial coverage instead of presenting the
 data as full layout-pass support. Runtime/core/layout crates remain toolkit-free;
 Open GPUI-specific widgets and measurement plumbing stay in this crate and the
 `repo-ref/open-gpui/examples/canvas-jellyflow` consumer fixture.
+
+Product visual proof must be sourced from measured regions, not inferred from
+semantic projection, renderer presets, control counts, or string/fit estimates.
+Readable regions, control regions, drag-exclusion regions, and
+component-declared overflow each have distinct evidence. In particular,
+`OpenGpuiMeasuredInternalsEvidence::drag_exclusion_region_count` is complete
+only when Open GPUI reports `OpenGpuiMeasurementId::drag_exclusion` regions from
+a layout pass; graph drag-region policy and measured control bounds do not
+substitute for it. Projection-only visual reports are expected to stay degraded
+with `MeasuredInternalsEvidenceIncomplete` and
+`MeasuredInternalsProjectionFallback` gaps.
 
 ## Graph Affordance Evidence
 
