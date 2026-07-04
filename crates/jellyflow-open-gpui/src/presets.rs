@@ -131,7 +131,6 @@ impl OpenGpuiGraphAffordanceEvidence {
 
         match renderer_key {
             "shader-card" => {
-                evidence.committed_wire_route = OpenGpuiWireRouteEvidence::Bezier;
                 evidence.port_placement_budget = 16;
                 evidence.drag_region_count = 2;
                 evidence.readable_layout_region_count = 5;
@@ -318,7 +317,7 @@ mod tests {
 
         assert_eq!(
             evidence.committed_wire_route,
-            OpenGpuiWireRouteEvidence::Bezier
+            OpenGpuiWireRouteEvidence::Orthogonal
         );
         assert_eq!(
             evidence.connection_preview_policy,
