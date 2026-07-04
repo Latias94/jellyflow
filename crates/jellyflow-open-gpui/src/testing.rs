@@ -1999,6 +1999,7 @@ pub fn assert_product_fixture_regression_gates() {
     assert_density_and_resize_evidence(&dify_layout);
     assert!(dify_layout.region_sources.contains("layout_pass"));
     assert!(dify_layout.measurement_coverage.is_full_layout_pass());
+    assert_layout_pass_region_kind_evidence(&dify_layout);
     assert_layout_pass_capability_requires_real_bounds(&OpenGpuiAdapter::layout_pass(
         dify_layout.measurement_coverage.clone(),
     ));
@@ -2011,6 +2012,7 @@ pub fn assert_product_fixture_regression_gates() {
         dify_node_layout.measurement_coverage
     );
     assert!(dify_node_layout.measured_control_regions >= 3);
+    assert_layout_pass_region_kind_evidence(&dify_node_layout);
 
     let shader = product_fixture_report(OpenGpuiProductFixtureKind::ShaderBlueprint)
         .expect("shader fixture");
@@ -2041,6 +2043,7 @@ pub fn assert_product_fixture_regression_gates() {
         layout_pass_product_fixture_report(OpenGpuiProductFixtureKind::ShaderBlueprint)
             .expect("shader layout-pass fixture");
     assert!(shader_layout.measurement_coverage.is_full_layout_pass());
+    assert_layout_pass_region_kind_evidence(&shader_layout);
     let shader_node_layout = layout_pass_schema_node_report(
         OpenGpuiProductFixtureKind::ShaderBlueprint,
         "demo.shader.mix",
@@ -2054,6 +2057,7 @@ pub fn assert_product_fixture_regression_gates() {
     );
     assert!(shader_node_layout.repeatable_item_count >= 3);
     assert!(shader_node_layout.anchor_count >= 3);
+    assert_layout_pass_region_kind_evidence(&shader_node_layout);
 
     let erd = product_fixture_report(OpenGpuiProductFixtureKind::ErdTable).expect("ERD fixture");
     assert!(erd.node_count >= 2);
@@ -2069,6 +2073,7 @@ pub fn assert_product_fixture_regression_gates() {
     assert!(erd_layout.measurement_coverage.is_full_layout_pass());
     assert!(erd_layout.repeatable_item_count >= 3);
     assert!(erd_layout.measured_control_regions >= 3);
+    assert_layout_pass_region_kind_evidence(&erd_layout);
 
     let mind =
         product_fixture_report(OpenGpuiProductFixtureKind::MindMap).expect("mind-map fixture");
@@ -2082,6 +2087,7 @@ pub fn assert_product_fixture_regression_gates() {
     assert_density_and_resize_evidence(&mind_layout);
     assert!(mind_layout.measurement_coverage.is_full_layout_pass());
     assert!(mind_layout.slot_count >= 3);
+    assert_layout_pass_region_kind_evidence(&mind_layout);
 }
 
 /// Assert that descriptor-driven interaction states exist for the GPUI adapter to render locally.
@@ -3052,6 +3058,10 @@ fn layout_pass_regions_for_node(
             OpenGpuiMeasurementId::slot(*node_id, slot.slot.key.clone())
                 .into_region(view_bounds_from_rect(node_view_origin, slot.rect)),
         );
+        regions.push(
+            OpenGpuiMeasurementId::readable(*node_id, format!("slot:{}", slot.slot.key))
+                .into_region(view_bounds_from_rect(node_view_origin, slot.rect)),
+        );
         if let Some(anchor) = slot
             .descriptor
             .as_ref()
@@ -3067,16 +3077,22 @@ fn layout_pass_regions_for_node(
             let control_count = controls.len();
             control_regions += control_count;
             for (index, control) in controls.into_iter().enumerate() {
+                let control_rect = control_region_rect(slot.rect, index, control_count.max(1));
+                let control_key = control.key.clone();
                 regions.push(
                     OpenGpuiMeasurementId::control_in_slot(
                         *node_id,
                         descriptor.key.as_str(),
-                        control.key,
+                        control_key.clone(),
                     )
-                    .into_region(view_bounds_from_rect(
-                        node_view_origin,
-                        control_region_rect(slot.rect, index, control_count.max(1)),
-                    )),
+                    .into_region(view_bounds_from_rect(node_view_origin, control_rect)),
+                );
+                regions.push(
+                    OpenGpuiMeasurementId::drag_exclusion(
+                        *node_id,
+                        format!("{}:{control_key}", descriptor.key),
+                    )
+                    .into_region(view_bounds_from_rect(node_view_origin, control_rect)),
                 );
             }
         }
@@ -3086,6 +3102,13 @@ fn layout_pass_regions_for_node(
         regions.push(
             OpenGpuiMeasurementId::slot(*node_id, repeatable.projection.key.clone())
                 .into_region(view_bounds_from_rect(node_view_origin, repeatable.rect)),
+        );
+        regions.push(
+            OpenGpuiMeasurementId::readable(
+                *node_id,
+                format!("repeatable:{}", repeatable.projection.key),
+            )
+            .into_region(view_bounds_from_rect(node_view_origin, repeatable.rect)),
         );
     }
 
@@ -3101,6 +3124,16 @@ fn layout_pass_regions_for_node(
         regions.push(
             OpenGpuiMeasurementId::anchor(*node_id, item.projection.anchor.clone())
                 .into_region(view_bounds_from_rect(node_view_origin, item.anchor_rect)),
+        );
+        regions.push(
+            OpenGpuiMeasurementId::readable(
+                *node_id,
+                format!(
+                    "repeatable:{}:{}",
+                    item.projection.slot_key, item.projection.item_id
+                ),
+            )
+            .into_region(view_bounds_from_rect(node_view_origin, item.rect)),
         );
     }
 
@@ -3146,6 +3179,10 @@ fn accumulate_coverage(
     target.duplicate_regions += coverage.duplicate_regions;
     target.measured_slots += coverage.measured_slots;
     target.measured_anchors += coverage.measured_anchors;
+    target.readable_regions += coverage.readable_regions;
+    target.control_regions += coverage.control_regions;
+    target.drag_exclusion_regions += coverage.drag_exclusion_regions;
+    target.overflow_regions += coverage.overflow_regions;
 }
 
 fn sync_region_sources(report: &mut OpenGpuiProductFixtureReport) {
@@ -3229,6 +3266,37 @@ fn assert_density_and_resize_evidence(report: &OpenGpuiProductFixtureReport) {
         report.resize_probe_count,
         report.measured_nodes
     );
+}
+
+fn assert_layout_pass_region_kind_evidence(report: &OpenGpuiProductFixtureReport) {
+    assert_eq!(
+        report.measurement_mode,
+        OpenGpuiMeasurementMode::LayoutPass,
+        "{:?} fixture `{}` must be checked through layout-pass coverage",
+        report.kind,
+        report.fixture_key
+    );
+    assert!(
+        report.measurement_coverage.readable_regions >= report.measured_nodes,
+        "{:?} fixture `{}` must expose explicit readable regions: {:?}",
+        report.kind,
+        report.fixture_key,
+        report.measurement_coverage
+    );
+    assert_eq!(
+        report.measurement_coverage.control_regions, report.measured_control_regions,
+        "{:?} fixture `{}` control coverage must come from measured control ids",
+        report.kind, report.fixture_key
+    );
+    if report.measured_control_regions > 0 {
+        assert!(
+            report.measurement_coverage.drag_exclusion_regions >= report.measured_control_regions,
+            "{:?} fixture `{}` controls must expose explicit drag-exclusion regions: {:?}",
+            report.kind,
+            report.fixture_key,
+            report.measurement_coverage
+        );
+    }
 }
 
 fn inspector_target_source_name(source: OpenGpuiInspectorTargetSource) -> &'static str {
