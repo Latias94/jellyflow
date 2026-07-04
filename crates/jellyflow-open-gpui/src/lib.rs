@@ -104,12 +104,14 @@ pub use repeatable::{
 };
 pub use sync::{OpenGpuiNodeTransformSnapshot, plan_transform_sync_transaction};
 pub use testing::{
-    OpenGpuiHostProductInteractionGap, OpenGpuiHostProductInteractionReport,
-    OpenGpuiHostRendererSource, OpenGpuiHostSurfaceReport, OpenGpuiHostSurfaceReportRow,
-    OpenGpuiHostVisualInteractionGap, OpenGpuiHostVisualInteractionReport,
-    OpenGpuiHostVisualSurfaceRow, OpenGpuiMeasuredContentEvidence,
-    OpenGpuiMeasuredInternalsEvidence, OpenGpuiMeasuredInternalsEvidenceInput,
-    OpenGpuiMeasuredInternalsSource, OpenGpuiNativeLifecycleEvidence, OpenGpuiNativeLifecycleGap,
+    OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE, OpenGpuiConnectionReleaseEvidence,
+    OpenGpuiFirstPointerEvidence, OpenGpuiHostProductInteractionGap,
+    OpenGpuiHostProductInteractionReport, OpenGpuiHostRendererSource, OpenGpuiHostSurfaceReport,
+    OpenGpuiHostSurfaceReportRow, OpenGpuiHostVisualInteractionGap,
+    OpenGpuiHostVisualInteractionReport, OpenGpuiHostVisualSurfaceRow,
+    OpenGpuiMeasuredContentEvidence, OpenGpuiMeasuredInternalsEvidence,
+    OpenGpuiMeasuredInternalsEvidenceInput, OpenGpuiMeasuredInternalsSource,
+    OpenGpuiNativeLifecycleEvidence, OpenGpuiNativeLifecycleGap, OpenGpuiPortHandleEvidence,
     OpenGpuiProductFixtureCase, OpenGpuiProductFixtureFamily, OpenGpuiProductFixtureKind,
     OpenGpuiReconnectSequenceEvidence, OpenGpuiScreenshotFixtureEvidence,
     OpenGpuiScreenshotRegionEvidence, OpenGpuiScreenshotRegionGap, OpenGpuiScreenshotRegionKind,

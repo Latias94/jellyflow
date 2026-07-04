@@ -829,13 +829,94 @@ pub enum OpenGpuiHostProductInteractionGap {
     GraphAffordanceHitBudgetMissing,
     GraphAffordanceLayoutEvidenceMissing,
     GraphAffordanceRoutePolicyMissing,
+    PortHandleEvidenceIncomplete,
     PortHotspotPathMissing,
+    FirstPointerEvidenceMissing,
     ToolSwitcherMissing,
     ConnectFlowNotStoreSynced,
     ReconnectAffordanceMissing,
     ReconnectSequenceIncomplete,
     DroppedWireGestureDetached,
+    ConnectionReleaseEvidenceIncomplete,
     RepeatableOverflowIndicatorMissing,
+}
+
+pub const OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE: u32 = 22;
+
+/// Widget-free proof that visible product ports, measured anchors, canvas handles, hit targets,
+/// and edge endpoint geometry agree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiPortHandleEvidence {
+    pub visible_port_marker_count: usize,
+    pub measured_anchor_count: usize,
+    pub canvas_handle_count: usize,
+    pub anchor_handle_match_count: usize,
+    pub hit_test_endpoint_match_count: usize,
+    pub edge_endpoint_match_count: usize,
+    pub minimum_hit_width: u32,
+    pub minimum_hit_height: u32,
+    pub stale_or_projected_port_count: usize,
+    pub disabled_or_missing_ports_non_connectable_checked: bool,
+}
+
+impl OpenGpuiPortHandleEvidence {
+    pub fn complete(self) -> bool {
+        self.visible_port_marker_count > 0
+            && self.measured_anchor_count >= self.visible_port_marker_count
+            && self.canvas_handle_count >= self.visible_port_marker_count
+            && self.anchor_handle_match_count >= self.visible_port_marker_count
+            && self.hit_test_endpoint_match_count >= self.visible_port_marker_count
+            && self.edge_endpoint_match_count > 0
+            && self.minimum_hit_width >= OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE
+            && self.minimum_hit_height >= OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE
+            && self.stale_or_projected_port_count == 0
+            && self.disabled_or_missing_ports_non_connectable_checked
+    }
+}
+
+/// Widget-free proof for the first pointer after fixture/internals readiness.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiFirstPointerEvidence {
+    pub fixture_count: usize,
+    pub handle_first_connection_count: usize,
+    pub node_body_drag_count: usize,
+    pub node_body_connection_suppression_count: usize,
+    pub control_shield_count: usize,
+    pub no_pointer_readiness_count: usize,
+    pub dynamic_handle_freshness_count: usize,
+}
+
+impl OpenGpuiFirstPointerEvidence {
+    pub fn complete(self) -> bool {
+        let required = product_fixture_catalog().len();
+        self.fixture_count >= required
+            && self.handle_first_connection_count >= self.fixture_count
+            && self.node_body_drag_count >= self.fixture_count
+            && self.node_body_connection_suppression_count >= self.fixture_count
+            && self.control_shield_count > 0
+            && self.no_pointer_readiness_count >= self.fixture_count
+            && self.dynamic_handle_freshness_count > 0
+    }
+}
+
+/// Widget-free evidence for connection hover/release product states.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiConnectionReleaseEvidence {
+    pub valid_hover_feedback_checked: bool,
+    pub invalid_hover_feedback_checked: bool,
+    pub dropped_wire_release_from_handle_count: usize,
+    pub dropped_wire_release_from_body_count: usize,
+    pub dropped_wire_menu_action_count: usize,
+}
+
+impl OpenGpuiConnectionReleaseEvidence {
+    pub fn complete(self) -> bool {
+        self.valid_hover_feedback_checked
+            && self.invalid_hover_feedback_checked
+            && self.dropped_wire_release_from_handle_count > 0
+            && self.dropped_wire_release_from_body_count == 0
+            && self.dropped_wire_menu_action_count > 0
+    }
 }
 
 /// Widget-free proof that selected-edge reconnect gestures are not just visible but actionable.
@@ -873,13 +954,16 @@ pub struct OpenGpuiHostProductInteractionReport {
     pub dense_surface_drag_exclusion_checked: bool,
     pub dense_surface_keyboard_focus_checked: bool,
     pub graph_menu_absence_checked: bool,
+    pub port_handle_evidence: Option<OpenGpuiPortHandleEvidence>,
     pub port_hotspot_path_checked: bool,
+    pub first_pointer_evidence: Option<OpenGpuiFirstPointerEvidence>,
     pub tool_switcher_visible: bool,
     pub connect_flow_store_synced: bool,
     pub reconnect_affordance_visible: bool,
     pub reconnect_sequence_evidence: Option<OpenGpuiReconnectSequenceEvidence>,
     pub dropped_wire_gesture_connected: bool,
     pub graph_affordance_evidence: Option<OpenGpuiGraphAffordanceEvidence>,
+    pub connection_release_evidence: Option<OpenGpuiConnectionReleaseEvidence>,
     pub hidden_repeatable_overflow_count: usize,
     pub repeatable_overflow_indicator_count: usize,
     pub gaps: BTreeSet<OpenGpuiHostProductInteractionGap>,
@@ -939,11 +1023,29 @@ impl OpenGpuiHostProductInteractionReport {
         self.sync_gaps();
     }
 
+    pub fn mark_port_handle_evidence(&mut self, evidence: OpenGpuiPortHandleEvidence) {
+        self.port_handle_evidence = Some(evidence);
+        if !evidence.complete() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::PortHandleEvidenceIncomplete);
+        }
+        self.sync_gaps();
+    }
+
     pub fn mark_port_hotspot_path_checked(&mut self, checked: bool) {
         self.port_hotspot_path_checked = checked;
         if !checked {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
+        }
+        self.sync_gaps();
+    }
+
+    pub fn mark_first_pointer_evidence(&mut self, evidence: OpenGpuiFirstPointerEvidence) {
+        self.first_pointer_evidence = Some(evidence);
+        if !evidence.complete() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::FirstPointerEvidenceMissing);
         }
         self.sync_gaps();
     }
@@ -1013,6 +1115,18 @@ impl OpenGpuiHostProductInteractionReport {
         self.sync_gaps();
     }
 
+    pub fn mark_connection_release_evidence(
+        &mut self,
+        evidence: OpenGpuiConnectionReleaseEvidence,
+    ) {
+        self.connection_release_evidence = Some(evidence);
+        if !evidence.complete() {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::ConnectionReleaseEvidenceIncomplete);
+        }
+        self.sync_gaps();
+    }
+
     pub fn mark_repeatable_overflow(
         &mut self,
         hidden_overflow_count: usize,
@@ -1049,8 +1163,28 @@ impl OpenGpuiHostProductInteractionReport {
         if !self.graph_menu_absence_checked {
             gaps.insert(OpenGpuiHostProductInteractionGap::GraphMenuAbsenceUnchecked);
         }
+        match self.port_handle_evidence {
+            Some(evidence) => {
+                if !evidence.complete() {
+                    gaps.insert(OpenGpuiHostProductInteractionGap::PortHandleEvidenceIncomplete);
+                }
+            }
+            None => {
+                gaps.insert(OpenGpuiHostProductInteractionGap::PortHandleEvidenceIncomplete);
+            }
+        }
         if !self.port_hotspot_path_checked {
             gaps.insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
+        }
+        match self.first_pointer_evidence {
+            Some(evidence) => {
+                if !evidence.complete() {
+                    gaps.insert(OpenGpuiHostProductInteractionGap::FirstPointerEvidenceMissing);
+                }
+            }
+            None => {
+                gaps.insert(OpenGpuiHostProductInteractionGap::FirstPointerEvidenceMissing);
+            }
         }
         if !self.tool_switcher_visible {
             gaps.insert(OpenGpuiHostProductInteractionGap::ToolSwitcherMissing);
@@ -1094,6 +1228,12 @@ impl OpenGpuiHostProductInteractionReport {
                 );
             }
         }
+        if !self
+            .connection_release_evidence
+            .is_some_and(OpenGpuiConnectionReleaseEvidence::complete)
+        {
+            gaps.insert(OpenGpuiHostProductInteractionGap::ConnectionReleaseEvidenceIncomplete);
+        }
         if self.hidden_repeatable_overflow_count > 0
             && self.repeatable_overflow_indicator_count == 0
         {
@@ -1127,7 +1267,10 @@ pub fn assert_product_interaction_characterization_report_contract(
             || report.reconnect_affordance_visible
             || report.reconnect_sequence_evidence.is_some()
             || report.dropped_wire_gesture_connected
-            || report.graph_affordance_evidence.is_some(),
+            || report.graph_affordance_evidence.is_some()
+            || report.port_handle_evidence.is_some()
+            || report.first_pointer_evidence.is_some()
+            || report.connection_release_evidence.is_some(),
         "product interaction report must expose at least one checked interaction fact: {report:?}"
     );
     assert!(
@@ -1171,9 +1314,23 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
         report.graph_menu_absence_checked,
         "product evidence must not report a fake graph menu when descriptors provide no graph-level action: {report:?}"
     );
+    let Some(port_handle) = report.port_handle_evidence else {
+        panic!("product interaction report must include visible-port handle evidence: {report:?}");
+    };
+    assert!(
+        port_handle.complete(),
+        "visible port markers, measured anchors, canvas handles, hit targets, and edge endpoints must share one handle fact chain: {report:?}"
+    );
     assert!(
         report.port_hotspot_path_checked,
         "product ports must be reachable through the concrete host hotspot path: {report:?}"
+    );
+    let Some(first_pointer) = report.first_pointer_evidence else {
+        panic!("product interaction report must include first-pointer evidence: {report:?}");
+    };
+    assert!(
+        first_pointer.complete(),
+        "first pointer must start handle connection, move node bodies, shield controls, and prove no-pointer readiness: {report:?}"
     );
     assert!(
         report.tool_switcher_visible,
@@ -1216,6 +1373,13 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
     assert!(
         graph_affordance.has_layout_region_evidence(),
         "product graph affordance evidence must include drag and readable layout regions: {report:?}"
+    );
+    let Some(connection_release) = report.connection_release_evidence else {
+        panic!("product interaction report must include connection release evidence: {report:?}");
+    };
+    assert!(
+        connection_release.complete(),
+        "connection UX must prove valid/invalid hover and dropped-wire release ownership: {report:?}"
     );
     if report.hidden_repeatable_overflow_count > 0 {
         assert!(
@@ -3628,6 +3792,62 @@ mod tests {
         }
     }
 
+    fn complete_port_handle_evidence() -> OpenGpuiPortHandleEvidence {
+        OpenGpuiPortHandleEvidence {
+            visible_port_marker_count: 4,
+            measured_anchor_count: 4,
+            canvas_handle_count: 4,
+            anchor_handle_match_count: 4,
+            hit_test_endpoint_match_count: 4,
+            edge_endpoint_match_count: 2,
+            minimum_hit_width: OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE,
+            minimum_hit_height: OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE,
+            stale_or_projected_port_count: 0,
+            disabled_or_missing_ports_non_connectable_checked: true,
+        }
+    }
+
+    fn complete_first_pointer_evidence() -> OpenGpuiFirstPointerEvidence {
+        let fixture_count = product_fixture_catalog().len();
+        OpenGpuiFirstPointerEvidence {
+            fixture_count,
+            handle_first_connection_count: fixture_count,
+            node_body_drag_count: fixture_count,
+            node_body_connection_suppression_count: fixture_count,
+            control_shield_count: 1,
+            no_pointer_readiness_count: fixture_count,
+            dynamic_handle_freshness_count: 1,
+        }
+    }
+
+    fn complete_connection_release_evidence() -> OpenGpuiConnectionReleaseEvidence {
+        OpenGpuiConnectionReleaseEvidence {
+            valid_hover_feedback_checked: true,
+            invalid_hover_feedback_checked: true,
+            dropped_wire_release_from_handle_count: 1,
+            dropped_wire_release_from_body_count: 0,
+            dropped_wire_menu_action_count: 1,
+        }
+    }
+
+    fn mark_complete_product_interaction_evidence(
+        report: &mut OpenGpuiHostProductInteractionReport,
+    ) {
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
+        report.mark_port_handle_evidence(complete_port_handle_evidence());
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_first_pointer_evidence(complete_first_pointer_evidence());
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
+        report.mark_connection_release_evidence(complete_connection_release_evidence());
+    }
+
     #[test]
     fn helper_rejects_full_claim_without_layout_pass_mode() {
         let adapter = OpenGpuiAdapter::projection_fallback();
@@ -3785,16 +4005,7 @@ mod tests {
     #[test]
     fn product_interaction_gate_accepts_productized_report() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
-        report.mark_dense_surface_interaction_coverage(4, true, true, true);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
-        report.mark_connect_flow_store_synced(true);
-        report.mark_reconnect_affordance_visible(true);
-        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
-        report.mark_dropped_wire_gesture_connected(true);
-        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
+        mark_complete_product_interaction_evidence(&mut report);
         report.mark_repeatable_overflow(3, 1);
 
         assert_product_interaction_report_gates(&report);
@@ -3810,13 +4021,16 @@ mod tests {
             dense_surface_drag_exclusion_checked: true,
             dense_surface_keyboard_focus_checked: true,
             graph_menu_absence_checked: true,
+            port_handle_evidence: Some(complete_port_handle_evidence()),
             port_hotspot_path_checked: true,
+            first_pointer_evidence: Some(complete_first_pointer_evidence()),
             tool_switcher_visible: true,
             connect_flow_store_synced: true,
             reconnect_affordance_visible: false,
             reconnect_sequence_evidence: Some(complete_reconnect_sequence_evidence()),
             dropped_wire_gesture_connected: true,
             graph_affordance_evidence: Some(productized_graph_affordance_evidence()),
+            connection_release_evidence: Some(complete_connection_release_evidence()),
             hidden_repeatable_overflow_count: 0,
             repeatable_overflow_indicator_count: 0,
             gaps: BTreeSet::new(),
@@ -3837,16 +4051,8 @@ mod tests {
     #[test]
     fn product_interaction_gate_rejects_unresolved_product_gaps() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
-        report.mark_dense_surface_interaction_coverage(4, true, true, true);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
+        mark_complete_product_interaction_evidence(&mut report);
         report.mark_connect_flow_store_synced(false);
-        report.mark_reconnect_affordance_visible(true);
-        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
-        report.mark_dropped_wire_gesture_connected(true);
-        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(3, 0);
 
         let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
@@ -3859,16 +4065,8 @@ mod tests {
     #[test]
     fn product_interaction_gate_rejects_missing_dense_surface_evidence() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
+        mark_complete_product_interaction_evidence(&mut report);
         report.mark_dense_surface_interaction_coverage(2, true, false, false);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
-        report.mark_connect_flow_store_synced(true);
-        report.mark_reconnect_affordance_visible(true);
-        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
-        report.mark_dropped_wire_gesture_connected(true);
-        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(0, 0);
 
         assert!(
@@ -3896,15 +4094,8 @@ mod tests {
     #[test]
     fn product_interaction_gate_rejects_missing_graph_affordance_evidence() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
-        report.mark_dense_surface_interaction_coverage(4, true, true, true);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
-        report.mark_connect_flow_store_synced(true);
-        report.mark_reconnect_affordance_visible(true);
-        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
-        report.mark_dropped_wire_gesture_connected(true);
+        mark_complete_product_interaction_evidence(&mut report);
+        report.graph_affordance_evidence = None;
         report.mark_repeatable_overflow(0, 0);
 
         let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
@@ -3917,15 +4108,7 @@ mod tests {
     #[test]
     fn product_interaction_gate_rejects_direct_line_preview_fallback() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
-        report.mark_dense_surface_interaction_coverage(4, true, true, true);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
-        report.mark_connect_flow_store_synced(true);
-        report.mark_reconnect_affordance_visible(true);
-        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
-        report.mark_dropped_wire_gesture_connected(true);
+        mark_complete_product_interaction_evidence(&mut report);
 
         let mut evidence = productized_graph_affordance_evidence();
         evidence.connection_preview_policy =
@@ -3948,13 +4131,7 @@ mod tests {
     #[test]
     fn product_interaction_gate_rejects_incomplete_reconnect_sequence() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
-        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
-        report.mark_control_event_shielding_checked(true);
-        report.mark_dense_surface_interaction_coverage(4, true, true, true);
-        report.mark_port_hotspot_path_checked(true);
-        report.mark_tool_switcher_visible(true);
-        report.mark_connect_flow_store_synced(true);
-        report.mark_reconnect_affordance_visible(true);
+        mark_complete_product_interaction_evidence(&mut report);
         report.mark_reconnect_sequence_evidence(OpenGpuiReconnectSequenceEvidence {
             source_endpoint_switch_store_synced: true,
             target_endpoint_switch_store_synced: false,
@@ -3963,8 +4140,6 @@ mod tests {
             empty_reconnect_reports_drop: true,
             second_gesture_after_rejection_clears_planning_error: true,
         });
-        report.mark_dropped_wire_gesture_connected(true);
-        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
         report.mark_repeatable_overflow(0, 0);
 
         assert!(
@@ -3976,6 +4151,89 @@ mod tests {
         assert!(
             result.is_err(),
             "product interaction hard gate must fail until both endpoint switches and recovery paths are covered"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_incomplete_port_handle_evidence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        mark_complete_product_interaction_evidence(&mut report);
+        report.mark_port_handle_evidence(OpenGpuiPortHandleEvidence {
+            visible_port_marker_count: 4,
+            measured_anchor_count: 4,
+            canvas_handle_count: 4,
+            anchor_handle_match_count: 4,
+            hit_test_endpoint_match_count: 4,
+            edge_endpoint_match_count: 0,
+            minimum_hit_width: OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE,
+            minimum_hit_height: OPEN_GPUI_MIN_PRODUCT_PORT_HIT_SIZE,
+            stale_or_projected_port_count: 0,
+            disabled_or_missing_ports_non_connectable_checked: true,
+        });
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::PortHandleEvidenceIncomplete)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail when visible ports, measured handles, and edge endpoints do not align"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_incomplete_first_pointer_evidence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        mark_complete_product_interaction_evidence(&mut report);
+        let fixture_count = product_fixture_catalog().len();
+        report.mark_first_pointer_evidence(OpenGpuiFirstPointerEvidence {
+            fixture_count,
+            handle_first_connection_count: 0,
+            node_body_drag_count: fixture_count,
+            node_body_connection_suppression_count: fixture_count,
+            control_shield_count: 1,
+            no_pointer_readiness_count: fixture_count,
+            dynamic_handle_freshness_count: 1,
+        });
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::FirstPointerEvidenceMissing)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail when first pointer ownership can fall back to selection"
+        );
+    }
+
+    #[test]
+    fn product_interaction_gate_rejects_incomplete_connection_release_evidence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        mark_complete_product_interaction_evidence(&mut report);
+        report.mark_connection_release_evidence(OpenGpuiConnectionReleaseEvidence {
+            valid_hover_feedback_checked: true,
+            invalid_hover_feedback_checked: false,
+            dropped_wire_release_from_handle_count: 1,
+            dropped_wire_release_from_body_count: 0,
+            dropped_wire_menu_action_count: 1,
+        });
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::ConnectionReleaseEvidenceIncomplete)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail when connection release evidence omits invalid hover"
         );
     }
 
