@@ -69,9 +69,11 @@ pub use inspector::{
 pub use measurement::{
     OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
     OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
-    OpenGpuiMeasurementRevisionDecision, OpenGpuiMeasurementSource, OpenGpuiViewBounds,
-    OpenGpuiViewPoint, OpenGpuiViewSize, assign_layout_pass_measurement_revision,
-    layout_pass_measurement_from_regions, open_gpui_measurement_regions_match,
+    OpenGpuiMeasurementRevisionDecision, OpenGpuiMeasurementSource,
+    OpenGpuiProjectionFallbackStoreEvidence, OpenGpuiProjectionFallbackStoreSummary,
+    OpenGpuiProjectionMeasurementSource, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    assign_layout_pass_measurement_revision, layout_pass_measurement_from_regions,
+    open_gpui_measurement_regions_match,
 };
 pub use presets::{
     OpenGpuiConnectionPreviewPolicyEvidence, OpenGpuiGraphAffordanceEvidence,
@@ -105,7 +107,8 @@ pub use testing::{
     OpenGpuiHostProductInteractionGap, OpenGpuiHostProductInteractionReport,
     OpenGpuiHostRendererSource, OpenGpuiHostSurfaceReport, OpenGpuiHostSurfaceReportRow,
     OpenGpuiHostVisualInteractionGap, OpenGpuiHostVisualInteractionReport,
-    OpenGpuiHostVisualSurfaceRow, OpenGpuiMeasuredInternalsEvidence,
+    OpenGpuiHostVisualSurfaceRow, OpenGpuiMeasuredContentEvidence,
+    OpenGpuiMeasuredInternalsEvidence, OpenGpuiMeasuredInternalsEvidenceInput,
     OpenGpuiMeasuredInternalsSource, OpenGpuiNativeLifecycleEvidence, OpenGpuiNativeLifecycleGap,
     OpenGpuiProductFixtureCase, OpenGpuiProductFixtureFamily, OpenGpuiProductFixtureKind,
     OpenGpuiReconnectSequenceEvidence, OpenGpuiScreenshotFixtureEvidence,
@@ -115,5 +118,6 @@ pub use testing::{
     assert_native_lifecycle_evidence_gates, assert_product_gallery_host_report_gates,
     assert_product_interaction_characterization_report_contract,
     assert_product_interaction_report_gates, assert_screenshot_region_report_gates,
-    product_fixture_catalog,
+    open_gpui_measured_content_evidence_from_slots, open_gpui_measured_internals_evidence,
+    open_gpui_measured_region_kind_evidence, product_fixture_catalog,
 };

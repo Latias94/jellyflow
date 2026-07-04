@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use jellyflow::{
     core::{
-        CanvasRect, CanvasSize, DefaultTypeCompatibility, Edge, EdgeId, EdgeKind, Graph,
-        GraphBuilder, GraphId, GraphOp, GraphTransaction, Node, NodeId, NodeKindKey, PortId,
+        CanvasPoint, CanvasRect, CanvasSize, DefaultTypeCompatibility, Edge, EdgeId, EdgeKind,
+        Graph, GraphBuilder, GraphId, GraphOp, GraphTransaction, Node, NodeId, NodeKindKey, PortId,
         PortKey,
     },
     runtime::{
@@ -26,13 +26,13 @@ use crate::{
     OpenGpuiGraphAffordanceEvidence, OpenGpuiInspectorSurface, OpenGpuiInspectorTargetSource,
     OpenGpuiMeasuredRegion, OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage,
     OpenGpuiMeasurementId, OpenGpuiMeasurementMode, OpenGpuiNodeSurfaceLayout,
-    OpenGpuiRepeatableActionPlan, OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic,
-    OpenGpuiSizeEvidence, OpenGpuiStyleBudgetEvidence, OpenGpuiViewBounds, OpenGpuiViewPoint,
-    OpenGpuiViewSize, layout_pass_measurement_from_regions, measured_surface_anchors,
-    plan_repeatable_action, primitive_for_kind, project_actions_for_surface,
-    project_blackboards_for_descriptor, project_node_measurement, project_slot_controls,
-    projected_node_surface_graph_layout, repeatable_item_projection, repeatable_port_diagnostics,
-    resolve_inspector_target_bounds,
+    OpenGpuiProjectionMeasurementSource, OpenGpuiRepeatableActionPlan,
+    OpenGpuiRepeatableItemLayout, OpenGpuiRepeatablePortDiagnostic, OpenGpuiSizeEvidence,
+    OpenGpuiStyleBudgetEvidence, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    layout_pass_measurement_from_regions, measured_surface_anchors, plan_repeatable_action,
+    primitive_for_kind, project_actions_for_surface, project_blackboards_for_descriptor,
+    project_node_measurement, project_slot_controls, projected_node_surface_graph_layout,
+    repeatable_item_projection, repeatable_port_diagnostics, resolve_inspector_target_bounds,
 };
 
 pub fn assert_layout_pass_capability_requires_real_bounds(adapter: &OpenGpuiAdapter) {
@@ -306,6 +306,135 @@ impl OpenGpuiMeasuredInternalsEvidence {
 
     pub fn uses_projection_fallback(self) -> bool {
         self.node_bounds_source.is_projection_fallback() || self.projected_handle_count > 0
+    }
+}
+
+/// Widget-free readable/control coverage derived from measured product-node regions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenGpuiMeasuredContentEvidence {
+    pub text_overflow_count: usize,
+    pub clipped_control_count: usize,
+    pub readable_region_count: usize,
+    pub control_region_count: usize,
+    pub drag_exclusion_region_count: usize,
+    pub overflow_region_count: usize,
+}
+
+/// Builds content evidence from coverage only, for hosts that do not have slot geometry yet.
+pub fn open_gpui_measured_region_kind_evidence(
+    measurement_coverage: Option<&OpenGpuiMeasurementCoverage>,
+) -> OpenGpuiMeasuredContentEvidence {
+    measurement_coverage
+        .map(|coverage| OpenGpuiMeasuredContentEvidence {
+            text_overflow_count: 0,
+            clipped_control_count: 0,
+            readable_region_count: coverage.readable_regions,
+            control_region_count: coverage.control_regions,
+            drag_exclusion_region_count: coverage.drag_exclusion_regions,
+            overflow_region_count: coverage.overflow_regions,
+        })
+        .unwrap_or_default()
+}
+
+/// Builds content evidence from semantic slots plus widget-free measured-region coverage.
+pub fn open_gpui_measured_content_evidence_from_slots<'a>(
+    slots: impl IntoIterator<Item = &'a MeasuredSurfaceSlot>,
+    control_keys: &BTreeSet<String>,
+    measurement_coverage: Option<&OpenGpuiMeasurementCoverage>,
+    node_size: CanvasSize,
+) -> OpenGpuiMeasuredContentEvidence {
+    let mut evidence = open_gpui_measured_region_kind_evidence(measurement_coverage);
+    let has_measured_controls = evidence.control_region_count > 0;
+
+    for slot in slots.into_iter().filter(|slot| slot.is_visible()) {
+        if has_measured_controls && control_keys.contains(slot.key.as_str()) {
+            if !open_gpui_rect_inside_size(slot.rect, node_size) {
+                evidence.clipped_control_count += 1;
+            }
+        } else if !open_gpui_rect_inside_size(slot.rect, node_size) {
+            evidence.text_overflow_count += 1;
+        }
+    }
+
+    evidence
+}
+
+fn open_gpui_rect_inside_size(rect: CanvasRect, size: CanvasSize) -> bool {
+    rect.origin.x >= 0.0
+        && rect.origin.y >= 0.0
+        && rect.origin.x + rect.size.width <= size.width
+        && rect.origin.y + rect.size.height <= size.height
+        && rect.size.width > 0.0
+        && rect.size.height > 0.0
+}
+
+/// Widget-free input facts used to build measured-internals evidence for a product row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGpuiMeasuredInternalsEvidenceInput<'a> {
+    pub renderer_source: OpenGpuiHostRendererSource,
+    pub measurement_source: OpenGpuiProjectionMeasurementSource,
+    pub measurement_coverage: Option<&'a OpenGpuiMeasurementCoverage>,
+    pub node_bounds_present: bool,
+    pub measured_handle_count: usize,
+    pub measured_readable_regions: usize,
+    pub measured_control_regions: usize,
+    pub measured_drag_exclusion_regions: usize,
+    pub measured_overflow_regions: usize,
+    pub semantic_readable_region_count: usize,
+    pub fallback_stale_region_count: usize,
+    pub hidden_repeatable_overflow_count: usize,
+    pub repeatable_overflow_indicator_count: usize,
+}
+
+/// Builds widget-free evidence for whether a product node's internals are product-ready.
+pub fn open_gpui_measured_internals_evidence(
+    input: OpenGpuiMeasuredInternalsEvidenceInput<'_>,
+) -> OpenGpuiMeasuredInternalsEvidence {
+    let stale_region_count = input
+        .measurement_coverage
+        .map(|coverage| coverage.stale_regions)
+        .unwrap_or(input.fallback_stale_region_count);
+    let missing_required_overflow_count = usize::from(
+        input.hidden_repeatable_overflow_count > 0
+            && input.repeatable_overflow_indicator_count == 0,
+    );
+    let node_bounds_source = match input.measurement_source {
+        OpenGpuiProjectionMeasurementSource::FreshLayoutPass
+            if input.node_bounds_present
+                && input
+                    .measurement_coverage
+                    .is_some_and(|coverage| coverage.is_full_layout_pass()) =>
+        {
+            OpenGpuiMeasuredInternalsSource::LayoutPass
+        }
+        OpenGpuiProjectionMeasurementSource::ProjectionFallback => {
+            OpenGpuiMeasuredInternalsSource::ProjectionFallback
+        }
+        OpenGpuiProjectionMeasurementSource::Missing
+        | OpenGpuiProjectionMeasurementSource::FreshLayoutPass => {
+            OpenGpuiMeasuredInternalsSource::Missing
+        }
+    };
+    let readable_region_count =
+        if input.renderer_source == OpenGpuiHostRendererSource::ProductRenderer {
+            input.measured_readable_regions
+        } else {
+            input.semantic_readable_region_count
+        };
+
+    OpenGpuiMeasuredInternalsEvidence {
+        node_bounds_source,
+        node_bounds_present: input.node_bounds_present,
+        handle_bounds_present: input.measured_handle_count > 0,
+        measured_handle_count: input.measured_handle_count,
+        projected_handle_count: 0,
+        readable_region_count,
+        control_region_count: input.measured_control_regions,
+        drag_exclusion_region_count: input.measured_drag_exclusion_regions,
+        overflow_region_count: input.measured_overflow_regions,
+        stale_region_count,
+        component_declared_overflow_count: input.repeatable_overflow_indicator_count,
+        missing_required_overflow_count,
     }
 }
 
@@ -4186,6 +4315,94 @@ mod tests {
         assert!(
             row.computed_gaps()
                 .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete)
+        );
+    }
+
+    fn full_region_coverage() -> OpenGpuiMeasurementCoverage {
+        OpenGpuiMeasurementCoverage {
+            layout_pass_regions: 4,
+            projection_fallback_regions: 0,
+            missing_regions: 0,
+            stale_regions: 0,
+            partial_regions: 0,
+            duplicate_regions: 0,
+            measured_slots: 1,
+            measured_anchors: 1,
+            readable_regions: 1,
+            control_regions: 1,
+            drag_exclusion_regions: 1,
+            overflow_regions: 1,
+        }
+    }
+
+    #[test]
+    fn measured_content_evidence_uses_coverage_region_kinds() {
+        let prompt_slot = MeasuredSurfaceSlot::new(
+            "prompt",
+            CanvasRect {
+                origin: CanvasPoint { x: 8.0, y: 12.0 },
+                size: CanvasSize {
+                    width: 120.0,
+                    height: 24.0,
+                },
+            },
+        );
+        let control_keys = BTreeSet::from(["prompt".to_owned()]);
+        let node_size = CanvasSize {
+            width: 220.0,
+            height: 160.0,
+        };
+
+        let fallback_evidence = open_gpui_measured_content_evidence_from_slots(
+            [&prompt_slot],
+            &control_keys,
+            None,
+            node_size,
+        );
+        assert_eq!(fallback_evidence.control_region_count, 0);
+        assert_eq!(fallback_evidence.drag_exclusion_region_count, 0);
+
+        let layout_pass_evidence = open_gpui_measured_content_evidence_from_slots(
+            [&prompt_slot],
+            &control_keys,
+            Some(&full_region_coverage()),
+            node_size,
+        );
+        assert_eq!(layout_pass_evidence.readable_region_count, 1);
+        assert_eq!(layout_pass_evidence.control_region_count, 1);
+        assert_eq!(layout_pass_evidence.drag_exclusion_region_count, 1);
+        assert_eq!(layout_pass_evidence.overflow_region_count, 1);
+    }
+
+    #[test]
+    fn measured_internals_evidence_builder_downgrades_partial_layout_pass() {
+        let mut partial = full_region_coverage();
+        partial.projection_fallback_regions = 1;
+
+        let evidence =
+            open_gpui_measured_internals_evidence(OpenGpuiMeasuredInternalsEvidenceInput {
+                renderer_source: OpenGpuiHostRendererSource::ProductRenderer,
+                measurement_source: OpenGpuiProjectionMeasurementSource::FreshLayoutPass,
+                measurement_coverage: Some(&partial),
+                node_bounds_present: true,
+                measured_handle_count: 2,
+                measured_readable_regions: 1,
+                measured_control_regions: 1,
+                measured_drag_exclusion_regions: 1,
+                measured_overflow_regions: 1,
+                semantic_readable_region_count: 0,
+                fallback_stale_region_count: 0,
+                hidden_repeatable_overflow_count: 0,
+                repeatable_overflow_indicator_count: 0,
+            });
+
+        assert_eq!(
+            evidence.node_bounds_source,
+            OpenGpuiMeasuredInternalsSource::Missing
+        );
+        assert!(
+            !evidence.complete_for_product_renderer(),
+            "partial coverage must not be promoted to product-ready layout-pass internals"
         );
     }
 

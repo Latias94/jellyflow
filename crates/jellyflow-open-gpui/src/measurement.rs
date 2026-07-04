@@ -527,6 +527,55 @@ impl OpenGpuiMeasurementCoverage {
     }
 }
 
+/// Summary of how a host mixed live layout-pass measurements with projection fallback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpenGpuiProjectionFallbackStoreSummary {
+    pub fresh_live_measurements: usize,
+    pub projection_fallback_measurements: usize,
+}
+
+/// Source selected for a node's internals after a host resolves live measurements and fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenGpuiProjectionMeasurementSource {
+    FreshLayoutPass,
+    ProjectionFallback,
+    Missing,
+}
+
+/// Widget-free evidence for hosts that explicitly keep projection fallback separate from live bounds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenGpuiProjectionFallbackStoreEvidence {
+    pub summary: OpenGpuiProjectionFallbackStoreSummary,
+    pub fresh_nodes: Vec<NodeId>,
+    pub fallback_nodes: Vec<NodeId>,
+}
+
+impl OpenGpuiProjectionFallbackStoreEvidence {
+    pub fn record_fresh_live_measurement(&mut self, node_id: NodeId) {
+        self.fresh_nodes.push(node_id);
+        self.summary.fresh_live_measurements += 1;
+    }
+
+    pub fn record_projection_fallback_measurement(&mut self, node_id: NodeId) {
+        self.fallback_nodes.push(node_id);
+        self.summary.projection_fallback_measurements += 1;
+    }
+
+    pub fn node_uses_projection_fallback(&self, node_id: NodeId) -> bool {
+        self.fallback_nodes.contains(&node_id)
+    }
+
+    pub fn node_measurement_source(&self, node_id: NodeId) -> OpenGpuiProjectionMeasurementSource {
+        if self.fresh_nodes.contains(&node_id) {
+            OpenGpuiProjectionMeasurementSource::FreshLayoutPass
+        } else if self.fallback_nodes.contains(&node_id) {
+            OpenGpuiProjectionMeasurementSource::ProjectionFallback
+        } else {
+            OpenGpuiProjectionMeasurementSource::Missing
+        }
+    }
+}
+
 fn unique_positive_regions(
     regions: impl IntoIterator<Item = OpenGpuiMeasuredRegion>,
 ) -> impl Iterator<Item = OpenGpuiMeasuredRegion> {
@@ -974,6 +1023,34 @@ mod tests {
         assert_eq!(coverage.missing_regions, 1);
         assert_eq!(coverage.duplicate_regions, 1);
         assert!(!coverage.is_full_layout_pass());
+    }
+
+    #[test]
+    fn projection_fallback_store_evidence_classifies_nodes_separately() {
+        let fresh = NodeId::from_u128(1);
+        let fallback = NodeId::from_u128(2);
+        let missing = NodeId::from_u128(3);
+        let mut evidence = OpenGpuiProjectionFallbackStoreEvidence::default();
+
+        evidence.record_fresh_live_measurement(fresh);
+        evidence.record_projection_fallback_measurement(fallback);
+
+        assert_eq!(evidence.summary.fresh_live_measurements, 1);
+        assert_eq!(evidence.summary.projection_fallback_measurements, 1);
+        assert_eq!(
+            evidence.node_measurement_source(fresh),
+            OpenGpuiProjectionMeasurementSource::FreshLayoutPass
+        );
+        assert_eq!(
+            evidence.node_measurement_source(fallback),
+            OpenGpuiProjectionMeasurementSource::ProjectionFallback
+        );
+        assert_eq!(
+            evidence.node_measurement_source(missing),
+            OpenGpuiProjectionMeasurementSource::Missing
+        );
+        assert!(!evidence.node_uses_projection_fallback(fresh));
+        assert!(evidence.node_uses_projection_fallback(fallback));
     }
 
     #[test]
