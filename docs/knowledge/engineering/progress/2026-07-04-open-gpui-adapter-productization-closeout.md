@@ -20,15 +20,16 @@ No shared cross-framework widget crate was introduced.
 - U1 promoted widget-free projection fallback and measured internals evidence into `jellyflow-open-gpui`, then removed duplicate example-local classification logic.
 - U2 split host measurement/report responsibilities out of `canvas-jellyflow/src/main.rs` into focused bridge/report modules.
 - U3 consolidated product node atoms in `node_component_kit` and deleted duplicate renderer-local card, header, footer, anchor, repeatable chip, repeatable row, and layout constants.
-- U4 verified that product readiness is gated by semantic layout policy and explicit measured evidence, not string/text fit heuristics or projection fallback.
-- U5 verified mature graph interaction coverage for orthogonal route policy, port hit budgets, reconnect, dropped-wire release, invalid hover, and toolbar modes.
-- U6 verified product fixtures for Dify workflow, shader graph, ERD, and mind map/source cards, including non-overlapping initial layouts and reduced-card bounds.
+- U4 verified mature graph interaction coverage for orthogonal route policy, preview-route parity, port hit budgets, reconnect, dropped-wire release, invalid hover, and toolbar modes.
+- U5 verified Dify workflow and shader graph cards through host-local atoms, controls, dynamic repeatables, measured anchors, overflow affordances, and graph port binding evidence.
+- U6 verified ERD and mind map/source cards, including readable rows, measured overflow affordances, non-overlapping initial layouts, and reduced-card bounds.
 - U7 verified structured host surface, visual interaction, product interaction, native smoke, and screenshot ROI evidence gates.
 
 # Commits
 
 - Root Jellyflow: `b792c3a docs(plan): add open gpui adapter productization plan`
 - Root Jellyflow: `8cba813 feat(open-gpui): promote widget-free measurement evidence`
+- Root Jellyflow: `45460fe chore(open-gpui): close adapter productization work`
 - `repo-ref/open-gpui`: `8ae2708 refactor(jellyflow): consume adapter measurement evidence`
 - `repo-ref/open-gpui`: `561f790 refactor(jellyflow): extract host measurement reports`
 - `repo-ref/open-gpui`: `8538983 refactor(jellyflow): centralize product node atoms`

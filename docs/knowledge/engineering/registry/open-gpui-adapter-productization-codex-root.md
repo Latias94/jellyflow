@@ -4,13 +4,14 @@ title: "Open GPUI adapter productization"
 description: "Registration for Open GPUI adapter productization."
 timestamp: 2026-07-04T10:40:24Z
 status: "completed"
-last_seen: 2026-07-04T19:40:31+08:00
+last_seen: 2026-07-04T19:51:31+08:00
 producer_id: "codex-root"
 related_plan: "docs/plans/2026-07-04-001-feat-open-gpui-adapter-productization-plan.md"
 git_branch: "feat/xyflow-product-surface"
 root_commits:
   - "b792c3a docs(plan): add open gpui adapter productization plan"
   - "8cba813 feat(open-gpui): promote widget-free measurement evidence"
+  - "45460fe chore(open-gpui): close adapter productization work"
 open_gpui_commits:
   - "8ae2708 refactor(jellyflow): consume adapter measurement evidence"
   - "561f790 refactor(jellyflow): extract host measurement reports"
