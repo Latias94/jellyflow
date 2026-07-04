@@ -693,6 +693,10 @@ impl OpenGpuiHostVisualInteractionReport {
 pub enum OpenGpuiHostProductInteractionGap {
     DragSurfaceMissingFullPointerSequence,
     ControlEventShieldingUnchecked,
+    DenseSurfaceMissing,
+    DenseSurfaceDragExclusionUnchecked,
+    DenseSurfaceKeyboardShieldUnchecked,
+    GraphMenuAbsenceUnchecked,
     GraphAffordanceHitBudgetMissing,
     GraphAffordanceLayoutEvidenceMissing,
     GraphAffordanceRoutePolicyMissing,
@@ -736,6 +740,10 @@ pub struct OpenGpuiHostProductInteractionReport {
     pub product_drag_surface_count: usize,
     pub full_drag_pointer_sequence_checked: bool,
     pub control_event_shielding_checked: bool,
+    pub dense_surface_count: usize,
+    pub dense_surface_drag_exclusion_checked: bool,
+    pub dense_surface_keyboard_focus_checked: bool,
+    pub graph_menu_absence_checked: bool,
     pub port_hotspot_path_checked: bool,
     pub tool_switcher_visible: bool,
     pub connect_flow_store_synced: bool,
@@ -768,6 +776,36 @@ impl OpenGpuiHostProductInteractionReport {
         if !checked {
             self.gaps
                 .insert(OpenGpuiHostProductInteractionGap::ControlEventShieldingUnchecked);
+        }
+        self.sync_gaps();
+    }
+
+    pub fn mark_dense_surface_interaction_coverage(
+        &mut self,
+        dense_surface_count: usize,
+        drag_exclusion_checked: bool,
+        keyboard_focus_checked: bool,
+        graph_menu_absence_checked: bool,
+    ) {
+        self.dense_surface_count = dense_surface_count;
+        self.dense_surface_drag_exclusion_checked = drag_exclusion_checked;
+        self.dense_surface_keyboard_focus_checked = keyboard_focus_checked;
+        self.graph_menu_absence_checked = graph_menu_absence_checked;
+        if dense_surface_count < 3 {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::DenseSurfaceMissing);
+        }
+        if !drag_exclusion_checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::DenseSurfaceDragExclusionUnchecked);
+        }
+        if !keyboard_focus_checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::DenseSurfaceKeyboardShieldUnchecked);
+        }
+        if !graph_menu_absence_checked {
+            self.gaps
+                .insert(OpenGpuiHostProductInteractionGap::GraphMenuAbsenceUnchecked);
         }
         self.sync_gaps();
     }
@@ -869,6 +907,18 @@ impl OpenGpuiHostProductInteractionReport {
         }
         if !self.control_event_shielding_checked {
             gaps.insert(OpenGpuiHostProductInteractionGap::ControlEventShieldingUnchecked);
+        }
+        if self.dense_surface_count < 3 {
+            gaps.insert(OpenGpuiHostProductInteractionGap::DenseSurfaceMissing);
+        }
+        if !self.dense_surface_drag_exclusion_checked {
+            gaps.insert(OpenGpuiHostProductInteractionGap::DenseSurfaceDragExclusionUnchecked);
+        }
+        if !self.dense_surface_keyboard_focus_checked {
+            gaps.insert(OpenGpuiHostProductInteractionGap::DenseSurfaceKeyboardShieldUnchecked);
+        }
+        if !self.graph_menu_absence_checked {
+            gaps.insert(OpenGpuiHostProductInteractionGap::GraphMenuAbsenceUnchecked);
         }
         if !self.port_hotspot_path_checked {
             gaps.insert(OpenGpuiHostProductInteractionGap::PortHotspotPathMissing);
@@ -975,6 +1025,22 @@ pub fn assert_product_interaction_report_gates(report: &OpenGpuiHostProductInter
     assert!(
         report.control_event_shielding_checked,
         "product controls must prove they do not start node drags: {report:?}"
+    );
+    assert!(
+        report.dense_surface_count >= 3,
+        "inspector, blackboard, and menu surfaces must be represented in product interaction evidence: {report:?}"
+    );
+    assert!(
+        report.dense_surface_drag_exclusion_checked,
+        "dense editing surfaces must prove mouse-down drag exclusion: {report:?}"
+    );
+    assert!(
+        report.dense_surface_keyboard_focus_checked,
+        "dense editing surfaces must prove keyboard focus/shortcut shielding: {report:?}"
+    );
+    assert!(
+        report.graph_menu_absence_checked,
+        "product evidence must not report a fake graph menu when descriptors provide no graph-level action: {report:?}"
     );
     assert!(
         report.port_hotspot_path_checked,
@@ -1658,9 +1724,12 @@ pub struct OpenGpuiProductFixtureReport {
 pub struct OpenGpuiAuthoringInteractionReport {
     pub dropped_wire_actions: BTreeSet<String>,
     pub node_actions: BTreeSet<String>,
+    pub dense_surface_dispatch_paths: BTreeSet<&'static str>,
     pub inspector_target_sources: BTreeSet<&'static str>,
     pub inspector_actions: BTreeSet<String>,
     pub blackboard_actions: BTreeSet<String>,
+    pub graph_menu_action_count: usize,
+    pub graph_menu_absence_checked: bool,
     pub repeatable_mutations: BTreeSet<&'static str>,
     pub dynamic_repeatable_lifecycle: OpenGpuiDynamicRepeatableLifecycleReport,
     pub invalid_hover_rejections: usize,
@@ -2023,6 +2092,17 @@ pub fn assert_authoring_interaction_regression_gates() {
         "dropped-wire insert action must remain visible and dispatchable: {report:?}"
     );
     assert!(
+        report
+            .dense_surface_dispatch_paths
+            .is_superset(&BTreeSet::from([
+                "dropped-wire",
+                "node-menu",
+                "inspector",
+                "blackboard"
+            ])),
+        "dense inspector/blackboard/menu surfaces must expose real dispatch paths: {report:?}"
+    );
+    assert!(
         report.node_actions.contains("action.llm.run"),
         "node action dispatch evidence is missing: {report:?}"
     );
@@ -2041,6 +2121,14 @@ pub fn assert_authoring_interaction_regression_gates() {
             .blackboard_actions
             .contains("action.shader_property.add"),
         "blackboard action dispatch evidence is missing: {report:?}"
+    );
+    assert_eq!(
+        report.graph_menu_action_count, 0,
+        "builtin product fixtures should not fabricate graph-level actions: {report:?}"
+    );
+    assert!(
+        report.graph_menu_absence_checked,
+        "empty graph menus must be recorded as unsupported/absent, not as product evidence: {report:?}"
     );
     assert!(
         report.repeatable_mutations.is_superset(&BTreeSet::from([
@@ -2158,6 +2246,9 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
             .filter(|action| action.dispatchable())
             .map(|action| action.key.clone()),
     );
+    if dropped.enabled_actions().next().is_some() {
+        report.dense_surface_dispatch_paths.insert("dropped-wire");
+    }
 
     let node_menu = project_actions_for_surface(
         &llm,
@@ -2168,6 +2259,12 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
     report
         .node_actions
         .extend(node_menu.actions.iter().map(|action| action.key.clone()));
+    if crate::plan_action_dispatch(&node_menu, "action.llm.run").is_some() {
+        report.dense_surface_dispatch_paths.insert("node-menu");
+    }
+    report.graph_menu_action_count =
+        product_fixture_graph_menu_action_count(&kit_registry, &registry)?;
+    report.graph_menu_absence_checked = report.graph_menu_action_count == 0;
 
     let inspectors = crate::project_inspectors_for_surface(
         &llm,
@@ -2207,6 +2304,10 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
             .iter()
             .map(|action| action.key.clone()),
     );
+    if crate::plan_action_dispatch(&column_inspector.action_menu, "action.column.remove").is_some()
+    {
+        report.dense_surface_dispatch_paths.insert("inspector");
+    }
     let measured = CanvasRect {
         origin: jellyflow::core::CanvasPoint { x: 8.0, y: 52.0 },
         size: CanvasSize {
@@ -2238,13 +2339,20 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
     }
 
     let (shader_descriptor, _, shader_node, _) = schema_node_graph("demo.shader.mix")?;
+    let shader_blackboards =
+        project_blackboards_for_descriptor(&shader_descriptor, &shader_node.data);
     report.blackboard_actions.extend(
-        project_blackboards_for_descriptor(&shader_descriptor, &shader_node.data)
-            .into_iter()
-            .flat_map(|blackboard| blackboard.action_menu.actions.into_iter())
+        shader_blackboards
+            .iter()
+            .flat_map(|blackboard| blackboard.action_menu.actions.iter())
             .filter(|action| action.dispatchable())
-            .map(|action| action.key),
+            .map(|action| action.key.clone()),
     );
+    if shader_blackboards.iter().any(|blackboard| {
+        crate::plan_action_dispatch(&blackboard.action_menu, "action.shader_property.add").is_some()
+    }) {
+        report.dense_surface_dispatch_paths.insert("blackboard");
+    }
     report.dynamic_repeatable_lifecycle = dynamic_repeatable_lifecycle_report()?;
     report.repeatable_mutations.extend(
         report
@@ -2270,6 +2378,27 @@ pub fn authoring_interaction_report() -> Result<OpenGpuiAuthoringInteractionRepo
     report.invalid_hover_rejections += shader_invalid_hover_rejections(&kit_registry)?;
 
     Ok(report)
+}
+
+fn product_fixture_graph_menu_action_count(
+    kit_registry: &NodeKitRegistry,
+    registry: &NodeRegistry,
+) -> Result<usize, String> {
+    let mut action_count = 0;
+    for spec in product_fixture_catalog() {
+        let graph = kit_registry
+            .fixture_graph(&NodeKitKey::new(spec.kit_key), &spec.fixture_key)
+            .map_err(|error| error.to_string())?;
+        for node in graph.nodes().values() {
+            let Some(descriptor) = registry.view_descriptor(&node.kind) else {
+                continue;
+            };
+            action_count += project_actions_for_surface(&descriptor, &OpenGpuiActionSurface::Graph)
+                .actions
+                .len();
+        }
+    }
+    Ok(action_count)
 }
 
 fn schema_node_report(
@@ -3461,6 +3590,7 @@ mod tests {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
         report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
         report.mark_port_hotspot_path_checked(true);
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
@@ -3479,6 +3609,10 @@ mod tests {
             product_drag_surface_count: product_fixture_catalog().len(),
             full_drag_pointer_sequence_checked: true,
             control_event_shielding_checked: true,
+            dense_surface_count: 4,
+            dense_surface_drag_exclusion_checked: true,
+            dense_surface_keyboard_focus_checked: true,
+            graph_menu_absence_checked: true,
             port_hotspot_path_checked: true,
             tool_switcher_visible: true,
             connect_flow_store_synced: true,
@@ -3508,6 +3642,7 @@ mod tests {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
         report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
         report.mark_port_hotspot_path_checked(true);
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(false);
@@ -3525,10 +3660,48 @@ mod tests {
     }
 
     #[test]
+    fn product_interaction_gate_rejects_missing_dense_surface_evidence() {
+        let mut report = OpenGpuiHostProductInteractionReport::default();
+        report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
+        report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(2, true, false, false);
+        report.mark_port_hotspot_path_checked(true);
+        report.mark_tool_switcher_visible(true);
+        report.mark_connect_flow_store_synced(true);
+        report.mark_reconnect_affordance_visible(true);
+        report.mark_reconnect_sequence_evidence(complete_reconnect_sequence_evidence());
+        report.mark_dropped_wire_gesture_connected(true);
+        report.mark_graph_affordance_evidence(productized_graph_affordance_evidence());
+        report.mark_repeatable_overflow(0, 0);
+
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::DenseSurfaceMissing)
+        );
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::DenseSurfaceKeyboardShieldUnchecked)
+        );
+        assert!(
+            report
+                .gaps
+                .contains(&OpenGpuiHostProductInteractionGap::GraphMenuAbsenceUnchecked)
+        );
+        let result = std::panic::catch_unwind(|| assert_product_interaction_report_gates(&report));
+        assert!(
+            result.is_err(),
+            "product interaction hard gate must fail while dense surface evidence is incomplete"
+        );
+    }
+
+    #[test]
     fn product_interaction_gate_rejects_missing_graph_affordance_evidence() {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
         report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
         report.mark_port_hotspot_path_checked(true);
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
@@ -3549,6 +3722,7 @@ mod tests {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
         report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
         report.mark_port_hotspot_path_checked(true);
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
@@ -3579,6 +3753,7 @@ mod tests {
         let mut report = OpenGpuiHostProductInteractionReport::default();
         report.mark_drag_surface_coverage(product_fixture_catalog().len(), true);
         report.mark_control_event_shielding_checked(true);
+        report.mark_dense_surface_interaction_coverage(4, true, true, true);
         report.mark_port_hotspot_path_checked(true);
         report.mark_tool_switcher_visible(true);
         report.mark_connect_flow_store_synced(true);
