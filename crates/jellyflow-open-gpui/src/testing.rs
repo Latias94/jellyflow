@@ -4078,6 +4078,50 @@ mod tests {
     }
 
     #[test]
+    fn measured_internals_evidence_requires_explicit_drag_exclusion_regions() {
+        let evidence = OpenGpuiMeasuredInternalsEvidence {
+            node_bounds_source: OpenGpuiMeasuredInternalsSource::LayoutPass,
+            node_bounds_present: true,
+            handle_bounds_present: true,
+            measured_handle_count: 2,
+            projected_handle_count: 0,
+            readable_region_count: 3,
+            control_region_count: 2,
+            drag_exclusion_region_count: 0,
+            overflow_region_count: 0,
+            stale_region_count: 0,
+            component_declared_overflow_count: 0,
+            missing_required_overflow_count: 0,
+        };
+
+        assert!(
+            !evidence.complete(),
+            "control bounds must not be promoted into drag-exclusion evidence"
+        );
+        assert!(
+            !evidence.complete_for_product_renderer(),
+            "product internals must require explicit measured drag-exclusion regions"
+        );
+        let fixture = product_fixture_catalog()
+            .into_iter()
+            .find(|fixture| fixture.kind == OpenGpuiProductFixtureKind::DifyWorkflow)
+            .expect("Dify fixture");
+        let row = OpenGpuiHostVisualSurfaceRow::new(
+            &fixture,
+            "demo.decision",
+            "decision-card",
+            OpenGpuiHostRendererSource::ProductRenderer,
+        )
+        .with_content_bounds(true, true, true)
+        .with_measured_internals_evidence(evidence);
+
+        assert!(
+            row.computed_gaps()
+                .contains(&OpenGpuiHostVisualInteractionGap::MeasuredInternalsEvidenceIncomplete)
+        );
+    }
+
+    #[test]
     fn unregistered_renderer_measured_internals_do_not_require_control_regions() {
         let evidence = OpenGpuiMeasuredInternalsEvidence {
             node_bounds_source: OpenGpuiMeasuredInternalsSource::CanvasDocument,
