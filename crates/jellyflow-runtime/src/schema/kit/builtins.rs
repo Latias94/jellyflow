@@ -1026,7 +1026,7 @@ fn shader_mix_schema() -> NodeSchema {
             },
             CanvasSize {
                 width: 392.0,
-                height: 300.0,
+                height: 340.0,
             },
             3,
             2,

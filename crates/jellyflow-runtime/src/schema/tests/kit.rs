@@ -464,7 +464,7 @@ fn builtin_product_kits_expose_readable_layout_budgets() {
             },
             CanvasSize {
                 width: 392.0,
-                height: 300.0,
+                height: 340.0,
             },
             Some(3),
             Some(3),
