@@ -68,13 +68,15 @@ pub use inspector::{
     project_inspectors_for_surface, resolve_inspector_target_bounds,
 };
 pub use measurement::{
-    OpenGpuiBoundsCollector, OpenGpuiMeasuredRegion, OpenGpuiMeasuredRegionKind,
-    OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage, OpenGpuiMeasurementId,
-    OpenGpuiMeasurementRevisionDecision, OpenGpuiMeasurementSource,
-    OpenGpuiProjectionFallbackStoreEvidence, OpenGpuiProjectionFallbackStoreSummary,
-    OpenGpuiProjectionMeasurementSource, OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
+    OpenGpuiBoundsCollector, OpenGpuiInteractionRegionRole, OpenGpuiMeasuredRegion,
+    OpenGpuiMeasuredRegionKind, OpenGpuiMeasurementContext, OpenGpuiMeasurementCoverage,
+    OpenGpuiMeasurementId, OpenGpuiMeasurementRevisionDecision, OpenGpuiMeasurementSource,
+    OpenGpuiPortHandlePlan, OpenGpuiProjectionFallbackStoreEvidence,
+    OpenGpuiProjectionFallbackStoreSummary, OpenGpuiProjectionMeasurementSource,
+    OpenGpuiViewBounds, OpenGpuiViewPoint, OpenGpuiViewSize,
     assign_layout_pass_measurement_revision, layout_pass_measurement_from_regions,
-    open_gpui_measurement_regions_match,
+    open_gpui_interaction_region_roles, open_gpui_measurement_regions_match,
+    open_gpui_port_handle_plans,
 };
 pub use presets::{
     OpenGpuiConnectionPreviewPolicyEvidence, OpenGpuiGraphAffordanceEvidence,
@@ -93,7 +95,8 @@ pub use renderer::{
     OpenGpuiNodeRendererContext, OpenGpuiNodeRendererFallback, OpenGpuiNodeRendererFallbackReason,
     OpenGpuiNodeRendererHostContext, OpenGpuiNodeRendererOutput, OpenGpuiNodeRendererOutputSource,
     OpenGpuiNodeRendererRegistration, OpenGpuiNodeRendererRegistry, OpenGpuiNodeRendererResolution,
-    OpenGpuiNodeRendererState, OpenGpuiNodeRendererTable, open_gpui_node_renderer_context,
+    OpenGpuiNodeRendererState, OpenGpuiNodeRendererTable, OpenGpuiNodeSurfacePlan,
+    open_gpui_node_renderer_context, open_gpui_node_surface_plan,
     open_gpui_renderer_repeatable_items, open_gpui_renderer_repeatable_surfaces,
 };
 pub use repeatable::{

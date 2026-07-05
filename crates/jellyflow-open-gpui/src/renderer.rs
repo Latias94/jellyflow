@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use jellyflow::{
     core::{CanvasPoint, CanvasSize, Graph, Node, NodeId, NodeKindKey},
     runtime::{
-        runtime::connection::ConnectionHandleRef,
+        runtime::{connection::ConnectionHandleRef, measurement::NodeMeasurement},
         schema::{
             MenuSurface, NodeKindViewDescriptor, NodeSurfaceProjection, NodeSurfaceSlotDescriptor,
             NodeSurfaceSlotProjection,
@@ -244,6 +244,65 @@ pub struct OpenGpuiNodeRendererOutput<Output> {
 pub enum OpenGpuiNodeRendererOutputSource {
     Custom(OpenGpuiNodeRendererRegistration),
     Fallback(OpenGpuiNodeRendererFallback),
+}
+
+/// Widget-free surface plan shared by custom and fallback Open GPUI node renderers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenGpuiNodeSurfacePlan {
+    pub renderer_context: OpenGpuiNodeRendererContext,
+    pub measurement: Option<NodeMeasurement>,
+}
+
+impl OpenGpuiNodeSurfacePlan {
+    pub fn new(
+        renderer_context: OpenGpuiNodeRendererContext,
+        measurement: Option<NodeMeasurement>,
+    ) -> Self {
+        Self {
+            renderer_context,
+            measurement,
+        }
+    }
+
+    pub fn renderer_context(&self) -> &OpenGpuiNodeRendererContext {
+        &self.renderer_context
+    }
+
+    pub fn measurement(&self) -> Option<&NodeMeasurement> {
+        self.measurement.as_ref()
+    }
+
+    pub fn surface_slots(&self) -> &[NodeSurfaceSlotProjection] {
+        &self.renderer_context.surface_slots
+    }
+
+    pub fn slot_descriptors(&self) -> &[NodeSurfaceSlotDescriptor] {
+        &self.renderer_context.slot_descriptors
+    }
+
+    pub fn repeatables(&self) -> &[OpenGpuiRepeatableSurfaceLayout] {
+        &self.renderer_context.repeatables
+    }
+
+    pub fn repeatable_items(&self) -> &[OpenGpuiRepeatableItemLayout] {
+        &self.renderer_context.repeatable_items
+    }
+
+    pub fn action_menus(&self) -> &[OpenGpuiMenuPlan] {
+        &self.renderer_context.action_menus
+    }
+
+    pub fn toolbar_menu(&self) -> &OpenGpuiMenuPlan {
+        &self.renderer_context.toolbar_menu
+    }
+
+    pub fn slot_measurement_id(&self, slot_key: impl Into<String>) -> OpenGpuiMeasurementId {
+        self.renderer_context.slot_measurement_id(slot_key)
+    }
+
+    pub fn anchor_measurement_id(&self, anchor_key: impl Into<String>) -> OpenGpuiMeasurementId {
+        self.renderer_context.anchor_measurement_id(anchor_key)
+    }
 }
 
 /// Host-owned services plus semantic renderer context for one resolved node renderer.
@@ -675,6 +734,30 @@ pub fn open_gpui_node_renderer_context(
     )
 }
 
+pub fn open_gpui_node_surface_plan(
+    node_id: NodeId,
+    node: &Node,
+    graph: &Graph,
+    descriptor: &NodeKindViewDescriptor,
+    state: OpenGpuiNodeRendererState,
+    surface_projection: NodeSurfaceProjection,
+    surface_slots: Vec<NodeSurfaceSlotProjection>,
+    measurement: Option<NodeMeasurement>,
+) -> OpenGpuiNodeSurfacePlan {
+    OpenGpuiNodeSurfacePlan::new(
+        open_gpui_node_renderer_context(
+            node_id,
+            node,
+            graph,
+            descriptor,
+            state,
+            surface_projection,
+            surface_slots,
+        ),
+        measurement,
+    )
+}
+
 pub fn open_gpui_renderer_repeatable_surfaces(
     descriptor: &NodeKindViewDescriptor,
     data: &Value,
@@ -949,6 +1032,30 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn node_surface_plan_preserves_renderer_context_facts_for_custom_and_fallback_paths() {
+        let context = renderer_context("demo.shader.mix");
+        let measurement = NodeMeasurement::new(context.node_id);
+        let plan = OpenGpuiNodeSurfacePlan::new(context.clone(), Some(measurement.clone()));
+
+        assert_eq!(plan.renderer_context(), &context);
+        assert_eq!(plan.measurement(), Some(&measurement));
+        assert_eq!(plan.surface_slots(), context.surface_slots.as_slice());
+        assert_eq!(plan.slot_descriptors(), context.slot_descriptors.as_slice());
+        assert_eq!(plan.repeatables(), context.repeatables.as_slice());
+        assert_eq!(plan.repeatable_items(), context.repeatable_items.as_slice());
+        assert_eq!(plan.action_menus(), context.action_menus.as_slice());
+        assert_eq!(plan.toolbar_menu(), &context.toolbar_menu);
+        assert_eq!(
+            plan.slot_measurement_id("shader.inputs"),
+            context.slot_measurement_id("shader.inputs")
+        );
+        assert_eq!(
+            plan.anchor_measurement_id("rail.outputs.result"),
+            context.anchor_measurement_id("rail.outputs.result")
+        );
     }
 
     fn renderer_context(kind: &str) -> OpenGpuiNodeRendererContext {

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortId, PortKey};
 use jellyflow::runtime::runtime::measurement::{
     MeasuredSurfaceAnchor, MeasuredSurfaceSlot, NodeMeasurement, NodeMeasurementStatus,
 };
@@ -84,6 +84,79 @@ impl OpenGpuiMeasuredRegionKind {
             | Self::Overflow { key } => key,
         }
     }
+
+    pub fn interaction_role(&self) -> OpenGpuiInteractionRegionRole {
+        match self {
+            Self::Anchor { .. } => OpenGpuiInteractionRegionRole::PortHandle,
+            Self::Control { .. } | Self::DragExclusion { .. } => {
+                OpenGpuiInteractionRegionRole::ControlShield
+            }
+            Self::Overflow { .. } => OpenGpuiInteractionRegionRole::OverflowAction,
+            Self::Slot { .. } | Self::RepeatableItem { .. } | Self::Readable { .. } => {
+                OpenGpuiInteractionRegionRole::ReadableContent
+            }
+        }
+    }
+}
+
+/// Product-region role used by Open GPUI hosts to map widget-local regions into graph gestures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpenGpuiInteractionRegionRole {
+    SurfacePointer,
+    ControlShield,
+    PortHandle,
+    ReadableContent,
+    OverflowAction,
+}
+
+pub fn open_gpui_interaction_region_roles() -> [OpenGpuiInteractionRegionRole; 5] {
+    [
+        OpenGpuiInteractionRegionRole::SurfacePointer,
+        OpenGpuiInteractionRegionRole::ControlShield,
+        OpenGpuiInteractionRegionRole::PortHandle,
+        OpenGpuiInteractionRegionRole::ReadableContent,
+        OpenGpuiInteractionRegionRole::OverflowAction,
+    ]
+}
+
+/// Widget-free plan for one node-local port handle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenGpuiPortHandlePlan {
+    pub node: NodeId,
+    pub anchor: String,
+    pub port: Option<PortId>,
+    pub port_key: Option<PortKey>,
+    pub measurement_id: OpenGpuiMeasurementId,
+    pub measured_anchor: MeasuredSurfaceAnchor,
+    pub role: OpenGpuiInteractionRegionRole,
+    pub connectable: bool,
+}
+
+impl OpenGpuiPortHandlePlan {
+    pub fn from_measured_anchor(node: NodeId, anchor: MeasuredSurfaceAnchor) -> Self {
+        let measurement_id = OpenGpuiMeasurementId::anchor(node, anchor.anchor.clone());
+        let connectable = anchor.is_visible() && anchor.port.is_some();
+        Self {
+            node,
+            anchor: anchor.anchor.clone(),
+            port: anchor.port,
+            port_key: anchor.port_key.clone(),
+            measurement_id,
+            measured_anchor: anchor,
+            role: OpenGpuiInteractionRegionRole::PortHandle,
+            connectable,
+        }
+    }
+}
+
+pub fn open_gpui_port_handle_plans(
+    node: NodeId,
+    anchors: impl IntoIterator<Item = MeasuredSurfaceAnchor>,
+) -> Vec<OpenGpuiPortHandlePlan> {
+    anchors
+        .into_iter()
+        .map(|anchor| OpenGpuiPortHandlePlan::from_measured_anchor(node, anchor))
+        .collect()
 }
 
 /// Stable semantic identifier attached to a GPUI measured element.
@@ -175,6 +248,10 @@ impl OpenGpuiMeasurementId {
         &self.kind
     }
 
+    pub fn interaction_role(&self) -> OpenGpuiInteractionRegionRole {
+        self.kind.interaction_role()
+    }
+
     pub fn element_id(&self) -> String {
         match &self.kind {
             OpenGpuiMeasuredRegionKind::Slot { key } => {
@@ -258,6 +335,10 @@ impl OpenGpuiMeasuredRegion {
     pub fn for_node(mut self, node: NodeId) -> Self {
         self.node = Some(node);
         self
+    }
+
+    pub fn interaction_role(&self) -> OpenGpuiInteractionRegionRole {
+        self.kind.interaction_role()
     }
 }
 
@@ -713,6 +794,82 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].kind.key(), "prompt");
         assert_eq!(regions[0].bounds.size.width, 80.0);
+    }
+
+    #[test]
+    fn measured_region_kind_maps_to_interaction_role() {
+        assert_eq!(
+            OpenGpuiMeasuredRegionKind::Anchor {
+                key: "out".to_string()
+            }
+            .interaction_role(),
+            OpenGpuiInteractionRegionRole::PortHandle
+        );
+        assert_eq!(
+            OpenGpuiMeasuredRegionKind::Control {
+                key: "model".to_string(),
+                scope: Some("field.config".to_string()),
+            }
+            .interaction_role(),
+            OpenGpuiInteractionRegionRole::ControlShield
+        );
+        assert_eq!(
+            OpenGpuiMeasuredRegionKind::DragExclusion {
+                key: "prompt".to_string()
+            }
+            .interaction_role(),
+            OpenGpuiInteractionRegionRole::ControlShield
+        );
+        assert_eq!(
+            OpenGpuiMeasuredRegionKind::Overflow {
+                key: "shader.inputs".to_string()
+            }
+            .interaction_role(),
+            OpenGpuiInteractionRegionRole::OverflowAction
+        );
+        assert_eq!(
+            OpenGpuiMeasuredRegionKind::Slot {
+                key: "title".to_string()
+            }
+            .interaction_role(),
+            OpenGpuiInteractionRegionRole::ReadableContent
+        );
+    }
+
+    #[test]
+    fn port_handle_plan_requires_visible_graph_bound_port() {
+        let node = NodeId::from_u128(42);
+        let rect = CanvasRect {
+            origin: CanvasPoint { x: 10.0, y: 20.0 },
+            size: CanvasSize {
+                width: 8.0,
+                height: 18.0,
+            },
+        };
+        let connected = MeasuredSurfaceAnchor::new("field.out", rect, HandlePosition::Right)
+            .with_port(PortId::from_u128(7))
+            .with_port_key("out");
+        let missing_graph_port =
+            MeasuredSurfaceAnchor::new("field.missing", rect, HandlePosition::Left)
+                .with_port_key("missing");
+        let hidden = MeasuredSurfaceAnchor::new("field.hidden", rect, HandlePosition::Left)
+            .with_port(PortId::from_u128(8))
+            .with_port_key("hidden")
+            .with_visibility(jellyflow::runtime::schema::NodeSurfaceSlotVisibility::Hidden);
+
+        let plans = open_gpui_port_handle_plans(node, [connected, missing_graph_port, hidden]);
+
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[0].role, OpenGpuiInteractionRegionRole::PortHandle);
+        assert_eq!(
+            plans[0].measurement_id,
+            OpenGpuiMeasurementId::anchor(node, "field.out")
+        );
+        assert!(plans[0].connectable);
+        assert_eq!(plans[0].port_key, Some(PortKey::new("out")));
+        assert!(!plans[1].connectable);
+        assert_eq!(plans[1].port_key, Some(PortKey::new("missing")));
+        assert!(!plans[2].connectable);
     }
 
     #[test]
