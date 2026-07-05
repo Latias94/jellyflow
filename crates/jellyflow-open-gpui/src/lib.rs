@@ -54,6 +54,7 @@ pub use element_ids::{
     open_gpui_control_element_id, open_gpui_custom_action_missing_element_id,
     open_gpui_custom_renderer_badge_element_id, open_gpui_custom_repeatables_badge_element_id,
     open_gpui_custom_slots_badge_element_id, open_gpui_node_element_scope,
+    open_gpui_node_surface_wrapper_element_id, open_gpui_product_card_element_id,
     open_gpui_repeatable_add_action_element_id, open_gpui_repeatable_collection_element_id,
     open_gpui_repeatable_item_element_id, open_gpui_repeatable_remove_action_element_id,
     open_gpui_repeatable_reorder_action_element_id, open_gpui_slot_action_button_element_id,

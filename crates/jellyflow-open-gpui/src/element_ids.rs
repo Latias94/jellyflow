@@ -82,6 +82,25 @@ pub fn open_gpui_chrome_fallback_button_element_id(
     )
 }
 
+pub fn open_gpui_node_surface_wrapper_element_id(
+    node_id: NodeId,
+    renderer_key: impl AsRef<str>,
+) -> String {
+    format!(
+        "jellyflow-node-surface:{}:{}",
+        node_id.0,
+        id_segment(renderer_key)
+    )
+}
+
+pub fn open_gpui_product_card_element_id(node_id: NodeId, renderer_key: impl AsRef<str>) -> String {
+    format!(
+        "jellyflow-product-card:{}:{}",
+        node_id.0,
+        id_segment(renderer_key)
+    )
+}
+
 pub fn open_gpui_slot_badge_element_id(node_id: NodeId, slot_key: impl AsRef<str>) -> String {
     format!(
         "jellyflow-slot-badge:{}:{}",
@@ -268,6 +287,14 @@ mod tests {
             open_gpui_chrome_fallback_button_element_id(first, "demo.llm"),
             open_gpui_chrome_fallback_button_element_id(second, "demo.llm")
         );
+        assert_ne!(
+            open_gpui_node_surface_wrapper_element_id(first, "decision-card"),
+            open_gpui_node_surface_wrapper_element_id(second, "decision-card")
+        );
+        assert_ne!(
+            open_gpui_product_card_element_id(first, "decision-card"),
+            open_gpui_product_card_element_id(second, "decision-card")
+        );
     }
 
     #[test]
@@ -320,6 +347,14 @@ mod tests {
             open_gpui_repeatable_item_element_id(node, "items:a", "b"),
             open_gpui_repeatable_item_element_id(node, "items", "a:b")
         );
+        assert_ne!(
+            open_gpui_node_surface_wrapper_element_id(node, "renderer:a"),
+            open_gpui_node_surface_wrapper_element_id(node, "renderer:a:")
+        );
+        assert_ne!(
+            open_gpui_product_card_element_id(node, "renderer:a"),
+            open_gpui_product_card_element_id(node, "renderer:a:")
+        );
     }
 
     #[test]
@@ -327,6 +362,20 @@ mod tests {
         assert_ne!(
             open_gpui_custom_renderer_badge_element_id(NodeId::from_u128(1), "decision-card"),
             open_gpui_custom_renderer_badge_element_id(NodeId::from_u128(2), "decision-card")
+        );
+    }
+
+    #[test]
+    fn node_surface_ids_change_with_renderer_key() {
+        let node = NodeId::from_u128(1);
+
+        assert_ne!(
+            open_gpui_node_surface_wrapper_element_id(node, "decision-card"),
+            open_gpui_node_surface_wrapper_element_id(node, "table-card")
+        );
+        assert_ne!(
+            open_gpui_product_card_element_id(node, "decision-card"),
+            open_gpui_product_card_element_id(node, "table-card")
         );
     }
 }
