@@ -17,19 +17,22 @@ stability, and low-zoom degradation without adding backend workflow execution.
 
 The Open GPUI gallery is the first mature adapter surface. It is intentionally host-local:
 `jellyflow-open-gpui` owns widget-free renderer plans, authoring plans, ids, measurement facts, and
-structured reports; `repo-ref/open-gpui/examples/canvas-jellyflow` owns concrete Open GPUI
+structured reports; `examples/canvas-jellyflow` owns concrete Open GPUI
 components and product renderers.
+The example is intentionally outside the root workspace and currently depends on
+a pinned Open GPUI git revision until the required `open-gpui-*` 0.2 crates are
+published.
 
 Run the gallery:
 
 ```sh
-cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml
 ```
 
 The local component kit lives at
-`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`. Product renderers live at
-`repo-ref/open-gpui/examples/canvas-jellyflow/src/product_renderers.rs`, and the gallery fixture
-catalog lives at `repo-ref/open-gpui/examples/canvas-jellyflow/src/product_gallery.rs`.
+`examples/canvas-jellyflow/src/node_component_kit.rs`. Product renderers live at
+`examples/canvas-jellyflow/src/product_renderers.rs`, and the gallery fixture
+catalog lives at `examples/canvas-jellyflow/src/product_gallery.rs`.
 
 ## Verification
 
@@ -41,12 +44,12 @@ cargo test -p jellyflow-egui all_sample_graphs_build_with_nodes_edges_and_defaul
 cargo test -p jellyflow-egui product_samples_reuse_edge_metadata_and_port_descriptors
 cargo test -p jellyflow-proof --example adapter_smoke
 cargo test --manifest-path templates/headless-adapter/Cargo.toml
-RUSTFLAGS='-Awarnings' cargo test --quiet --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast --status-level fail --final-status-level fail -E 'not test(gallery_screenshot::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips)'
 ```
 
 The examples are intentionally frontend/headless. They do not execute LLM calls, shader compilers,
 database queries, sync engines, schedulers, or collaboration backends.
 
 When the local Open GPUI headless renderer supports capture, the `canvas-jellyflow` bin tests also
-export review screenshots to `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`. Those PNGs
+export review screenshots to `target/open-gpui-jellyflow-gallery/`. Those PNGs
 are smoke artifacts only; geometry/capability/interaction reports are the hard regression gate.

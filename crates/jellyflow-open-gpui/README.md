@@ -49,7 +49,7 @@ own component tree.
 ## Node Component Kit Recipe
 
 Open GPUI node-internal UI is now proven through a host-local component kit in
-`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`.
+`examples/canvas-jellyflow/src/node_component_kit.rs`.
 That module is intentionally not a shared widget crate. It is the reference
 consumer for Open GPUI apps that want Dify-style cards, shader/material rows,
 ERD fields, or mind-map previews while keeping runtime descriptors headless.
@@ -101,7 +101,7 @@ The boundary is:
 - `jellyflow-open-gpui` owns adapter facts: renderer registration, stable ids,
   authoring plans, measurement ids, coverage reports, product fixture reports,
   graph affordance evidence, and hard regression gates.
-- `repo-ref/open-gpui/examples/canvas-jellyflow` owns concrete Open GPUI
+- `examples/canvas-jellyflow` owns concrete Open GPUI
   widgets, focus/popup lifecycle, pointer shielding, `measured_element`
   collection, local node component atoms, renderer layout, screenshots, and
   native app lifecycle smoke tests.
@@ -141,7 +141,7 @@ dirty after a node-internal edit, duplicated, zero-sized, or hidden by density,
 the adapter must report projection/partial coverage instead of presenting the
 data as full layout-pass support. Runtime/core/layout crates remain toolkit-free;
 Open GPUI-specific widgets and measurement plumbing stay in this crate and the
-`repo-ref/open-gpui/examples/canvas-jellyflow` consumer fixture.
+`examples/canvas-jellyflow` consumer fixture.
 
 Product visual proof must be sourced from measured regions, not inferred from
 semantic projection, renderer presets, control counts, or string/fit estimates.
@@ -175,7 +175,7 @@ capture, reconnect handles, and connection release events belong to
 contract and report gates.
 
 The host-local product renderer layer may use layout primitives from
-`repo-ref/open-gpui/examples/canvas-jellyflow/src/node_component_kit.rs`, but
+`examples/canvas-jellyflow/src/node_component_kit.rs`, but
 those primitives are product component code. They can decide how Dify, shader,
 ERD, topic, and source cards degrade, clamp, or reveal overflow, while the
 adapter only consumes explicit measured internals and component-declared
@@ -218,22 +218,25 @@ They also require graph affordance evidence for product route/preview policy,
 port and reconnect hit budgets, drag-region coverage, and readable adaptive
 layout coverage.
 
-The Open GPUI gallery lives in `repo-ref/open-gpui/examples/canvas-jellyflow`.
+The Open GPUI gallery lives in `examples/canvas-jellyflow`.
+It is outside the root Jellyflow workspace and currently uses a pinned Open GPUI
+git revision until the required `open-gpui-*` 0.2 crates are available from the
+registry.
 Run it with:
 
 ```sh
-cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow
 ```
 
 The hard structured gate is:
 
 ```sh
-cargo nextest run -p jellyflow-open-gpui --no-fail-fast
-cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo nextest run -p jellyflow-open-gpui --no-fail-fast --status-level fail --final-status-level fail
+RUSTFLAGS='-Awarnings' cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast --status-level fail --final-status-level fail -E 'not test(gallery_screenshot::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips)'
 ```
 
 The gallery also has a test-only screenshot smoke exporter. When the platform
 has a headless renderer, the bin tests write nonblank PNG review artifacts under
-`repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`. These screenshots are
+`target/open-gpui-jellyflow-gallery/`. These screenshots are
 supporting evidence only; structured geometry, capability, and interaction
 reports remain the correctness gate.

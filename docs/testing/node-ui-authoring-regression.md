@@ -21,33 +21,33 @@ Run these as the focused authoring regression gate:
 cargo test -p jellyflow-egui --lib -- --nocapture
 cargo nextest run -p jellyflow-open-gpui --no-fail-fast
 cargo run -p jellyflow-egui --example gallery_snapshot -- target/jellyflow-egui-gallery
-cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast --status-level fail --final-status-level fail -E 'not test(gallery_screenshot::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips)'
 ```
 
 The broad plan gate still includes runtime, proof, template, examples, GPUI check, and format
 commands from `docs/plans/2026-06-30-001-feat-node-ui-authoring-contracts-plan.md`.
 Open GPUI screenshot smoke artifacts, when the local headless renderer supports capture, are written
-under `repo-ref/open-gpui/target/open-gpui-jellyflow-gallery/`. The exporter now pairs those PNGs
+under `target/open-gpui-jellyflow-gallery/`. The exporter now pairs those PNGs
 with coarse product-region evidence for node bodies, node-internal UI, wire paths, and port areas.
 
 For the Open GPUI canvas/node-UI foundation gate, run the broader set:
 
 ```sh
 cargo fmt --all -- --check
-cargo fmt --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml -- --check
+cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 git diff --check
 git -C repo-ref/open-gpui diff --check
 cargo nextest run -p jellyflow-open-gpui --no-fail-fast
 cargo nextest run -p jellyflow-runtime -p jellyflow-egui -p jellyflow-proof --lib --no-fail-fast
 cargo test -p jellyflow-runtime --test public_surface -- --nocapture
-cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --no-fail-fast --status-level fail --final-status-level fail -E 'not test(gallery_screenshot::product_gallery_screenshot_exporter_writes_nonblank_pngs_or_skips)'
 ```
 
 Native lifecycle smoke now has a structured Open GPUI test gate:
 
 ```sh
 cargo test --manifest-path repo-ref/open-gpui/crates/gpui/Cargo.toml test_simulate_window_close_honors_last_window_quit_mode -- --nocapture
-cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders product_gallery_native_smoke -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow product_gallery_native_smoke -- --nocapture --test-threads=1
 ```
 
 This gate uses `TestAppContext::simulate_window_close` to exercise the App-side window removal path
@@ -60,7 +60,7 @@ Screenshot smoke now has a structured region-evidence gate:
 
 ```sh
 cargo test -p jellyflow-open-gpui screenshot_region -- --nocapture
-cargo test --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders screenshot -- --nocapture --test-threads=1
+RUSTFLAGS='-Awarnings' cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow screenshot -- --nocapture --test-threads=1
 ```
 
 `OpenGpuiScreenshotRegionReport` distinguishes skipped capture, blank/single-color captures,
@@ -70,7 +70,7 @@ review aids; the hard claim is the serializable adapter evidence, not pixel-gold
 Native review smoke remains a manual macOS launch check for the real windowing shell:
 
 ```sh
-cargo run --manifest-path repo-ref/open-gpui/examples/canvas-jellyflow/Cargo.toml --features open_gpui_platform/runtime_shaders --bin open-gpui-canvas-jellyflow
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow
 ```
 
 For that smoke, verify the product gallery launches, Dify/shader/ERD/mind-map nodes render with
