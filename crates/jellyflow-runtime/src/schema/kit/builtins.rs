@@ -1290,6 +1290,19 @@ fn mind_idea_schema() -> NodeSchema {
             width: 176.0,
             height: 76.0,
         })
+        .layout_budget(product_layout_budget(
+            CanvasSize {
+                width: 248.0,
+                height: 132.0,
+            },
+            CanvasSize {
+                width: 280.0,
+                height: 156.0,
+            },
+            2,
+            1,
+            None,
+        ))
         .port(input_port("in"))
         .port(output_port("out"))
         .surface_slot(

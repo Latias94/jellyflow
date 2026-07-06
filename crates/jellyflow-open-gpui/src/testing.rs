@@ -3759,7 +3759,7 @@ impl ProductFixtureSpec {
                 family: OpenGpuiProductFixtureFamily::MindMap,
                 kit_key: "mind-map.knowledge-canvas",
                 fixture_key: "mind-map.strategy",
-                expected_renderer_keys: &["topic-card", "source-card"],
+                expected_renderer_keys: &["topic-card", "idea-card", "source-card"],
                 expected_capabilities: &["controls", "preview", "shell", "actions"],
             },
         }
@@ -3894,6 +3894,7 @@ mod tests {
             fixture.id == "mind-map.strategy"
                 && fixture.family == OpenGpuiProductFixtureFamily::MindMap
                 && fixture.expected_renderer_keys.contains("topic-card")
+                && fixture.expected_renderer_keys.contains("idea-card")
                 && fixture.expected_renderer_keys.contains("source-card")
         }));
 
