@@ -265,32 +265,26 @@ fn repeatable_item_action_parts(
     use jellyflow::runtime::schema::{ActionIntent, ActionTarget};
 
     match intent {
-        ActionIntent::RemoveRepeatableItem { collection_key, .. } => {
-            let collection_key = collection_key;
-            (
-                ActionTarget::RepeatableItem {
-                    collection_key: repeatable.collection.key.clone(),
-                    item_id: repeatable.item_id.clone(),
-                },
-                ActionIntent::RemoveRepeatableItem {
-                    collection_key,
-                    item_id: repeatable.item_id.clone(),
-                },
-            )
-        }
-        ActionIntent::ReorderRepeatableItem { collection_key, .. } => {
-            let collection_key = collection_key;
-            (
-                ActionTarget::RepeatableItem {
-                    collection_key: repeatable.collection.key.clone(),
-                    item_id: repeatable.item_id.clone(),
-                },
-                ActionIntent::ReorderRepeatableItem {
-                    collection_key,
-                    item_id: repeatable.item_id.clone(),
-                },
-            )
-        }
+        ActionIntent::RemoveRepeatableItem { collection_key, .. } => (
+            ActionTarget::RepeatableItem {
+                collection_key: repeatable.collection.key.clone(),
+                item_id: repeatable.item_id.clone(),
+            },
+            ActionIntent::RemoveRepeatableItem {
+                collection_key,
+                item_id: repeatable.item_id.clone(),
+            },
+        ),
+        ActionIntent::ReorderRepeatableItem { collection_key, .. } => (
+            ActionTarget::RepeatableItem {
+                collection_key: repeatable.collection.key.clone(),
+                item_id: repeatable.item_id.clone(),
+            },
+            ActionIntent::ReorderRepeatableItem {
+                collection_key,
+                item_id: repeatable.item_id.clone(),
+            },
+        ),
         other => (target, other),
     }
 }

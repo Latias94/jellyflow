@@ -323,20 +323,15 @@ impl NodeControlOption {
 }
 
 /// Renderer-neutral option source for controls whose choices are adapter or graph supplied.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "key")]
 pub enum NodeControlOptionSource {
+    #[default]
     Inline,
     Variables,
     Assets,
     Ports,
     Custom(String),
-}
-
-impl Default for NodeControlOptionSource {
-    fn default() -> Self {
-        Self::Inline
-    }
 }
 
 fn node_control_option_source_is_default(value: &NodeControlOptionSource) -> bool {

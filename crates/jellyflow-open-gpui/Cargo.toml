@@ -21,3 +21,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"

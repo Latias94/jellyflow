@@ -8,8 +8,8 @@ use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, Node, NodeId};
 use jellyflow::runtime::schema::{
     NodeControlBinding, NodeControlBindingSource, NodeControlDescriptor, NodeControlKind,
     NodeControlOptionSource, NodeControlValidationRule, NodeKindViewDescriptor,
-    NodeRepeatableCollectionDescriptor, NodeRepeatableItemProjection, NodeSurfaceLayoutBudget,
-    NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
+    NodeRepeatableCollectionDescriptor, NodeRepeatableItemProjection, NodeSurfaceSlotDescriptor,
+    NodeSurfaceSlotKind,
 };
 
 /// Visual style mapped from an adapter-owned renderer key.
@@ -789,7 +789,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
                     .get(key)
                     .map(field_value_label)
                     .filter(|label| !label.is_empty());
-                if label.is_none() && !slot.is_some_and(|slot| !slot.controls.is_empty()) {
+                if label.is_none() && slot.is_none_or(|slot| slot.controls.is_empty()) {
                     continue;
                 }
                 let Some(rect) = input.region_screen_rect(region) else {
@@ -896,10 +896,7 @@ impl EguiNodeWidgetRenderer for FieldListNodeRenderer {
                 continue;
             };
             outcome.mark_rendered();
-            let text = region
-                .label
-                .as_deref()
-                .unwrap_or_else(|| region.key.as_str());
+            let text = region.label.as_deref().unwrap_or(region.key.as_str());
             draw_semantic_chip(
                 ui,
                 rect,
@@ -2058,7 +2055,7 @@ fn node_local_rect_to_screen(node_rect: Rect, local_rect: CanvasRect, zoom: f32)
 mod tests {
     use super::*;
     use jellyflow::core::{CanvasPoint, NodeKindKey};
-    use jellyflow::runtime::schema::NodeRepeatableAnchorRule;
+    use jellyflow::runtime::schema::{NodeRepeatableAnchorRule, NodeSurfaceLayoutBudget};
 
     #[derive(Debug, Clone, Copy)]
     struct TestRenderer;

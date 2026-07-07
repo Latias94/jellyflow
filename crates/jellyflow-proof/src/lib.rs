@@ -343,7 +343,7 @@ pub fn component_tree_proof_from_graph(
             Some(component_node_proof(*node_id, node, &descriptor))
         })
         .collect::<Vec<_>>();
-    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    nodes.sort_by_key(|node| node.node_id);
 
     ComponentTreeProof {
         framework_family,

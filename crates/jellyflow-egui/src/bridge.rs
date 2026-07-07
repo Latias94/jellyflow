@@ -923,7 +923,7 @@ impl JellyflowEguiBridge {
         &self,
         request: ConnectEdgeRequest,
     ) -> jellyflow::runtime::rules::ConnectPlan {
-        let mut compat = DefaultTypeCompatibility::default();
+        let mut compat = DefaultTypeCompatibility;
         let interaction = self.store.resolved_interaction_state();
         plan_connect_typed_with_mode_and_policy(
             self.store.graph(),

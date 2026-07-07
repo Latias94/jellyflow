@@ -6,6 +6,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-07
+
 ### Changed
 
 - Changed the default marquee selection mode to select nodes that intersect the selection box while

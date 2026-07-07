@@ -441,7 +441,7 @@ mod tests {
                 .contains("type mismatch")
         );
 
-        let mut compat = DefaultTypeCompatibility::default();
+        let mut compat = DefaultTypeCompatibility;
         assert!(
             !compat
                 .compatible(&TypeDesc::Float, &shader_vec4())

@@ -40,6 +40,7 @@ use jellyflow_core::core::{CanvasPoint, CanvasSize, EdgeId, GroupId, NodeId};
 use jellyflow_core::ops::GraphTransaction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConformanceAction {
     /// Applies a raw graph transaction through the store dispatch pipeline.

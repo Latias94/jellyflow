@@ -4,19 +4,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// The ordering is intentional: a `full` adapter satisfies `partial`, while a
 /// `projection` proof does not satisfy editable or layout-pass expectations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConformanceSupportLevel {
+    #[default]
     None,
     Projection,
     Partial,
     Full,
-}
-
-impl Default for ConformanceSupportLevel {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl ConformanceSupportLevel {
