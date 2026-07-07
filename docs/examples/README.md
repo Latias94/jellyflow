@@ -19,9 +19,9 @@ The Open GPUI gallery is the first mature adapter surface. It is intentionally h
 `jellyflow-open-gpui` owns widget-free renderer plans, authoring plans, ids, measurement facts, and
 structured reports; `examples/canvas-jellyflow` owns concrete Open GPUI
 components and product renderers.
-The example is intentionally outside the root workspace and currently depends on
-a pinned Open GPUI git revision until the required `open-gpui-*` 0.2 crates are
-published.
+The example is intentionally outside the root workspace and depends on the
+published `open-gpui-*` 0.2 crates while Jellyflow 0.3.0 is still the local
+release candidate.
 
 Run the gallery:
 

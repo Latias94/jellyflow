@@ -216,8 +216,8 @@ Custom node checklist:
 - Keep toolkit widgets adapter-local. egui, GPUI, Dioxus, DOM, and other hosts map the same
   `renderer_key` and slot descriptors to their own components.
 - Treat `jellyflow-open-gpui` as the mature retained-adapter target for this stage. It owns GPUI
-  adapter contracts and measurement conversion, while the `repo-ref/open-gpui` example stays a
-  consumer and visual fixture.
+  adapter contracts and measurement conversion, while `examples/canvas-jellyflow` stays a concrete
+  Open GPUI consumer and visual fixture.
 - Report measurements after rendering rich internals. Slot, anchor, handle, node-size, density, and
   invalidation facts are the bridge that keeps handles, edges, hit tests, and resize previews aligned
   with real UI.
