@@ -359,8 +359,9 @@ impl Render for BlueprintCallNode {
                     .zip(binding.port_handles(&facts)?)
                     .map(|(port, handle)| ShaderPort {
                         id: port.id(),
+                        key: port.port().key.clone(),
                         direction: port.port().dir,
-                        label: blueprint_port_label(port.port()),
+                        label: blueprint_port_label(port.port()).into(),
                         handle,
                     })
                     .collect();

@@ -18,14 +18,14 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
         },
     );
     let nodes = [
-        (NodeId::from_u128(0x7100), CanvasPoint { x: 70.0, y: 210.0 }),
+        (NodeId::from_u128(0x7100), CanvasPoint { x: 40.0, y: 300.0 }),
         (
             NodeId::from_u128(0x7200),
-            CanvasPoint { x: 440.0, y: 110.0 },
+            CanvasPoint { x: 320.0, y: 120.0 },
         ),
         (
             NodeId::from_u128(0x7300),
-            CanvasPoint { x: 810.0, y: 260.0 },
+            CanvasPoint { x: 600.0, y: 330.0 },
         ),
     ];
 

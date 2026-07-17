@@ -1,10 +1,12 @@
 mod blueprint_call;
 mod multiply;
 
-use jellyflow::core::{NodeId, PortDirection, PortId};
+use jellyflow::core::{NodeId, PortDirection, PortId, PortKey};
 use jellyflow::runtime::schema::NodeKindSpec;
 use jellyflow_open_gpui::{OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle};
-use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px, rgb};
+use open_gpui::{
+    AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px, rgb,
+};
 
 pub use blueprint_call::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
@@ -108,9 +110,16 @@ impl std::error::Error for ShaderNodeError {}
 
 struct ShaderPort {
     id: PortId,
+    key: PortKey,
     direction: PortDirection,
-    label: String,
+    label: SharedString,
     handle: OpenGpuiPortHandle,
+}
+
+struct ShaderPortElement {
+    key: PortKey,
+    label: SharedString,
+    marker: AnyElement,
 }
 
 pub(super) fn catalog_specs() -> [NodeKindSpec; 2] {
@@ -134,18 +143,7 @@ fn port_elements(
         .into_iter()
         .enumerate()
         .map(|(index, port)| {
-            let selector = selector_for(port.id);
-            let marker = port.handle.interactive(
-                div()
-                    .debug_selector(move || selector.clone())
-                    .w(px(12.0))
-                    .h(px(12.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(0xb8c3d4))
-                    .bg(rgb(0x6c83a6)),
-                |_, _, _| {},
-            );
+            let port = port_element(port, selector_for);
             let top = px(58.0 + index as f32 * 32.0);
             let row = div()
                 .absolute()
@@ -158,15 +156,35 @@ fn port_elements(
             match direction {
                 PortDirection::In => row
                     .left(px(-6.0))
-                    .child(marker)
+                    .child(port.marker)
                     .child(port.label)
                     .into_any_element(),
                 PortDirection::Out => row
                     .right(px(-6.0))
                     .child(port.label)
-                    .child(marker)
+                    .child(port.marker)
                     .into_any_element(),
             }
         })
         .collect()
+}
+
+fn port_element(port: ShaderPort, selector_for: fn(PortId) -> String) -> ShaderPortElement {
+    let selector = selector_for(port.id);
+    let marker = port.handle.interactive(
+        div()
+            .debug_selector(move || selector.clone())
+            .w(px(12.0))
+            .h(px(12.0))
+            .rounded_full()
+            .border_1()
+            .border_color(rgb(0xc9d3df))
+            .bg(rgb(0x6f8fbb)),
+        |_, _, _| {},
+    );
+    ShaderPortElement {
+        key: port.key,
+        label: port.label,
+        marker: marker.into_any_element(),
+    }
 }

@@ -5,12 +5,14 @@ use std::rc::Rc;
 use jellyflow::core::types::TypeDesc;
 use jellyflow::core::{GraphBuilder, GraphId, Symbol, SymbolId};
 use jellyflow::runtime::{GraphCommand, GraphRuntime};
+use open_gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
     BlackboardCommandError, BlackboardSource, BlackboardSourceError, BlackboardSourceSnapshot,
     BlackboardSourceSubscription, GraphRuntimeBlackboardSource, NativeBlackboard,
     blackboard_empty_selector, blackboard_failed_selector, blackboard_loading_selector,
-    blackboard_retry_selector, blackboard_symbol_accept_remote_selector,
-    blackboard_symbol_apply_selector, blackboard_symbol_name_selector,
+    blackboard_retry_selector, blackboard_scroll_selector,
+    blackboard_symbol_accept_remote_selector, blackboard_symbol_apply_selector,
+    blackboard_symbol_name_selector,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -71,6 +73,56 @@ fn empty_blackboard_source_renders_an_explicit_empty_state(cx: &mut open_gpui::T
     assert!(cx.debug_bounds(blackboard_empty_selector()).is_some());
     assert!(cx.debug_bounds(blackboard_loading_selector()).is_none());
     assert!(cx.debug_bounds(blackboard_failed_selector()).is_none());
+}
+
+#[open_gpui::test]
+fn blackboard_scroll_keeps_large_symbol_sets_reachable(cx: &mut open_gpui::TestAppContext) {
+    cx.update(init_text_input);
+    let symbol_ids = (0..12)
+        .map(|index| SymbolId::from_u128(0xb1ac_1000 + index))
+        .collect::<Vec<_>>();
+    let mut graph = GraphBuilder::new(GraphId::from_u128(0xb1b3));
+    for (index, symbol_id) in symbol_ids.iter().copied().enumerate() {
+        graph = graph.with_symbol(symbol_id, symbol(&format!("parameter_{index:02}")));
+    }
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph.build().expect("valid scrollable blackboard graph"))
+            .expect("scrollable blackboard runtime"),
+    );
+    let panel_runtime = Rc::clone(&runtime);
+    let (_blackboard, cx) = cx.add_window_view(move |_, _| runtime_blackboard(panel_runtime));
+    draw(cx);
+
+    let first_selector = blackboard_symbol_name_selector(symbol_ids[0]);
+    let last_selector = blackboard_symbol_name_selector(*symbol_ids.last().unwrap());
+    let first_before = cx
+        .debug_bounds(&first_selector)
+        .expect("first blackboard symbol before scrolling");
+    let last_before = cx
+        .debug_bounds(&last_selector)
+        .expect("last blackboard symbol before scrolling");
+    let scroll = cx
+        .debug_bounds(blackboard_scroll_selector())
+        .expect("blackboard scroll region");
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: scroll.center(),
+        delta: ScrollDelta::Lines(point(0.0, -30.0)),
+        modifiers: Default::default(),
+        touch_phase: TouchPhase::Moved,
+    });
+    draw(cx);
+
+    let first_after = cx
+        .debug_bounds(&first_selector)
+        .expect("first blackboard symbol after scrolling");
+    let last_after = cx
+        .debug_bounds(&last_selector)
+        .expect("last blackboard symbol after scrolling");
+    assert!(first_after.origin.y < first_before.origin.y);
+    assert!(last_after.origin.y < last_before.origin.y);
+    assert!(last_after.is_contained_within(&scroll));
 }
 
 #[open_gpui::test]
@@ -153,6 +205,7 @@ fn native_blackboard_edits_graph_symbols_with_stable_identity_and_exact_undo(
         .debug_bounds(&blackboard_symbol_name_selector(symbol_id))
         .expect("native symbol name input");
     cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
     cx.simulate_input("_ev");
     draw(cx);
 
@@ -224,6 +277,7 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
         .debug_bounds(&blackboard_symbol_name_selector(symbol_id))
         .expect("native symbol name input");
     cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
     runtime
         .execute(GraphCommand::symbols(
@@ -296,6 +350,7 @@ fn unrelated_graph_revision_advances_blackboard_draft_without_a_false_conflict(
         .debug_bounds(&blackboard_symbol_name_selector(edited))
         .expect("editable symbol input");
     cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
     runtime
         .execute(GraphCommand::symbols(
@@ -348,6 +403,7 @@ fn accepting_remote_blackboard_value_clears_conflict_without_writing_the_graph(
         .debug_bounds(&blackboard_symbol_name_selector(symbol_id))
         .expect("native symbol name input");
     cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
     cx.simulate_input(" local");
     runtime
         .execute(GraphCommand::symbols(

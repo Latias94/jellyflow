@@ -84,10 +84,19 @@ fn native_shader_entity_mounts_through_scene_host_and_submits_real_port_feedback
         .debug_bounds(SHADER_PREVIEW_CONTROL_SELECTOR)
         .expect("native shader preview control");
     assert!(cx.debug_bounds(SHADER_PREVIEW_VALUE_SELECTOR).is_none());
-    assert!(
-        cx.debug_bounds(&shader_port_selector(output_id()))
-            .is_some()
-    );
+    let input_port = cx
+        .debug_bounds(&shader_port_selector(input_a_id()))
+        .expect("native shader input port");
+    let output_port = cx
+        .debug_bounds(&shader_port_selector(output_id()))
+        .expect("native shader output port");
+    let inline_editor = cx
+        .debug_bounds(&shader_inline_editor_selector(node_id(), "a"))
+        .expect("native shader inline editor");
+    assert!(!input_port.intersects(&inline_editor));
+    assert!(!output_port.intersects(&inline_editor));
+    assert!(input_port.center().y >= inline_editor.origin.y);
+    assert!(input_port.center().y <= inline_editor.origin.y + inline_editor.size.height);
 
     let geometry = weak_view.geometry_snapshot().expect("shader geometry");
     let node = geometry.node(node_id()).expect("shader node geometry");

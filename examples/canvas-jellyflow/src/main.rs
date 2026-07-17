@@ -16,7 +16,9 @@ use open_gpui_canvas_jellyflow::nodes::{
     native_node_registry, workflow_demo_graph,
 };
 use open_gpui_platform::application;
+use open_gpui_ui_components::ThemeMode;
 use open_gpui_ui_components::gpui_adapter::init_text_input;
+use open_gpui_ui_components::theme::set_active_theme_mode;
 
 mod demo_fixture;
 mod real_window_smoke;
@@ -193,6 +195,8 @@ fn launch_native_graph(
     options: LaunchOptions,
     smoke_state: Option<SharedSmokeState>,
 ) -> Result<(), NativeLaunchError> {
+    set_active_theme_mode(cx, ThemeMode::Dark)
+        .map_err(|error| NativeLaunchError::new("theme_initialization", format!("{error:?}")))?;
     let catalog = native_node_catalog()
         .map_err(|error| NativeLaunchError::new("catalog_initialization", format!("{error:?}")))?;
     let document = match options.demo {

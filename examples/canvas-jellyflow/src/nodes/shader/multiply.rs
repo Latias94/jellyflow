@@ -17,16 +17,17 @@ use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
     Styled, Task, Window, div, px, rgb,
 };
+use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, NumberInput};
 
 use super::super::sync_activity_lease;
-use super::{ShaderNodeError, ShaderPort, port_elements};
+use super::{ShaderNodeError, ShaderPort, ShaderPortElement, port_element};
 
 pub const SHADER_MULTIPLY_KIND: &str = "shader.multiply";
 pub const SHADER_MULTIPLY_RENDERER: &str = "jellyflow.open-gpui.shader.multiply";
 pub const SHADER_MULTIPLY_DEFAULT_SIZE: CanvasSize = CanvasSize {
-    width: 280.0,
-    height: 190.0,
+    width: 260.0,
+    height: 160.0,
 };
 pub const SHADER_NODE_SELECTOR: &str = "jellyflow-native-shader-multiply";
 pub const SHADER_PREVIEW_CONTROL_SELECTOR: &str = "jellyflow-native-shader-preview-control";
@@ -561,11 +562,21 @@ impl Render for ShaderMultiplyNode {
                 let ports = facts
                     .ports()
                     .zip(binding.port_handles(&facts)?)
-                    .map(|(port, handle)| ShaderPort {
-                        id: port.id(),
-                        direction: port.port().dir,
-                        label: port.port().key.0.clone(),
-                        handle,
+                    .map(|(port, handle)| {
+                        let key = port.port().key.clone();
+                        let label = match key.0.as_str() {
+                            "a" => "A".into(),
+                            "b" => "B".into(),
+                            "result" => "Result".into(),
+                            _ => key.0.clone().into(),
+                        };
+                        ShaderPort {
+                            id: port.id(),
+                            key,
+                            direction: port.port().dir,
+                            label,
+                            handle,
+                        }
                     })
                     .collect();
                 Ok((
@@ -612,20 +623,26 @@ impl Render for ShaderMultiplyNode {
             ShaderFactorCommandState::Idle | ShaderFactorCommandState::ReadyToRetry(_)
         );
 
-        let (inputs, outputs): (Vec<_>, Vec<_>) = ports
-            .into_iter()
-            .partition(|port| port.direction == PortDirection::In);
+        let mut input_a = None;
+        let mut input_b = None;
+        let mut output = None;
+        for port in ports {
+            let ShaderPortElement { key, marker, .. } = port_element(port, shader_port_selector);
+            match key.0.as_str() {
+                "a" => input_a = Some(marker),
+                "b" => input_b = Some(marker),
+                "result" => output = Some(marker),
+                _ => {}
+            }
+        }
 
         let node = cx.weak_entity();
         let preview_button = Button::new(
             format!("jellyflow-shader-preview-{instance_scope}"),
-            if self.preview_expanded {
-                "Hide preview"
-            } else {
-                "Show preview"
-            },
+            "Preview",
         )
-        .variant(ButtonVariant::Secondary)
+        .variant(ButtonVariant::Ghost)
+        .xsmall()
         .selected(self.preview_expanded)
         .on_click(move |_, _, cx| {
             let _ = node.update(cx, |node, cx| {
@@ -633,185 +650,266 @@ impl Render for ShaderMultiplyNode {
                 cx.notify();
             });
         });
-        let mut controls = div().flex().items_end().gap(px(8.0));
-        if input_a_connected {
-            let selector = shader_connected_input_selector(node_id, "a");
-            controls = controls.child(
-                div()
-                    .debug_selector(move || selector)
-                    .px(px(8.0))
-                    .py(px(6.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(0x27364b))
-                    .text_color(rgb(0x9fc4ff))
-                    .child("A connected"),
-            );
-        } else {
-            let editor_selector = shader_inline_editor_selector(node_id, "a");
-            let value_selector = shader_inline_value_selector(node_id, "a", inline_factor);
-            let inline_node = cx.weak_entity();
-            controls = controls.child(
-                div().debug_selector(move || editor_selector).child(
-                    div().debug_selector(move || value_selector).child(
-                        NumberInput::new(
-                            format!("jellyflow-shader-factor-{instance_scope}"),
-                            "Factor",
-                        )
-                        .value(inline_factor)
-                        .min(-16.0)
-                        .max(16.0)
-                        .step(0.05)
-                        .disabled(factor_input_disabled)
-                        .on_change(move |change, _, cx| {
-                            let _ = inline_node.update(cx, |node, cx| {
-                                node.edit_factor(change.value(), cx);
-                            });
-                        }),
-                    ),
-                ),
-            );
-        }
-        controls = controls.child(
+        let preview_control = OpenGpuiNodeInteractionGuard::control(
             div()
                 .debug_selector(|| SHADER_PREVIEW_CONTROL_SELECTOR.to_owned())
                 .child(preview_button),
         );
-        let controls = OpenGpuiNodeInteractionGuard::control(controls);
 
-        let conflict = self.factor.conflict().map(|_| {
+        let input_a_label = if input_a_connected {
+            let selector = shader_connected_input_selector(node_id, "a");
+            div()
+                .debug_selector(move || selector)
+                .text_sm()
+                .text_color(rgb(0xdbe3ec))
+                .child("A")
+        } else {
+            div().text_sm().text_color(rgb(0xdbe3ec)).child("A")
+        };
+        let factor_editor = (!input_a_connected).then(|| {
+            let editor_selector = shader_inline_editor_selector(node_id, "a");
+            let value_selector = shader_inline_value_selector(node_id, "a", inline_factor);
+            let inline_node = cx.weak_entity();
+            OpenGpuiNodeInteractionGuard::control(
+                div()
+                    .debug_selector(move || editor_selector)
+                    .w(px(92.0))
+                    .child(
+                        div().debug_selector(move || value_selector).child(
+                            NumberInput::new(
+                                format!("jellyflow-shader-factor-{instance_scope}"),
+                                "Factor",
+                            )
+                            .value(inline_factor)
+                            .min(-16.0)
+                            .max(16.0)
+                            .step(0.05)
+                            .disabled(factor_input_disabled)
+                            .xsmall()
+                            .on_change(move |change, _, cx| {
+                                let _ = inline_node.update(cx, |node, cx| {
+                                    node.edit_factor(change.value(), cx);
+                                });
+                            }),
+                        ),
+                    ),
+            )
+        });
+
+        let mut input_a_row = div()
+            .relative()
+            .h(px(40.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .children(
+                input_a.map(|marker| div().absolute().left(px(-6.0)).top(px(14.0)).child(marker)),
+            )
+            .child(input_a_label)
+            .child(div().flex_1())
+            .children(factor_editor);
+        if let Some(marker) = output {
+            input_a_row = input_a_row
+                .child(div().text_sm().text_color(rgb(0xdbe3ec)).child("Result"))
+                .child(div().absolute().right(px(-6.0)).top(px(14.0)).child(marker));
+        }
+        let input_b_row = div()
+            .relative()
+            .h(px(32.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .children(
+                input_b.map(|marker| div().absolute().left(px(-6.0)).top(px(10.0)).child(marker)),
+            )
+            .child(div().text_sm().text_color(rgb(0xdbe3ec)).child("B"));
+
+        let status_content = if self.factor.conflict().is_some() {
             let accept_node = cx.weak_entity();
             let reapply_node = cx.weak_entity();
             let accept_selector = shader_factor_accept_remote_selector(node_id);
             let reapply_selector = shader_factor_reapply_selector(node_id);
-            div()
-                .debug_selector(move || shader_factor_conflict_selector(node_id))
-                .p(px(8.0))
-                .flex()
-                .flex_col()
-                .gap(px(7.0))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(rgb(0x9d654d))
-                .bg(rgb(0x382a28))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0xf0c3aa))
-                        .child("Factor changed in another view"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.0))
-                        .child(
-                            div().debug_selector(move || accept_selector.clone()).child(
-                                Button::new(
-                                    format!("jellyflow-shader-factor-accept-{instance_scope}"),
-                                    "Use remote",
-                                )
-                                .variant(ButtonVariant::Secondary)
-                                .disabled(conflict_resolution_disabled)
-                                .on_click(move |_, window, cx| {
-                                    let _ = accept_node
-                                        .update(cx, |node, cx| node.accept_remote_factor(cx));
-                                    window.refresh();
-                                }),
-                            ),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(move || reapply_selector.clone())
-                                .child(
+            Some(
+                div()
+                    .debug_selector(move || shader_factor_conflict_selector(node_id))
+                    .h_full()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(0x9d654d))
+                    .bg(rgb(0x382a28))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(0xf0c3aa))
+                            .child("Factor conflict"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(
+                                div().debug_selector(move || accept_selector.clone()).child(
                                     Button::new(
-                                        format!("jellyflow-shader-factor-reapply-{instance_scope}"),
-                                        "Reapply local",
+                                        format!("jellyflow-shader-factor-accept-{instance_scope}"),
+                                        "Use remote",
                                     )
-                                    .variant(ButtonVariant::Secondary)
+                                    .variant(ButtonVariant::Ghost)
+                                    .xsmall()
                                     .disabled(conflict_resolution_disabled)
                                     .on_click(
                                         move |_, window, cx| {
-                                            let _ = reapply_node.update(cx, |node, cx| {
-                                                node.reapply_local_factor(cx)
+                                            let _ = accept_node.update(cx, |node, cx| {
+                                                node.accept_remote_factor(cx)
                                             });
                                             window.refresh();
                                         },
                                     ),
                                 ),
-                        ),
-                )
-                .into_any_element()
-        });
-        let pending = self.factor_command.is_waiting().then(|| {
-            div()
-                .debug_selector(|| SHADER_FACTOR_COMMAND_PENDING_SELECTOR.to_owned())
-                .px(px(8.0))
-                .py(px(5.0))
-                .rounded(px(4.0))
-                .bg(rgb(0x27364b))
-                .text_color(rgb(0x9fc4ff))
-                .child("Saving factor...")
-                .into_any_element()
-        });
-        let retry = (self.factor_command.retry_intent().is_some()
-            && self.factor.conflict().is_none())
-        .then(|| {
-            let retry_node = cx.weak_entity();
-            div()
-                .debug_selector(|| SHADER_FACTOR_RETRY_SELECTOR.to_owned())
-                .child(
-                    Button::new(
-                        format!("jellyflow-shader-factor-retry-{instance_scope}"),
-                        "Retry factor edit",
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || reapply_selector.clone())
+                                    .child(
+                                        Button::new(
+                                            format!(
+                                                "jellyflow-shader-factor-reapply-{instance_scope}"
+                                            ),
+                                            "Reapply",
+                                        )
+                                        .variant(ButtonVariant::Ghost)
+                                        .xsmall()
+                                        .disabled(conflict_resolution_disabled)
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                let _ = reapply_node.update(cx, |node, cx| {
+                                                    node.reapply_local_factor(cx)
+                                                });
+                                                window.refresh();
+                                            },
+                                        ),
+                                    ),
+                            ),
                     )
-                    .variant(ButtonVariant::Secondary)
-                    .on_click(move |_, window, cx| {
-                        let _ = retry_node.update(cx, |node, cx| node.reapply_local_factor(cx));
-                        window.refresh();
-                    }),
-                )
-                .into_any_element()
-        });
-        let diagnostic = self.diagnostic.clone().map(|message| {
-            div()
-                .debug_selector(|| SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR.to_owned())
-                .px(px(8.0))
-                .py(px(5.0))
-                .rounded(px(4.0))
-                .bg(rgb(0x3a2026))
-                .text_color(rgb(0xffa5ad))
-                .child(message)
-                .into_any_element()
-        });
-
-        let mut body = div()
-            .px(px(18.0))
-            .py(px(12.0))
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xa9b1bd))
-                    .child("A x B -> Result"),
+                    .into_any_element(),
             )
-            .child(controls)
-            .children(conflict)
-            .children(pending)
-            .children(retry)
-            .children(diagnostic);
-        if self.preview_expanded {
-            body = body.child(
+        } else if self.factor_command.retry_intent().is_some() {
+            let retry_node = cx.weak_entity();
+            let message = self
+                .diagnostic
+                .clone()
+                .unwrap_or_else(|| "Factor edit needs retry".to_owned());
+            Some(
+                div()
+                    .debug_selector(|| SHADER_FACTOR_RETRY_SELECTOR.to_owned())
+                    .h_full()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(4.0))
+                    .bg(rgb(0x3a2026))
+                    .text_color(rgb(0xffa5ad))
+                    .child(
+                        div()
+                            .debug_selector(|| SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR.to_owned())
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_xs()
+                            .child(message),
+                    )
+                    .child(
+                        Button::new(
+                            format!("jellyflow-shader-factor-retry-{instance_scope}"),
+                            "Retry",
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .xsmall()
+                        .on_click(move |_, window, cx| {
+                            let _ = retry_node.update(cx, |node, cx| node.reapply_local_factor(cx));
+                            window.refresh();
+                        }),
+                    )
+                    .into_any_element(),
+            )
+        } else if let Some(message) = self.diagnostic.clone() {
+            Some(
+                div()
+                    .debug_selector(|| SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR.to_owned())
+                    .h_full()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x3a2026))
+                    .text_color(rgb(0xffa5ad))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_xs()
+                            .child(message),
+                    )
+                    .into_any_element(),
+            )
+        } else if self.factor_command.is_waiting() {
+            Some(
+                div()
+                    .debug_selector(|| SHADER_FACTOR_COMMAND_PENDING_SELECTOR.to_owned())
+                    .h_full()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x27364b))
+                    .text_xs()
+                    .text_color(rgb(0x9fc4ff))
+                    .child("Saving factor...")
+                    .into_any_element(),
+            )
+        } else if self.preview_expanded {
+            Some(
                 div()
                     .debug_selector(|| SHADER_PREVIEW_VALUE_SELECTOR.to_owned())
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(0x152b24))
-                    .text_color(rgb(0x78d6ad))
-                    .child(format!("Preview {preview:.2}")),
-            );
-        }
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_t_1()
+                    .border_color(rgb(0x34404a))
+                    .text_xs()
+                    .text_color(rgb(0x9aa7b5))
+                    .child("Output")
+                    .child(
+                        div()
+                            .text_color(rgb(0x7fd5ac))
+                            .child(format!("{preview:.2}")),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let status = div().h(px(40.0)).px(px(12.0)).children(status_content);
+        let body = div()
+            .py(px(4.0))
+            .flex()
+            .flex_col()
+            .child(input_a_row)
+            .child(input_b_row)
+            .child(status);
 
         div()
             .debug_selector(|| SHADER_NODE_SELECTOR.to_owned())
@@ -819,32 +917,39 @@ impl Render for ShaderMultiplyNode {
             .size_full()
             .rounded(px(6.0))
             .border_1()
-            .border_color(rgb(0x47505f))
-            .bg(rgb(0x20242c))
-            .text_color(rgb(0xe7eaf0))
+            .border_color(rgb(0x3b4450))
+            .bg(rgb(0x20262d))
+            .text_color(rgb(0xf4f7fb))
             .child(
                 div()
-                    .h(px(42.0))
-                    .px(px(14.0))
+                    .h(px(40.0))
+                    .px(px(12.0))
                     .flex()
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(rgb(0x3a414d))
-                    .child(title)
-                    .child(div().text_xs().text_color(rgb(0x91a0b6)).child("VECTOR")),
+                    .border_color(rgb(0x3b4450))
+                    .bg(rgb(0x252b33))
+                    .child(div().text_sm().child(title))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(3.0))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(0x303944))
+                                    .text_xs()
+                                    .text_color(rgb(0xaab4c0))
+                                    .child("FLOAT"),
+                            )
+                            .child(preview_control),
+                    ),
             )
             .child(body)
-            .children(port_elements(
-                inputs,
-                PortDirection::In,
-                shader_port_selector,
-            ))
-            .children(port_elements(
-                outputs,
-                PortDirection::Out,
-                shader_port_selector,
-            ))
     }
 }
 
@@ -1179,6 +1284,74 @@ mod tests {
             assert_eq!(node.factor.local(), &2.0);
             assert_eq!(node.factor.phase(), DraftPhase::Clean);
         });
+    }
+
+    #[open_gpui::test]
+    fn conflict_status_replaces_preview_and_stays_inside_fixed_node_bounds(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let mut catalog = NodeCatalog::new();
+        catalog
+            .register(catalog_spec())
+            .expect("register shader multiply kind");
+        let graph = pending_factor_graph(&catalog);
+        let runtime = GraphRuntime::builder(catalog)
+            .build(graph)
+            .expect("valid shader conflict graph");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("attach shader conflict view");
+        let captured = Rc::new(RefCell::new(None::<Entity<ShaderMultiplyNode>>));
+        let captured_for_factory = Rc::clone(&captured);
+        let draft_store = ShaderDraftStore::new();
+        let mut registry = OpenGpuiNodeRegistry::builder();
+        registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
+            let node = mount_shader_multiply(binding, draft_store.clone(), cx);
+            captured_for_factory.borrow_mut().replace(node.clone());
+            node
+        });
+        let (_host, cx) = cx.add_window_view(move |_, _| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid shader conflict registry"),
+                pending_factor_viewport(),
+            )
+        });
+        draw_pending_factor_host(cx);
+        let node = captured
+            .borrow()
+            .clone()
+            .expect("mounted shader conflict node");
+
+        cx.update_entity(&node, |node, cx| {
+            node.factor.edit_local(2.0);
+            assert!(matches!(
+                node.factor.reconcile_remote(1, 3.0),
+                DraftReconcileDecision::Conflict { .. }
+            ));
+            node.preview_expanded = true;
+            cx.notify();
+        });
+        draw_pending_factor_host(cx);
+
+        let node_bounds = cx
+            .debug_bounds(SHADER_NODE_SELECTOR)
+            .expect("fixed shader node bounds");
+        let conflict_bounds = cx
+            .debug_bounds(&shader_factor_conflict_selector(pending_factor_node_id()))
+            .expect("shader conflict status");
+        let accept_bounds = cx
+            .debug_bounds(&shader_factor_accept_remote_selector(
+                pending_factor_node_id(),
+            ))
+            .expect("shader accept-remote action");
+        let reapply_bounds = cx
+            .debug_bounds(&shader_factor_reapply_selector(pending_factor_node_id()))
+            .expect("shader reapply action");
+        assert!(conflict_bounds.is_contained_within(&node_bounds));
+        assert!(accept_bounds.is_contained_within(&node_bounds));
+        assert!(reapply_bounds.is_contained_within(&node_bounds));
+        assert!(cx.debug_bounds(SHADER_PREVIEW_VALUE_SELECTOR).is_none());
     }
 
     fn pending_factor_graph(catalog: &NodeCatalog) -> jellyflow::core::Graph {

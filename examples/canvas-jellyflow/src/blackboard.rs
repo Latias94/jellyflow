@@ -14,8 +14,10 @@ use jellyflow_open_gpui::{
     DraftSubmissionDecision, DraftSubmissionIntent, RevisionedDraft,
 };
 use open_gpui::{
-    Context, InteractiveElement, ParentElement, Render, Styled, Task, Window, div, px, rgb,
+    Context, InteractiveElement, ParentElement, Render, StatefulInteractiveElement, Styled, Task,
+    Window, div, px, rgb,
 };
+use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
 
 pub const NATIVE_BLACKBOARD_WIDTH: f32 = 280.0;
@@ -23,6 +25,7 @@ const NATIVE_BLACKBOARD_LOADING_SELECTOR: &str = "jellyflow-native-blackboard-lo
 const NATIVE_BLACKBOARD_EMPTY_SELECTOR: &str = "jellyflow-native-blackboard-empty";
 const NATIVE_BLACKBOARD_FAILED_SELECTOR: &str = "jellyflow-native-blackboard-failed";
 const NATIVE_BLACKBOARD_RETRY_SELECTOR: &str = "jellyflow-native-blackboard-retry";
+const NATIVE_BLACKBOARD_SCROLL_SELECTOR: &str = "jellyflow-native-blackboard-scroll";
 
 /// Application-level failure while loading or observing graph-scoped symbols.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -576,52 +579,86 @@ impl Render for NativeBlackboard {
                     .unwrap_or_else(|| "Any".to_owned());
                 symbols.push(
                     div()
-                        .p(px(8.0))
+                        .p(px(10.0))
                         .flex()
                         .flex_col()
-                        .gap(px(6.0))
+                        .gap(px(8.0))
                         .rounded(px(4.0))
-                        .bg(rgb(0x24282f))
-                        .child(div().text_xs().text_color(rgb(0x929aa7)).child(type_label))
+                        .border_1()
+                        .border_color(rgb(0x343d48))
+                        .bg(rgb(0x20262d))
                         .child(
                             div()
-                                .debug_selector(move || blackboard_symbol_name_selector(id))
-                                .child(
-                                    TextInput::new(
-                                        format!("jellyflow-blackboard-name-{}", id.0),
-                                        "Symbol name",
-                                    )
-                                    .value(value)
-                                    .on_change(
-                                        move |value, window, cx| {
-                                            let input_panel = input_panel.clone();
-                                            window.defer(cx, move |window, cx| {
-                                                let _ = input_panel.update(cx, |panel, cx| {
-                                                    panel.edit_name(id, value, cx)
-                                                });
-                                                window.refresh();
-                                            });
-                                        },
-                                    ),
-                                ),
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_xs()
+                                .text_color(rgb(0xaab4c0))
+                                .child(type_label.to_ascii_uppercase())
+                                .children(dirty.then(|| {
+                                    div()
+                                        .text_color(if conflicted {
+                                            rgb(0xffb28a)
+                                        } else {
+                                            rgb(0x7ab8ff)
+                                        })
+                                        .child(if conflicted { "Conflict" } else { "Edited" })
+                                })),
                         )
                         .child(
                             div()
-                                .debug_selector(move || blackboard_symbol_apply_selector(id))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
                                 .child(
-                                    Button::new(
-                                        format!("jellyflow-blackboard-apply-{}", id.0),
-                                        if conflicted { "Reapply" } else { "Apply" },
-                                    )
-                                    .variant(ButtonVariant::Secondary)
-                                    .disabled(!dirty)
-                                    .on_click(
-                                        move |_, window, cx| {
-                                            let _ = apply_panel
-                                                .update(cx, |panel, cx| panel.apply_name(id, cx));
-                                            window.refresh();
-                                        },
-                                    ),
+                                    div()
+                                        .debug_selector(move || blackboard_symbol_name_selector(id))
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .child(
+                                            TextInput::new(
+                                                format!("jellyflow-blackboard-name-{}", id.0),
+                                                "Symbol name",
+                                            )
+                                            .value(value)
+                                            .small()
+                                            .on_change(move |value, window, cx| {
+                                                let input_panel = input_panel.clone();
+                                                window.defer(cx, move |window, cx| {
+                                                    let _ = input_panel.update(cx, |panel, cx| {
+                                                        panel.edit_name(id, value, cx)
+                                                    });
+                                                    window.refresh();
+                                                });
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || {
+                                            blackboard_symbol_apply_selector(id)
+                                        })
+                                        .child(
+                                            Button::new(
+                                                format!("jellyflow-blackboard-apply-{}", id.0),
+                                                if conflicted { "Reapply" } else { "Apply" },
+                                            )
+                                            .variant(if dirty {
+                                                ButtonVariant::Default
+                                            } else {
+                                                ButtonVariant::Ghost
+                                            })
+                                            .xsmall()
+                                            .disabled(!dirty)
+                                            .on_click(
+                                                move |_, window, cx| {
+                                                    let _ = apply_panel.update(cx, |panel, cx| {
+                                                        panel.apply_name(id, cx)
+                                                    });
+                                                    window.refresh();
+                                                },
+                                            ),
+                                        ),
                                 ),
                         )
                         .children(conflicted.then(|| {
@@ -634,7 +671,8 @@ impl Render for NativeBlackboard {
                                         format!("jellyflow-blackboard-accept-remote-{}", id.0),
                                         "Use remote",
                                     )
-                                    .variant(ButtonVariant::Secondary)
+                                    .variant(ButtonVariant::Ghost)
+                                    .xsmall()
                                     .on_click(
                                         move |_, window, cx| {
                                             let _ = accept_panel.update(cx, |panel, cx| {
@@ -682,6 +720,7 @@ impl Render for NativeBlackboard {
                                 .child(
                                     Button::new("jellyflow-blackboard-retry", "Retry")
                                         .variant(ButtonVariant::Secondary)
+                                        .xsmall()
                                         .on_click(move |_, window, cx| {
                                             let _ = retry_panel.update(cx, |panel, cx| {
                                                 panel.retry_source(cx);
@@ -694,24 +733,54 @@ impl Render for NativeBlackboard {
             }
             BlackboardResourceState::Ready(_) => None,
         };
+        let symbol_count = symbols.len();
 
         div()
             .debug_selector(|| "jellyflow-native-blackboard".to_owned())
             .w(px(NATIVE_BLACKBOARD_WIDTH))
             .h_full()
-            .p(px(12.0))
             .flex()
             .flex_col()
-            .gap(px(10.0))
-            .bg(rgb(0x181b20))
-            .text_color(rgb(0xe8edf3))
-            .child(div().text_lg().child("Blackboard"))
-            .children(resource_notice)
-            .children(symbols)
-            .children(
-                self.draft_diagnostic
-                    .clone()
-                    .map(|message| div().text_xs().text_color(rgb(0xe58b7b)).child(message)),
+            .border_l_1()
+            .border_color(rgb(0x2d3540))
+            .bg(rgb(0x171b20))
+            .text_color(rgb(0xf4f7fb))
+            .child(
+                div()
+                    .h(px(48.0))
+                    .px(px(14.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(rgb(0x2d3540))
+                    .child(div().text_base().child("Blackboard"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x84909d))
+                            .child(format!("{symbol_count} PARAM")),
+                    ),
+            )
+            .child(
+                div()
+                    .id(NATIVE_BLACKBOARD_SCROLL_SELECTOR)
+                    .debug_selector(|| NATIVE_BLACKBOARD_SCROLL_SELECTOR.to_owned())
+                    .p(px(12.0))
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .overflow_y_scroll()
+                    .scrollbar_width(px(7.0))
+                    .children(resource_notice)
+                    .children(symbols)
+                    .children(
+                        self.draft_diagnostic.clone().map(|message| {
+                            div().text_xs().text_color(rgb(0xff8b84)).child(message)
+                        }),
+                    ),
             )
     }
 }
@@ -761,6 +830,11 @@ pub const fn blackboard_failed_selector() -> &'static str {
 #[must_use]
 pub const fn blackboard_retry_selector() -> &'static str {
     NATIVE_BLACKBOARD_RETRY_SELECTOR
+}
+
+#[must_use]
+pub const fn blackboard_scroll_selector() -> &'static str {
+    NATIVE_BLACKBOARD_SCROLL_SELECTOR
 }
 
 #[must_use]
