@@ -1,46 +1,24 @@
 use super::*;
 
 #[test]
-fn graph_without_bindings_deserializes_with_empty_binding_map() {
-    let graph_id = GraphId::from_u128(1);
-    let json = serde_json::json!({
-        "graph_id": graph_id,
-        "graph_version": 1,
-        "symbols": {},
-        "nodes": {},
-        "ports": {},
-        "edges": {}
-    });
-
-    let graph: Graph = serde_json::from_value(json).expect("old graph shape must deserialize");
-
-    assert!(graph.bindings().is_empty());
-}
-
-#[test]
-fn graph_preserves_graph_local_and_source_binding_endpoints() {
+fn graph_stores_graph_local_and_source_binding_endpoints() {
     let mut graph = Graph::default();
     let node_id = NodeId::new();
     graph.insert_node(node_id, make_node("core.note"));
 
     let binding_id = BindingId::new();
-    graph.insert_binding(
-        binding_id,
-        Binding::node_to_source(
-            node_id,
-            "source.pdf",
-            serde_json::json!({ "page": 3, "rect": [10, 20, 30, 40] }),
-        )
-        .with_kind("excerpt")
-        .with_meta(serde_json::json!({ "color": "yellow" })),
-    );
+    let binding = Binding::node_to_source(
+        node_id,
+        "source.pdf",
+        serde_json::json!({ "page": 3, "rect": [10, 20, 30, 40] }),
+    )
+    .with_kind("excerpt")
+    .with_meta(serde_json::json!({ "color": "yellow" }));
+    graph.insert_binding(binding_id, binding.clone());
 
-    let encoded = serde_json::to_value(&graph).expect("serialize graph with binding");
-    let decoded: Graph = serde_json::from_value(encoded).expect("deserialize graph with binding");
-
-    assert_eq!(decoded.bindings(), graph.bindings());
+    assert_eq!(graph.bindings().get(&binding_id), Some(&binding));
     assert_eq!(
-        decoded.nodes().get(&node_id).and_then(|node| node.origin),
+        graph.nodes().get(&node_id).and_then(|node| node.origin),
         None
     );
 }

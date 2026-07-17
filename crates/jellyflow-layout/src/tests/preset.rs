@@ -72,7 +72,6 @@ fn preset_builder_can_switch_scope_and_options() {
             width: 144.0,
             height: 72.0,
         })
-        .with_node_origin((0.25, 0.75))
         .nodes([node])
         .with_measured_node_sizes([(
             node,
@@ -108,7 +107,6 @@ fn preset_builder_can_switch_scope_and_options() {
             height: 72.0,
         }
     );
-    assert_eq!(request.layout.options.node_origin, (0.25, 0.75));
     assert_eq!(
         request.layout.measured_node_sizes.get(&node),
         Some(&CanvasSize {

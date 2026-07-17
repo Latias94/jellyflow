@@ -1,15 +1,62 @@
 #!/usr/bin/env python3
-"""Run a temporary external Jellyflow consumer outside the Fret workspace."""
+"""Verify candidate archives and source-only native interaction from outside the workspace."""
 
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
+import http.server
+import json
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Iterator, Sequence
+
+import tomllib
+
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS_ROOT))
+try:
+    from run_with_timeout import run_process
+finally:
+    sys.path.pop(0)
+
+
+ROOT = TOOLS_ROOT.parent
+PUBLISHABLE_CRATES = tuple(
+    crate
+    for crate in (ROOT / "scripts" / "release-crates.txt").read_text(encoding="utf-8").splitlines()
+    if crate
+)
+if not PUBLISHABLE_CRATES:
+    raise RuntimeError("the ordered release crate set is empty")
+CRATES_IO_INDEX = "https://github.com/rust-lang/crates.io-index"
+CARGO_COMMAND_TIMEOUT_SECONDS = 20 * 60
+
+
+def _run_cargo(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    return run_process(
+        command,
+        cwd=cwd,
+        check=True,
+        capture_output=capture_output,
+        text=capture_output,
+        timeout_seconds=CARGO_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 @dataclass(frozen=True)
@@ -17,6 +64,15 @@ class SmokeScenario:
     slug: str
     cargo_toml: str
     main_rs: str
+    cargo_subcommand: str = "run"
+
+
+@dataclass(frozen=True)
+class PackagedCrate:
+    name: str
+    version: str
+    archive: Path
+    source_dir: Path
 
 
 def write_file(path: Path, contents: str) -> None:
@@ -24,627 +80,349 @@ def write_file(path: Path, contents: str) -> None:
     path.write_text(contents, encoding="utf-8")
 
 
-def jellyflow_external_consumer_scenarios(repo_root: Path) -> list[SmokeScenario]:
-    return [
-        jellyflow_facade_scenario(repo_root),
-        jellyflow_runtime_scenario(repo_root),
-        jellyflow_egui_scenario(repo_root),
+def _load_external_consumer_main_rs(fixture_name: str) -> str:
+    fixture_path = (
+        ROOT
+        / "tools"
+        / "fixtures"
+        / "external-consumer"
+        / fixture_name
+        / "src/main.rs"
+    )
+    return fixture_path.read_text(encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def extract_package_archive(archive: Path, destination: Path) -> Path:
+    with tarfile.open(archive, mode="r:gz") as package:
+        members = package.getmembers()
+        roots: set[str] = set()
+        for member in members:
+            member_path = Path(member.name)
+            if member_path.is_absolute() or ".." in member_path.parts:
+                raise RuntimeError(f"unsafe path in package archive {archive}: {member.name}")
+            if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+                raise RuntimeError(
+                    f"unsafe member type in package archive {archive}: {member.name}"
+                )
+            if member_path.parts:
+                roots.add(member_path.parts[0])
+        if len(roots) != 1:
+            raise RuntimeError(
+                f"package archive {archive} must contain one root directory, found {roots}"
+            )
+        try:
+            package.extractall(destination, filter="data")
+        except TypeError:
+            # Python 3.11 lacks the extraction filter; paths and member types were validated above.
+            package.extractall(destination)
+    return destination / roots.pop()
+
+
+def normalized_package_manifest(source_dir: Path) -> dict[str, object]:
+    manifest_path = source_dir / "Cargo.toml"
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest = tomllib.loads(manifest_text)
+    if "workspace" in manifest:
+        raise RuntimeError(f"normalized package manifest retained [workspace]: {manifest_path}")
+    dependency_tables = [
+        manifest.get("dependencies", {}),
+        manifest.get("dev-dependencies", {}),
+        manifest.get("build-dependencies", {}),
     ]
+    targets = manifest.get("target", {})
+    if isinstance(targets, dict):
+        for target in targets.values():
+            if isinstance(target, dict):
+                dependency_tables.extend(
+                    [
+                        target.get("dependencies", {}),
+                        target.get("dev-dependencies", {}),
+                        target.get("build-dependencies", {}),
+                    ]
+                )
+    for dependencies in dependency_tables:
+        if not isinstance(dependencies, dict):
+            continue
+        for name, dependency in dependencies.items():
+            if isinstance(dependency, dict) and (
+                "path" in dependency or "workspace" in dependency
+            ):
+                raise RuntimeError(
+                    f"normalized dependency {name} retained path/workspace in {manifest_path}"
+                )
+    return manifest
 
 
-def jellyflow_facade_scenario(repo_root: Path) -> SmokeScenario:
+def local_package_patch_args(repo_root: Path, crate: str) -> list[str]:
+    """Resolve an unpublished release set while preserving packaged manifests."""
+
+    args: list[str] = []
+    for dependency in PUBLISHABLE_CRATES:
+        if dependency == crate:
+            continue
+        dependency_path = repo_root / "crates" / dependency
+        args.extend(
+            [
+                "--config",
+                f"patch.crates-io.{dependency}.path={json.dumps(str(dependency_path))}",
+            ]
+        )
+    return args
+
+
+def assemble_package_archives(
+    repo_root: Path, package_root: Path
+) -> list[PackagedCrate]:
+    target_dir = package_root / "target"
+    extracted_dir = package_root / "extracted"
+    packaged: list[PackagedCrate] = []
+    for crate in PUBLISHABLE_CRATES:
+        crate_target_dir = target_dir / crate
+        print(f"assembling package archive: {crate}", flush=True)
+        command = [
+            "cargo",
+            "package",
+            "--locked",
+            "--allow-dirty",
+            "--no-verify",
+            "--package",
+            crate,
+            "--target-dir",
+            str(crate_target_dir),
+        ]
+        command.extend(local_package_patch_args(repo_root, crate))
+        _run_cargo(
+            command,
+            cwd=repo_root,
+        )
+        archives = sorted((crate_target_dir / "package").glob("*.crate"))
+        if len(archives) != 1:
+            raise RuntimeError(
+                f"expected one package archive for {crate}, found {len(archives)}"
+            )
+        archive = archives[0]
+        source_dir = extract_package_archive(archive, extracted_dir)
+        manifest = normalized_package_manifest(source_dir)
+        package = manifest.get("package")
+        if not isinstance(package, dict):
+            raise RuntimeError(f"package metadata missing from {source_dir / 'Cargo.toml'}")
+        name = package.get("name")
+        version = package.get("version")
+        if name != crate or not isinstance(version, str):
+            raise RuntimeError(
+                f"unexpected package identity in {source_dir / 'Cargo.toml'}: {name} {version}"
+            )
+        packaged.append(PackagedCrate(crate, version, archive, source_dir))
+    print("candidate archives assembled; package-derived compile verification follows")
+    return packaged
+
+
+def resolve_package_metadata(
+    packaged: list[PackagedCrate],
+) -> dict[str, dict[str, object]]:
+    package_metadata: dict[str, dict[str, object]] = {}
+    for package in packaged:
+        manifest_path = package.source_dir / "Cargo.toml"
+        result = _run_cargo(
+            [
+                "cargo",
+                "metadata",
+                "--no-deps",
+                "--locked",
+                "--offline",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                str(manifest_path),
+            ],
+            cwd=package.source_dir,
+            capture_output=True,
+        )
+        metadata = json.loads(result.stdout)
+        candidates = [
+            candidate
+            for candidate in metadata["packages"]
+            if candidate["name"] == package.name
+            and candidate["version"] == package.version
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"metadata returned {len(candidates)} candidates for "
+                f"{package.name} {package.version}"
+            )
+        package_metadata[package.name] = candidates[0]
+    missing = set(PUBLISHABLE_CRATES) - package_metadata.keys()
+    if missing:
+        raise RuntimeError(f"metadata omitted packaged crates: {sorted(missing)}")
+    return package_metadata
+
+
+def sparse_index_path(package_name: str) -> Path:
+    name = package_name.lower()
+    if len(name) == 1:
+        return Path("1") / name
+    if len(name) == 2:
+        return Path("2") / name
+    if len(name) == 3:
+        return Path("3") / name[0] / name
+    return Path(name[:2]) / name[2:4] / name
+
+
+def dependency_index_entry(dependency: dict[str, object]) -> dict[str, object]:
+    package_name = dependency["name"]
+    rename = dependency["rename"]
+    return {
+        "name": rename or package_name,
+        "req": dependency["req"],
+        "features": dependency["features"],
+        "optional": dependency["optional"],
+        "default_features": dependency["uses_default_features"],
+        "target": dependency["target"],
+        "kind": dependency["kind"] or "normal",
+        "registry": None
+        if package_name in PUBLISHABLE_CRATES
+        else dependency["registry"] or CRATES_IO_INDEX,
+        "package": package_name if rename else None,
+    }
+
+
+def package_index_entry(
+    package: PackagedCrate, metadata: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "name": package.name,
+        "vers": package.version,
+        "deps": [
+            dependency_index_entry(dependency)
+            for dependency in metadata["dependencies"]
+        ],
+        "cksum": sha256_file(package.archive),
+        "features": metadata["features"],
+        "yanked": False,
+        "links": metadata["links"],
+        "v": 2,
+        "features2": {},
+        "rust_version": metadata["rust_version"],
+    }
+
+
+def write_sparse_registry(
+    root: Path,
+    base_url: str,
+    packaged: list[PackagedCrate],
+    metadata: dict[str, dict[str, object]],
+) -> None:
+    write_file(
+        root / "index/config.json",
+        json.dumps({"dl": f"{base_url}/crates"}, separators=(",", ":")),
+    )
+    for package in packaged:
+        index_entry = package_index_entry(package, metadata[package.name])
+        write_file(
+            root / "index" / sparse_index_path(package.name),
+            json.dumps(index_entry, separators=(",", ":"), sort_keys=True) + "\n",
+        )
+        download = root / "crates" / package.name / package.version / "download"
+        download.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(package.archive, download)
+
+
+class QuietStaticHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+@contextmanager
+def serve_sparse_registry(
+    root: Path,
+    packaged: list[PackagedCrate],
+    metadata: dict[str, dict[str, object]],
+) -> Iterator[str]:
+    handler = functools.partial(QuietStaticHandler, directory=str(root))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    write_sparse_registry(root, base_url, packaged, metadata)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"sparse+{base_url}/index/"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def package_registry_config(index_url: str) -> str:
+    return textwrap.dedent(
+        f"""
+        [registries.jellyflow-package-archives]
+        index = {json.dumps(index_url)}
+        """
+    ).strip() + "\n"
+
+
+def external_cargo_toml(slug: str, dependencies: list[str]) -> str:
+    package = textwrap.dedent(
+        f"""
+        [package]
+        name = "{slug}"
+        version = "0.0.0"
+        edition = "2024"
+        rust-version = "1.95"
+        publish = false
+        """
+    ).strip()
+    return f"{package}\n\n[dependencies]\n" + "\n".join(dependencies) + "\n"
+
+
+def jellyflow_source_path_smoke_scenarios(repo_root: Path) -> list[SmokeScenario]:
+    """Keep framework test-support coverage separate from the package gate."""
+
+    return [jellyflow_open_gpui_source_scenario(repo_root)]
+
+
+def jellyflow_package_consumer_scenario(versions: dict[str, str]) -> SmokeScenario:
+    """Build one consumer from the temporary package-derived Cargo source."""
+
+    dependencies = [
+        f'{name} = {{ version = "={versions[name]}", '
+        'registry = "jellyflow-package-archives" }'
+        for name in PUBLISHABLE_CRATES
+    ]
+    dependencies.append(
+        'open_gpui = { package = "open-gpui", version = "=0.2.0", '
+        "default-features = false }"
+    )
+    dependencies.append('serde_json = "1"')
     return SmokeScenario(
-        slug="jellyflow-facade-external-smoke",
-        cargo_toml=jellyflow_facade_cargo_toml(repo_root),
-        main_rs=jellyflow_facade_main_rs(),
+        slug="jellyflow-package-derived-external-smoke",
+        cargo_toml=external_cargo_toml(
+            "jellyflow-package-derived-external-smoke", dependencies
+        ),
+        main_rs=_load_external_consumer_main_rs("package-derived"),
     )
 
 
-def jellyflow_facade_cargo_toml(repo_root: Path) -> str:
-    return (
-        textwrap.dedent(
-            f"""
-            [package]
-            name = "jellyflow-facade-external-smoke"
-            version = "0.0.0"
-            edition = "2024"
-            rust-version = "1.95"
-            publish = false
-
-            [dependencies]
-            jellyflow = {{ path = "{(repo_root / "crates/jellyflow").as_posix()}" }}
-            """
-        ).strip()
-        + "\n"
-    )
-
-
-def jellyflow_facade_main_rs() -> str:
-    return (
-        textwrap.dedent(
-            """
-            use jellyflow::prelude::*;
-            use jellyflow::{core, layout, runtime};
-
-            fn main() {
-                let store = NodeGraphStore::new(
-                    Graph::new(GraphId::from_u128(1)),
-                    NodeGraphViewState::default(),
-                    NodeGraphEditorConfig::default(),
-                );
-
-                assert_eq!(store.graph().nodes().len(), 0);
-
-                let registry = builtin_layout_engine_registry();
-                assert!(registry.get(&LayoutEngineId::dugong()).is_some());
-                assert!(
-                    registry
-                        .engines_for_family(&LayoutFamilyId::mind_map())
-                        .count()
-                        >= 2
-                );
-
-                let request = LayoutEngineRequest::dugong(LayoutRequest::all());
-                let planned = store
-                    .plan_layout(&request, &registry)
-                    .expect("facade layout planning succeeds");
-                assert!(planned.nodes.is_empty());
-
-                let _graph: core::Graph = store.graph().clone();
-                let _patch = runtime::NodeGraphPatch::default();
-                let _: fn() -> &'static layout::LayoutEngineRegistry =
-                    layout::builtin_layout_engine_registry;
-                let _ = std::mem::size_of::<DispatchOutcome>();
-                let _ = std::mem::size_of::<DispatchError>();
-            }
-            """
-        ).strip()
-        + "\n"
-    )
-
-
-def jellyflow_runtime_scenario(repo_root: Path) -> SmokeScenario:
+def jellyflow_open_gpui_source_scenario(repo_root: Path) -> SmokeScenario:
     return SmokeScenario(
-        slug="jellyflow-external-smoke",
-        cargo_toml=jellyflow_runtime_cargo_toml(repo_root),
-        main_rs=jellyflow_runtime_main_rs(),
-    )
-
-
-def jellyflow_egui_scenario(repo_root: Path) -> SmokeScenario:
-    return SmokeScenario(
-        slug="jellyflow-egui-external-smoke",
-        cargo_toml=jellyflow_egui_cargo_toml(repo_root),
-        main_rs=jellyflow_egui_main_rs(),
-    )
-
-
-def jellyflow_egui_cargo_toml(repo_root: Path) -> str:
-    return (
-        textwrap.dedent(
-            f"""
-            [package]
-            name = "jellyflow-egui-external-smoke"
-            version = "0.0.0"
-            edition = "2024"
-            rust-version = "1.95"
-            publish = false
-
-            [dependencies]
-            jellyflow-egui = {{ path = "{(repo_root / "crates/jellyflow-egui").as_posix()}" }}
-            """
-        ).strip()
-        + "\n"
-    )
-
-
-def jellyflow_egui_main_rs() -> str:
-    return (
-        textwrap.dedent(
-            """
-            use jellyflow_egui::{
-                JellyflowEguiApp, JellyflowEguiBridge, NodeRendererStyle, RendererCatalog,
-                SampleGraphKind, egui,
-            };
-
-            fn main() {
-                let app = JellyflowEguiApp::demo().expect("demo app builds");
-                assert!(!app.bridge.store().graph().nodes().is_empty());
-
-                let mut catalog = RendererCatalog::new();
-                catalog.register("custom-card", NodeRendererStyle::fallback());
-                assert_eq!(
-                    catalog.style_for_key("custom-card"),
-                    NodeRendererStyle::fallback()
-                );
-
-                let bridge = JellyflowEguiBridge::demo().expect("demo bridge builds");
-                assert!(bridge.descriptors().len() >= 4);
-                for sample in [
-                    SampleGraphKind::AutomationBuilder,
-                    SampleGraphKind::Erd,
-                    SampleGraphKind::OrgChart,
-                ] {
-                    let app = JellyflowEguiApp::sample(sample).expect("product sample app builds");
-                    assert!(!app.bridge.store().graph().nodes().is_empty());
-                    assert!(!app.bridge.store().graph().edges().is_empty());
-                }
-                let _ = egui::Color32::WHITE;
-            }
-            """
-        ).strip()
-        + "\n"
-    )
-
-
-def jellyflow_runtime_cargo_toml(repo_root: Path) -> str:
-    return (
-        textwrap.dedent(
-            f"""
-            [package]
-            name = "jellyflow-external-smoke"
-            version = "0.0.0"
-            edition = "2024"
-            rust-version = "1.95"
-            publish = false
-
-            [dependencies]
-            jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}
-            jellyflow-layout = {{ path = "{(repo_root / "crates/jellyflow-layout").as_posix()}" }}
-            jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}
-            serde_json = "1"
-            """
-        ).strip()
-        + "\n"
-    )
-
-
-def jellyflow_runtime_main_rs() -> str:
-    return (
-        textwrap.dedent(
-            """
-            use jellyflow_core::{
-                Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge,
-                EdgeId, EdgeKind, EdgeLabelAnchor, EdgeViewDescriptor, Graph, GraphElementKeys,
-                GraphElements, GraphId, GraphLocalBindingTarget, GraphOp, GraphTransaction, Node,
-                NodeGraphModifierKey, NodeGraphModifiers, NodeId, NodeKindKey, Port,
-                PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor,
-            };
-            use jellyflow_layout::{
-                LayoutContext, LayoutEngineId, LayoutEngineRequest, LayoutFamilyId,
-                LayoutRequest, LayoutScope, builtin_layout_engine_registry,
-                layout_graph_with_engine,
-            };
-            use jellyflow_runtime::io::{NodeGraphEditorConfig, NodeGraphViewState};
-            use jellyflow_runtime::profile::{
-                ConnectionRuleDescriptor, FieldSchema, GraphProfileMetadata, NodeFieldSchemaSet,
-                ValidationHint, VariableDescriptor, VariableSurfaceDescriptor,
-            };
-            use jellyflow_runtime::rules::{Diagnostic, DiagnosticTarget};
-            use jellyflow_runtime::schema::{
-                NodeRegistry, NodeSchema, PortDecl, PortHandleVisibility, PortViewDescriptor,
-                PortViewSide,
-            };
-            use jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus;
-            use jellyflow_runtime::runtime::conformance::{
-                run_conformance_scenario, ConformanceAction, ConformanceFixtureDirectory,
-                ConformanceScenario, ConformanceSuite, ConformanceTraceEvent,
-            };
-            use jellyflow_runtime::runtime::fit_view::{
-                compute_fit_view_target_for_canvas_rect, FitViewComputeOptions,
-            };
-            use jellyflow_runtime::runtime::drag::NODE_DRAG_TRANSACTION_LABEL;
-            use jellyflow_runtime::runtime::geometry::{
-                bezier_edge_path, edge_path_contains_point, edge_position, BezierEdgeOptions,
-                EdgeEndpointInput, EdgeHitTestOptions, HandleBounds, HandlePosition,
-            };
-            use jellyflow_runtime::NodeGraphStore;
-
-            fn make_node(kind: &str, x: f32, y: f32) -> Node {
-                Node {
-                    kind: NodeKindKey::new(kind),
-                    kind_version: 1,
-                    pos: CanvasPoint { x, y },
-                    origin: None,
-                    selectable: None,
-                    focusable: None,
-                    draggable: None,
-                    connectable: None,
-                    deletable: None,
-                    parent: None,
-                    extent: None,
-                    expand_parent: None,
-                    size: Some(CanvasSize {
-                        width: 160.0,
-                        height: 80.0,
-                    }),
-                    hidden: false,
-                    collapsed: false,
-                    ports: Vec::new(),
-                    data: Default::default(),
-                }
-            }
-
-            fn main() {
-                let node_id = NodeId::from_u128(2);
-                let node = make_node("demo.source", 10.0, 20.0);
-                let mut graph = Graph::new(GraphId::from_u128(1));
-                let mut registry = NodeRegistry::new();
-                registry.register(
-                    NodeSchema::builder("demo.workflow", "Workflow")
-                        .port(
-                            PortDecl::data_input("input").with_view(
-                                PortViewDescriptor::left()
-                                    .with_order(0)
-                                    .with_group("data")
-                                    .with_anchor("field.input")
-                                    .with_visibility(PortHandleVisibility::Visible),
-                            ),
-                        )
-                        .port(PortDecl::data_output("result").on_right().with_view_order(1))
-                        .build(),
-                );
-                let workflow_descriptor = registry
-                    .view_descriptor(&NodeKindKey::new("demo.workflow"))
-                    .expect("workflow descriptor");
-                assert_eq!(
-                    workflow_descriptor.ports[0].view.side,
-                    Some(PortViewSide::Left)
-                );
-                assert_eq!(
-                    workflow_descriptor.ports[0].view.anchor.as_deref(),
-                    Some("field.input")
-                );
-
-                let mut add = GraphTransaction::new().with_label("add demo node");
-                add.push(GraphOp::AddNode { id: node_id, node });
-                add.apply_to(&mut graph).expect("transaction applies");
-                assert!(graph.nodes().contains_key(&node_id));
-                let binding_id = BindingId::from_u128(40);
-                let mut binding_tx = GraphTransaction::new().with_label("add binding");
-                binding_tx.push(GraphOp::AddBinding {
-                    id: binding_id,
-                    binding: Binding {
-                        subject: BindingEndpoint::graph_local(
-                            GraphLocalBindingTarget::Node { id: node_id },
-                        ),
-                        target: BindingEndpoint::source(SourceAnchor::new(
-                            "source://paper.pdf",
-                            serde_json::json!({ "page": 1, "rect": [10, 20, 30, 40] }),
-                        )),
-                        kind: Some("excerpt".to_owned()),
-                        meta: serde_json::Value::Null,
-                    },
-                });
-                binding_tx.apply_to(&mut graph).expect("binding applies");
-                let target_id = NodeId::from_u128(3);
-                let from_port = PortId::from_u128(50);
-                let to_port = PortId::from_u128(51);
-                let edge_id = EdgeId::from_u128(52);
-                let edge_view = EdgeViewDescriptor::new()
-                    .with_renderer_key("branch-edge")
-                    .with_label("approved")
-                    .with_label_anchor(EdgeLabelAnchor::Center);
-
-                let target_node = make_node("demo.target", 220.0, 20.0);
-                let mut edge_tx = GraphTransaction::new().with_label("add edge metadata");
-                edge_tx.push(GraphOp::AddNode {
-                    id: target_id,
-                    node: target_node,
-                });
-                edge_tx.push(GraphOp::AddPort {
-                    id: from_port,
-                    port: Port {
-                        node: node_id,
-                        key: PortKey::new("out"),
-                        dir: PortDirection::Out,
-                        kind: PortKind::Data,
-                        capacity: PortCapacity::Multi,
-                        connectable: None,
-                        connectable_start: None,
-                        connectable_end: None,
-                        ty: None,
-                        data: serde_json::Value::Null,
-                    },
-                });
-                edge_tx.push(GraphOp::AddPort {
-                    id: to_port,
-                    port: Port {
-                        node: target_id,
-                        key: PortKey::new("in"),
-                        dir: PortDirection::In,
-                        kind: PortKind::Data,
-                        capacity: PortCapacity::Single,
-                        connectable: None,
-                        connectable_start: None,
-                        connectable_end: None,
-                        ty: None,
-                        data: serde_json::Value::Null,
-                    },
-                });
-                edge_tx.push(GraphOp::SetNodePorts {
-                    id: node_id,
-                    from: Vec::new(),
-                    to: vec![from_port],
-                });
-                edge_tx.push(GraphOp::SetNodePorts {
-                    id: target_id,
-                    from: Vec::new(),
-                    to: vec![to_port],
-                });
-                edge_tx.push(GraphOp::AddEdge {
-                    id: edge_id,
-                    edge: Edge::new(EdgeKind::Data, from_port, to_port),
-                });
-                edge_tx.push(GraphOp::SetEdgeData {
-                    id: edge_id,
-                    from: serde_json::Value::Null,
-                    to: serde_json::json!({ "branch": "approved" }),
-                });
-                edge_tx.push(GraphOp::SetEdgeView {
-                    id: edge_id,
-                    from: EdgeViewDescriptor::default(),
-                    to: edge_view.clone(),
-                });
-                edge_tx.apply_to(&mut graph).expect("edge metadata applies");
-                assert_eq!(
-                    graph.edges()[&edge_id].data,
-                    serde_json::json!({ "branch": "approved" })
-                );
-                assert_eq!(graph.edges()[&edge_id].view, edge_view);
-                let profile_metadata =
-                    GraphProfileMetadata::new("external.workflow", "External workflow")
-                        .with_node_fields(
-                            NodeFieldSchemaSet::new("demo.workflow").with_field(
-                                FieldSchema::new("prompt", "Prompt")
-                                    .with_type(jellyflow_core::TypeDesc::String)
-                                    .required()
-                                    .with_hint(ValidationHint::new(
-                                        "external.prompt_required",
-                                        "Prompt is required",
-                                    ))
-                                    .with_port_anchor("input"),
-                            ),
-                        )
-                        .with_variable_surface(
-                            VariableSurfaceDescriptor::new("inputs", "Inputs").with_variable(
-                                VariableDescriptor::new("topic", "Topic")
-                                    .with_type(jellyflow_core::TypeDesc::String),
-                            ),
-                        )
-                        .with_connection_rule(
-                            ConnectionRuleDescriptor::new(
-                                "external.exec_dag",
-                                "Execution flow must be acyclic",
-                            )
-                            .for_edge_kind(EdgeKind::Exec),
-                        );
-                assert_eq!(profile_metadata.node_fields[0].fields[0].key, "prompt");
-                let diagnostic = Diagnostic::error(
-                    "external.edge.invalid",
-                    DiagnosticTarget::Edge { id: edge_id },
-                    "edge is invalid",
-                );
-                assert_eq!(diagnostic.key, "external.edge.invalid");
-
-                let mut store = NodeGraphStore::new(
-                    graph,
-                    NodeGraphViewState::default(),
-                    NodeGraphEditorConfig::default(),
-                );
-                let mut move_node = GraphTransaction::new().with_label("move demo node");
-                move_node.push(GraphOp::SetNodePos {
-                    id: node_id,
-                    from: CanvasPoint { x: 10.0, y: 20.0 },
-                    to: CanvasPoint { x: 32.0, y: 48.0 },
-                });
-                let outcome = store
-                    .dispatch_transaction(&move_node)
-                    .expect("store dispatch succeeds");
-                let graph_nodes: GraphElements<'_, NodeId, Node> = store.graph().nodes();
-                let graph_node_keys: GraphElementKeys<'_, NodeId, Node> = graph_nodes.keys();
-                assert_eq!(graph_node_keys.count(), graph_nodes.len());
-                assert_eq!(outcome.committed().ops.len(), 1);
-                assert_eq!(outcome.patch().transaction().ops.len(), 1);
-                assert!(outcome.footprint().nodes.contains(&node_id));
-                assert_eq!(outcome.footprint(), outcome.patch().footprint());
-                assert_eq!(
-                    LayoutScope::from_footprint(store.graph(), outcome.footprint()).nodes(),
-                    Some(&[node_id].into_iter().collect())
-                );
-                let owned_patch = outcome.clone().into_patch();
-                assert_eq!(owned_patch.transaction().ops.len(), 1);
-                assert_eq!(
-                    store.graph().nodes()[&node_id].pos,
-                    CanvasPoint { x: 32.0, y: 48.0 }
-                );
-
-                let layout_registry = builtin_layout_engine_registry();
-                assert_eq!(
-                    layout_registry
-                        .engines_for_family(&LayoutFamilyId::mind_map())
-                        .count(),
-                    2
-                );
-                let layout_request = LayoutEngineRequest::dugong(LayoutRequest::all());
-                let graph_layout = layout_graph_with_engine(
-                    store.graph(),
-                    &layout_request,
-                    &layout_registry,
-                    &LayoutContext::new(),
-                )
-                .expect("direct layout crate planning succeeds");
-                assert!(graph_layout.node_position(node_id).is_some());
-
-                let freeform_request = LayoutEngineRequest::new(
-                    LayoutEngineId::mind_map_freeform(),
-                    LayoutRequest::all(),
-                );
-                let freeform_layout = layout_graph_with_engine(
-                    store.graph(),
-                    &freeform_request,
-                    &layout_registry,
-                    &LayoutContext::new(),
-                )
-                .expect("freeform layout planning succeeds");
-                assert!(freeform_layout.node_position(node_id).is_some());
-
-                let runtime_layout = store
-                    .plan_layout(&layout_request, &layout_registry)
-                    .expect("runtime layout planning succeeds");
-                assert!(runtime_layout.node_position(node_id).is_some());
-                assert_eq!(
-                    store
-                        .binding_query()
-                        .binding(binding_id)
-                        .expect("binding query result")
-                        .subject
-                        .status(),
-                    BindingEndpointResolutionStatus::Resolved
-                );
-                assert!(
-                    store
-                        .layout_context_with_binding_pins()
-                        .pinned_nodes
-                        .contains(&node_id)
-                );
-                assert!(store.graph().edges().contains_key(&edge_id));
-
-                let conformance_scenario =
-                    ConformanceScenario::new("external node drag fixture", store.graph().clone())
-                        .with_actions([ConformanceAction::apply_node_drag(
-                            node_id,
-                            CanvasPoint { x: 96.0, y: 128.0 },
-                        )])
-                        .with_expected_trace([ConformanceTraceEvent::graph_commit(
-                            Some(NODE_DRAG_TRANSACTION_LABEL),
-                            ["set_node_pos"],
-                        )]);
-                let conformance_report = run_conformance_scenario(&conformance_scenario)
-                    .expect("conformance fixture runs");
-                assert!(conformance_report.is_match(), "{conformance_report}");
-
-                let fixture_root = std::env::temp_dir().join(format!(
-                    "jellyflow-external-fixtures-{}",
-                    std::process::id()
-                ));
-                let suite_path = fixture_root.join("nested").join("suite.json");
-                let suite = ConformanceSuite::new("external adapter suite")
-                    .with_scenarios([conformance_scenario]);
-                suite.save_json(&suite_path).expect("save conformance suite");
-                let loaded_suite =
-                    ConformanceSuite::load_json(&suite_path).expect("load conformance suite");
-                let suite_report = loaded_suite.run();
-                assert!(suite_report.is_match(), "{suite_report}");
-                assert!(
-                    ConformanceSuite::load_json_if_exists(&suite_path)
-                        .expect("load optional conformance suite")
-                        .is_some()
-                );
-
-                let fixture_directory = ConformanceFixtureDirectory::load_json(&fixture_root)
-                    .expect("load conformance fixture directory");
-                assert_eq!(fixture_directory.file_count(), 1);
-                let directory_report = fixture_directory.run();
-                assert!(directory_report.is_match(), "{directory_report}");
-                assert_eq!(directory_report.scenario_count(), 1);
-                assert!(
-                    ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
-                        .expect("load optional conformance fixture directory")
-                        .is_some()
-                );
-                std::fs::remove_dir_all(&fixture_root).expect("remove conformance fixture directory");
-                assert!(
-                    ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
-                        .expect("missing optional conformance fixture directory")
-                        .is_none()
-                );
-
-                let (pan, zoom) = compute_fit_view_target_for_canvas_rect(
-                    CanvasRect {
-                        origin: CanvasPoint { x: 32.0, y: 48.0 },
-                        size: CanvasSize {
-                            width: 160.0,
-                            height: 80.0,
-                        },
-                    },
-                    FitViewComputeOptions {
-                        viewport_width_px: 800.0,
-                        viewport_height_px: 600.0,
-                        node_origin: (0.0, 0.0),
-                        padding: 0.1,
-                        margin_px_fallback: 24.0,
-                        min_zoom: 0.1,
-                        max_zoom: 4.0,
-                    },
-                )
-                .expect("fit-view target");
-                assert!(pan.x.is_finite() && pan.y.is_finite());
-                assert!(zoom.is_finite() && zoom > 0.0);
-
-                let endpoints = edge_position(
-                    EdgeEndpointInput {
-                        node_rect: CanvasRect {
-                            origin: CanvasPoint { x: 32.0, y: 48.0 },
-                            size: CanvasSize {
-                                width: 160.0,
-                                height: 80.0,
-                            },
-                        },
-                        handle: Some(HandleBounds {
-                            rect: CanvasRect {
-                                origin: CanvasPoint { x: 152.0, y: 32.0 },
-                                size: CanvasSize {
-                                    width: 8.0,
-                                    height: 16.0,
-                                },
-                            },
-                            position: HandlePosition::Right,
-                        }),
-                        fallback_position: HandlePosition::Right,
-                    },
-                    EdgeEndpointInput {
-                        node_rect: CanvasRect {
-                            origin: CanvasPoint { x: 320.0, y: 96.0 },
-                            size: CanvasSize {
-                                width: 160.0,
-                                height: 80.0,
-                            },
-                        },
-                        handle: Some(HandleBounds {
-                            rect: CanvasRect {
-                                origin: CanvasPoint { x: 0.0, y: 32.0 },
-                                size: CanvasSize {
-                                    width: 8.0,
-                                    height: 16.0,
-                                },
-                            },
-                            position: HandlePosition::Left,
-                        }),
-                        fallback_position: HandlePosition::Left,
-                    },
-                )
-                .expect("edge endpoints");
-                let edge_path = bezier_edge_path(
-                    endpoints.source,
-                    endpoints.target,
-                    BezierEdgeOptions::default(),
-                )
-                .expect("edge path");
-                assert!(edge_path_contains_point(
-                    &edge_path,
-                    edge_path.label.point,
-                    EdgeHitTestOptions::default(),
-                ));
-
-                assert!(NodeGraphModifierKey::CtrlOrMeta.is_pressed(NodeGraphModifiers {
-                    ctrl: true,
-                    ..NodeGraphModifiers::default()
-                }));
-            }
-            """
-        ).strip()
-        + "\n"
+        slug="jellyflow-open-gpui-external-smoke",
+        cargo_subcommand="test",
+        cargo_toml=external_cargo_toml(
+            "jellyflow-open-gpui-external-smoke",
+            [
+                f'jellyflow = {{ path = "{(repo_root / "crates/jellyflow").as_posix()}" }}',
+                f'jellyflow-open-gpui = {{ path = "{(repo_root / "crates/jellyflow-open-gpui").as_posix()}" }}',
+                'open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }',
+            ],
+        ),
+        main_rs=_load_external_consumer_main_rs("open-gpui-source"),
     )
 
 
@@ -671,54 +449,87 @@ def write_scenario(project_dir: Path, scenario: SmokeScenario) -> None:
     write_file(project_dir / "src/main.rs", scenario.main_rs)
 
 
-def run_cargo_smoke(repo_root: Path, project_dir: Path) -> None:
-    run_cargo_manifest(repo_root, project_dir / "Cargo.toml")
-
-
 def run_cargo_manifest(
-    repo_root: Path,
+    cwd: Path,
     manifest_path: Path,
-    extra_args: list[str] | None = None,
-    capture_output: bool = False,
-) -> subprocess.CompletedProcess[str]:
+    cargo_subcommand: str = "run",
+    locked: bool = False,
+) -> None:
     command = [
         "cargo",
-        "run",
+        cargo_subcommand,
         "--quiet",
         "--manifest-path",
         str(manifest_path),
     ]
-    if extra_args:
-        command.extend(["--", *extra_args])
-    return subprocess.run(
+    if locked:
+        command.append("--locked")
+    _run_cargo(
         command,
-        cwd=repo_root,
-        check=True,
-        capture_output=capture_output,
-        text=capture_output,
+        cwd=cwd,
     )
 
 
-def cargo_tree(repo_root: Path, project_dir: Path) -> str:
-    return cargo_tree_for_manifest(repo_root, project_dir / "Cargo.toml")
-
-
-def cargo_tree_for_manifest(repo_root: Path, manifest_path: Path) -> str:
-    tree = subprocess.run(
-        [
-            "cargo",
-            "tree",
-            "--manifest-path",
-            str(manifest_path),
-            "--prefix",
-            "none",
-        ],
-        cwd=repo_root,
-        check=True,
+def cargo_tree_for_manifest(
+    cwd: Path,
+    manifest_path: Path,
+    *,
+    locked: bool = False,
+) -> str:
+    command = [
+        "cargo",
+        "tree",
+        "--manifest-path",
+        str(manifest_path),
+        "--prefix",
+        "none",
+    ]
+    if locked:
+        command.append("--locked")
+    tree = _run_cargo(
+        command,
+        cwd=cwd,
         capture_output=True,
-        text=True,
     )
     return tree.stdout
+
+
+def resolved_package_features(
+    cwd: Path,
+    manifest_path: Path,
+    package_name: str,
+    *,
+    locked: bool = False,
+) -> set[str]:
+    command = [
+        "cargo",
+        "metadata",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        str(manifest_path),
+    ]
+    if locked:
+        command.append("--locked")
+    result = _run_cargo(
+        command,
+        cwd=cwd,
+        capture_output=True,
+    )
+    metadata = json.loads(result.stdout)
+    package_ids = {
+        package["id"]
+        for package in metadata["packages"]
+        if package["name"] == package_name
+    }
+    if not package_ids:
+        raise RuntimeError(f"cargo metadata omitted package {package_name}")
+    return {
+        feature
+        for node in metadata["resolve"]["nodes"]
+        if node["id"] in package_ids
+        for feature in node["features"]
+    }
 
 
 def forbidden_fret_packages(tree_output: str) -> list[str]:
@@ -743,55 +554,202 @@ def assert_no_fret_packages(tree_output: str) -> bool:
     return True
 
 
-def run_scenario(repo_root: Path, project_dir: Path, scenario: SmokeScenario) -> bool:
+def run_source_path_scenario(
+    repo_root: Path, project_dir: Path, scenario: SmokeScenario
+) -> bool:
     write_scenario(project_dir, scenario)
-    print(f"external smoke project: {project_dir}", flush=True)
-    run_cargo_smoke(repo_root, project_dir)
-    return assert_no_fret_packages(cargo_tree(repo_root, project_dir))
-
-
-def run_template_adapter_smoke(repo_root: Path) -> bool:
-    template_manifest = repo_root / "templates/headless-adapter/Cargo.toml"
-    print(f"headless adapter template smoke: {template_manifest.parent}", flush=True)
-    result = run_cargo_manifest(
-        repo_root,
-        template_manifest,
-        ["check"],
-        capture_output=True,
+    print(f"source-path interaction smoke project: {project_dir}", flush=True)
+    manifest = project_dir / "Cargo.toml"
+    _run_cargo(
+        ["cargo", "generate-lockfile", "--manifest-path", str(manifest)],
+        cwd=repo_root,
     )
-    if '"scenario_reports"' not in result.stdout:
+    run_cargo_manifest(
+        repo_root,
+        manifest,
+        cargo_subcommand=scenario.cargo_subcommand,
+        locked=True,
+    )
+    return assert_no_fret_packages(
+        cargo_tree_for_manifest(repo_root, manifest, locked=True)
+    )
+
+
+def assert_registry_only_consumer(manifest_path: Path) -> None:
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    if "workspace" in manifest:
+        raise RuntimeError("package-derived consumer must not define a workspace")
+    dependencies = manifest.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise RuntimeError(f"consumer dependencies missing from {manifest_path}")
+    for name, dependency in dependencies.items():
+        if isinstance(dependency, dict) and (
+            "git" in dependency or "path" in dependency or "workspace" in dependency
+        ):
+            raise RuntimeError(
+                f"package-derived consumer dependency {name} uses a non-registry source"
+            )
+    for name in PUBLISHABLE_CRATES:
+        dependency = dependencies.get(name)
+        if not isinstance(dependency, dict) or dependency.get("registry") != (
+            "jellyflow-package-archives"
+        ):
+            raise RuntimeError(f"package-derived dependency {name} bypasses the archive registry")
+    open_gpui = dependencies.get("open_gpui")
+    if not isinstance(open_gpui, dict):
+        raise RuntimeError("package-derived consumer must declare Open GPUI explicitly")
+    features = open_gpui.get("features", [])
+    if isinstance(features, list) and "test-support" in features:
+        raise RuntimeError("package-derived Open GPUI consumer enabled test-support")
+    if open_gpui.get("default-features") is not False:
+        raise RuntimeError("package-derived Open GPUI consumer enabled default features")
+
+
+def assert_packaged_crates_in_tree(
+    tree_output: str, packaged: Iterable[PackagedCrate]
+) -> bool:
+    missing = [
+        f"{package.name} v{package.version}"
+        for package in packaged
+        if f"{package.name} v{package.version}" not in tree_output
+    ]
+    if missing:
         print(
-            "headless adapter template did not print a suite report",
+            "package-derived consumer omitted packaged crates:\n" + "\n".join(missing),
             file=sys.stderr,
         )
         return False
-    print("headless adapter template check produced a suite report")
-    return assert_no_fret_packages(cargo_tree_for_manifest(repo_root, template_manifest))
+    print("external cargo tree resolves all Jellyflow package archives")
+    return True
+
+
+def assert_package_lock_sources(
+    lock_path: Path, index_url: str, packaged: Iterable[PackagedCrate]
+) -> None:
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    entries = lock.get("package", [])
+    expected_identities = {(package.name, package.version) for package in packaged}
+    unexpected = [
+        (entry["name"], entry["version"], entry.get("source"))
+        for entry in entries
+        if entry["name"] in PUBLISHABLE_CRATES
+        and (entry["name"], entry["version"]) not in expected_identities
+    ]
+    if unexpected:
+        raise RuntimeError(f"lockfile pulled non-candidate Jellyflow packages: {unexpected}")
+    expected_source = index_url
+    for package in packaged:
+        matches = [
+            entry
+            for entry in entries
+            if entry["name"] == package.name and entry["version"] == package.version
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"lockfile contains {len(matches)} sources for "
+                f"{package.name} {package.version}"
+            )
+        entry = matches[0]
+        if entry.get("source") != expected_source:
+            raise RuntimeError(
+                f"{package.name} resolved from {entry.get('source')}, expected {expected_source}"
+            )
+        if entry.get("checksum") != sha256_file(package.archive):
+            raise RuntimeError(f"lockfile checksum does not match {package.archive}")
+
+
+def run_package_consumer_smoke(
+    project_dir: Path,
+    index_url: str,
+    packaged: list[PackagedCrate],
+) -> bool:
+    versions = {package.name: package.version for package in packaged}
+    scenario = jellyflow_package_consumer_scenario(versions)
+    write_scenario(project_dir, scenario)
+    write_file(project_dir / ".cargo/config.toml", package_registry_config(index_url))
+    manifest = project_dir / "Cargo.toml"
+    assert_registry_only_consumer(manifest)
+    print(f"package-derived external smoke project: {project_dir}", flush=True)
+    _run_cargo(
+        [
+            "cargo",
+            "generate-lockfile",
+            "--manifest-path",
+            str(manifest),
+        ],
+        cwd=project_dir,
+    )
+    assert_package_lock_sources(project_dir / "Cargo.lock", index_url, packaged)
+    tree = cargo_tree_for_manifest(project_dir, manifest, locked=True)
+    open_gpui_features = resolved_package_features(
+        project_dir, manifest, "open-gpui", locked=True
+    )
+    for feature in ("default", "test-support"):
+        if feature in open_gpui_features:
+            print(
+                f"package-derived Open GPUI consumer activated {feature}",
+                file=sys.stderr,
+            )
+            return False
+    print("package-derived Open GPUI consumer excludes default and test-support features")
+    if not assert_packaged_crates_in_tree(tree, packaged) or not assert_no_fret_packages(
+        tree
+    ):
+        return False
+    run_cargo_manifest(project_dir, manifest, locked=True)
+    print("package-derived external consumer compiled from candidate archives")
+    return True
+
+
+def run_template_adapter_smoke(repo_root: Path) -> bool:
+    template_manifest = repo_root / "templates/native-adapter/Cargo.toml"
+    print(f"native adapter template smoke: {template_manifest.parent}", flush=True)
+    run_cargo_manifest(
+        repo_root,
+        template_manifest,
+        cargo_subcommand="test",
+        locked=True,
+    )
+    print("native adapter template protocol test passed")
+    return assert_no_fret_packages(
+        cargo_tree_for_manifest(repo_root, template_manifest, locked=True)
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a temporary Cargo project outside this workspace and run a smoke binary that can "
-            "consume jellyflow and the lower-level Jellyflow crates without fret-node or fret-core."
+            "Create temporary Cargo projects outside this workspace and exercise the public "
+            "Jellyflow runtime and native adapter packages."
         )
     )
     parser.add_argument(
         "--keep",
         action="store_true",
-        help="keep the temporary smoke project for inspection",
+        help="keep the temporary smoke projects for inspection",
     )
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1]
-    scenarios = jellyflow_external_consumer_scenarios(repo_root)
+    repo_root = ROOT
+    scenarios = jellyflow_source_path_smoke_scenarios(repo_root)
     temp_root, temp_context = make_temp_root(args.keep)
 
     try:
-        ok = True
+        package_root = temp_root / "package-source"
+        packaged = assemble_package_archives(repo_root, package_root)
+        metadata = resolve_package_metadata(packaged)
+        with serve_sparse_registry(
+            package_root / "registry", packaged, metadata
+        ) as index_url:
+            ok = run_package_consumer_smoke(
+                temp_root / "package-consumer",
+                index_url,
+                packaged,
+            )
+        source_root = temp_root / "source-path-consumers"
         for scenario in scenarios:
-            project_dir = scenario_project_dir(temp_root, scenario, len(scenarios))
-            ok = run_scenario(repo_root, project_dir, scenario) and ok
+            project_dir = scenario_project_dir(source_root, scenario, len(scenarios))
+            ok = run_source_path_scenario(repo_root, project_dir, scenario) and ok
         ok = run_template_adapter_smoke(repo_root) and ok
         return 0 if ok else 1
     finally:

@@ -1,0 +1,12 @@
+{
+  "graph_id": "00000000-0000-0000-0000-000000000399",
+  "graph_version": 3,
+  "graph": {
+    "future_payload_sentinel": {
+      "must_not_enter_v2_decoder": true
+    }
+  },
+  "future_envelope_sentinel": {
+    "must_survive_rejection": true
+  }
+}

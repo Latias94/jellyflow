@@ -1,31 +1,22 @@
-//! On-disk wrapper formats, view state, and editor configuration.
+//! On-disk graph formats and versioned view-session seed state.
 
-mod config;
 mod files;
-mod tuning;
 mod view_state;
 
-pub use config::{
-    NodeGraphBoxSelectEdges, NodeGraphConnectionInteraction, NodeGraphDeleteInteraction,
-    NodeGraphDeleteKey, NodeGraphEditorConfig, NodeGraphFrameViewInteraction,
-    NodeGraphInteractionConfig, NodeGraphInteractionState, NodeGraphKeyCode,
-    NodeGraphKeyboardInteraction, NodeGraphNodeDragInteraction, NodeGraphNodeOrigin,
-    NodeGraphNudgeStepMode, NodeGraphPanInteraction, NodeGraphPanOnDragButtons,
-    NodeGraphPanOnScrollMode, NodeGraphRenderingInteraction, NodeGraphSelectionInteraction,
-    NodeGraphSelectionMode, NodeGraphViewportEase, NodeGraphZoomInteraction,
-};
 pub use files::{
-    EDITOR_STATE_FILE_VERSION, GRAPH_FILE_VERSION, GraphFileError, GraphFileV1,
-    NodeGraphEditorStateFile, NodeGraphEditorStateFileError,
+    CanonicalGraphFileError, GRAPH_FILE_VERSION, GraphFile, GraphFileError, PersistenceLimitError,
+    PersistenceLimits, PersistenceResource, VIEW_SESSION_SEED_FILE_VERSION, ViewSessionSeedFile,
+    ViewSessionSeedFileError,
 };
-pub use jellyflow_core::interaction::{
-    NodeGraphConnectionMode, NodeGraphDragHandleMode, NodeGraphModifierKey, NodeGraphModifiers,
+
+#[cfg(test)]
+pub(crate) use files::{GraphFileSaveFault, ViewSessionSeedFileSaveFault};
+pub(crate) use files::{PayloadCounter, validate_graph_resources};
+pub use view_state::{
+    ViewSelectionSeed, ViewSessionSeed, ViewSessionSeedGraphMismatch, ViewStackingSeed,
+    ViewportSeed,
 };
-pub use tuning::{
-    NodeGraphAutoPanTuning, NodeGraphPaintCachePruneTuning, NodeGraphPanInertiaTuning,
-    NodeGraphRuntimeTuning, NodeGraphSpatialIndexTuning,
-};
-pub use view_state::{NodeGraphPureViewState, NodeGraphViewState};
+pub(crate) use view_state::{edge_is_visible, retain_first};
 
 #[cfg(test)]
 mod tests;

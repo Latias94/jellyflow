@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphTransaction, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasSize, Graph, NodeId};
 
 use crate::engine::{
     LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
-    LayoutOptions, LayoutRequest, LayoutResult, TIDY_TREE_LAYOUT_ENGINE_ID, position_from_center,
-    resolve_node_origin, resolve_node_size, validate_request,
+    LayoutOptions, LayoutRequest, LayoutResult, TIDY_TREE_LAYOUT_ENGINE_ID, normalized_node_origin,
+    position_from_center, resolve_node_size, validate_request,
 };
 use crate::projection::{VisibleLayoutEdge, build_visible_edge_projection, result_from_placements};
 
@@ -24,27 +24,11 @@ impl LayoutEngine for TidyTreeLayoutEngine {
         request: &LayoutRequest,
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_tidy_tree_context(graph, request, context)
+        run_tidy_tree_layout(graph, request, context)
     }
 }
 
-/// Runs the native tidy tree engine.
-pub fn layout_graph_with_tidy_tree(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_tidy_tree_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs the native tidy tree engine and converts the result into a transaction.
-pub fn layout_graph_to_transaction_with_tidy_tree(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_tidy_tree(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_tidy_tree_context(
+fn run_tidy_tree_layout(
     graph: &Graph,
     request: &LayoutRequest,
     context: &LayoutContext,
@@ -99,7 +83,7 @@ impl<'a> TidyTreeProjection<'a> {
             }
 
             let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = resolve_node_origin(node.origin, request.options.node_origin, context);
+            let origin = normalized_node_origin(node.origin);
 
             node_infos.insert(*id, TidyTreeNodeInfo { size, origin });
             visible_nodes.insert(*id);

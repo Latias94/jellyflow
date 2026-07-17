@@ -151,7 +151,6 @@ fn cubic_point(
 #[cfg(test)]
 mod tests {
     use super::{EdgeHitTestOptions, edge_path_contains_point, edge_path_distance};
-    use crate::io::NodeGraphInteractionState;
     use crate::runtime::geometry::{
         BezierEdgeOptions, EdgeEndpointPosition, HandlePosition, bezier_edge_path,
         straight_edge_path,
@@ -187,16 +186,5 @@ mod tests {
         let distance = edge_path_distance(&bezier, CanvasPoint { x: 50.0, y: 0.0 }, options)
             .expect("distance");
         assert!(distance <= 1.0e-3);
-    }
-
-    #[test]
-    fn hit_test_options_are_derived_from_interaction_state() {
-        let mut state = NodeGraphInteractionState::default();
-        state.edge_interaction_width = 18.0;
-        state.bezier_hit_test_steps = 32;
-
-        let options = state.edge_hit_test_options();
-        assert!((options.interaction_width - 18.0).abs() <= 1.0e-6);
-        assert_eq!(options.curve_samples, 32);
     }
 }

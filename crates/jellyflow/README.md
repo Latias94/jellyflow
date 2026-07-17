@@ -1,29 +1,36 @@
-# Jellyflow
+# jellyflow
+`jellyflow` is the thin public facade for Jellyflow's headless graph engine. It re-exports the
+portable graph model, optional layout engines, and renderer-neutral runtime under stable module
+names:
 
-`jellyflow` is the user-friendly facade crate for the headless Jellyflow graph engine.
+- `jellyflow::core` for graph facts, IDs, ports, edges, validation, and type descriptors;
+- `jellyflow::layout` for optional headless layout engines;
+- `jellyflow::runtime` for `GraphRuntime`, `ViewSession`, revisioned commands, authoritative
+  history, persistence, connection facts, frames, and geometry feedback.
 
-It re-exports the lower-level crates under stable module names:
+The intended adapter boundary is:
 
-- `jellyflow::core` for document data, IDs, graph operations, and interaction primitives;
-- `jellyflow::layout` for optional headless layout engines and layout discovery metadata;
-- `jellyflow::runtime` for the headless store, schema/profile pipeline, rules, conformance helpers,
-  and renderer-neutral adapter contracts.
+```text
+GraphRuntime -> ViewSession -> native framework
+```
 
-Use this crate when you want one dependency for application or adapter code. Depend on
-`jellyflow-core`, `jellyflow-layout`, or `jellyflow-runtime` directly when you need a narrower
-dependency boundary. For automatic layout, start with `LayoutPresetBuilder::workflow()`,
-`LayoutPresetBuilder::tree()`, `LayoutPresetBuilder::mind_map()`, or
-`LayoutPresetBuilder::freeform()`, then pass the built `LayoutEngineRequest` to the runtime layout
-facade.
+The facade does not define a node widget DSL. Open GPUI node internals belong to
+`jellyflow-open-gpui` and the application that registers native `Entity<V: Render>` components;
+egui is provided as a small protocol witness in `jellyflow-egui`.
+
+## Quick start
 
 ```rust
 use jellyflow::prelude::*;
 
-let store = NodeGraphStore::new(
-    Graph::new(GraphId::new()),
-    NodeGraphViewState::default(),
-    NodeGraphEditorConfig::default(),
-);
-
-assert_eq!(store.graph().nodes().len(), 0);
+let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
+let view = runtime.attach_view(ViewSessionOptions::default())?;
+assert_eq!(view.graph_snapshot()?.revision(), 0);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Use `NodeCatalog` to describe creation metadata and real ports, then let the selected native
+adapter render the node's internal controls. Dynamic UI changes must become revision-checked
+`GraphCommand` topology edits; adapter-local visual handles are never graph endpoints.
+
+The crate intentionally has no dependency on a window system, renderer, or UI framework.

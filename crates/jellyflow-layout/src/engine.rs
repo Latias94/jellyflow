@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use jellyflow_core::{
     BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphMutationFootprint,
-    GraphOp, GraphTransaction, NodeId,
+    NodeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -114,8 +114,6 @@ pub struct LayoutOptions {
     pub spacing: LayoutSpacing,
     pub margin: CanvasSize,
     pub default_node_size: CanvasSize,
-    /// Fallback node origin used when a node has no per-node origin override.
-    pub node_origin: (f32, f32),
 }
 
 impl Default for LayoutOptions {
@@ -131,7 +129,6 @@ impl Default for LayoutOptions {
                 width: 172.0,
                 height: 36.0,
             },
-            node_origin: (0.0, 0.0),
         }
     }
 }
@@ -146,12 +143,6 @@ impl LayoutOptions {
     /// Uses a different layered layout direction.
     pub fn with_direction(mut self, direction: LayoutDirection) -> Self {
         self.direction = direction;
-        self
-    }
-
-    /// Uses a different fallback node origin.
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.node_origin = node_origin;
         self
     }
 }
@@ -202,11 +193,6 @@ impl LayoutScope {
         }
 
         Self::Nodes { nodes }
-    }
-
-    /// Derives a conservative node scope from a transaction and the current graph.
-    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
-        Self::from_footprint(graph, &tx.footprint())
     }
 
     /// Returns `true` when this scope selects no nodes.
@@ -267,14 +253,6 @@ impl LayoutRequest {
         }
     }
 
-    /// Creates a request scoped to nodes affected by a transaction.
-    pub fn from_transaction(graph: &Graph, tx: &GraphTransaction) -> Self {
-        Self {
-            scope: LayoutScope::from_transaction(graph, tx),
-            ..Self::default()
-        }
-    }
-
     /// Adds adapter-reported node sizes.
     pub fn with_measured_node_sizes(
         mut self,
@@ -287,16 +265,6 @@ impl LayoutRequest {
     /// Sets layout options.
     pub fn with_options(mut self, options: LayoutOptions) -> Self {
         self.options = options;
-        self
-    }
-
-    /// Replaces this request's scope with nodes affected by a transaction.
-    pub fn with_dirty_scope_from_transaction(
-        mut self,
-        graph: &Graph,
-        tx: &GraphTransaction,
-    ) -> Self {
-        self.scope = LayoutScope::from_transaction(graph, tx);
         self
     }
 
@@ -378,9 +346,6 @@ pub struct LayoutContext {
     /// Nodes that engines should treat as fixed when they support pinning.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned_nodes: BTreeSet<NodeId>,
-    /// Runtime fallback node origin, usually resolved from interaction state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_origin: Option<(f32, f32)>,
 }
 
 impl LayoutContext {
@@ -401,12 +366,6 @@ impl LayoutContext {
     /// Adds nodes that engines should keep fixed when possible.
     pub fn with_pinned_nodes(mut self, nodes: impl IntoIterator<Item = NodeId>) -> Self {
         self.pinned_nodes.extend(nodes);
-        self
-    }
-
-    /// Sets the runtime fallback node origin.
-    pub fn with_node_origin(mut self, node_origin: (f32, f32)) -> Self {
-        self.node_origin = Some(node_origin);
         self
     }
 }
@@ -430,8 +389,9 @@ pub struct LayoutEdgeRoute {
 /// Result of a headless layout run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutResult {
-    /// Engine-produced results contain at most one entry per node. If a caller manually constructs a
-    /// result with duplicates, lookup returns the first entry and transaction conversion fails.
+    /// Engine-produced results contain at most one entry per node. If a caller manually constructs
+    /// a result with duplicates, lookup returns the first entry and command conversion must reject
+    /// the result.
     pub nodes: Vec<LayoutNodePosition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_routes: Vec<LayoutEdgeRoute>,
@@ -447,36 +407,9 @@ impl LayoutResult {
             .find(|position| position.node == node)
             .copied()
     }
-
-    /// Converts node position changes into a Jellyflow transaction.
-    pub fn to_transaction(&self, graph: &Graph) -> Result<GraphTransaction, LayoutError> {
-        let mut seen = BTreeSet::new();
-        let mut ops = Vec::new();
-
-        for node in &self.nodes {
-            if !seen.insert(node.node) {
-                return Err(LayoutError::DuplicateResultNode(node.node));
-            }
-
-            let from = graph
-                .nodes()
-                .get(&node.node)
-                .ok_or(LayoutError::MissingTransactionNode(node.node))?
-                .pos;
-            if from != node.pos {
-                ops.push(GraphOp::SetNodePos {
-                    id: node.node,
-                    from,
-                    to: node.pos,
-                });
-            }
-        }
-
-        Ok(GraphTransaction::from_ops(ops).with_label("Layout graph"))
-    }
 }
 
-/// Errors reported by layout projection, registry lookup, or layout output conversion.
+/// Errors reported by layout projection, registry lookup, or layout result validation.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum LayoutError {
     #[error("layout engine id is already registered: {0}")]
@@ -510,7 +443,7 @@ pub enum LayoutError {
     #[error("layout result contains a duplicate node position for node {0:?}")]
     DuplicateResultNode(NodeId),
     #[error("layout result references missing graph node: {0:?}")]
-    MissingTransactionNode(NodeId),
+    MissingResultNode(NodeId),
     #[error("layout engine returned a non-finite node position for node {node:?}: ({x}, {y})")]
     NonFiniteNodePosition { node: NodeId, x: f64, y: f64 },
 }
@@ -659,16 +592,6 @@ pub fn layout_graph_with_engine(
     registry.layout(graph, request, context)
 }
 
-/// Runs a layout engine and converts the node positions into a Jellyflow transaction.
-pub fn layout_graph_to_transaction_with_engine(
-    graph: &Graph,
-    request: &LayoutEngineRequest,
-    registry: &LayoutEngineRegistry,
-    context: &LayoutContext,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_engine(graph, request, registry, context)?.to_transaction(graph)
-}
-
 pub(crate) fn validate_request(graph: &Graph, request: &LayoutRequest) -> Result<(), LayoutError> {
     if !request.options.default_node_size.is_positive_finite() {
         return Err(LayoutError::InvalidDefaultNodeSize(
@@ -754,13 +677,8 @@ pub(crate) fn resolve_node_size(
     }
 }
 
-pub(crate) fn resolve_node_origin(
-    origin: Option<jellyflow_core::NodeOrigin>,
-    request_fallback: (f32, f32),
-    context: &LayoutContext,
-) -> (f32, f32) {
-    let fallback = context.node_origin.unwrap_or(request_fallback);
-    let (x, y) = origin.map(|origin| origin.as_tuple()).unwrap_or(fallback);
+pub(crate) fn normalized_node_origin(origin: Option<jellyflow_core::NodeOrigin>) -> (f32, f32) {
+    let (x, y) = origin.map(|origin| origin.as_tuple()).unwrap_or((0.0, 0.0));
     (normalize_origin_component(x), normalize_origin_component(y))
 }
 

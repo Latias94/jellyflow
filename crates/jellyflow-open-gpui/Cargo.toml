@@ -9,18 +9,19 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/jellyflow-open-gpui"
 readme = "README.md"
-publish = false
-description = "Open GPUI adapter boundary for Jellyflow node graphs."
+description = "Retained native Open GPUI adapter for Jellyflow node graphs."
 keywords = ["gpui", "graph", "node-graph", "adapter"]
 categories = ["gui", "visualization"]
 
 [dependencies]
 jellyflow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false }
 thiserror.workspace = true
 
 [dev-dependencies]
+open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }
+open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0" }
+serde_json.workspace = true
 
 [lints.clippy]
 too_many_arguments = "allow"

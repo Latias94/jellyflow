@@ -6,7 +6,7 @@ use jellyflow_core::{
 use crate::{
     LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutEngineRequest,
     LayoutOptions, LayoutRequest, LayoutResult, LayoutSpacing, MindMapFreeformLayoutEngine,
-    builtin_layout_engine_registry, layout_graph_with_mind_map_freeform,
+    builtin_layout_engine_registry,
 };
 
 #[test]
@@ -20,19 +20,6 @@ fn builtin_registry_contains_freeform_engine() {
         LayoutEngineId::mind_map_freeform().as_str(),
         crate::MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID
     );
-}
-
-#[test]
-fn wrapper_matches_engine_entry_point() {
-    let (graph, _root, _branch_a, _branch_b, _separate) = freeform_fixture_graph();
-    let request = freeform_request();
-
-    let wrapper = layout_graph_with_mind_map_freeform(&graph, &request).expect("wrapper");
-    let engine = MindMapFreeformLayoutEngine
-        .layout(&graph, &request, &LayoutContext::default())
-        .expect("engine");
-
-    assert_eq!(wrapper, engine);
 }
 
 #[test]
@@ -98,7 +85,6 @@ fn freeform_request() -> LayoutRequest {
             width: 172.0,
             height: 36.0,
         },
-        node_origin: (0.0, 0.0),
     })
 }
 
@@ -122,12 +108,12 @@ fn freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
     graph.insert_node(branch_b, node("demo.branch-b", vec![branch_b_in]));
     graph.insert_node(separate, node("demo.separate", vec![separate_in]));
     graph
-        .update_node(&separate, |node| {
-            node.pos = CanvasPoint { x: 150.0, y: 0.0 }
-        })
+        .node_mut(&separate)
+        .map(|node| node.pos = CanvasPoint { x: 150.0, y: 0.0 })
         .expect("node exists");
     graph
-        .update_node(&separate, |node| {
+        .node_mut(&separate)
+        .map(|node| {
             node.size = Some(CanvasSize {
                 width: 80.0,
                 height: 80.0,
@@ -165,7 +151,8 @@ fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, Nod
 
     graph.insert_node(root, node("demo.root", vec![root_out]));
     graph
-        .update_node(&root, |node| {
+        .node_mut(&root)
+        .map(|node| {
             node.size = Some(CanvasSize {
                 width: 140.0,
                 height: 72.0,
@@ -174,14 +161,17 @@ fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, Nod
         .expect("node exists");
     graph.insert_node(note, node("demo.note", vec![note_in, note_out]));
     graph
-        .update_node(&note, |node| node.size = None)
+        .node_mut(&note)
+        .map(|node| node.size = None)
         .expect("node exists");
     graph.insert_node(image, node("demo.image", vec![image_in, image_out]));
     graph
-        .update_node(&image, |node| node.pos = CanvasPoint { x: 60.0, y: 20.0 })
+        .node_mut(&image)
+        .map(|node| node.pos = CanvasPoint { x: 60.0, y: 20.0 })
         .expect("node exists");
     graph
-        .update_node(&image, |node| {
+        .node_mut(&image)
+        .map(|node| {
             node.size = Some(CanvasSize {
                 width: 96.0,
                 height: 96.0,
@@ -190,12 +180,12 @@ fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, Nod
         .expect("node exists");
     graph.insert_node(detached, node("demo.detached", vec![detached_in]));
     graph
-        .update_node(&detached, |node| {
-            node.pos = CanvasPoint { x: 520.0, y: 40.0 }
-        })
+        .node_mut(&detached)
+        .map(|node| node.pos = CanvasPoint { x: 520.0, y: 40.0 })
         .expect("node exists");
     graph
-        .update_node(&detached, |node| {
+        .node_mut(&detached)
+        .map(|node| {
             node.size = Some(CanvasSize {
                 width: 180.0,
                 height: 110.0,
@@ -204,10 +194,12 @@ fn mixed_freeform_fixture_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId, Nod
         .expect("node exists");
     graph.insert_node(hidden, node("demo.hidden", vec![hidden_in]));
     graph
-        .update_node(&hidden, |node| node.pos = CanvasPoint { x: 30.0, y: 30.0 })
+        .node_mut(&hidden)
+        .map(|node| node.pos = CanvasPoint { x: 30.0, y: 30.0 })
         .expect("node exists");
     graph
-        .update_node(&hidden, |node| node.hidden = true)
+        .node_mut(&hidden)
+        .map(|node| node.hidden = true)
         .expect("node exists");
 
     graph.insert_port(root_out, port(root, "out", PortDirection::Out));
@@ -351,7 +343,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

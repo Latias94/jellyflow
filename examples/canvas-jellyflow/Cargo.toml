@@ -3,7 +3,7 @@ resolver = "2"
 
 [package]
 name = "open-gpui-canvas-jellyflow"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
@@ -12,7 +12,11 @@ repository = "https://github.com/Latias94/jellyflow"
 homepage = "https://github.com/Latias94/jellyflow"
 readme = "README.md"
 publish = false
-description = "Native Open GPUI product gallery for Jellyflow node graphs."
+description = "Retained native Open GPUI workflow and shader graphs built on Jellyflow's headless runtime."
+
+[features]
+default = []
+real-window-smoke = ["open_gpui/test-support", "open_gpui_platform/test-support"]
 
 [[bin]]
 name = "open-gpui-canvas-jellyflow"
@@ -22,13 +26,11 @@ path = "src/main.rs"
 jellyflow = { path = "../../crates/jellyflow" }
 jellyflow-open-gpui = { path = "../../crates/jellyflow-open-gpui" }
 open_gpui = { package = "open-gpui", version = "0.2.0", default-features = false }
-open_gpui_canvas = { package = "open-gpui-canvas", version = "0.2.0" }
 open_gpui_platform = { package = "open-gpui-platform", version = "0.2.0", default-features = false, features = ["font-kit"] }
 open_gpui_ui_components = { package = "open-gpui-ui-components", version = "0.2.0" }
-open_gpui_ui_core = { package = "open-gpui-ui-core", version = "0.2.0" }
 serde_json = "1"
 
 [dev-dependencies]
-image = "0.25.1"
+jellyflow-runtime = { path = "../../crates/jellyflow-runtime" }
 open_gpui = { package = "open-gpui", version = "0.2.0", default-features = false, features = ["test-support"] }
 open_gpui_platform = { package = "open-gpui-platform", version = "0.2.0", default-features = false, features = ["font-kit", "test-support"] }

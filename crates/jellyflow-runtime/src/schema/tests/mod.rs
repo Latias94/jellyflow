@@ -1,15 +1,9 @@
 use serde_json::json;
 
-use crate::schema::{NodeKindMigrateError, NodeKindMigrator, NodeSchema, NodeSurfaceLayoutBudget};
+use crate::schema::{NodeKindMigrateError, NodeKindMigrator};
 use jellyflow_core::core::{CanvasPoint, Node, NodeKindKey};
 
-mod builder;
-mod canonicalize;
-mod facades;
-mod instantiation;
-mod kit;
-mod migration;
-mod view_descriptor;
+mod catalog;
 
 struct DummyMigrator;
 
@@ -29,42 +23,6 @@ impl NodeKindMigrator for DummyMigrator {
     }
 }
 
-struct IdentityMigrator;
-
-impl NodeKindMigrator for IdentityMigrator {
-    fn migrate(
-        &self,
-        _from_version: u32,
-        _to_version: u32,
-        data: &serde_json::Value,
-    ) -> Result<serde_json::Value, NodeKindMigrateError> {
-        Ok(data.clone())
-    }
-}
-
-fn demo_add_schema(latest_kind_version: u32, kind_aliases: Vec<&str>) -> NodeSchema {
-    NodeSchema {
-        kind: NodeKindKey::new("demo.add"),
-        latest_kind_version,
-        kind_aliases: kind_aliases.into_iter().map(NodeKindKey::new).collect(),
-        title: "Add".into(),
-        category: Vec::new(),
-        keywords: Vec::new(),
-        renderer_key: None,
-        default_size: None,
-        layout_budget: NodeSurfaceLayoutBudget::default(),
-        ports: Vec::new(),
-        surface_slots: Vec::new(),
-        repeatable_collections: Vec::new(),
-        actions: Vec::new(),
-        menus: Vec::new(),
-        inspectors: Vec::new(),
-        blackboards: Vec::new(),
-        chrome: Vec::new(),
-        default_data: serde_json::Value::Null,
-    }
-}
-
 fn demo_add_node(kind: &str, kind_version: u32, data: serde_json::Value) -> Node {
     Node {
         kind: NodeKindKey::new(kind),
@@ -72,7 +30,6 @@ fn demo_add_node(kind: &str, kind_version: u32, data: serde_json::Value) -> Node
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

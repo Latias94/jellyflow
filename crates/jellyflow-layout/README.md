@@ -2,8 +2,8 @@
 
 Optional headless layout adapters for Jellyflow graphs.
 
-The crate keeps layout engines outside `jellyflow-core` and returns normal Jellyflow
-transactions so hosts can decide when to apply or animate layout results.
+The crate keeps layout engines outside `jellyflow-core` and returns immutable `LayoutResult`
+values. Applying those results belongs to a revision-aware runtime or host.
 
 ## Engine Boundary
 
@@ -13,6 +13,7 @@ transactions so hosts can decide when to apply or animate layout results.
 - `LayoutEngineRegistry` maps stable `LayoutEngineId` values to engines.
 - `LayoutEngineRequest` selects one engine and carries a `LayoutRequest`.
 - `LayoutContext` carries runtime-only facts such as measured node sizes and fallback node origin.
+- `LayoutResult` contains node positions, edge routes, and bounds without mutating the graph.
 - `LayoutFamilyMetadata` and `LayoutEngineMetadata` expose discovery-only family/capability data
   without changing the stable engine-id dispatch contract.
 
@@ -24,8 +25,7 @@ The built-in radial mind-map engine is registered under `MIND_MAP_RADIAL_LAYOUT_
 The built-in freeform mind-map engine is registered under `MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID`
 (`"mind_map_freeform"`).
 It currently keeps the input canvas feel and only resolves overlaps while preserving pinned nodes.
-Compatibility helpers such as `layout_graph_with_dugong` remain available, but new host code should
-prefer the registry path when it needs runtime selection or custom engines.
+Hosts select built-in or custom engines through `LayoutEngine` and `LayoutEngineRegistry`.
 The built-in `dugong` and tidy tree engines are grouped under the `layered_dag` family, while the
 radial and freeform mind-map engines are grouped under the `mind_map` family.
 
@@ -52,31 +52,22 @@ assert_eq!(mind_map.engine.as_str(), "mind_map_radial");
 ```rust
 use jellyflow_core::Graph;
 use jellyflow_layout::{
-    LayoutContext, LayoutPresetBuilder, builtin_layout_engine_registry,
-    layout_graph_to_transaction_with_engine,
+    LayoutContext, LayoutPresetBuilder, LayoutResult, builtin_layout_engine_registry,
 };
 
-fn plan_builtin_layout(graph: &Graph) -> Result<(), jellyflow_layout::LayoutError> {
+fn plan_builtin_layout(graph: &Graph) -> Result<LayoutResult, jellyflow_layout::LayoutError> {
     let registry = builtin_layout_engine_registry();
     let request = LayoutPresetBuilder::workflow().build();
     let context = LayoutContext::new();
 
-    let tx = layout_graph_to_transaction_with_engine(graph, &request, &registry, &context)?;
-    assert_eq!(tx.label(), Some("Layout graph"));
-    Ok(())
+    registry.layout(graph, &request, &context)
 }
 ```
 
+Applications using `jellyflow-runtime` pass the result to `layout_result_to_command` with the
+expected graph revision. This keeps every layout write on the same `GraphCommand` path as other
+document mutations.
+
 For interactive editors, keep product-specific behavior in custom engines. A radial, freeform, or
 mind-map engine can implement `LayoutEngine`, use `LayoutContext` for measured sizes or pinned
-nodes, and still return the same `LayoutResult` / `GraphTransaction` shape as the built-in engine.
-
-## Diagnostics
-
-`dugong` exposes optional internal stage timings through `DUGONG_DAGREISH_TIMING` and order-stage
-timings through `DUGONG_ORDER_TIMING`. Use the local diagnostic example when layered DAG performance
-changes and you need to separate Jellyflow projection cost from upstream rank/order/position work:
-
-```sh
-DUGONG_DAGREISH_TIMING=1 DUGONG_ORDER_TIMING=1 cargo run -p jellyflow-layout --example dugong_timing
-```
+nodes, and return the same `LayoutResult` shape as the built-in engines.

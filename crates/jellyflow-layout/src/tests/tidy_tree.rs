@@ -1,12 +1,12 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node, NodeId,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
     NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
 };
 
 use crate::{
-    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutOptions, LayoutRequest,
-    TIDY_TREE_LAYOUT_ENGINE_ID, TidyTreeLayoutEngine, builtin_layout_engine_registry,
-    layout_graph_with_tidy_tree,
+    LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutOptions,
+    LayoutRequest, LayoutResult, TIDY_TREE_LAYOUT_ENGINE_ID, TidyTreeLayoutEngine,
+    builtin_layout_engine_registry,
 };
 
 #[test]
@@ -28,22 +28,9 @@ fn builtin_registry_contains_tidy_tree_engine() {
 }
 
 #[test]
-fn wrapper_matches_engine_entry_point() {
-    let (graph, _root, _left, _right, _grandchild) = tidy_tree_graph();
-    let request = LayoutRequest::all();
-
-    let wrapper = layout_graph_with_tidy_tree(&graph, &request).expect("wrapper");
-    let engine = TidyTreeLayoutEngine
-        .layout(&graph, &request, &LayoutContext::default())
-        .expect("engine");
-
-    assert_eq!(wrapper, engine);
-}
-
-#[test]
 fn top_to_bottom_layout_centers_parent_above_children() {
     let (graph, root, left, right, grandchild) = tidy_tree_graph();
-    let result = layout_graph_with_tidy_tree(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let root = result.node_position(root).expect("root");
     let left = result.node_position(left).expect("left");
@@ -62,7 +49,7 @@ fn top_to_bottom_layout_centers_parent_above_children() {
 #[test]
 fn left_to_right_layout_changes_growth_axis() {
     let (graph, root, left, right, _grandchild) = tidy_tree_graph();
-    let result = layout_graph_with_tidy_tree(
+    let result = run_default_tidy_tree_layout(
         &graph,
         &LayoutRequest::all()
             .with_options(LayoutOptions::default().with_direction(LayoutDirection::LeftToRight)),
@@ -81,7 +68,7 @@ fn left_to_right_layout_changes_growth_axis() {
 #[test]
 fn siblings_do_not_overlap_with_default_spacing() {
     let (graph, _root, left, right, _grandchild) = tidy_tree_graph();
-    let result = layout_graph_with_tidy_tree(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let left = result.node_position(left).expect("left");
     let right = result.node_position(right).expect("right");
@@ -94,7 +81,7 @@ fn siblings_do_not_overlap_with_default_spacing() {
 #[test]
 fn disconnected_roots_are_separated() {
     let (graph, first, second) = disconnected_roots_graph();
-    let result = layout_graph_with_tidy_tree(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let first = result.node_position(first).expect("first");
     let second = result.node_position(second).expect("second");
@@ -107,11 +94,12 @@ fn disconnected_roots_are_separated() {
 fn hidden_nodes_edges_and_scope_are_excluded() {
     let (mut graph, root, left, right, _grandchild) = tidy_tree_graph();
     graph
-        .update_node(&right, |node| node.hidden = true)
+        .node_mut(&right)
+        .map(|node| node.hidden = true)
         .expect("node exists");
 
     let hidden_node_result =
-        layout_graph_with_tidy_tree(&graph, &LayoutRequest::all()).expect("hidden node");
+        run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("hidden node");
 
     assert!(hidden_node_result.node_position(root).is_some());
     assert!(hidden_node_result.node_position(left).is_some());
@@ -119,7 +107,7 @@ fn hidden_nodes_edges_and_scope_are_excluded() {
     assert_eq!(hidden_node_result.edge_routes.len(), 2);
 
     let scoped_result =
-        layout_graph_with_tidy_tree(&graph, &LayoutRequest::nodes([root, right])).expect("scope");
+        run_default_tidy_tree_layout(&graph, &LayoutRequest::nodes([root, right])).expect("scope");
 
     assert!(scoped_result.node_position(root).is_some());
     assert!(scoped_result.node_position(left).is_none());
@@ -135,17 +123,19 @@ fn cycles_are_projected_as_stable_tree_without_looping() {
     let cycle_edge = EdgeId::from_u128(32);
 
     graph
-        .update_node(&left, |node| node.ports.push(left_out))
+        .node_mut(&left)
+        .map(|node| node.ports.push(left_out))
         .expect("left node exists");
     graph
-        .update_node(&root, |node| node.ports.push(root_in))
+        .node_mut(&root)
+        .map(|node| node.ports.push(root_in))
         .expect("root node exists");
     graph.insert_port(left_out, port(left, "cycle-out", PortDirection::Out));
     graph.insert_port(root_in, port(root, "cycle-in", PortDirection::In));
     graph.insert_edge(cycle_edge, edge(left_out, root_in));
 
     let graph = graph.build_unchecked();
-    let result = layout_graph_with_tidy_tree(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_tidy_tree_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     assert_eq!(result.nodes.len(), 4);
     assert!(result.node_position(root).is_some());
@@ -157,6 +147,13 @@ fn cycles_are_projected_as_stable_tree_without_looping() {
             .iter()
             .any(|route| route.edge == cycle_edge)
     );
+}
+
+fn run_default_tidy_tree_layout(
+    graph: &Graph,
+    request: &LayoutRequest,
+) -> Result<LayoutResult, LayoutError> {
+    TidyTreeLayoutEngine.layout(graph, request, &LayoutContext::default())
 }
 
 fn tidy_tree_graph() -> (GraphBuilder, NodeId, NodeId, NodeId, NodeId) {
@@ -210,7 +207,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

@@ -1,0 +1,486 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::mem;
+use std::rc::Rc;
+
+use jellyflow::runtime::NodeInstanceKey;
+use thiserror::Error;
+
+/// A native resource or interaction that remains owned by a retained node.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OpenGpuiActivityKind {
+    Focus,
+    Ime,
+    PointerCapture,
+    Overlay,
+    Task,
+    Subscription,
+    Draft,
+}
+
+impl OpenGpuiActivityKind {
+    fn protects_retention(self) -> bool {
+        !matches!(self, Self::Task | Self::Subscription)
+    }
+}
+
+/// Failure to acquire an activity lease.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum OpenGpuiActivityAcquireError {
+    #[error("the node activity registry has been revoked")]
+    RegistryRevoked,
+    #[error("the node activity registry exhausted its lease identity space")]
+    IdentityExhausted,
+    #[error("the view already protects its maximum of {capacity} native node instances")]
+    ProtectedCapacityExceeded { capacity: usize },
+}
+
+type RevocationCallback = Box<dyn FnOnce() + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct OpenGpuiActivityCoordinator {
+    state: Rc<RefCell<ActivityCoordinatorState>>,
+}
+
+struct ActivityCoordinatorState {
+    capacity: usize,
+    protected: BTreeMap<NodeInstanceKey, usize>,
+    protected_high_water: usize,
+    overflows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OpenGpuiActivityCoordinatorStats {
+    pub(crate) protected_instances: usize,
+    pub(crate) protected_leases: usize,
+    pub(crate) protected_high_water: usize,
+    pub(crate) overflows: u64,
+}
+
+impl OpenGpuiActivityCoordinator {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(ActivityCoordinatorState {
+                capacity,
+                protected: BTreeMap::new(),
+                protected_high_water: 0,
+                overflows: 0,
+            })),
+        }
+    }
+
+    fn acquire(&self, instance: &NodeInstanceKey) -> Result<(), OpenGpuiActivityAcquireError> {
+        let mut state = self.state.borrow_mut();
+        if let Some(count) = state.protected.get_mut(instance) {
+            *count = count.saturating_add(1);
+            return Ok(());
+        }
+        if state.protected.len() >= state.capacity {
+            state.overflows = state.overflows.saturating_add(1);
+            return Err(OpenGpuiActivityAcquireError::ProtectedCapacityExceeded {
+                capacity: state.capacity,
+            });
+        }
+        state.protected.insert(instance.clone(), 1);
+        state.protected_high_water = state.protected_high_water.max(state.protected.len());
+        Ok(())
+    }
+
+    fn release(&self, instance: &NodeInstanceKey, leases: usize) {
+        if leases == 0 {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        let Some(count) = state.protected.get_mut(instance) else {
+            return;
+        };
+        if *count <= leases {
+            state.protected.remove(instance);
+        } else {
+            *count -= leases;
+        }
+    }
+
+    pub(crate) fn stats(&self) -> OpenGpuiActivityCoordinatorStats {
+        let state = self.state.borrow();
+        OpenGpuiActivityCoordinatorStats {
+            protected_instances: state.protected.len(),
+            protected_leases: state.protected.values().copied().sum(),
+            protected_high_water: state.protected_high_water,
+            overflows: state.overflows,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CoordinatedInstance {
+    instance: NodeInstanceKey,
+    coordinator: OpenGpuiActivityCoordinator,
+}
+
+struct ActivityEntry {
+    kind: OpenGpuiActivityKind,
+    revoke: Option<RevocationCallback>,
+}
+
+struct ActivityState {
+    next_id: Option<u64>,
+    revoked: bool,
+    entries: BTreeMap<u64, ActivityEntry>,
+    coordinated_instance: Option<CoordinatedInstance>,
+}
+
+impl Default for ActivityState {
+    fn default() -> Self {
+        Self {
+            next_id: Some(1),
+            revoked: false,
+            entries: BTreeMap::new(),
+            coordinated_instance: None,
+        }
+    }
+}
+
+/// A single-threaded activity ledger shared by a retained node and its leases.
+#[derive(Clone)]
+pub struct OpenGpuiNodeActivityRegistry {
+    state: Rc<RefCell<ActivityState>>,
+}
+
+impl OpenGpuiNodeActivityRegistry {
+    fn detached() -> Self {
+        Self {
+            state: Rc::new(RefCell::new(ActivityState::default())),
+        }
+    }
+
+    pub(crate) fn for_host(
+        instance: NodeInstanceKey,
+        coordinator: OpenGpuiActivityCoordinator,
+    ) -> Self {
+        let registry = Self::detached();
+        registry.state.borrow_mut().coordinated_instance = Some(CoordinatedInstance {
+            instance,
+            coordinator,
+        });
+        registry
+    }
+
+    pub fn acquire(
+        &self,
+        kind: OpenGpuiActivityKind,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        self.acquire_inner(kind, None)
+    }
+
+    pub fn acquire_with_revocation(
+        &self,
+        kind: OpenGpuiActivityKind,
+        revoke: impl FnOnce() + 'static,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        self.acquire_inner(kind, Some(Box::new(revoke)))
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.state.borrow().entries.len()
+    }
+
+    pub fn protected_count(&self) -> usize {
+        self.state
+            .borrow()
+            .entries
+            .values()
+            .filter(|entry| entry.kind.protects_retention())
+            .count()
+    }
+
+    pub fn is_active(&self, id: u64) -> bool {
+        self.state.borrow().entries.contains_key(&id)
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        self.state.borrow().revoked
+    }
+
+    /// Permanently closes the registry and revokes every currently active lease.
+    ///
+    /// Callbacks run in acquisition order and outside the registry's `RefCell`
+    /// borrow, so they may safely query the registry or release other leases.
+    pub fn revoke_all(&self) -> usize {
+        let (entries, coordinated_instance) = {
+            let mut state = self.state.borrow_mut();
+            if state.revoked {
+                return 0;
+            }
+
+            state.revoked = true;
+            (
+                mem::take(&mut state.entries),
+                state.coordinated_instance.clone(),
+            )
+        };
+        let revoked_count = entries.len();
+        let protected_count = entries
+            .values()
+            .filter(|entry| entry.kind.protects_retention())
+            .count();
+
+        if let Some(coordinated_instance) = coordinated_instance {
+            coordinated_instance
+                .coordinator
+                .release(&coordinated_instance.instance, protected_count);
+        }
+
+        let mut first_panic = None;
+        for entry in entries.into_values() {
+            if let Some(revoke) = entry.revoke {
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(revoke)).err();
+                if first_panic.is_none() {
+                    first_panic = panic;
+                } else if let Some(payload) = panic {
+                    std::mem::forget(payload);
+                }
+            }
+        }
+
+        if let Some(payload) = first_panic {
+            std::panic::resume_unwind(payload);
+        }
+        revoked_count
+    }
+
+    fn acquire_inner(
+        &self,
+        kind: OpenGpuiActivityKind,
+        revoke: Option<RevocationCallback>,
+    ) -> Result<OpenGpuiActivityLease, OpenGpuiActivityAcquireError> {
+        let mut revoke = revoke;
+        let mut state = self.state.borrow_mut();
+        if state.revoked {
+            drop(state);
+            invoke_failed_acquisition_callback(revoke);
+            return Err(OpenGpuiActivityAcquireError::RegistryRevoked);
+        }
+
+        let Some(id) = state.next_id else {
+            drop(state);
+            invoke_failed_acquisition_callback(revoke);
+            return Err(OpenGpuiActivityAcquireError::IdentityExhausted);
+        };
+        if kind.protects_retention()
+            && let Some(coordinated_instance) = &state.coordinated_instance
+            && let Err(error) = coordinated_instance
+                .coordinator
+                .acquire(&coordinated_instance.instance)
+        {
+            drop(state);
+            invoke_failed_acquisition_callback(revoke);
+            return Err(error);
+        }
+        state.next_id = id.checked_add(1);
+        state.entries.insert(
+            id,
+            ActivityEntry {
+                kind,
+                revoke: revoke.take(),
+            },
+        );
+        drop(state);
+
+        Ok(OpenGpuiActivityLease {
+            id,
+            state: Some(self.state.clone()),
+        })
+    }
+}
+
+impl fmt::Debug for OpenGpuiNodeActivityRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiNodeActivityRegistry")
+            .field("active_count", &self.active_count())
+            .field("protected_count", &self.protected_count())
+            .field("revoked", &self.is_revoked())
+            .finish()
+    }
+}
+
+/// An owned activity lease that unregisters itself when dropped.
+pub struct OpenGpuiActivityLease {
+    id: u64,
+    state: Option<Rc<RefCell<ActivityState>>>,
+}
+
+impl OpenGpuiActivityLease {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl fmt::Debug for OpenGpuiActivityLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiActivityLease")
+            .field("id", &self.id)
+            .field("active", &self.state.is_some())
+            .finish()
+    }
+}
+
+impl Drop for OpenGpuiActivityLease {
+    fn drop(&mut self) {
+        let Some(state) = self.state.take() else {
+            return;
+        };
+
+        let (entry, coordinated_instance) = {
+            let mut state = state.borrow_mut();
+            let entry = state.entries.remove(&self.id);
+            let coordinated_instance = entry
+                .as_ref()
+                .filter(|entry| entry.kind.protects_retention())
+                .and(state.coordinated_instance.clone());
+            (entry, coordinated_instance)
+        };
+        if let Some(coordinated_instance) = coordinated_instance {
+            coordinated_instance
+                .coordinator
+                .release(&coordinated_instance.instance, 1);
+        }
+        drop(entry);
+    }
+}
+
+fn invoke_failed_acquisition_callback(revoke: Option<RevocationCallback>) {
+    if let Some(revoke) = revoke {
+        revoke();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[test]
+    fn identity_exhaustion_is_reported_after_the_last_identity() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        registry.state.borrow_mut().next_id = Some(u64::MAX);
+
+        let last = registry.acquire(OpenGpuiActivityKind::Task).unwrap();
+
+        assert_eq!(last.id(), u64::MAX);
+        assert_eq!(
+            registry.acquire(OpenGpuiActivityKind::Task).unwrap_err(),
+            OpenGpuiActivityAcquireError::IdentityExhausted,
+        );
+    }
+
+    #[test]
+    fn revocation_callback_can_reenter_registry() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let callback_registry = registry.clone();
+        let _lease = registry
+            .acquire_with_revocation(OpenGpuiActivityKind::Focus, move || {
+                assert!(callback_registry.is_revoked());
+                assert_eq!(callback_registry.active_count(), 0);
+            })
+            .unwrap();
+
+        assert_eq!(registry.revoke_all(), 1);
+    }
+
+    #[test]
+    fn activity_leases_protect_retention_until_their_raii_guards_drop() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let focus = registry.acquire(OpenGpuiActivityKind::Focus).unwrap();
+        let task = registry.acquire(OpenGpuiActivityKind::Task).unwrap();
+        let draft = registry.acquire(OpenGpuiActivityKind::Draft).unwrap();
+
+        assert_eq!(registry.active_count(), 3);
+        assert_eq!(registry.protected_count(), 2);
+        assert!(registry.is_active(focus.id()));
+        assert!(registry.is_active(task.id()));
+
+        drop(focus);
+        assert_eq!(registry.active_count(), 2);
+        assert_eq!(registry.protected_count(), 1);
+        drop(task);
+        drop(draft);
+        assert_eq!(registry.active_count(), 0);
+        assert_eq!(registry.protected_count(), 0);
+    }
+
+    #[test]
+    fn hard_retirement_revokes_resources_once_in_acquisition_order() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let revoked = Rc::new(RefCell::new(Vec::new()));
+        let first_revoked = revoked.clone();
+        let first = registry
+            .acquire_with_revocation(OpenGpuiActivityKind::PointerCapture, move || {
+                first_revoked.borrow_mut().push("capture");
+            })
+            .unwrap();
+        let second_revoked = revoked.clone();
+        let second = registry
+            .acquire_with_revocation(OpenGpuiActivityKind::Overlay, move || {
+                second_revoked.borrow_mut().push("overlay");
+            })
+            .unwrap();
+
+        assert_eq!(registry.revoke_all(), 2);
+        assert_eq!(&*revoked.borrow(), &["capture", "overlay"]);
+        assert!(registry.is_revoked());
+        assert_eq!(registry.active_count(), 0);
+        assert_eq!(registry.revoke_all(), 0);
+
+        drop(first);
+        drop(second);
+        assert_eq!(&*revoked.borrow(), &["capture", "overlay"]);
+        assert_eq!(
+            registry.acquire(OpenGpuiActivityKind::Focus).unwrap_err(),
+            OpenGpuiActivityAcquireError::RegistryRevoked,
+        );
+    }
+
+    #[test]
+    fn panicking_revocation_does_not_skip_later_resources() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let revoked = Rc::new(RefCell::new(Vec::new()));
+        let mut leases = Vec::new();
+        for (label, should_panic) in [("first", false), ("second", true), ("third", false)] {
+            let callback_revoked = revoked.clone();
+            leases.push(
+                registry
+                    .acquire_with_revocation(OpenGpuiActivityKind::Task, move || {
+                        callback_revoked.borrow_mut().push(label);
+                        assert!(!should_panic, "revocation panic");
+                    })
+                    .unwrap(),
+            );
+        }
+
+        let panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.revoke_all()));
+
+        assert!(panic.is_err());
+        assert_eq!(&*revoked.borrow(), &["first", "second", "third"]);
+        assert!(registry.is_revoked());
+        assert_eq!(registry.active_count(), 0);
+        drop(leases);
+    }
+
+    #[test]
+    fn unprotected_tasks_and_subscriptions_do_not_count_as_retention_protection() {
+        let registry = OpenGpuiNodeActivityRegistry::detached();
+        let _task = registry.acquire(OpenGpuiActivityKind::Task).unwrap();
+        let _subscription = registry
+            .acquire(OpenGpuiActivityKind::Subscription)
+            .unwrap();
+
+        assert_eq!(registry.active_count(), 2);
+        assert_eq!(registry.protected_count(), 0);
+    }
+}

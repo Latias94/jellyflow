@@ -1,93 +1,121 @@
-use crate::io::NodeGraphInteractionState;
+use crate::graph_kernel::{EdgeEndpoints, GraphOp};
 use crate::rules::{ConnectPlan, EdgeEndpoint};
+use crate::runtime::policy::{GraphRuntimePolicy, resolve_edge_policy};
 use jellyflow_core::core::{Edge, EdgeId, Graph, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::EdgeEndpoints;
 
 use super::super::common::{
-    ConnectionEndpoints, ConnectionOpBuilder, connection_exists, reject_duplicate_connection,
-    reject_edge_kind_incompatible_with_ports, reject_if_connection_policy_disallows,
-    reject_missing_edge, reject_reconnect_directions_required, reject_self_connection,
+    ConnectionEndpoints, ConnectionPlanningContext, connection_exists_using,
+    disconnect_for_endpoint_capacity_using, reject_duplicate_connection,
+    reject_edge_kind_incompatible_with_ports, reject_edge_not_reconnectable,
+    reject_if_connection_policy_disallows, reject_missing_edge,
+    reject_reconnect_directions_required, reject_self_connection,
     resolve_ordered_connection_endpoints,
 };
 
-/// Plans reconnecting one endpoint of an existing edge to a new port.
-///
-/// This is used for "yank and reattach" workflows where edge identity should be preserved.
-pub fn plan_reconnect_edge_with_mode_and_policy(
-    graph: &Graph,
+pub(super) struct ResolvedReconnectPlan<'a> {
+    endpoints: ConnectionEndpoints<'a>,
+    plan: ConnectPlan,
+}
+
+impl<'a> ResolvedReconnectPlan<'a> {
+    pub(super) fn endpoints(&self) -> &ConnectionEndpoints<'a> {
+        &self.endpoints
+    }
+
+    pub(super) fn into_plan(self) -> ConnectPlan {
+        self.plan
+    }
+}
+
+pub(super) fn plan_resolved_reconnect_using<'a>(
+    graph: &'a Graph,
     edge_id: EdgeId,
     endpoint: EdgeEndpoint,
     new_port: PortId,
     mode: NodeGraphConnectionMode,
-    state: &NodeGraphInteractionState,
-) -> ConnectPlan {
+    policy: &GraphRuntimePolicy,
+    query: &mut dyn ConnectionPlanningContext,
+) -> Result<ResolvedReconnectPlan<'a>, ConnectPlan> {
     let Some(edge) = graph.edges().get(&edge_id) else {
-        return reject_missing_edge(edge_id);
+        return Err(reject_missing_edge(edge_id));
     };
 
-    if let Some(reject) = reconnect_endpoint_policy_rejection(edge, endpoint, state) {
-        return reject;
+    if let Some(reject) = reconnect_endpoint_policy_rejection(edge_id, edge, endpoint, policy) {
+        return Err(reject);
     }
 
     let endpoint_change = ReconnectEndpointChange::new(edge, endpoint, new_port);
 
     if let Some(reject) = endpoint_change.self_connection_rejection() {
-        return reject;
+        return Err(reject);
     }
+
+    let endpoints = endpoint_change.resolve(graph)?;
 
     if endpoint_change.is_noop() {
-        return ConnectPlan::accept();
+        return Ok(ResolvedReconnectPlan {
+            endpoints,
+            plan: ConnectPlan::accept(),
+        });
     }
-
-    let endpoints = match endpoint_change.resolve(graph) {
-        Ok(endpoints) => endpoints,
-        Err(reject) => return reject,
-    };
 
     if let Some(reject) = strict_mode_rejection(mode, &endpoints) {
-        return reject;
+        return Err(reject);
     }
 
-    if let Some(reject) = reject_if_connection_policy_disallows(graph, &endpoints, state) {
-        return reject;
+    if let Some(reject) = reject_if_connection_policy_disallows(graph, &endpoints, policy) {
+        return Err(reject);
     }
 
     if edge.kind != endpoints.edge_kind {
-        return reject_edge_kind_incompatible_with_ports(edge.kind, endpoints.edge_kind);
+        return Err(reject_edge_kind_incompatible_with_ports(
+            edge.kind,
+            endpoints.edge_kind,
+            endpoints.to_id,
+        ));
     }
 
-    if connection_exists(
+    if connection_exists_using(
+        query,
         graph,
         edge.kind,
         endpoints.from_id,
         endpoints.to_id,
         Some(edge_id),
     ) {
-        return reject_duplicate_connection();
+        return Err(reject_duplicate_connection(endpoints.to_id));
     }
 
     let mut ops =
-        ConnectionOpBuilder::with_endpoint_capacity_disconnects(graph, &endpoints, Some(edge_id));
+        disconnect_for_endpoint_capacity_using(query, graph, &endpoints, Some(edge_id), policy)?;
 
-    ops.push_set_edge_endpoints(edge_id, endpoint_change.old, endpoints.edge_endpoints());
+    ops.push(GraphOp::SetEdgeEndpoints {
+        id: edge_id,
+        from: endpoint_change.old,
+        to: endpoints.edge_endpoints(),
+    });
 
-    ConnectPlan::from_ops(ops.into_ops())
+    Ok(ResolvedReconnectPlan {
+        endpoints,
+        plan: ConnectPlan::from_ops(ops),
+    })
 }
 
 fn reconnect_endpoint_policy_rejection(
+    edge_id: EdgeId,
     edge: &Edge,
     endpoint: EdgeEndpoint,
-    state: &NodeGraphInteractionState,
+    policy: &GraphRuntimePolicy,
 ) -> Option<ConnectPlan> {
-    let edge_policy = state.edge_interaction_policy(edge);
+    let edge_policy = resolve_edge_policy(edge, policy);
     match endpoint {
-        EdgeEndpoint::From if !edge_policy.can_reconnect_source() => Some(ConnectPlan::reject(
-            "edge source endpoint is not reconnectable",
-        )),
-        EdgeEndpoint::To if !edge_policy.can_reconnect_target() => Some(ConnectPlan::reject(
-            "edge target endpoint is not reconnectable",
-        )),
+        EdgeEndpoint::From if !edge_policy.can_reconnect_source() => {
+            Some(reject_edge_not_reconnectable(edge_id, true))
+        }
+        EdgeEndpoint::To if !edge_policy.can_reconnect_target() => {
+            Some(reject_edge_not_reconnectable(edge_id, false))
+        }
         _ => None,
     }
 }
@@ -109,7 +137,8 @@ impl ReconnectEndpointChange {
     }
 
     fn self_connection_rejection(&self) -> Option<ConnectPlan> {
-        (self.candidate.from == self.candidate.to).then(reject_self_connection)
+        (self.candidate.from == self.candidate.to)
+            .then(|| reject_self_connection(self.candidate.from))
     }
 
     fn is_noop(&self) -> bool {
@@ -126,5 +155,5 @@ fn strict_mode_rejection(
     endpoints: &ConnectionEndpoints<'_>,
 ) -> Option<ConnectPlan> {
     (mode == NodeGraphConnectionMode::Strict && !endpoints.is_out_to_in())
-        .then(reject_reconnect_directions_required)
+        .then(|| reject_reconnect_directions_required(endpoints.to_id))
 }

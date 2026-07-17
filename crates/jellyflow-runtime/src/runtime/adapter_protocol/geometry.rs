@@ -1,0 +1,494 @@
+use std::collections::BTreeMap;
+use std::ops::Index;
+use std::sync::Arc;
+
+use jellyflow_core::core::{CanvasPoint, CanvasRect, EdgeId, NodeId, PortId};
+use rpds::RedBlackTreeMapSync;
+
+use crate::runtime::geometry::{EdgeRouteFacts, HandlePosition};
+use crate::runtime::graph_runtime::NodeIncarnation;
+
+use super::RendererStamp;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublishedEdgeRoute {
+    edge: EdgeId,
+    facts: EdgeRouteFacts,
+}
+
+impl PublishedEdgeRoute {
+    pub(crate) fn new(edge: EdgeId, facts: EdgeRouteFacts) -> Self {
+        Self { edge, facts }
+    }
+
+    pub fn edge(&self) -> EdgeId {
+        self.edge
+    }
+
+    pub fn facts(&self) -> &EdgeRouteFacts {
+        &self.facts
+    }
+}
+
+/// Published canvas-space geometry for one real graph port.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublishedPortGeometry {
+    port: PortId,
+    node: NodeId,
+    visual_bounds: CanvasRect,
+    hit_bounds: CanvasRect,
+    route_anchor: CanvasPoint,
+    outward: HandlePosition,
+}
+
+impl PublishedPortGeometry {
+    pub(crate) fn new(
+        port: PortId,
+        node: NodeId,
+        visual_bounds: CanvasRect,
+        hit_bounds: CanvasRect,
+        route_anchor: CanvasPoint,
+        outward: HandlePosition,
+    ) -> Self {
+        Self {
+            port,
+            node,
+            visual_bounds,
+            hit_bounds,
+            route_anchor,
+            outward,
+        }
+    }
+
+    pub fn port(&self) -> PortId {
+        self.port
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Bounds of the native element that visually represents the port.
+    pub fn visual_bounds(&self) -> CanvasRect {
+        self.visual_bounds
+    }
+
+    /// Bounds used by the adapter for pointer targeting.
+    pub fn hit_bounds(&self) -> CanvasRect {
+        self.hit_bounds
+    }
+
+    /// Exact point where the routed edge meets the port.
+    pub fn route_anchor(&self) -> CanvasPoint {
+        self.route_anchor
+    }
+
+    /// Cardinal direction in which the route leaves the anchor.
+    pub fn outward(&self) -> HandlePosition {
+        self.outward
+    }
+}
+
+/// Published layout availability for one real graph port.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PublishedPortOutcome {
+    Rendered(PublishedPortGeometry),
+    Hidden,
+    Culled,
+    Unavailable,
+}
+
+impl PublishedPortOutcome {
+    pub fn rendered(&self) -> Option<&PublishedPortGeometry> {
+        match self {
+            Self::Rendered(geometry) => Some(geometry),
+            Self::Hidden | Self::Culled | Self::Unavailable => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublishedNodeGeometry {
+    node: NodeId,
+    incarnation: NodeIncarnation,
+    renderer: RendererStamp,
+    layout_generation: u64,
+    fresh: bool,
+    bounds: CanvasRect,
+    ports: BTreeMap<PortId, PublishedPortGeometry>,
+    port_outcomes: BTreeMap<PortId, PublishedPortOutcome>,
+}
+
+impl PublishedNodeGeometry {
+    pub(crate) fn new(
+        node: NodeId,
+        incarnation: NodeIncarnation,
+        renderer: RendererStamp,
+        layout_generation: u64,
+        bounds: CanvasRect,
+        port_outcomes: BTreeMap<PortId, PublishedPortOutcome>,
+    ) -> Self {
+        let ports = rendered_ports(&port_outcomes);
+        Self {
+            node,
+            incarnation,
+            renderer,
+            layout_generation,
+            fresh: true,
+            bounds,
+            ports,
+            port_outcomes,
+        }
+    }
+
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn incarnation(&self) -> NodeIncarnation {
+        self.incarnation
+    }
+
+    pub fn renderer(&self) -> &RendererStamp {
+        &self.renderer
+    }
+
+    pub fn layout_generation(&self) -> u64 {
+        self.layout_generation
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.fresh
+    }
+
+    pub fn bounds(&self) -> CanvasRect {
+        self.bounds
+    }
+
+    pub fn ports(&self) -> &BTreeMap<PortId, PublishedPortGeometry> {
+        &self.ports
+    }
+
+    /// Complete outcome map for every real port covered by the latest publication.
+    pub fn port_outcomes(&self) -> &BTreeMap<PortId, PublishedPortOutcome> {
+        &self.port_outcomes
+    }
+
+    pub(crate) fn translate(&mut self, x: f32, y: f32) {
+        self.bounds.origin.x += x;
+        self.bounds.origin.y += y;
+        for outcome in self.port_outcomes.values_mut() {
+            if let PublishedPortOutcome::Rendered(port) = outcome {
+                port.visual_bounds.origin.x += x;
+                port.visual_bounds.origin.y += y;
+                port.hit_bounds.origin.x += x;
+                port.hit_bounds.origin.y += y;
+                port.route_anchor.x += x;
+                port.route_anchor.y += y;
+            }
+        }
+        self.ports = rendered_ports(&self.port_outcomes);
+    }
+
+    pub(crate) fn mark_ports_culled(&mut self, ports: impl IntoIterator<Item = PortId>) -> bool {
+        self.replace_port_outcomes(ports, || PublishedPortOutcome::Culled)
+    }
+
+    pub(crate) fn mark_stale(&mut self, ports: impl IntoIterator<Item = PortId>) -> bool {
+        let outcomes_changed =
+            self.replace_port_outcomes(ports, || PublishedPortOutcome::Unavailable);
+        let changed = self.fresh || outcomes_changed;
+        self.fresh = false;
+        changed
+    }
+
+    fn replace_port_outcomes(
+        &mut self,
+        ports: impl IntoIterator<Item = PortId>,
+        outcome: impl Fn() -> PublishedPortOutcome,
+    ) -> bool {
+        let next = ports
+            .into_iter()
+            .map(|port| (port, outcome()))
+            .collect::<BTreeMap<_, _>>();
+        if self.port_outcomes == next {
+            return false;
+        }
+        self.port_outcomes = next;
+        self.ports = rendered_ports(&self.port_outcomes);
+        true
+    }
+
+    pub(crate) fn approximately_eq(&self, other: &Self, epsilon: f32) -> bool {
+        self.node == other.node
+            && self.incarnation == other.incarnation
+            && self.renderer == other.renderer
+            && self.layout_generation == other.layout_generation
+            && self.fresh == other.fresh
+            && rect_approximately_eq(self.bounds, other.bounds, epsilon)
+            && self.port_outcomes.len() == other.port_outcomes.len()
+            && self.port_outcomes.iter().all(|(port, current)| {
+                other.port_outcomes.get(port).is_some_and(|candidate| {
+                    port_outcomes_approximately_eq(current, candidate, epsilon)
+                })
+            })
+    }
+}
+
+fn rendered_ports(
+    outcomes: &BTreeMap<PortId, PublishedPortOutcome>,
+) -> BTreeMap<PortId, PublishedPortGeometry> {
+    outcomes
+        .iter()
+        .filter_map(|(port, outcome)| {
+            outcome
+                .rendered()
+                .cloned()
+                .map(|geometry| (*port, geometry))
+        })
+        .collect()
+}
+
+fn port_outcomes_approximately_eq(
+    left: &PublishedPortOutcome,
+    right: &PublishedPortOutcome,
+    epsilon: f32,
+) -> bool {
+    match (left, right) {
+        (PublishedPortOutcome::Hidden, PublishedPortOutcome::Hidden)
+        | (PublishedPortOutcome::Culled, PublishedPortOutcome::Culled)
+        | (PublishedPortOutcome::Unavailable, PublishedPortOutcome::Unavailable) => true,
+        (PublishedPortOutcome::Rendered(left), PublishedPortOutcome::Rendered(right)) => {
+            left.port == right.port
+                && left.node == right.node
+                && left.outward == right.outward
+                && rect_approximately_eq(left.visual_bounds, right.visual_bounds, epsilon)
+                && rect_approximately_eq(left.hit_bounds, right.hit_bounds, epsilon)
+                && point_approximately_eq(left.route_anchor, right.route_anchor, epsilon)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) type SharedGeometryMap<K, V> = RedBlackTreeMapSync<K, Arc<V>>;
+type SharedGeometryMapIter<'a, K, V> = <&'a SharedGeometryMap<K, V> as IntoIterator>::IntoIter;
+
+/// Read-only view over one published geometry collection.
+///
+/// The wrapper keeps the persistent storage and shared value ownership private while exposing
+/// deterministic map-like reads to native adapters.
+#[derive(Debug, Clone, Copy)]
+pub struct GeometryElements<'a, K: Ord, V> {
+    entries: &'a SharedGeometryMap<K, V>,
+}
+
+/// Iterator over published geometry ids and values.
+pub struct GeometryElementIter<'a, K: Ord, V> {
+    inner: SharedGeometryMapIter<'a, K, V>,
+}
+
+/// Iterator over published geometry ids.
+pub struct GeometryElementKeys<'a, K: Ord, V> {
+    inner: GeometryElementIter<'a, K, V>,
+}
+
+/// Iterator over published geometry values.
+pub struct GeometryElementValues<'a, K: Ord, V> {
+    inner: GeometryElementIter<'a, K, V>,
+}
+
+impl<'a, K: Ord, V> GeometryElements<'a, K, V> {
+    pub(crate) fn new(entries: &'a SharedGeometryMap<K, V>) -> Self {
+        Self { entries }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.size()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub fn get(&self, key: &K) -> Option<&'a V> {
+        self.entries.get(key).map(Arc::as_ref)
+    }
+
+    pub fn iter(&self) -> GeometryElementIter<'a, K, V> {
+        GeometryElementIter {
+            inner: self.entries.into_iter(),
+        }
+    }
+
+    pub fn keys(&self) -> GeometryElementKeys<'a, K, V> {
+        GeometryElementKeys { inner: self.iter() }
+    }
+
+    pub fn values(&self) -> GeometryElementValues<'a, K, V> {
+        GeometryElementValues { inner: self.iter() }
+    }
+}
+
+impl<K: Ord, V> Index<&K> for GeometryElements<'_, K, V> {
+    type Output = V;
+
+    fn index(&self, key: &K) -> &Self::Output {
+        self.get(key).expect("no published geometry for key")
+    }
+}
+
+impl<'a, K: Ord, V> IntoIterator for GeometryElements<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = GeometryElementIter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K: Ord, V> Iterator for GeometryElementIter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(key, value)| (key, value.as_ref()))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K: Ord, V> DoubleEndedIterator for GeometryElementIter<'_, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next_back()
+            .map(|(key, value)| (key, value.as_ref()))
+    }
+}
+
+impl<K: Ord, V> ExactSizeIterator for GeometryElementIter<'_, K, V> {}
+
+impl<'a, K: Ord, V> Iterator for GeometryElementKeys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(key, _)| key)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K: Ord, V> DoubleEndedIterator for GeometryElementKeys<'_, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back().map(|(key, _)| key)
+    }
+}
+
+impl<K: Ord, V> ExactSizeIterator for GeometryElementKeys<'_, K, V> {}
+
+impl<'a, K: Ord, V> Iterator for GeometryElementValues<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, value)| value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<K: Ord, V> DoubleEndedIterator for GeometryElementValues<'_, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back().map(|(_, value)| value)
+    }
+}
+
+impl<K: Ord, V> ExactSizeIterator for GeometryElementValues<'_, K, V> {}
+
+#[derive(Debug, Default)]
+struct GeometrySnapshotInner {
+    layout_revision: u64,
+    nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
+    ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
+    port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+    routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GeometrySnapshot {
+    inner: Arc<GeometrySnapshotInner>,
+}
+
+fn rect_approximately_eq(left: CanvasRect, right: CanvasRect, epsilon: f32) -> bool {
+    (left.origin.x - right.origin.x).abs() <= epsilon
+        && (left.origin.y - right.origin.y).abs() <= epsilon
+        && (left.size.width - right.size.width).abs() <= epsilon
+        && (left.size.height - right.size.height).abs() <= epsilon
+}
+
+fn point_approximately_eq(left: CanvasPoint, right: CanvasPoint, epsilon: f32) -> bool {
+    (left.x - right.x).abs() <= epsilon && (left.y - right.y).abs() <= epsilon
+}
+
+impl GeometrySnapshot {
+    pub(crate) fn new(
+        layout_revision: u64,
+        nodes: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
+        ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
+        port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+        routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(GeometrySnapshotInner {
+                layout_revision,
+                nodes,
+                ports,
+                port_outcomes,
+                routes,
+            }),
+        }
+    }
+
+    pub fn layout_revision(&self) -> u64 {
+        self.inner.layout_revision
+    }
+
+    pub fn node(&self, node: NodeId) -> Option<&PublishedNodeGeometry> {
+        self.inner.nodes.get(&node).map(Arc::as_ref)
+    }
+
+    pub fn port(&self, port: PortId) -> Option<&PublishedPortGeometry> {
+        self.inner.ports.get(&port).map(Arc::as_ref)
+    }
+
+    pub fn nodes(&self) -> GeometryElements<'_, NodeId, PublishedNodeGeometry> {
+        GeometryElements::new(&self.inner.nodes)
+    }
+
+    pub fn ports(&self) -> GeometryElements<'_, PortId, PublishedPortGeometry> {
+        GeometryElements::new(&self.inner.ports)
+    }
+
+    pub fn port_outcome(&self, port: PortId) -> Option<&PublishedPortOutcome> {
+        self.inner.port_outcomes.get(&port).map(Arc::as_ref)
+    }
+
+    pub fn port_outcomes(&self) -> GeometryElements<'_, PortId, PublishedPortOutcome> {
+        GeometryElements::new(&self.inner.port_outcomes)
+    }
+
+    pub fn route(&self, edge: EdgeId) -> Option<&PublishedEdgeRoute> {
+        self.inner.routes.get(&edge).map(Arc::as_ref)
+    }
+
+    pub fn routes(&self) -> GeometryElements<'_, EdgeId, PublishedEdgeRoute> {
+        GeometryElements::new(&self.inner.routes)
+    }
+}

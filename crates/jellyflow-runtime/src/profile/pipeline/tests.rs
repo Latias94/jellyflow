@@ -1,127 +1,126 @@
 use jellyflow_core::core::{CanvasPoint, Graph, GraphBuilder, Node, NodeId, NodeKindKey, PortId};
-use jellyflow_core::ops::{GraphOp, GraphTransaction};
 
 use crate::profile::GraphProfile;
 use crate::rules::{Diagnostic, DiagnosticTarget};
-
-use super::*;
+use crate::runtime::commands::GraphCommand;
+use crate::runtime::graph_runtime::GraphRuntime;
 
 #[test]
-fn apply_transaction_with_profile_preserves_label_and_appends_derived_ops() {
+fn graph_runtime_applies_profiled_commands() {
     let node = NodeId::new();
     let mut graph = GraphBuilder::default();
     graph.insert_node(node, make_node());
+    let runtime = GraphRuntime::builder(Default::default())
+        .with_profile(Box::new(PassThroughProfile))
+        .build(graph.build_unchecked())
+        .expect("profiled runtime");
+    runtime
+        .execute(GraphCommand::set_node_position(
+            0,
+            node,
+            CanvasPoint { x: 10.0, y: 20.0 },
+        ))
+        .expect("command execution")
+        .applied()
+        .expect("profiled command applies");
 
-    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
-        id: node,
-        from: CanvasPoint { x: 0.0, y: 0.0 },
-        to: CanvasPoint { x: 10.0, y: 20.0 },
-    }])
-    .with_label("Move");
-
-    let mut graph = graph.build_unchecked();
-    let committed = apply_transaction_with_profile(&mut graph, &mut OneDerivedOp::new(node), &tx)
-        .expect("profile apply");
-
-    assert_eq!(committed.label(), Some("Move"));
-    assert_eq!(committed.ops().len(), 2);
-    assert!(matches!(committed.ops()[0], GraphOp::SetNodePos { id, .. } if id == node));
-    assert!(matches!(
-        committed.ops()[1],
-        GraphOp::SetNodeHidden {
-            id,
-            from: false,
-            to: true
-        } if id == node
-    ));
     assert_eq!(
-        graph.nodes().get(&node).expect("node").pos,
+        runtime
+            .snapshot()
+            .expect("snapshot")
+            .graph()
+            .nodes()
+            .get(&node)
+            .expect("node")
+            .pos,
         CanvasPoint { x: 10.0, y: 20.0 }
     );
-    assert!(graph.nodes().get(&node).expect("node").hidden);
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 1);
 }
 
 #[test]
-fn apply_transaction_with_profile_rejection_leaves_graph_unchanged() {
+fn graph_runtime_profile_rejection_leaves_state_unchanged() {
     let node = NodeId::new();
     let mut graph = GraphBuilder::default();
     graph.insert_node(node, make_node());
+    let runtime = GraphRuntime::builder(Default::default())
+        .with_profile(Box::new(RejectingProfile { node }))
+        .build(graph.build_unchecked())
+        .expect("initial graph is accepted");
+    let before = runtime.snapshot().expect("snapshot");
+    let outcome = runtime
+        .execute(GraphCommand::set_node_position(
+            0,
+            node,
+            CanvasPoint { x: 10.0, y: 20.0 },
+        ))
+        .expect("command execution");
 
-    let tx = GraphTransaction::from_ops([GraphOp::SetNodePos {
-        id: node,
-        from: CanvasPoint { x: 0.0, y: 0.0 },
-        to: CanvasPoint { x: 10.0, y: 20.0 },
-    }]);
-
-    let mut graph = graph.build_unchecked();
-    let err = apply_transaction_with_profile(&mut graph, &mut RejectingProfile, &tx)
-        .expect_err("profile should reject");
-
-    assert!(matches!(err, ApplyPipelineError::Rejected { .. }));
     assert_eq!(
-        graph.nodes().get(&node).expect("node").pos,
+        outcome
+            .rejection()
+            .expect("profile should reject")
+            .diagnostics()[0]
+            .key,
+        "profile.reject",
+    );
+    assert!(before.ptr_eq(&runtime.snapshot().expect("unchanged snapshot")));
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("snapshot")
+            .graph()
+            .nodes()
+            .get(&node)
+            .expect("node")
+            .pos,
         CanvasPoint { x: 0.0, y: 0.0 }
     );
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 0);
 }
 
-struct OneDerivedOp {
-    node: NodeId,
-    emitted: bool,
-}
+struct PassThroughProfile;
 
-impl OneDerivedOp {
-    fn new(node: NodeId) -> Self {
-        Self {
-            node,
-            emitted: false,
-        }
-    }
-}
-
-impl GraphProfile for OneDerivedOp {
+impl GraphProfile for PassThroughProfile {
     fn type_of_port(
-        &mut self,
+        &self,
         _graph: &Graph,
         _port: PortId,
     ) -> Option<jellyflow_core::types::TypeDesc> {
         None
     }
 
-    fn validate_graph(&mut self, _graph: &Graph) -> Vec<Diagnostic> {
+    fn validate_graph(&self, _graph: &Graph) -> Vec<Diagnostic> {
         Vec::new()
-    }
-
-    fn concretize(&mut self, _graph: &Graph) -> Vec<GraphOp> {
-        if self.emitted {
-            return Vec::new();
-        }
-
-        self.emitted = true;
-        vec![GraphOp::SetNodeHidden {
-            id: self.node,
-            from: false,
-            to: true,
-        }]
     }
 }
 
-struct RejectingProfile;
+struct RejectingProfile {
+    node: NodeId,
+}
 
 impl GraphProfile for RejectingProfile {
     fn type_of_port(
-        &mut self,
+        &self,
         _graph: &Graph,
         _port: PortId,
     ) -> Option<jellyflow_core::types::TypeDesc> {
         None
     }
 
-    fn validate_graph(&mut self, _graph: &Graph) -> Vec<Diagnostic> {
-        vec![Diagnostic::error(
-            "profile.reject",
-            DiagnosticTarget::Graph,
-            "profile rejected graph",
-        )]
+    fn validate_graph(&self, graph: &Graph) -> Vec<Diagnostic> {
+        if graph
+            .node(&self.node)
+            .is_some_and(|node| node.pos != CanvasPoint { x: 0.0, y: 0.0 })
+        {
+            vec![Diagnostic::error(
+                "profile.reject",
+                DiagnosticTarget::Graph,
+                "profile rejected graph",
+            )]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -132,7 +131,6 @@ fn make_node() -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

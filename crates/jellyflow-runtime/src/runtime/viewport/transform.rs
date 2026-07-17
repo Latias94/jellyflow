@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::io::NodeGraphViewState;
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
 /// Current viewport transform.
@@ -29,11 +28,6 @@ impl ViewportTransform {
     /// Returns true when the transform can safely participate in viewport math.
     pub fn is_valid(self) -> bool {
         self.pan.is_finite() && valid_zoom(self.zoom)
-    }
-
-    /// Reads the viewport transform from a persisted view-state.
-    pub fn from_view_state(view_state: &NodeGraphViewState) -> Option<Self> {
-        Self::new(view_state.pan, view_state.zoom)
     }
 
     /// Projects a canvas point into logical screen pixels.

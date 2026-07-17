@@ -72,7 +72,6 @@ const DEFAULT_LAYOUT_OPTIONS: LayoutOptions = LayoutOptions {
         width: 172.0,
         height: 36.0,
     },
-    node_origin: (0.0, 0.0),
 };
 
 const LAYERED_DAG_FAMILY_SPEC: BuiltinLayoutFamilySpec = BuiltinLayoutFamilySpec {
@@ -263,10 +262,12 @@ fn mind_map_freeform_engine() -> Arc<dyn LayoutEngine> {
 }
 
 impl BuiltinLayoutFamilySpec {
+    #[cfg(test)]
     pub(crate) fn id(&self) -> &'static str {
         self.id
     }
 
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &'static str {
         self.name
     }
@@ -277,10 +278,12 @@ impl BuiltinLayoutFamilySpec {
 }
 
 impl BuiltinLayoutSpec {
+    #[cfg(test)]
     pub(crate) fn preset(&self) -> BuiltinLayoutPreset {
         self.preset
     }
 
+    #[cfg(test)]
     pub(crate) fn engine_id(&self) -> &'static str {
         self.engine_id
     }
@@ -289,14 +292,17 @@ impl BuiltinLayoutSpec {
         self.family_spec().id
     }
 
+    #[cfg(test)]
     pub(crate) fn engine_name(&self) -> &'static str {
         self.engine_name
     }
 
+    #[cfg(test)]
     pub(crate) fn capabilities(&self) -> &'static [LayoutEngineCapability] {
         self.capabilities
     }
 
+    #[cfg(test)]
     pub(crate) fn options(&self) -> LayoutOptions {
         self.options
     }

@@ -1,1908 +1,389 @@
+use std::collections::BTreeSet;
+
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeKind, EdgeLabelAnchor, EdgeRouteKind,
-    EdgeViewDescriptor, Graph, GraphId, GroupId, NodeId, PortDirection, PortId,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
-use jellyflow_core::ops::{GraphMutationFootprint, GraphTransaction};
-use jellyflow_runtime::io::{
-    GraphFileV1, NodeGraphEditorConfig, NodeGraphEditorStateFile, NodeGraphInteractionConfig,
-    NodeGraphInteractionState, NodeGraphPanInertiaTuning, NodeGraphPanOnDragButtons,
-    NodeGraphViewState,
+use jellyflow_core::types::TypeDesc;
+use jellyflow_layout::{
+    LayoutContext, LayoutEngineRequest, LayoutRequest, builtin_layout_engine_registry,
 };
-use jellyflow_runtime::profile::{
-    ApplyPipelineError, ConnectionRuleDescriptor, FieldSchema, GraphProfile as ModuleGraphProfile,
-    GraphProfileMetadata, NodeFieldSchemaSet, ValidationHint, VariableDescriptor,
-    VariableSurfaceDescriptor,
-};
-use jellyflow_runtime::rules::{ConnectPlan, Diagnostic, DiagnosticTarget, EdgeEndpoint};
-use jellyflow_runtime::runtime::{
-    auto_pan, chrome, commit, conformance, connection, create_node, delete, drag, events, geometry,
-    gesture, keyboard, layout, measurement, rendering, resize, selection, store, viewport, xyflow,
-};
+use jellyflow_runtime::io::{GraphFile, PersistenceLimits, ViewSessionSeed, ViewSessionSeedFile};
+use jellyflow_runtime::runtime::{layout, viewport};
 use jellyflow_runtime::schema::{
-    ActionIntent, ActionShortcut, ActionTarget, BlackboardDescriptor, InspectorDescriptor,
-    InspectorTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor, NodeChromeDescriptor,
-    NodeChromeKind, NodeChromePlacement, NodeChromeVisibility, NodeControlBinding,
-    NodeControlDescriptor, NodeControlEditability, NodeControlKind, NodeControlOption,
-    NodeControlOptionSource, NodeControlPresentation, NodeControlValidation,
-    NodeControlValidationRule, NodeInstantiation, NodeInstantiationError, NodeKindViewDescriptor,
-    NodeKitContentDensity, NodeRegistry, NodeRepeatableAnchorRule,
-    NodeRepeatableCollectionDescriptor, NodeSchema, NodeSchemaBuilder, NodeSurfaceLayoutBudget,
-    NodeSurfaceOverflowIndicator, NodeSurfaceSlotDescriptor, NodeSurfaceSlotKind,
-    NodeSurfaceSlotVisibility, PortDecl, PortHandleVisibility, PortViewDescriptor, PortViewSide,
+    NodeCatalog, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
 };
 use jellyflow_runtime::{
-    DispatchError, DispatchOutcome, GraphProfile, NodeGraphPatch, NodeGraphStore,
-    apply_connect_plan_with_profile, apply_transaction_with_profile,
+    AdapterEnvironment, ConnectionEdit, Diagnostic, DiagnosticTarget, FeedbackCollector,
+    FrameRequest, GraphCommand, GraphProfile, GraphRuntime, GraphRuntimePolicy, HandlePosition,
+    IncidentEdgePolicy, NodeLayoutTarget, RendererStamp, TopologyEdit, TopologyPort, ViewPoint,
+    ViewRect, ViewSessionOptions, ViewSize,
 };
 
-fn accepts_root_profile<T: ?Sized + GraphProfile>() {}
-
-fn accepts_module_profile<T: ?Sized + ModuleGraphProfile>() {}
-
-#[test]
-fn crate_root_exposes_canonical_runtime_api() {
-    accepts_root_profile::<dyn GraphProfile>();
-    accepts_module_profile::<dyn ModuleGraphProfile>();
-
-    let _: fn(
-        &mut Graph,
-        &mut dyn GraphProfile,
-        &GraphTransaction,
-    ) -> Result<GraphTransaction, ApplyPipelineError> = apply_transaction_with_profile;
-    let _: fn(
-        &mut Graph,
-        &mut dyn GraphProfile,
-        &ConnectPlan,
-    ) -> Result<GraphTransaction, ApplyPipelineError> = apply_connect_plan_with_profile;
-
-    let graph = Graph::new(GraphId::new());
-    let store = NodeGraphStore::new(
-        graph.clone(),
-        NodeGraphViewState::default(),
-        NodeGraphEditorConfig::default(),
-    );
-
-    assert_eq!(store.graph().graph_id(), graph.graph_id());
-    assert!(NodeGraphPatch::default().is_empty());
-    let _: &GraphMutationFootprint = NodeGraphPatch::default().footprint();
-    let _ = std::mem::size_of::<DispatchOutcome>();
-    let _ = std::mem::size_of::<DispatchError>();
-    let dispatch = DispatchOutcome::from_committed(GraphTransaction::default());
-    let _: &NodeGraphPatch = dispatch.patch();
-    let _: NodeGraphPatch = dispatch.into_patch();
+fn graph_with_one_port() -> (Graph, NodeId, PortId) {
+    let graph_id = GraphId::from_u128(0x501);
+    let node = NodeId::from_u128(0x502);
+    let port = PortId::from_u128(0x503);
+    let graph = GraphBuilder::new(graph_id)
+        .with_node(
+            node,
+            Node {
+                kind: NodeKindKey::new("public.native"),
+                kind_version: 1,
+                pos: CanvasPoint { x: 40.0, y: 60.0 },
+                origin: None,
+                selectable: None,
+                draggable: None,
+                connectable: None,
+                deletable: None,
+                parent: None,
+                extent: None,
+                expand_parent: None,
+                size: Some(CanvasSize {
+                    width: 160.0,
+                    height: 96.0,
+                }),
+                hidden: false,
+                collapsed: false,
+                ports: vec![port],
+                data: serde_json::json!({"label": "native"}),
+            },
+        )
+        .with_port(
+            port,
+            Port {
+                node,
+                key: PortKey::new("output"),
+                dir: PortDirection::Out,
+                kind: PortKind::Data,
+                capacity: PortCapacity::Multi,
+                connectable: None,
+                connectable_start: None,
+                connectable_end: None,
+                ty: None,
+                data: serde_json::Value::Null,
+            },
+        )
+        .build()
+        .expect("public graph fixture");
+    (graph, node, port)
 }
 
 #[test]
-fn explicit_modules_expose_their_owned_surfaces() {
-    let graph = Graph::new(GraphId::new());
-    let edge_view = EdgeViewDescriptor {
-        renderer_key: Some("public.edge".to_owned()),
-        label: Some("Public edge".to_owned()),
-        label_anchor: Some(EdgeLabelAnchor::Center),
-        source_marker_key: None,
-        target_marker_key: Some("arrow".to_owned()),
-        style_token: Some("accent".to_owned()),
-        route_kind: Some(EdgeRouteKind::SmoothStep),
-        hit_target_width: Some(24.0),
-    };
-    assert_eq!(edge_view.label_anchor, Some(EdgeLabelAnchor::Center));
-    assert_eq!(edge_view.route_kind, Some(EdgeRouteKind::SmoothStep));
-    let profile_metadata = GraphProfileMetadata::new("public.workflow", "Public workflow")
-        .with_node_fields(
-            NodeFieldSchemaSet::new("public.note").with_field(
-                FieldSchema::new("prompt", "Prompt")
-                    .with_type(jellyflow_core::types::TypeDesc::String)
-                    .required()
-                    .with_hint(ValidationHint::new(
-                        "public.prompt_required",
-                        "Prompt is required",
-                    ))
-                    .with_port_anchor("source"),
-            ),
-        )
-        .with_variable_surface(
-            VariableSurfaceDescriptor::new("inputs", "Inputs").with_variable(
-                VariableDescriptor::new("topic", "Topic")
-                    .with_type(jellyflow_core::types::TypeDesc::String),
-            ),
-        )
-        .with_connection_rule(
-            ConnectionRuleDescriptor::new("public.exec_dag", "Execution flow must be acyclic")
-                .for_edge_kind(EdgeKind::Exec),
+fn view_seed_public_surface_returns_only_the_sanitized_seed() {
+    let seed = ViewSessionSeed::new(GraphId::from_u128(0x500));
+    let bytes = ViewSessionSeedFile::encode_json(&seed).expect("encode public seed");
+
+    let decoded: ViewSessionSeed =
+        ViewSessionSeedFile::decode_json(&bytes).expect("decode public seed");
+
+    assert_eq!(decoded, seed);
+}
+
+#[test]
+fn bounded_graph_save_is_part_of_the_public_persistence_surface() {
+    let directory = tempfile::tempdir().expect("temporary public persistence directory");
+    let path = directory.path().join("graph.json");
+    let graph_id = GraphId::from_u128(0x505);
+    let limits = PersistenceLimits::default().with_max_bytes(1024 * 1024);
+
+    GraphFile::from_graph(Graph::new(graph_id))
+        .save_json_with_limits(&path, limits)
+        .expect("bounded public graph save");
+    let loaded = GraphFile::load_canonical_json_with_limits(&path, &NodeCatalog::new(), limits)
+        .expect("bounded public graph load");
+
+    assert_eq!(loaded.graph().graph_id(), graph_id);
+}
+
+#[test]
+fn runtime_manifest_stays_framework_free() {
+    let manifest = include_str!("../Cargo.toml");
+    for forbidden in [
+        "fret-core",
+        "fret-ui",
+        "fret-runtime",
+        "egui",
+        "open-gpui",
+        "open_gpui",
+        "wgpu",
+        "winit",
+    ] {
+        assert!(
+            !manifest.contains(forbidden),
+            "forbidden dependency: {forbidden}"
         );
-    assert_eq!(profile_metadata.key.as_deref(), Some("public.workflow"));
-    assert_eq!(profile_metadata.node_fields[0].fields[0].key, "prompt");
-    assert_eq!(
-        profile_metadata.node_fields[0].fields[0]
-            .port_anchor
-            .as_ref()
-            .map(|key| key.0.as_str()),
-        Some("source")
-    );
-    let profile_diagnostic = Diagnostic::error(
-        "public.edge.invalid",
-        DiagnosticTarget::Edge { id: EdgeId::new() },
-        "edge is invalid",
-    );
-    assert_eq!(profile_diagnostic.key, "public.edge.invalid");
+    }
+}
 
-    let graph_file = GraphFileV1::from_graph(graph.clone());
-    assert_eq!(graph_file.graph_id, graph.graph_id());
+#[test]
+fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
+    let (graph, node, port) = graph_with_one_port();
+    let policy = GraphRuntimePolicy::default().with_edge_reconnection(false);
+    let runtime = GraphRuntime::builder(NodeCatalog::new())
+        .with_policy(policy)
+        .build(graph)
+        .expect("runtime");
+    assert_eq!(runtime.policy().unwrap(), policy);
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("view");
+    assert_eq!(view.graph_snapshot().unwrap().revision(), 0);
 
-    let editor_file = NodeGraphEditorStateFile::new(
-        graph.graph_id(),
-        NodeGraphViewState::default(),
-        NodeGraphEditorConfig::default(),
-    );
-    assert_eq!(editor_file.graph_id, graph.graph_id());
-    let _interaction = NodeGraphInteractionConfig::default();
-    let mut node_registry = NodeRegistry::new();
-    let _: NodeSchemaBuilder = NodeSchema::builder("public.note", "Note");
-    node_registry.register(
-        NodeSchema::builder("public.note", "Note")
-            .default_size(CanvasSize {
-                width: 120.0,
-                height: 80.0,
-            })
-            .layout_budget(
-                NodeSurfaceLayoutBudget::default()
-                    .with_min_readable_size(CanvasSize {
-                        width: 220.0,
-                        height: 160.0,
-                    })
-                    .with_preferred_size(CanvasSize {
-                        width: 260.0,
-                        height: 190.0,
-                    })
-                    .with_slot_line_budget(3)
-                    .with_control_line_budget(2)
-                    .with_repeatable_visible_items(4)
-                    .with_overflow_indicator(NodeSurfaceOverflowIndicator::Count)
-                    .with_density_priority([
-                        NodeKitContentDensity::Full,
-                        NodeKitContentDensity::Regular,
-                        NodeKitContentDensity::Compact,
-                    ]),
-            )
-            .port(
-                PortDecl::data_input("source")
-                    .with_label("Source")
-                    .with_view(
-                        PortViewDescriptor::left()
-                            .with_order(1)
-                            .with_group("inputs")
-                            .with_anchor("field.source")
-                            .with_icon_key("file-text")
-                            .with_visibility(PortHandleVisibility::Visible),
-                    ),
-            )
-            .surface_slot(
-                NodeSurfaceSlotDescriptor::field_row("field.source")
-                    .with_label("Source")
-                    .with_anchor("field.source")
-                    .with_lane("fields")
-                    .with_visibility(NodeSurfaceSlotVisibility::Visible)
-                    .with_control(
-                        NodeControlDescriptor::select("control.source_kind")
-                            .with_label("Source kind")
-                            .with_binding(NodeControlBinding::slot("source"))
-                            .with_options([
-                                NodeControlOption::new("file", "File"),
-                                NodeControlOption::new("url", "URL"),
-                            ])
-                            .with_validation(NodeControlValidation::default().required().with_rule(
-                                NodeControlValidationRule::EnumValues {
-                                    values: vec![
-                                        serde_json::json!("file"),
-                                        serde_json::json!("url"),
-                                    ],
-                                },
-                            ))
-                            .with_presentation(
-                                NodeControlPresentation::default()
-                                    .with_placeholder("Choose a source")
-                                    .with_icon_key("file-text"),
-                            )
-                            .with_editability(
-                                NodeControlEditability::default()
-                                    .disabled("Source is locked in this public API smoke"),
-                            ),
-                    ),
-            )
-            .repeatable_collection(
-                NodeRepeatableCollectionDescriptor::new("fields.args", "args", "id")
-                    .with_label("Arguments")
-                    .with_item_template_slot(
-                        NodeSurfaceSlotDescriptor::field_row("field.arg")
-                            .with_label("Argument")
-                            .with_slot("args")
-                            .with_control(
-                                NodeControlDescriptor::text_input("control.arg.name")
-                                    .with_label("Name")
-                                    .with_binding(NodeControlBinding::data_path("name")),
-                            ),
-                    )
-                    .with_anchor_rule(
-                        NodeRepeatableAnchorRule::new("field.arg", "field.arg")
-                            .with_port_key_path("port"),
-                    )
-                    .with_min_items(0)
-                    .with_max_items(4)
-                    .reorderable()
-                    .with_add_action("action.arg.add")
-                    .with_remove_action("action.arg.remove")
-                    .with_reorder_action("action.arg.reorder"),
-            )
-            .action(
-                NodeActionDescriptor::new(
-                    "action.arg.add",
-                    "Add argument",
-                    ActionTarget::Node {
-                        node_kind: "public.note".to_owned(),
-                    },
-                    ActionIntent::AddRepeatableItem {
-                        collection_key: "fields.args".to_owned(),
-                    },
-                )
-                .with_shortcut(ActionShortcut::new("A").ctrl()),
-            )
-            .menu(
-                MenuDescriptor::new("menu.node.public_note", MenuSurface::Node)
-                    .with_action_key("action.arg.add"),
-            )
-            .inspector(
-                InspectorDescriptor::new(
-                    "inspector.arg.topic",
-                    InspectorTarget::RepeatableItem {
-                        collection_key: "fields.args".to_owned(),
-                        item_id: "topic".to_owned(),
-                    },
-                )
-                .with_control(
-                    NodeControlDescriptor::text_input("inspector.arg.name")
-                        .with_label("Name")
-                        .with_binding(NodeControlBinding::data_path("name")),
-                ),
-            )
-            .blackboard(BlackboardDescriptor::new(
-                "blackboard.public.variables",
-                "Variables",
-                NodeRepeatableCollectionDescriptor::new("variables", "variables", "id"),
-            ))
-            .chrome(
-                NodeChromeDescriptor::toolbar("toolbar.primary", NodeChromePlacement::TopRight)
-                    .with_label("Tools")
-                    .with_visibility(NodeChromeVisibility::Selected),
-            )
-            .build(),
-    );
-    let view_descriptors = node_registry.view_descriptors();
-    let _: &NodeKindViewDescriptor = &view_descriptors[0];
-    assert_eq!(view_descriptors[0].renderer_key, "public.note");
-    assert_eq!(
-        view_descriptors[0].layout_budget.min_readable_size,
-        Some(CanvasSize {
-            width: 220.0,
-            height: 160.0,
-        })
-    );
-    assert_eq!(
-        view_descriptors[0].layout_budget.overflow_indicator,
-        Some(NodeSurfaceOverflowIndicator::Count)
-    );
-    assert_eq!(
-        view_descriptors[0]
-            .layout_budget
-            .density_priority
-            .as_slice(),
-        &[
-            NodeKitContentDensity::Full,
-            NodeKitContentDensity::Regular,
-            NodeKitContentDensity::Compact,
-        ]
-    );
-    assert_eq!(
-        view_descriptors[0].surface_slots[0].kind,
-        NodeSurfaceSlotKind::FieldRow
-    );
-    assert_eq!(
-        view_descriptors[0].surface_slots[0].controls[0].kind,
-        NodeControlKind::Select
-    );
-    assert_eq!(
-        view_descriptors[0].surface_slots[0].controls[0].data_key(),
-        Some("source")
-    );
-    assert_eq!(
-        view_descriptors[0].surface_slots[0].controls[0].option_source,
-        NodeControlOptionSource::Inline
-    );
-    assert_eq!(
-        view_descriptors[0].surface_slots[0].controls[0]
-            .editability
-            .disabled_reason
-            .as_deref(),
-        Some("Source is locked in this public API smoke")
-    );
-    let projected_slots = view_descriptors[0].surface_slots_projection(
-        &serde_json::json!({ "source": "file" }),
-        None,
-        1.0,
-    );
-    assert_eq!(
-        projected_slots[0].controls[0].label.as_deref(),
-        Some("Source kind")
-    );
-    let args = view_descriptors[0].repeatable_items_projection(
-        &serde_json::json!({
-            "source": "file",
-            "args": [
-                { "id": "topic", "name": "Topic", "port": "arg_topic" },
-                { "id": "tone", "name": "Tone", "port": "arg_tone" }
-            ]
-        }),
-        "fields.args",
-    );
-    assert_eq!(args[0].slot_key, "field.arg.topic");
-    assert_eq!(args[0].anchor, "field.arg.topic");
-    assert_eq!(args[0].port_key.as_deref(), Some("arg_topic"));
-    assert_eq!(args[1].item_id, "tone");
-    assert!(
-        view_descriptors[0]
-            .action("action.arg.add")
-            .expect("action")
-            .is_enabled()
-    );
-    assert_eq!(
-        view_descriptors[0]
-            .menu("menu.node.public_note")
-            .expect("menu")
-            .action_keys,
-        vec!["action.arg.add"]
-    );
-    assert_eq!(
-        view_descriptors[0]
-            .inspector("inspector.arg.topic")
-            .expect("inspector")
-            .controls[0]
-            .data_key(),
-        Some("name")
-    );
-    assert_eq!(
-        view_descriptors[0]
-            .blackboard("blackboard.public.variables")
-            .expect("blackboard")
-            .collection
-            .key,
-        "variables"
-    );
-    assert_eq!(
-        view_descriptors[0].ports[0].label.as_deref(),
-        Some("Source")
-    );
-    assert_eq!(
-        view_descriptors[0].ports[0].view.side,
-        Some(PortViewSide::Left)
-    );
-    assert_eq!(view_descriptors[0].ports[0].view.order, Some(1));
-    assert_eq!(
-        view_descriptors[0].ports[0].view.anchor.as_deref(),
-        Some("field.source")
-    );
-    assert_eq!(view_descriptors[0].chrome[0].kind, NodeChromeKind::Toolbar);
-    assert_eq!(
-        view_descriptors[0].chrome[0].effective_visibility(),
-        NodeChromeVisibility::Selected
-    );
-    let chrome_facts = chrome::resolve_node_chrome_facts(
-        chrome::NodeChromeFactsRequest::new(
-            NodeId::new(),
+    let frame = view
+        .frame(FrameRequest::new(
             CanvasRect {
                 origin: CanvasPoint::default(),
                 size: CanvasSize {
-                    width: 120.0,
-                    height: 80.0,
+                    width: 800.0,
+                    height: 600.0,
                 },
             },
-            &view_descriptors[0].chrome,
-        )
-        .with_state(chrome::NodeChromeState::selected()),
-    )
-    .expect("public chrome facts");
-    let _: &chrome::NodeChromeFacts = &chrome_facts;
-    let _: &chrome::ResolvedNodeChrome = &chrome_facts.chrome[0];
-    let _: chrome::NodeChromeLayoutPolicy = chrome::NodeChromeLayoutPolicy::default();
-    assert!(
-        node_registry
-            .view_descriptor(&jellyflow_core::core::NodeKindKey::new("public.note"))
-            .is_some()
-    );
-    let node_instantiation = node_registry
-        .instantiate_node(
-            &jellyflow_core::core::NodeKindKey::new("public.note"),
-            CanvasPoint::default(),
-        )
-        .expect("public node instantiation");
-    let _: &NodeInstantiation = &node_instantiation;
-    assert_eq!(
-        node_instantiation.node.kind,
-        jellyflow_core::core::NodeKindKey::new("public.note")
-    );
-    assert_eq!(
-        NodeInstantiationError::MissingSchema(jellyflow_core::core::NodeKindKey::new(
-            "public.missing"
+            RendererStamp::new("public.native", 1),
         ))
-        .to_string(),
-        "node kind schema not found: NodeKindKey(\"public.missing\")"
-    );
-    let _: fn(jellyflow_core::core::NodeKindKey, CanvasPoint) -> create_node::CreateNodeRequest =
-        create_node::CreateNodeRequest::new;
-    let create_node_request = create_node::CreateNodeRequest::new(
-        jellyflow_core::core::NodeKindKey::new("public.note"),
-        CanvasPoint::default(),
-    );
-    let mut create_node_store = NodeGraphStore::new(
-        graph.clone(),
-        NodeGraphViewState::default(),
-        NodeGraphEditorConfig::default(),
-    );
-    let create_node_outcome = create_node_store
-        .apply_create_node_from_schema(&node_registry, create_node_request.clone());
-    assert!(create_node_outcome.is_ok());
-    let _: fn(
-        &NodeGraphStore,
-        &NodeRegistry,
-        create_node::CreateNodeRequest,
-    ) -> Result<NodeInstantiation, NodeInstantiationError> =
-        NodeGraphStore::plan_create_node_from_schema;
-    let _: fn(
-        &mut NodeGraphStore,
-        &NodeRegistry,
-        create_node::CreateNodeRequest,
-    ) -> Result<create_node::CreateNodeOutcome, create_node::CreateNodeError> =
-        NodeGraphStore::apply_create_node_from_schema;
-    assert_eq!(
-        create_node_request.kind,
-        jellyflow_core::core::NodeKindKey::new("public.note")
-    );
-    assert_eq!(create_node::CREATE_NODE_TRANSACTION_LABEL, "create node");
+        .expect("frame");
+    let frame_node = frame
+        .nodes()
+        .iter()
+        .find(|candidate| candidate.id() == node)
+        .expect("node frame");
+    let frame_port = frame_node
+        .ports()
+        .iter()
+        .find(|candidate| candidate.id() == port)
+        .expect("port frame");
 
-    let root_patch = NodeGraphPatch::default();
-    let module_patch = commit::NodeGraphPatch::default();
-    assert!(root_patch.is_empty());
-    assert!(module_patch.is_empty());
-
-    let selection_result = selection::SelectionBoxResult::default();
-    assert!(selection_result.is_empty());
-    let _selection_options = selection::SelectionBoxOptions::default();
-    let selection_input = selection::SelectionBoxInput::replace(CanvasRect {
-        origin: CanvasPoint::default(),
-        size: CanvasSize {
-            width: 10.0,
-            height: 10.0,
-        },
-    });
-    let reverse_drag_selection_input = selection::SelectionBoxInput::replace_from_drag(
-        CanvasPoint { x: 10.0, y: 10.0 },
-        CanvasPoint::default(),
-    );
-    assert_eq!(reverse_drag_selection_input.rect, selection_input.rect);
-    let selection_store = NodeGraphStore::new(
-        graph.clone(),
-        NodeGraphViewState::default(),
-        NodeGraphEditorConfig::default(),
-    );
-    let selection_decision = selection::resolve_selection_box(
-        &graph,
-        selection_store.lookups(),
-        selection_store.view_state(),
-        &NodeGraphInteractionState::default(),
-        selection_input,
-    );
-    assert!(selection_decision.result().is_empty());
-    let _selection_modifier = selection::SelectionModifier::Additive;
-    assert!(selection::selection_drag_threshold_met(
-        selection::SelectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0, false),
-    ));
-    let drag_start_selection = selection::resolve_node_drag_start_selection(
-        &graph,
-        &NodeGraphViewState::default(),
-        &NodeGraphInteractionState::default(),
-        selection::NodeDragStartSelectionInput::new(NodeId::new(), false),
-    );
-    assert_eq!(
-        drag_start_selection,
-        selection::NodeDragStartSelectionAction::Unchanged
-    );
-
-    let _drag_request = drag::NodeDragRequest {
-        node: NodeId::new(),
-        to: CanvasPoint::default(),
-    };
-    let _layout_request = layout::LayoutRequest::all();
-    let _layout_context = layout::LayoutContext::new();
-    let layout_engine_request = layout::LayoutEngineRequest::dugong(layout::LayoutRequest::all());
-    let preset_layout_engine_request = layout::LayoutPresetBuilder::tree().build();
-    let layout_registry = layout::builtin_layout_engine_registry();
-    assert!(
-        layout_registry
-            .get(&layout::LayoutEngineId::dugong())
-            .is_some()
-    );
-    assert!(
-        layout_registry
-            .get(&layout::LayoutEngineId::tidy_tree())
-            .is_some()
-    );
-    assert!(
-        layout_registry
-            .get(&layout::LayoutEngineId::mind_map_radial())
-            .is_some()
-    );
-    assert!(
-        layout_registry
-            .get(&layout::LayoutEngineId::mind_map_freeform())
-            .is_some()
-    );
-    assert!(
-        layout_registry
-            .family(&layout::LayoutFamilyId::mind_map())
-            .is_some()
-    );
-    assert!(
-        layout_registry
-            .metadata(&layout::LayoutEngineId::mind_map_radial())
-            .is_some()
-    );
-    assert_eq!(
-        layout_registry
-            .engines_for_family(&layout::LayoutFamilyId::layered_dag())
-            .count(),
-        2
-    );
-    assert_eq!(
-        layout_registry
-            .engines_for_family(&layout::LayoutFamilyId::mind_map())
-            .count(),
-        2
-    );
-    let _ = layout::DUGONG_LAYOUT_ENGINE_ID;
-    let _ = layout::TIDY_TREE_LAYOUT_ENGINE_ID;
-    let _ = layout::MIND_MAP_RADIAL_LAYOUT_ENGINE_ID;
-    let _ = layout::MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID;
-    let _ = layout::LAYERED_DAG_LAYOUT_FAMILY_ID;
-    let _ = layout::MIND_MAP_LAYOUT_FAMILY_ID;
-    let _ = std::mem::size_of::<layout::LayoutFamilyId>();
-    let _ = std::mem::size_of::<layout::LayoutFamilyMetadata>();
-    let _ = std::mem::size_of::<layout::LayoutEngineMetadata>();
-    let _ = std::mem::size_of::<layout::LayoutEngineCapability>();
-    let _ = std::mem::size_of::<layout::LayoutPresetBuilder>();
-    let _ = std::mem::size_of::<layout::DugongLayoutEngine>();
-    let _ = std::mem::size_of::<layout::TidyTreeLayoutEngine>();
-    let _ = std::mem::size_of::<layout::MindMapRadialLayoutEngine>();
-    let _ = std::mem::size_of::<layout::MindMapFreeformLayoutEngine>();
-    let _ = std::mem::size_of::<layout::LayoutApplyOutcome>();
-    let _ = std::mem::size_of::<layout::LayoutApplyError>();
-    let _ = std::mem::size_of::<layout::DugongLayoutApplyOutcome>();
-    let _ = std::mem::size_of::<layout::DugongLayoutApplyError>();
-    let _: fn(&NodeGraphStore) -> layout::LayoutContext = layout::layout_context_from_store;
-    let _: fn(&NodeGraphStore) -> layout::LayoutContext =
-        NodeGraphStore::layout_context_with_binding_pins;
-    let _: fn(
-        &Graph,
-        &layout::LayoutEngineRequest,
-        &layout::LayoutEngineRegistry,
-        &layout::LayoutContext,
-    ) -> Result<layout::LayoutResult, layout::LayoutError> = layout::plan_layout;
-    let _: fn(
-        &Graph,
-        &layout::LayoutEngineRequest,
-        &layout::LayoutEngineRegistry,
-        &layout::LayoutContext,
-    ) -> Result<GraphTransaction, layout::LayoutError> = layout::layout_transaction;
-    let _ = layout_engine_request;
-    let _ = preset_layout_engine_request;
-    let _binding_query = selection_store.binding_query();
-    let _binding_query_with_options = selection_store.binding_query_with_options(
-        jellyflow_runtime::runtime::binding::BindingQueryOptions::default()
-            .include_hidden(true)
-            .with_fallback_node_size(Some(CanvasSize {
-                width: 10.0,
-                height: 10.0,
-            })),
-    );
-    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingQueryResult>();
-    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBinding>();
-    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::ResolvedBindingEndpoint>();
-    let _ = std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolution>();
-    let _ =
-        std::mem::size_of::<jellyflow_runtime::runtime::binding::BindingEndpointResolutionStatus>();
-    assert!(connection::connection_drag_threshold_met(
-        connection::ConnectionDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
-    ));
-    let from_handle = connection::ConnectionHandleRef::new(
-        NodeId::new(),
-        jellyflow_core::core::PortId::new(),
-        jellyflow_core::core::PortDirection::Out,
-    );
-    let _: Option<connection::ClosestConnectionHandle> =
-        connection::closest_connection_handle(connection::ClosestConnectionHandleInput::new(
-            CanvasPoint::default(),
-            0.0,
-            from_handle,
-            &[],
-        ));
-    assert_eq!(
-        connection::connection_handle_validity(true, false),
-        connection::ConnectionHandleValidity::Invalid
-    );
-    let target_handle = connection::ConnectionTargetHandle::new(
-        connection::ConnectionHandleRef::new(
-            NodeId::new(),
-            jellyflow_core::core::PortId::new(),
-            jellyflow_core::core::PortDirection::In,
-        ),
-        true,
-        true,
-    );
-    let resolved_target =
-        connection::resolve_connection_target(connection::ConnectionTargetInput::new(
-            from_handle,
-            Some(target_handle),
-            NodeGraphConnectionMode::Strict,
-            true,
-        ));
-    let target_candidate = connection::ConnectionTargetCandidate::new(
-        target_handle,
-        CanvasRect {
-            origin: CanvasPoint::default(),
-            size: CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        },
-        geometry::HandleBounds {
-            rect: CanvasRect {
-                origin: CanvasPoint::default(),
-                size: CanvasSize {
-                    width: 10.0,
-                    height: 10.0,
-                },
-            },
-            position: geometry::HandlePosition::Right,
-        },
-    );
-    let target_candidates = [target_candidate];
-    let resolved_target_from_handles = connection::resolve_connection_target_from_handles(
-        connection::ConnectionTargetFromHandlesInput::new(
-            CanvasPoint { x: 5.0, y: 5.0 },
-            10.0,
-            from_handle,
-            &target_candidates,
-            NodeGraphConnectionMode::Strict,
-        ),
-    );
-    let _: Option<connection::ConnectionHandleConnection> = resolved_target.connection;
-    let _: Option<connection::ConnectionHandleConnection> = resolved_target_from_handles.connection;
-    assert_eq!(
-        resolved_target.feedback,
-        connection::ConnectionHandleValidity::Valid
-    );
-    let indicator = connection::resolve_connection_handle_indicator(
-        connection::ConnectionHandleIndicatorInput::new(
-            target_handle.handle,
-            NodeGraphConnectionMode::Strict,
+    let node_bounds = ViewRect::new(ViewPoint::new(80.0, 120.0), ViewSize::new(240.0, 144.0));
+    let port_bounds = ViewRect::new(ViewPoint::new(308.0, 180.0), ViewSize::new(12.0, 12.0));
+    let port_hit_bounds = ViewRect::new(ViewPoint::new(300.0, 172.0), ViewSize::new(28.0, 28.0));
+    let mut layout = frame_node.begin_layout(node_bounds);
+    layout
+        .port_rendered(
+            frame_port.layout_target(),
+            port_bounds,
+            port_hit_bounds,
+            ViewPoint::new(320.0, 186.0),
+            HandlePosition::Right,
         )
-        .with_connection(
-            Some(from_handle),
-            Some(target_handle.handle),
-            resolved_target.feedback,
-        ),
-    );
-    let _: connection::ConnectionHandleIndicator = indicator;
-    assert!(indicator.show_connection_indicator);
-    let connection_start = connection::new_connection_start(
-        from_handle.port,
-        [from_handle.port],
-        NodeGraphConnectionMode::Strict,
-    );
-    let lifecycle = connection::resolve_connection_lifecycle(
-        connection_start.clone(),
-        Some(resolved_target),
-        connection::ConnectionEndIntent::Complete,
-    );
-    assert_eq!(
-        lifecycle.state,
-        connection::ConnectionLifecycleState::Committed
-    );
-    assert!(lifecycle.did_commit());
-    assert_eq!(lifecycle.start, connection_start);
-    let hover_lifecycle =
-        connection::ConnectionLifecycleResult::for_hover(connection_start, Some(resolved_target));
-    assert_eq!(
-        hover_lifecycle.state,
-        connection::ConnectionLifecycleState::HoverValid
-    );
-    let dropped_lifecycle = connection::resolve_connection_lifecycle(
-        connection::new_connection_start(
-            from_handle.port,
-            [from_handle.port],
-            NodeGraphConnectionMode::Strict,
-        ),
-        None,
-        connection::ConnectionEndIntent::DropOnPane {
-            pointer: CanvasPoint { x: 2.0, y: 3.0 },
-            menu: None,
-        },
-    );
-    assert!(dropped_lifecycle.opens_dropped_wire_menu());
-    let _ = std::mem::size_of::<geometry::ResolvedEdgeRouteKind>();
-    let _ = std::mem::size_of::<geometry::EdgeInteractionFacts>();
-    let _ = std::mem::size_of::<geometry::EdgeRouteFacts>();
-    let _ = std::mem::size_of::<connection::ConnectionLifecycleResult>();
-    let _ = std::mem::size_of::<connection::ConnectEdgeRequest>();
-    let _ = std::mem::size_of::<connection::ConnectEdgeError>();
-    let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::connect_edge_transaction;
-    let _: fn(&ConnectPlan, EdgeId) -> Option<GraphTransaction> =
-        connection::connect_edge_transaction_with_edge_id;
-    assert_eq!(connection::CONNECT_EDGE_TRANSACTION_LABEL, "connect edge");
-    let _ = std::mem::size_of::<connection::ReconnectEdgeRequest>();
-    let _ = std::mem::size_of::<connection::ReconnectEdgeError>();
-    let _: fn(&ConnectPlan) -> Option<GraphTransaction> = connection::reconnect_edge_transaction;
-    assert_eq!(
-        connection::RECONNECT_EDGE_TRANSACTION_LABEL,
-        "reconnect edge"
-    );
-    assert!(drag::node_drag_threshold_met(
-        drag::NodeDragActivationInput::new(CanvasPoint { x: 3.0, y: 4.0 }, 4.0),
-    ));
-    assert_eq!(
-        drag::resolve_pointer_gesture_claim(drag::PointerGestureClaimInput::new(
-            CanvasPoint { x: 3.0, y: 4.0 },
-            false,
-            false,
-            false,
-            8.0,
-            4.0,
-        )),
-        drag::PointerGestureClaim::NodeDrag
-    );
-    let _drag_item = drag::NodeDragItem {
-        node: NodeId::new(),
-        from: CanvasPoint::default(),
-        to: CanvasPoint::default(),
-    };
-    let _node_drag_session = gesture::NodeDragSession::new(
-        NodeId::new(),
-        CanvasPoint::default(),
-        CanvasPoint { x: 8.0, y: 8.0 },
-    );
-    let _connection_handle_target = gesture::PointerSessionTarget::ConnectionHandle(from_handle);
-    let _ = std::mem::size_of::<gesture::ConnectEdgeSession>();
-    let _ = std::mem::size_of::<gesture::ConnectSessionOutcome>();
-    let _viewport_drag_pan_session = gesture::ViewportDragPanSession::new(
-        viewport::ViewportGestureContext::idle(),
-        viewport::ViewportDragPanInput::new(
-            viewport::ViewportPointerButton::Left,
-            CanvasPoint { x: 3.0, y: 4.0 },
-        ),
-    );
-    assert_eq!(
-        gesture::PointerSessionClaim::NodeDrag,
-        gesture::PointerSessionClaim::NodeDrag
-    );
-    let _ = std::mem::size_of::<gesture::PointerSessionClaimOutcome>();
-    let _ = std::mem::size_of::<gesture::PointerSessionClaimRejection>();
-    let _: fn(
-        &NodeGraphStore,
-        gesture::PointerSessionClaimInput,
-    ) -> gesture::PointerSessionClaimOutcome = NodeGraphStore::resolve_pointer_session_claim;
-    let measured_handle = measurement::MeasuredHandle::new(
-        from_handle,
-        geometry::HandleBounds {
-            rect: CanvasRect {
-                origin: CanvasPoint::default(),
-                size: CanvasSize {
-                    width: 10.0,
-                    height: 10.0,
-                },
-            },
-            position: geometry::HandlePosition::Right,
-        },
-    );
-    let measured_slot = measurement::MeasuredSurfaceSlot::new(
-        "field.prompt",
-        CanvasRect {
-            origin: CanvasPoint::default(),
-            size: CanvasSize {
-                width: 80.0,
-                height: 24.0,
-            },
-        },
-    );
-    let measured_anchor = measurement::MeasuredSurfaceAnchor::new(
-        "field.prompt.input",
-        CanvasRect {
-            origin: CanvasPoint::default(),
-            size: CanvasSize {
-                width: 10.0,
-                height: 10.0,
-            },
-        },
-        geometry::HandlePosition::Left,
-    )
-    .with_port_key("input");
-    let _node_measurement = measurement::NodeMeasurement::new(NodeId::new())
-        .with_revision(1)
-        .with_size(Some(CanvasSize {
-            width: 100.0,
-            height: 80.0,
-        }))
-        .with_handles([measured_handle])
-        .with_slots([measured_slot])
-        .with_anchors([measured_anchor]);
-    let _node_internals_invalidation = measurement::NodeInternalsInvalidation::one(
-        NodeId::new(),
-        measurement::NodeInternalsInvalidationReason::DataChanged,
-    );
-    assert!(measurement::NodeMeasurementStatus::Fresh { revision: 1 }.is_fresh());
+        .expect("complete port layout");
+    let collector = frame.collector();
+    collector
+        .layout(layout.finish().expect("complete node layout"))
+        .expect("layout");
+    let receipt = view
+        .submit_feedback(collector.finish().expect("feedback"))
+        .expect("submit");
+    assert_eq!(receipt.operations().len(), 1);
+    assert!(receipt.publication().is_some());
+    assert_eq!(view.geometry_snapshot().unwrap().layout_revision(), 1);
+
     assert!(
-        measurement::NodeMeasurementStatus::Dirty {
-            revision: 1,
-            reason: measurement::NodeInternalsInvalidationReason::AdapterRequest,
-        }
-        .is_dirty()
+        view.set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))
+            .unwrap()
     );
-    let _handle_resolution = measurement::NodeHandleMeasurementResolution {
-        handle: from_handle,
-        bounds: None,
-        source: measurement::NodeHandleMeasurementSource::Fallback {
-            reason: measurement::NodeHandleFallbackReason::MissingMeasurement,
-        },
-        status: measurement::NodeMeasurementStatus::Missing,
-    };
-    let _ = std::mem::size_of::<measurement::NodeMeasurementOutcome>();
-    let _ = std::mem::size_of::<measurement::NodeMeasurementError>();
-    let _ = std::mem::size_of::<measurement::LayoutEdgePosition>();
-    let _ = std::mem::size_of::<measurement::LayoutNodeMeasurementStatus>();
-    let _ = std::mem::size_of::<measurement::LayoutFactsQueryResult>();
-    let _: fn(
-        &mut NodeGraphStore,
-        measurement::NodeMeasurement,
-    )
-        -> Result<measurement::NodeMeasurementOutcome, measurement::NodeMeasurementError> =
-        NodeGraphStore::report_node_measurement;
-    let _: fn(&mut NodeGraphStore, NodeId) -> measurement::NodeMeasurementOutcome =
-        NodeGraphStore::clear_node_measurement;
-    let _: fn(
-        &mut NodeGraphStore,
-        measurement::NodeInternalsInvalidation,
-    ) -> measurement::NodeMeasurementOutcome = NodeGraphStore::invalidate_node_internals;
-    let _: fn(&NodeGraphStore, NodeId) -> Option<measurement::NodeMeasurement> =
-        NodeGraphStore::node_measurement;
-    let _: fn(&NodeGraphStore, NodeId) -> measurement::NodeMeasurementStatus =
-        NodeGraphStore::node_measurement_status;
-    let _: fn(
-        &NodeGraphStore,
-        connection::ConnectionHandleRef,
-    ) -> measurement::NodeHandleMeasurementResolution =
-        NodeGraphStore::resolve_node_handle_measurement;
-    let _: fn(&NodeGraphStore) -> u64 = NodeGraphStore::layout_facts_revision;
-    let _: fn(&NodeGraphStore, CanvasSize) -> measurement::LayoutFactsQueryResult =
-        NodeGraphStore::layout_facts_query;
-    let _: fn(&NodeGraphStore) -> Vec<connection::ConnectionTargetCandidate> =
-        NodeGraphStore::connection_target_candidates_from_layout_facts;
-    let _: fn(
-        &NodeGraphStore,
-        CanvasPoint,
-        connection::ConnectionHandleRef,
-    ) -> connection::ResolvedConnectionTarget =
-        NodeGraphStore::resolve_connection_target_from_layout_facts;
-    let _: fn(&NodeGraphStore, EdgeId) -> Option<geometry::EdgePosition> =
-        NodeGraphStore::edge_position_from_layout_facts;
-    let _ = std::mem::size_of::<selection::NodePointerDownDecision>();
-    assert_eq!(drag::NODE_DRAG_TRANSACTION_LABEL, "node drag");
-    let _ = std::mem::size_of::<drag::NodeDragPlan>();
-    let resize_request = resize::NodeResizeRequest::new(
-        NodeId::new(),
-        CanvasSize {
-            width: 1.0,
-            height: 1.0,
-        },
-    )
-    .with_constraints(resize::NodeResizeConstraints::unconstrained());
-    let _: resize::NodeResizeRequest = resize_request;
-    let _: resize::NodeResizeRequest =
-        resize_request.with_direction(resize::NodeResizeDirection::BottomRight);
-    let pointer_resize_request = resize::NodePointerResizeRequest::new(
-        NodeId::new(),
-        CanvasPoint { x: 1.0, y: 1.0 },
-        CanvasPoint { x: 2.0, y: 3.0 },
-        resize::NodeResizeDirection::BottomRight,
-    )
-    .with_constraints(resize::NodeResizeConstraints::unconstrained())
-    .with_keep_aspect_ratio(true)
-    .with_axis(resize::NodeResizeAxis::Both);
-    let _: resize::NodePointerResizeRequest = pointer_resize_request;
-    let _: resize::NodeResizeContext = resize::NodeResizeContext::new((0.5, 0.5));
-    let _ = std::mem::size_of::<resize::NodeResizeAxis>();
-    let _ = std::mem::size_of::<resize::NodeResizeDirection>();
-    let _ = std::mem::size_of::<resize::NodeResizeItem>();
-    let _ = std::mem::size_of::<resize::NodeResizePlan>();
-    let _: fn(&Graph, resize::NodeResizeRequest) -> Option<resize::NodeResizePlan> =
-        resize::plan_node_resize;
-    let _: fn(
-        &Graph,
-        resize::NodeResizeContext,
-        resize::NodeResizeRequest,
-    ) -> Option<resize::NodeResizePlan> = resize::plan_node_resize_with_context;
-    let _: fn(&Graph, resize::NodePointerResizeRequest) -> Option<resize::NodeResizePlan> =
-        resize::plan_node_pointer_resize;
-    let _: fn(
-        &Graph,
-        resize::NodeResizeContext,
-        resize::NodePointerResizeRequest,
-    ) -> Option<resize::NodeResizePlan> = resize::plan_node_pointer_resize_with_context;
-    let _: fn(&NodeGraphStore, resize::NodePointerResizeRequest) -> Option<resize::NodeResizePlan> =
-        NodeGraphStore::plan_node_pointer_resize;
-    let _: fn(
-        &mut NodeGraphStore,
-        resize::NodePointerResizeRequest,
-    ) -> Result<Option<DispatchOutcome>, DispatchError> = NodeGraphStore::apply_node_pointer_resize;
-    assert_eq!(resize::NODE_RESIZE_TRANSACTION_LABEL, "node resize");
-    assert_eq!(
-        delete::DELETE_SELECTION_TRANSACTION_LABEL,
-        "delete selection"
+    assert!(
+        !view
+            .set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))
+            .unwrap()
     );
-    let delete_elements = delete::DeleteElements::new([NodeId::new()], [EdgeId::new()]);
-    let _pre_delete =
-        delete::PreDeleteRequest::new(delete_elements.clone(), delete_elements.clone());
-    let _pre_delete_accept = delete::PreDeleteResolution::accept();
-    let _pre_delete_veto = delete::PreDeleteResolution::veto();
-    let _pre_delete_replace =
-        delete::PreDeleteResolution::replace([NodeId::new()], [EdgeId::new()]);
-    let _: fn(&NodeGraphViewState) -> delete::DeleteElements = delete::delete_selection_elements;
-    let _: fn(&jellyflow_runtime::rules::DeletePlan) -> delete::DeleteElements =
-        delete::delete_elements_from_plan;
-    let _: fn(
-        &NodeGraphStore,
-    ) -> Result<Option<delete::PreDeleteRequest>, delete::DeleteSelectionError> =
-        NodeGraphStore::prepare_delete_selection;
-    let _: fn(
-        &mut NodeGraphStore,
-        &delete::PreDeleteRequest,
-        delete::PreDeleteResolution,
-    ) -> Result<Option<DispatchOutcome>, delete::DeleteSelectionError> =
-        NodeGraphStore::apply_pre_delete_resolution;
-    let delete_plan = delete::plan_delete_selection(
-        &graph,
-        &NodeGraphViewState::default(),
-        &NodeGraphInteractionState::default(),
-    );
-    assert!(delete::delete_selection_transaction(&delete_plan).is_none());
-    let _ = std::mem::size_of::<delete::DeleteSelectionError>();
-    let _ = std::mem::size_of::<keyboard::KeyboardIntent>();
-    let _ = std::mem::size_of::<keyboard::KeyboardActionError>();
-    let _ = std::mem::size_of::<keyboard::KeyboardActionOutcome>();
-    let _ = std::mem::size_of::<keyboard::KeyboardDeleteAction>();
 
-    let transform =
-        viewport::ViewportTransform::new(CanvasPoint { x: 1.0, y: 2.0 }, 1.5).expect("viewport");
-    assert_eq!(
-        viewport::resolve_pane_click_distance(viewport::PaneClickDistanceInput::new(3.0, false)),
-        3.0
-    );
-    let panned = viewport::pan_viewport(
-        transform,
-        viewport::ViewportPanRequest::new(CanvasPoint { x: 3.0, y: 6.0 }),
-    )
-    .expect("pan");
-    let zoomed = viewport::zoom_viewport(
-        panned,
-        viewport::ViewportZoomRequest::new(CanvasPoint { x: 24.0, y: 12.0 }, 2.0, 0.5, 4.0),
-    )
-    .expect("zoom");
-    let animation_plan =
-        viewport::plan_viewport_animation_with_options(viewport::ViewportAnimationRequest::new(
-            transform,
-            zoomed,
-            viewport::ViewportAnimationOptions::new(0.25)
-                .with_easing(viewport::ViewportAnimationEasing::Linear),
+    let outcome = runtime
+        .execute(GraphCommand::topology(
+            0,
+            jellyflow_runtime::TopologyEdit::new(),
         ))
-        .expect("viewport animation plan");
-    let animation_frame = animation_plan
-        .frame_at(0.125)
-        .expect("viewport animation frame");
-    assert!(!animation_frame.done);
-    assert_eq!(
-        animation_plan.easing,
-        viewport::ViewportAnimationEasing::Linear
-    );
-    let _ = std::mem::size_of::<viewport::ViewportAnimationEasing>();
-    let _ = std::mem::size_of::<viewport::ViewportAnimationPlan>();
-    let _ = std::mem::size_of::<viewport::ViewportAnimationFrame>();
-    let inertia_plan =
-        viewport::plan_viewport_pan_inertia(viewport::ViewportPanInertiaRequest::new(
-            transform,
-            CanvasPoint { x: 500.0, y: 0.0 },
-            NodeGraphPanInertiaTuning {
-                enabled: true,
-                decay_per_s: 2.0,
-                min_speed: 100.0,
-                max_speed: 1000.0,
-            },
-        ))
-        .expect("pan inertia plan");
-    let inertia_frame = inertia_plan.frame_at(0.25).expect("pan inertia frame");
-    assert!(!inertia_frame.done);
-    let _ = std::mem::size_of::<viewport::ViewportPanInertiaRequest>();
-    let _ = std::mem::size_of::<viewport::ViewportPanInertiaPlan>();
-    let _ = std::mem::size_of::<viewport::ViewportPanInertiaFrame>();
-    let interaction_state = NodeGraphInteractionState::default();
-    let double_click_plan = viewport::resolve_viewport_double_click_zoom(
-        &interaction_state.zoom_interaction(),
-        viewport::ViewportDoubleClickZoomInput::new(
-            transform,
-            CanvasPoint { x: 24.0, y: 12.0 },
-            2.0,
-            0.5,
-            4.0,
-            viewport::ViewportAnimationOptions::new(0.2),
-        ),
-    )
-    .expect("double-click zoom policy");
-    assert_eq!(double_click_plan.from, transform);
-    let _ = std::mem::size_of::<viewport::ViewportDoubleClickZoomInput>();
-    let scroll_intent = viewport::resolve_viewport_scroll_gesture(
-        &interaction_state.pan_interaction(),
-        &interaction_state.zoom_interaction(),
-        viewport::ViewportGestureContext::idle(),
-        viewport::ViewportScrollInput::new(
-            CanvasPoint { x: 3.0, y: 6.0 },
-            CanvasPoint { x: 24.0, y: 12.0 },
-            false,
-            2.0,
-            0.5,
-            4.0,
-        ),
-    )
-    .expect("scroll policy");
-    assert_eq!(
-        scroll_intent.move_kind(),
-        events::ViewportMoveKind::ZoomWheel
-    );
-    let drag_state = NodeGraphInteractionState {
-        pan_on_drag: NodeGraphPanOnDragButtons {
-            left: true,
-            middle: false,
-            right: false,
-        },
-        ..NodeGraphInteractionState::default()
-    };
-    let drag_intent = viewport::resolve_viewport_drag_pan_gesture(
-        &drag_state.pan_interaction(),
-        viewport::ViewportGestureContext::idle(),
-        viewport::ViewportDragPanInput::new(
-            viewport::ViewportPointerButton::Left,
-            CanvasPoint { x: 1.0, y: 0.0 },
-        ),
-    )
-    .expect("drag pan policy");
-    assert_eq!(drag_intent.move_kind(), events::ViewportMoveKind::PanDrag);
-    let _ = std::mem::size_of::<viewport::ViewportGestureRejection>();
-    let auto_pan_request = auto_pan::AutoPanRequest::new(
-        auto_pan::AutoPanActivation::Always,
-        CanvasPoint { x: 99.0, y: 40.0 },
-        jellyflow_core::core::CanvasSize {
-            width: 100.0,
-            height: 80.0,
-        },
-        0.016,
-    );
-    let auto_pan_plan = auto_pan::compute_auto_pan(
-        &jellyflow_runtime::io::NodeGraphAutoPanTuning::default(),
-        auto_pan_request,
-    )
-    .expect("auto-pan");
-    let selection_auto_pan_request = auto_pan::SelectionAutoPanRequest::new(
-        CanvasPoint { x: 99.0, y: 40.0 },
-        jellyflow_core::core::CanvasSize {
-            width: 100.0,
-            height: 80.0,
-        },
-        0.016,
-    );
-    let _ = auto_pan::compute_selection_auto_pan(
-        &jellyflow_runtime::io::NodeGraphAutoPanTuning::default(),
-        selection_auto_pan_request,
-    )
-    .expect("selection auto-pan");
-    let _ = auto_pan_plan.viewport_pan_request();
-    let _ = std::mem::size_of::<auto_pan::AutoPanOutcome>();
-    let _: fn(
-        &mut NodeGraphStore,
-        auto_pan::SelectionAutoPanRequest,
-    ) -> Option<auto_pan::AutoPanOutcome> = NodeGraphStore::apply_selection_auto_pan;
-
-    let drag_start = events::NodeDragStart {
-        primary: NodeId::new(),
-        nodes: Vec::new(),
-        pointer: CanvasPoint::default(),
-    };
-    let drag_update = events::NodeDragUpdate {
-        primary: drag_start.primary,
-        nodes: drag_start.nodes.clone(),
-        pointer: drag_start.pointer,
-    };
-    let _drag_end = events::NodeDragEnd {
-        primary: drag_start.primary,
-        nodes: drag_start.nodes,
-        pointer: drag_update.pointer,
-        outcome: events::NodeDragEndOutcome::NoOp,
-    };
-    let _gesture = events::NodeGraphGestureEvent::NodeDragUpdate(drag_update);
-    let resize_start = events::NodeResizeStart {
-        node: NodeId::new(),
-        direction: resize::NodeResizeDirection::BottomRight,
-        pointer: CanvasPoint::default(),
-    };
-    let resize_update = events::NodeResizeUpdate {
-        node: resize_start.node,
-        direction: resize_start.direction,
-        pointer: CanvasPoint { x: 2.0, y: 3.0 },
-        position: CanvasPoint::default(),
-        size: CanvasSize {
-            width: 4.0,
-            height: 5.0,
-        },
-    };
-    let resize_end = events::NodeResizeEnd {
-        node: resize_start.node,
-        direction: resize_start.direction,
-        pointer: resize_update.pointer,
-        outcome: events::NodeResizeEndOutcome::Committed,
-    };
-    let _resize_start_event = events::NodeGraphGestureEvent::NodeResizeStart(resize_start.clone());
-    let _resize_update_event =
-        events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
-    let _resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
-
-    let mut module_store = store::NodeGraphStore::new(
-        graph.clone(),
-        NodeGraphViewState::default(),
-        NodeGraphEditorConfig::default(),
-    );
-    let _ = std::mem::size_of::<events::NodeGraphStoreEvent<'_>>();
-    let _ = std::mem::size_of::<events::NodeGraphStoreSnapshot<'_>>();
-    let _ = std::mem::size_of::<events::SubscriptionToken>();
-    let _revision_token = module_store.subscribe_selector(
-        |snapshot| (snapshot.graph_revision, snapshot.layout_facts_revision),
-        |_| {},
-    );
-    let _rendering_token =
-        module_store.subscribe_selector(|snapshot| snapshot.view_state.zoom.to_bits(), |_| {});
-    let _: fn(&NodeGraphStore) -> u64 = NodeGraphStore::graph_revision;
-    let _: fn(&NodeGraphStore) -> Vec<GroupId> = NodeGraphStore::group_render_order;
-    let _: fn(&NodeGraphStore) -> Vec<NodeId> = NodeGraphStore::node_render_order;
-    let _: fn(&NodeGraphStore) -> Vec<EdgeId> = NodeGraphStore::edge_render_order;
-    let _ = std::mem::size_of::<rendering::RenderingQueryResult>();
-    let query = module_store.rendering_query(CanvasSize {
-        width: 100.0,
-        height: 80.0,
-    });
-    assert!(query.group_order.is_empty());
-    assert!(query.node_order.is_empty());
-    assert!(query.edge_order.is_empty());
-    assert!(query.visible_node_ids.is_empty());
-    assert!(query.visible_node_render_order.is_empty());
-    assert!(query.visible_edge_ids.is_empty());
-    assert!(query.visible_edge_render_order.is_empty());
-    let changes = xyflow::NodeGraphChanges::from_patch(&root_patch);
-    assert!(changes.is_empty());
-    let _ = std::mem::size_of::<xyflow::XyFlowNodeElement>();
-    let _ = std::mem::size_of::<xyflow::XyFlowEdgeElement>();
-    let _ = std::mem::size_of::<xyflow::XyFlowNodeChange>();
-    let _ = std::mem::size_of::<xyflow::XyFlowEdgeChange>();
-    let _ = std::mem::size_of::<xyflow::XyFlowDimensionAttribute>();
-    let _ = std::mem::size_of::<xyflow::XyFlowDimensionsSetAttributes>();
-    let _: fn(
-        &[xyflow::XyFlowNodeChange],
-        &[xyflow::XyFlowNodeElement],
-    ) -> Vec<xyflow::XyFlowNodeElement> = xyflow::apply_xyflow_node_changes;
-    let _: fn(
-        &[xyflow::XyFlowEdgeChange],
-        &[xyflow::XyFlowEdgeElement],
-    ) -> Vec<xyflow::XyFlowEdgeElement> = xyflow::apply_xyflow_edge_changes;
-    let _ = std::mem::size_of::<xyflow::NodeDragUpdate>();
-    let _ = std::mem::size_of::<xyflow::NodeResizeStart>();
-    let _ = std::mem::size_of::<xyflow::NodeResizeUpdate>();
-    let _ = std::mem::size_of::<xyflow::NodeResizeEnd>();
-    let _ = std::mem::size_of::<xyflow::NodeResizeEndOutcome>();
+        .expect("noop command");
+    assert!(outcome.applied().is_none());
 }
 
 #[test]
-fn conformance_module_exposes_serde_friendly_headless_fixture_vocabulary() {
-    let graph = Graph::new(GraphId::new());
-    let node_id = NodeId::new();
-    let target = CanvasPoint { x: 32.0, y: 16.0 };
-    let drag_start = events::NodeDragStart {
-        primary: node_id,
-        nodes: vec![node_id],
-        pointer: CanvasPoint { x: 1.0, y: 2.0 },
-    };
-    let resize_start = events::NodeResizeStart {
-        node: node_id,
-        direction: resize::NodeResizeDirection::BottomRight,
-        pointer: CanvasPoint { x: 1.0, y: 1.0 },
-    };
-    let resize_update = events::NodeResizeUpdate {
-        node: node_id,
-        direction: resize::NodeResizeDirection::BottomRight,
-        pointer: CanvasPoint { x: 2.0, y: 3.0 },
-        position: CanvasPoint::default(),
-        size: CanvasSize {
-            width: 2.0,
-            height: 3.0,
-        },
-    };
-    let resize_end = events::NodeResizeEnd {
-        node: node_id,
-        direction: resize::NodeResizeDirection::BottomRight,
-        pointer: resize_update.pointer,
-        outcome: events::NodeResizeEndOutcome::Committed,
-    };
-    let resize_start_event = events::NodeGraphGestureEvent::NodeResizeStart(resize_start.clone());
-    let resize_update_event =
-        events::NodeGraphGestureEvent::NodeResizeUpdate(resize_update.clone());
-    let resize_end_event = events::NodeGraphGestureEvent::NodeResizeEnd(resize_end.clone());
-    let viewport_scroll_action = conformance::ConformanceAction::apply_viewport_scroll_gesture(
-        viewport::ViewportGestureContext::idle(),
-        viewport::ViewportScrollInput::new(
-            CanvasPoint { x: 1.0, y: 2.0 },
-            CanvasPoint { x: 4.0, y: 5.0 },
-            false,
-            1.25,
-            0.5,
-            4.0,
+fn replace_node_ports_declares_retained_and_new_port_ids() {
+    let (_graph, node, retained_port) = graph_with_one_port();
+    let new_port = PortId::from_u128(0x504);
+    let command = GraphCommand::topology(
+        0,
+        TopologyEdit::new().replace_node_ports(
+            node,
+            [
+                TopologyPort::new(
+                    retained_port,
+                    public_port(node, "output", PortDirection::Out),
+                ),
+                TopologyPort::new(new_port, public_port(node, "input", PortDirection::In)),
+            ],
+            IncidentEdgePolicy::Reject,
         ),
     );
-    let viewport_reject_action =
-        conformance::ConformanceAction::expect_viewport_drag_pan_gesture_rejected(
-            viewport::ViewportGestureContext {
-                connection_in_progress: true,
-                ..viewport::ViewportGestureContext::idle()
-            },
-            viewport::ViewportDragPanInput::new(
-                viewport::ViewportPointerButton::Right,
-                CanvasPoint { x: 4.0, y: 5.0 },
-            ),
-            viewport::ViewportGestureRejection::ConnectionInProgress,
-        );
-    let auto_pan_action =
-        conformance::ConformanceAction::apply_auto_pan(auto_pan::AutoPanRequest::new(
-            auto_pan::AutoPanActivation::Always,
-            CanvasPoint { x: 99.0, y: 40.0 },
-            CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-            0.016,
-        ));
-    let selection_auto_pan_action = conformance::ConformanceAction::apply_selection_auto_pan(
-        auto_pan::SelectionAutoPanRequest::new(
-            CanvasPoint { x: 99.0, y: 40.0 },
-            CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-            0.016,
-        ),
-    );
-    let viewport_pan_constrained_action =
-        conformance::ConformanceAction::apply_viewport_pan_constrained(
-            viewport::ViewportPanRequest::new(CanvasPoint { x: 20.0, y: -10.0 }),
-            CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        );
-    let viewport_zoom_constrained_action =
-        conformance::ConformanceAction::apply_viewport_zoom_constrained(
-            viewport::ViewportZoomRequest::new(CanvasPoint::default(), 1.5, 0.5, 4.0),
-            CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        );
-    let viewport_animation_action = conformance::ConformanceAction::assert_viewport_animation_frame(
-        viewport::ViewportAnimationRequest::new(
-            viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-            viewport::ViewportTransform::new(CanvasPoint { x: 10.0, y: 0.0 }, 2.0)
-                .expect("viewport"),
-            viewport::ViewportAnimationOptions::new(1.0),
-        ),
-        0.5,
-        viewport::ViewportAnimationFrame {
-            elapsed_seconds: 0.5,
-            progress: 0.5,
-            eased_progress: 0.5,
-            transform: viewport::ViewportTransform::new(CanvasPoint { x: 5.0, y: 0.0 }, 1.5)
-                .expect("viewport"),
-            done: false,
-        },
-    );
-    let apply_viewport_animation_action =
-        conformance::ConformanceAction::apply_viewport_animation_frame(
-            viewport::ViewportAnimationRequest::new(
-                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-                viewport::ViewportTransform::new(CanvasPoint { x: 10.0, y: 0.0 }, 2.0)
-                    .expect("viewport"),
-                viewport::ViewportAnimationOptions::new(1.0),
-            ),
-            0.5,
-        );
-    let apply_viewport_animation_frames_action =
-        conformance::ConformanceAction::apply_viewport_animation_frames(
-            viewport::ViewportAnimationRequest::new(
-                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-                viewport::ViewportTransform::new(CanvasPoint { x: 10.0, y: 0.0 }, 2.0)
-                    .expect("viewport"),
-                viewport::ViewportAnimationOptions::new(1.0),
-            ),
-            [0.5, 1.0],
-        );
-    let rendering_query_action = conformance::ConformanceAction::assert_rendering_query(
-        CanvasSize {
-            width: 100.0,
-            height: 80.0,
-        },
-        rendering::RenderingQueryResult::default(),
-    );
-    let selection_box_input = selection::SelectionBoxInput::replace(CanvasRect {
-        origin: CanvasPoint::default(),
-        size: CanvasSize {
-            width: 10.0,
-            height: 10.0,
-        },
-    });
-    let selection_box_action =
-        conformance::ConformanceAction::apply_selection_box(selection_box_input);
-    let inertia_request = viewport::ViewportPanInertiaRequest::new(
-        viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-        CanvasPoint { x: 500.0, y: 0.0 },
-        NodeGraphPanInertiaTuning {
-            enabled: true,
-            decay_per_s: 2.0,
-            min_speed: 100.0,
-            max_speed: 1000.0,
-        },
-    );
-    let inertia_frame = viewport::plan_viewport_pan_inertia(inertia_request.clone())
-        .expect("inertia plan")
-        .frame_at(0.25)
-        .expect("inertia frame");
-    let apply_viewport_pan_inertia_action =
-        conformance::ConformanceAction::apply_viewport_pan_inertia_frame(
-            inertia_request.clone(),
-            0.25,
-        );
-    let apply_viewport_pan_inertia_frames_action =
-        conformance::ConformanceAction::apply_viewport_pan_inertia_frames(
-            inertia_request.clone(),
-            [0.25, 0.5],
-        );
-    let assert_viewport_pan_inertia_action =
-        conformance::ConformanceAction::assert_viewport_pan_inertia_frame(
-            inertia_request,
-            0.25,
-            inertia_frame,
-        );
-    let expect_viewport_pan_inertia_rejected_action =
-        conformance::ConformanceAction::expect_viewport_pan_inertia_rejected(
-            viewport::ViewportPanInertiaRequest::new(
-                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-                CanvasPoint { x: 50.0, y: 0.0 },
-                NodeGraphPanInertiaTuning {
-                    enabled: true,
-                    decay_per_s: 2.0,
-                    min_speed: 100.0,
-                    max_speed: 1000.0,
-                },
-            ),
-        );
-    let viewport_double_click_action =
-        conformance::ConformanceAction::assert_viewport_double_click_zoom(
-            viewport::ViewportDoubleClickZoomInput::new(
-                viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).expect("viewport"),
-                CanvasPoint { x: 10.0, y: 10.0 },
-                2.0,
-                0.5,
-                4.0,
-                viewport::ViewportAnimationOptions::new(0.2),
-            ),
-            viewport::ViewportAnimationPlan {
-                from: viewport::ViewportTransform::new(CanvasPoint::default(), 1.0)
-                    .expect("viewport"),
-                to: viewport::ViewportTransform::new(CanvasPoint { x: -5.0, y: -5.0 }, 2.0)
-                    .expect("viewport"),
-                duration_seconds: 0.2,
-                easing: viewport::ViewportAnimationEasing::CubicInOut,
-            },
-        );
-    let delete_key_action = conformance::ConformanceAction::apply_delete_selection_for_key(
-        keyboard_types::Code::Backspace,
-    );
-    let node_pointer_down_action =
-        conformance::ConformanceAction::apply_node_pointer_down_expect_claim(
-            node_id,
-            false,
-            CanvasPoint { x: 3.0, y: 4.0 },
-            drag::PointerGestureClaim::NodeDrag,
-        );
-    assert_eq!(node_pointer_down_action.kind(), "apply_node_pointer_down");
-    let assert_node_position_action = conformance::ConformanceAction::assert_node_position(
-        node_id,
-        CanvasPoint { x: 1.0, y: 2.0 },
-    );
-    let source_handle =
-        connection::ConnectionHandleRef::new(node_id, PortId::new(), PortDirection::Out);
-    let target_handle = connection::ConnectionTargetHandle::new(
-        connection::ConnectionHandleRef::new(NodeId::new(), PortId::new(), PortDirection::In),
-        true,
-        true,
-    );
-    let connection_target_input = connection::ConnectionTargetInput::new(
-        source_handle,
-        Some(target_handle),
+
+    let declared = command.declared_footprint();
+
+    assert_eq!(declared.nodes, BTreeSet::from([node]));
+    assert_eq!(declared.ports, BTreeSet::from([retained_port, new_port]));
+}
+
+#[test]
+fn graph_profile_keeps_type_policy_and_structured_connection_diagnostics_public() {
+    let graph_id = GraphId::from_u128(0x551);
+    let source_node = NodeId::from_u128(0x552);
+    let target_node = NodeId::from_u128(0x553);
+    let source_port = PortId::from_u128(0x554);
+    let target_port = PortId::from_u128(0x555);
+    let graph = GraphBuilder::new(graph_id)
+        .with_node(source_node, public_node("public.source", vec![source_port]))
+        .with_node(target_node, public_node("public.target", vec![target_port]))
+        .with_port(
+            source_port,
+            public_port(source_node, "output", PortDirection::Out),
+        )
+        .with_port(
+            target_port,
+            public_port(target_node, "input", PortDirection::In),
+        )
+        .build()
+        .expect("typed public graph fixture");
+    let runtime = GraphRuntime::builder(NodeCatalog::new())
+        .with_profile(Box::new(PublicTypedProfile {
+            source: source_port,
+            target: target_port,
+        }))
+        .build(graph)
+        .expect("profiled runtime");
+    let edit = ConnectionEdit::connect(
+        EdgeId::from_u128(0x556),
+        source_port,
+        target_port,
         NodeGraphConnectionMode::Strict,
-        true,
     );
-    let connection_target_action = conformance::ConformanceAction::assert_connection_target(
-        connection_target_input,
-        connection::ResolvedConnectionTarget {
-            target: Some(target_handle),
-            connection: Some(connection::ConnectionHandleConnection {
-                source: source_handle,
-                target: target_handle.handle,
-            }),
-            is_handle_valid: true,
-            feedback: connection::ConnectionHandleValidity::Valid,
-        },
+
+    let evaluation = runtime.evaluate_connection(edit).expect("evaluation");
+    assert!(!evaluation.is_accept());
+    assert_eq!(evaluation.diagnostics()[0].key, "connect.type_mismatch");
+    assert!(matches!(
+        evaluation.diagnostics()[0].target,
+        DiagnosticTarget::Port { id } if id == target_port
+    ));
+
+    let outcome = runtime
+        .execute(GraphCommand::connection(evaluation.revision(), edit))
+        .expect("connection command");
+    let rejection = outcome.rejection().expect("profile rejection");
+    assert_eq!(
+        rejection.diagnostics()[0].key,
+        evaluation.diagnostics()[0].key
     );
-    let connection_target_candidate = connection::ConnectionTargetCandidate::new(
-        target_handle,
-        CanvasRect {
-            origin: CanvasPoint::default(),
-            size: CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        },
-        geometry::HandleBounds {
-            rect: CanvasRect {
-                origin: CanvasPoint::default(),
-                size: CanvasSize {
-                    width: 10.0,
-                    height: 10.0,
-                },
-            },
-            position: geometry::HandlePosition::Right,
-        },
+    assert_eq!(
+        rejection.diagnostics()[0].message,
+        evaluation.diagnostics()[0].message
     );
-    let connection_target_candidates = [connection_target_candidate];
-    let connection_target_from_handles_action =
-        conformance::ConformanceAction::assert_connection_target_from_handles(
-            connection::ConnectionTargetFromHandlesInput::new(
-                CanvasPoint { x: 5.0, y: 5.0 },
-                10.0,
-                source_handle,
-                &connection_target_candidates,
-                NodeGraphConnectionMode::Strict,
-            ),
-            connection::ResolvedConnectionTarget {
-                target: Some(target_handle),
-                connection: Some(connection::ConnectionHandleConnection {
-                    source: source_handle,
-                    target: target_handle.handle,
-                }),
-                is_handle_valid: true,
-                feedback: connection::ConnectionHandleValidity::Valid,
-            },
-        );
-    let connect_action = conformance::ConformanceAction::apply_connect_edge(
-        connection::ConnectEdgeRequest::new(
-            PortId::new(),
-            PortId::new(),
-            NodeGraphConnectionMode::Strict,
+    assert!(matches!(
+        rejection.diagnostics()[0].target,
+        DiagnosticTarget::Port { id } if id == target_port
+    ));
+}
+
+struct PublicTypedProfile {
+    source: PortId,
+    target: PortId,
+}
+
+impl GraphProfile for PublicTypedProfile {
+    fn type_of_port(&self, _graph: &Graph, port: PortId) -> Option<TypeDesc> {
+        if port == self.source {
+            Some(TypeDesc::String)
+        } else if port == self.target {
+            Some(TypeDesc::Int)
+        } else {
+            None
+        }
+    }
+
+    fn validate_graph(&self, _graph: &Graph) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+}
+
+fn public_node(kind: &str, ports: Vec<PortId>) -> Node {
+    Node {
+        kind: NodeKindKey::new(kind),
+        kind_version: 1,
+        pos: CanvasPoint::default(),
+        origin: None,
+        selectable: None,
+        draggable: None,
+        connectable: None,
+        deletable: None,
+        parent: None,
+        extent: None,
+        expand_parent: None,
+        size: None,
+        hidden: false,
+        collapsed: false,
+        ports,
+        data: serde_json::Value::Null,
+    }
+}
+
+fn public_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
+    Port {
+        node,
+        key: PortKey::new(key),
+        dir,
+        kind: PortKind::Data,
+        capacity: PortCapacity::Multi,
+        connectable: None,
+        connectable_start: None,
+        connectable_end: None,
+        ty: None,
+        data: serde_json::Value::Null,
+    }
+}
+
+#[test]
+fn semantic_catalog_and_layout_planning_are_framework_neutral() {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder("public.value", "Value", "public.value")
+                .category(["Workflow"])
+                .default_size(CanvasSize {
+                    width: 120.0,
+                    height: 72.0,
+                })
+                .port(
+                    NodePortSpec::new(
+                        "value",
+                        PortDirection::Out,
+                        PortKind::Data,
+                        PortCapacity::Multi,
+                    )
+                    .with_presentation(PortPresentationHint::new().with_side(PortSide::Right)),
+                )
+                .build(),
         )
-        .with_edge_id(EdgeId::new()),
-    );
-    let reconnect_action = conformance::ConformanceAction::apply_reconnect_edge(
-        connection::ReconnectEdgeRequest::new(
-            EdgeId::new(),
-            EdgeEndpoint::To,
-            PortId::new(),
-            NodeGraphConnectionMode::Strict,
-        ),
-    );
-    let dispatch_action = conformance::ConformanceAction::dispatch_transaction(
-        GraphTransaction::new().with_label("low-level graph fixture setup"),
-    );
-    let resize_action = conformance::ConformanceAction::apply_node_resize(
-        resize::NodeResizeRequest::new(
-            node_id,
-            CanvasSize {
-                width: 2.0,
-                height: 2.0,
-            },
-        )
-        .with_direction(resize::NodeResizeDirection::BottomRight),
-    );
-    let pointer_resize_action = conformance::ConformanceAction::apply_node_pointer_resize(
-        resize::NodePointerResizeRequest::new(
-            node_id,
-            CanvasPoint { x: 1.0, y: 1.0 },
-            CanvasPoint { x: 2.0, y: 3.0 },
-            resize::NodeResizeDirection::BottomRight,
-        ),
-    );
-    let report_measurement_action = conformance::ConformanceAction::report_node_measurement(
-        measurement::NodeMeasurement::new(node_id).with_size(Some(CanvasSize {
-            width: 2.0,
-            height: 3.0,
-        })),
-    );
-    let assert_layout_facts_action = conformance::ConformanceAction::assert_layout_facts(
-        CanvasSize {
-            width: 100.0,
-            height: 100.0,
-        },
-        conformance::ConformanceLayoutFactsExpectation::new([node_id], Vec::<EdgeId>::new()),
-    );
-    let resize_start_gesture_action =
-        conformance::ConformanceAction::emit_gesture(resize_start_event.clone());
-    let resize_update_gesture_action =
-        conformance::ConformanceAction::emit_gesture(resize_update_event.clone());
-    let resize_end_gesture_action =
-        conformance::ConformanceAction::emit_gesture(resize_end_event.clone());
-    let encoded_fixture_actions = serde_json::to_value([
-        viewport_scroll_action,
-        viewport_reject_action,
-        auto_pan_action,
-        selection_auto_pan_action,
-        viewport_pan_constrained_action,
-        viewport_zoom_constrained_action,
-        viewport_animation_action,
-        apply_viewport_animation_action,
-        apply_viewport_animation_frames_action,
-        rendering_query_action,
-        selection_box_action,
-        apply_viewport_pan_inertia_action,
-        apply_viewport_pan_inertia_frames_action,
-        assert_viewport_pan_inertia_action,
-        expect_viewport_pan_inertia_rejected_action,
-        viewport_double_click_action,
-        delete_key_action,
-        assert_node_position_action,
-        connection_target_action,
-        connection_target_from_handles_action,
-        connect_action,
-        reconnect_action,
-        dispatch_action,
-        resize_action,
-        pointer_resize_action,
-        report_measurement_action,
-        assert_layout_facts_action,
-        resize_start_gesture_action,
-        resize_update_gesture_action,
-        resize_end_gesture_action,
-    ])
-    .expect("serialize fixture actions");
-    assert!(encoded_fixture_actions.is_array());
-    let encoded_resize_trace = serde_json::to_value([
-        conformance::ConformanceTraceEvent::gesture(resize_start_event.clone()),
-        conformance::ConformanceTraceEvent::callback(
-            conformance::ConformanceCallbackEvent::NodeResizeStart(resize_start.clone()),
-        ),
-        conformance::ConformanceTraceEvent::gesture(resize_update_event.clone()),
-        conformance::ConformanceTraceEvent::callback(
-            conformance::ConformanceCallbackEvent::NodeResize(resize_update.clone()),
-        ),
-        conformance::ConformanceTraceEvent::gesture(resize_end_event.clone()),
-        conformance::ConformanceTraceEvent::callback(
-            conformance::ConformanceCallbackEvent::NodeResizeEnd(resize_end),
-        ),
-    ])
-    .expect("serialize resize trace events");
-    assert!(encoded_resize_trace.is_array());
+        .expect("catalog registration");
+    let creation = catalog
+        .instantiate_node(&NodeKindKey::new("public.value"), CanvasPoint::default())
+        .expect("catalog creation");
+    let runtime = GraphRuntime::builder(catalog)
+        .build(Graph::new(GraphId::from_u128(0x601)))
+        .expect("runtime");
+    runtime
+        .execute(creation.into_command(0))
+        .expect("creation command")
+        .applied()
+        .expect("creation applies");
 
-    let scenario = conformance::ConformanceScenario::new("public node drag fixture", graph)
-        .with_view_state(NodeGraphViewState::default())
-        .with_editor_config(NodeGraphEditorConfig::default())
-        .with_xyflow_callbacks()
-        .with_node_drag_session_contract(conformance::ConformanceNodeDragSessionContract::new(
-            node_id,
-            drag_start.pointer,
-            target,
-        ));
+    let graph = runtime.snapshot().unwrap().graph().clone();
+    let request = LayoutEngineRequest::dugong(LayoutRequest::all());
+    let result = builtin_layout_engine_registry()
+        .layout(&graph, &request, &LayoutContext::new())
+        .expect("layout result");
+    let command = layout::layout_result_to_command(1, &graph, &result).expect("layout command");
+    assert_eq!(command.expected_revision(), 1);
 
-    assert_eq!(
-        scenario.schema_version,
-        conformance::CONFORMANCE_FIXTURE_SCHEMA_VERSION,
-    );
-    let scenario_json = serde_json::to_value(&scenario).expect("serialize public scenario");
-    assert_eq!(
-        scenario_json["setup"]["trace"]["record_xyflow_callbacks"],
-        true
-    );
-    assert!(scenario.actions.is_empty());
-    assert_eq!(scenario.behaviors.len(), 1);
-    assert_eq!(scenario.expanded_actions().len(), 1);
-    assert!(!scenario.expanded_expected_trace().is_empty());
-    let selection_box_contract = conformance::ConformanceSelectionBoxContract::new(
-        selection_box_input,
-        [node_id],
-        Vec::<EdgeId>::new(),
-    );
-    let selection_scenario = conformance::ConformanceScenario::new(
-        "public selection box fixture",
-        Graph::new(GraphId::new()),
-    )
-    .with_selection_box_contract(selection_box_contract);
-    assert_eq!(selection_scenario.behaviors.len(), 1);
-    assert_eq!(selection_scenario.expanded_actions().len(), 1);
-    assert!(!selection_scenario.expanded_expected_trace().is_empty());
-    let selection_fixture =
-        serde_json::to_value(&selection_scenario).expect("serialize selection fixture");
-    let selection_decoded: conformance::ConformanceScenario =
-        serde_json::from_value(selection_fixture).expect("deserialize selection fixture");
-    assert_eq!(selection_decoded.behaviors.len(), 1);
-    let delete_selection_contract = conformance::ConformanceDeleteSelectionContract::new(1, 0)
-        .for_key(keyboard_types::Code::Delete)
-        .with_commit_op_kinds(["remove_node"]);
-    let node_pointer_down_contract = conformance::ConformanceNodePointerDownSelectionContract::new(
-        selection::NodePointerDownInput::new(node_id, false, CanvasPoint { x: 3.0, y: 4.0 }),
-        drag::PointerGestureClaim::NodeDrag,
-        [node_id],
-        std::iter::empty::<EdgeId>(),
-    );
-    let node_pointer_down_scenario = conformance::ConformanceScenario::new(
-        "public node pointer down selection fixture",
-        Graph::new(GraphId::new()),
-    )
-    .with_node_pointer_down_selection_contract(node_pointer_down_contract);
-    assert_eq!(node_pointer_down_scenario.behaviors.len(), 1);
-    assert_eq!(node_pointer_down_scenario.expanded_actions().len(), 1);
-    assert!(
-        !node_pointer_down_scenario
-            .expanded_expected_trace()
-            .is_empty()
-    );
-    let node_pointer_down_fixture = serde_json::to_value(&node_pointer_down_scenario)
-        .expect("serialize node pointer down fixture");
-    let node_pointer_down_decoded: conformance::ConformanceScenario =
-        serde_json::from_value(node_pointer_down_fixture)
-            .expect("deserialize node pointer down fixture");
-    assert_eq!(node_pointer_down_decoded.behaviors.len(), 1);
-    let delete_during_drag_contract =
-        conformance::ConformanceDeleteSelectionDuringNodeDragContract::new(
-            events::NodeDragStart {
-                primary: node_id,
-                nodes: vec![node_id],
-                pointer: CanvasPoint { x: 1.0, y: 2.0 },
-            },
-            events::NodeDragEnd {
-                primary: node_id,
-                nodes: vec![node_id],
-                pointer: CanvasPoint { x: 1.0, y: 2.0 },
-                outcome: events::NodeDragEndOutcome::Canceled,
-            },
-            conformance::ConformanceDeleteSelectionContract::new(1, 1)
-                .for_key(keyboard_types::Code::Backspace)
-                .with_disconnected([xyflow::EdgeConnection::new(
-                    EdgeId::new(),
-                    PortId::new(),
-                    PortId::new(),
-                    EdgeKind::Data,
-                )]),
-        );
-    let delete_during_drag_scenario = conformance::ConformanceScenario::new(
-        "public delete during drag fixture",
-        Graph::new(GraphId::new()),
-    )
-    .with_delete_selection_during_node_drag_contract(delete_during_drag_contract);
-    assert_eq!(delete_during_drag_scenario.behaviors.len(), 1);
-    assert_eq!(delete_during_drag_scenario.expanded_actions().len(), 3);
-    assert!(
-        !delete_during_drag_scenario
-            .expanded_expected_trace()
-            .is_empty()
-    );
-    let delete_during_drag_fixture = serde_json::to_value(&delete_during_drag_scenario)
-        .expect("serialize delete during drag fixture");
-    let delete_during_drag_decoded: conformance::ConformanceScenario =
-        serde_json::from_value(delete_during_drag_fixture)
-            .expect("deserialize delete during drag fixture");
-    assert_eq!(delete_during_drag_decoded.behaviors.len(), 1);
-    let delete_scenario = conformance::ConformanceScenario::new(
-        "public delete selection fixture",
-        Graph::new(GraphId::new()),
-    )
-    .with_delete_selection_contract(delete_selection_contract);
-    assert_eq!(delete_scenario.behaviors.len(), 1);
-    assert_eq!(delete_scenario.expanded_actions().len(), 1);
-    assert!(!delete_scenario.expanded_expected_trace().is_empty());
-    let delete_fixture = serde_json::to_value(&delete_scenario).expect("serialize delete fixture");
-    let delete_decoded: conformance::ConformanceScenario =
-        serde_json::from_value(delete_fixture).expect("deserialize delete fixture");
-    assert_eq!(delete_decoded.behaviors.len(), 1);
-    let _ = std::mem::size_of::<conformance::ConformanceBehavior>();
-    let _ = std::mem::size_of::<conformance::ConformanceNodeResizeSessionContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceRenderingQueryContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceSelectionBoxContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceDeleteSelectionDuringNodeDragContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceNodePointerDownSelectionContract>();
-    let _ = std::mem::size_of::<selection::NodePointerDownInput>();
-    let _ = std::mem::size_of::<resize::NodeResizeRequest>();
-    let _ = std::mem::size_of::<resize::NodePointerResizeRequest>();
-    let _ = std::mem::size_of::<drag::NodeNudgeRequest>();
-    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsContract>();
-    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsExpectation>();
-    let _ = std::mem::size_of::<conformance::ConformanceLayoutEdgePosition>();
-    let _ = std::mem::size_of::<conformance::ConformanceEdgeEndpointPosition>();
-    let _ = std::mem::size_of::<conformance::ConformanceLayoutFactsConnectionTargetExpectation>();
-
-    let encoded = serde_json::to_value(&scenario).expect("serialize fixture");
-    let decoded: conformance::ConformanceScenario =
-        serde_json::from_value(encoded.clone()).expect("deserialize fixture");
-    assert_eq!(
-        serde_json::to_value(decoded).expect("reserialize fixture"),
-        encoded,
-    );
-
-    let empty_scenario =
-        conformance::ConformanceScenario::new("public empty fixture", Graph::new(GraphId::new()));
-    let capability_matrix = conformance::ConformanceCapabilityMatrix::for_adapter("public-adapter")
-        .with_claim(conformance::ConformanceCapabilityClaim::full(
-            conformance::ConformanceCapabilityKind::MeasuredAnchors,
-        ))
-        .with_claim(conformance::ConformanceCapabilityClaim::projection(
-            conformance::ConformanceCapabilityKind::LayoutPassMeasurement,
-        ));
-    assert!(capability_matrix.satisfies(
-        conformance::ConformanceCapabilityKind::MeasuredAnchors,
-        conformance::ConformanceSupportLevel::Full,
-    ));
-    assert!(!capability_matrix.satisfies(
-        conformance::ConformanceCapabilityKind::LayoutPassMeasurement,
-        conformance::ConformanceSupportLevel::Full,
-    ));
-    let capability_fixture =
-        serde_json::to_value(&capability_matrix).expect("serialize capability matrix");
-    let capability_decoded: conformance::ConformanceCapabilityMatrix =
-        serde_json::from_value(capability_fixture).expect("deserialize capability matrix");
-    assert_eq!(
-        capability_decoded.level(conformance::ConformanceCapabilityKind::LayoutPassMeasurement),
-        conformance::ConformanceSupportLevel::Projection
-    );
-    let mut suite = conformance::ConformanceSuite::new("public adapter suite")
-        .with_capabilities(capability_decoded);
-    suite.push_scenario(empty_scenario.clone());
-    let suite = suite.with_scenarios([empty_scenario.clone()]);
-    let suite_report = conformance::run_conformance_suite(&suite);
-    assert!(suite_report.is_match(), "{suite_report}");
-    assert_eq!(suite_report.scenario_count(), 1);
-    assert_eq!(suite_report.failed_scenarios(), 0);
-    assert_eq!(
-        suite_report
-            .capabilities
-            .level(conformance::ConformanceCapabilityKind::MeasuredAnchors),
-        conformance::ConformanceSupportLevel::Full
-    );
-
-    let overclaim_suite = conformance::ConformanceSuite::new("overclaim suite")
-        .with_capabilities(conformance::ConformanceCapabilityMatrix::for_adapter(
-            "overclaim-adapter",
-        ))
-        .with_capability_requirement(conformance::ConformanceCapabilityRequirement::new(
-            conformance::ConformanceCapabilityKind::MeasuredAnchors,
-            conformance::ConformanceSupportLevel::Full,
-        ))
-        .with_scenarios([empty_scenario.clone()]);
-    let overclaim_report = conformance::run_conformance_suite(&overclaim_suite);
-    assert!(!overclaim_report.is_match());
-    assert_eq!(overclaim_report.capability_gaps.len(), 1);
-    assert_eq!(
-        overclaim_report.capability_gaps[0].capability,
-        conformance::ConformanceCapabilityKind::MeasuredAnchors
-    );
-
-    let suite_encoded = serde_json::to_value(&suite).expect("serialize suite");
-    let suite_decoded: conformance::ConformanceSuite =
-        serde_json::from_value(suite_encoded.clone()).expect("deserialize suite");
-    assert_eq!(
-        serde_json::to_value(suite_decoded).expect("reserialize suite"),
-        suite_encoded,
-    );
-
-    let suite_path = std::env::temp_dir().join(format!(
-        "jellyflow-public-suite-{}.json",
-        uuid::Uuid::new_v4()
-    ));
-    suite.save_json(&suite_path).expect("save suite json");
-    let loaded_suite =
-        conformance::ConformanceSuite::load_json(&suite_path).expect("load suite json");
-    assert!(loaded_suite.run().is_match());
-    assert!(
-        conformance::ConformanceSuite::load_json_if_exists(&suite_path)
-            .expect("optional suite json")
-            .is_some()
-    );
-    let _ = std::fs::remove_file(&suite_path);
-    assert!(
-        conformance::ConformanceSuite::load_json_if_exists(&suite_path)
-            .expect("missing optional suite json")
-            .is_none()
-    );
-    let _ = std::mem::size_of::<conformance::ConformanceFixtureFileError>();
-    let suite_approval = suite.approve_actual_traces();
-    assert!(suite_approval.is_approvable());
-    let suite_approval_encoded =
-        serde_json::to_value(&suite_approval.report).expect("serialize suite approval report");
-    let suite_approval_decoded: conformance::ConformanceSuiteApprovalReport =
-        serde_json::from_value(suite_approval_encoded).expect("deserialize suite approval report");
-    assert!(suite_approval_decoded.is_approvable());
-
-    let fixture_root = std::env::temp_dir().join(format!(
-        "jellyflow-public-fixtures-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&fixture_root).expect("create fixture root");
-    suite
-        .save_json(fixture_root.join("suite.json"))
-        .expect("save directory suite json");
-    let fixture_directory = conformance::ConformanceFixtureDirectory::load_json(&fixture_root)
-        .expect("load fixture directory");
-    assert_eq!(fixture_directory.file_count(), 1);
-    let file_approval =
-        conformance::ConformanceSuiteFile::load_json(fixture_root.join("suite.json"))
-            .expect("load suite file")
-            .approve_actual_traces_to_json()
-            .expect("approve suite file");
-    assert!(file_approval.is_approvable());
-    let directory_approval = fixture_directory
-        .approve_actual_traces_to_json()
-        .expect("approve fixture directory");
-    assert!(directory_approval.is_approvable());
-    let fixture_report = fixture_directory.run();
-    assert!(fixture_report.is_match());
-    assert_eq!(fixture_report.failed_files(), 0);
-    let fixture_report_encoded =
-        serde_json::to_value(&fixture_report).expect("serialize fixture directory report");
-    let fixture_report_decoded: conformance::ConformanceFixtureDirectoryReport =
-        serde_json::from_value(fixture_report_encoded)
-            .expect("deserialize fixture directory report");
-    assert!(fixture_report_decoded.is_match());
-    assert!(
-        conformance::ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
-            .expect("optional fixture directory")
-            .is_some()
-    );
-    let _ = std::fs::remove_dir_all(&fixture_root);
-    assert!(
-        conformance::ConformanceFixtureDirectory::load_json_if_exists(&fixture_root)
-            .expect("missing optional fixture directory")
-            .is_none()
-    );
-    let _ = std::mem::size_of::<conformance::ConformanceSuiteFile>();
-    let _ = std::mem::size_of::<conformance::ConformanceSuiteFileReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceFixtureDirectoryReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceSuiteApproval>();
-    let _ = std::mem::size_of::<conformance::ConformanceSuiteApprovalReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceScenarioApprovalReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceSuiteFileApprovalReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceFixtureDirectoryApprovalReport>();
-    let _ = std::mem::size_of::<conformance::ConformanceApprovalError>();
+    let transform = viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+    assert!(transform.is_valid());
+    let _ = std::mem::size_of::<FeedbackCollector>();
+    let _ = std::mem::size_of::<NodeLayoutTarget>();
 }

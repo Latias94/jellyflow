@@ -1,13 +1,11 @@
 use dugong::graphlib::{Graph as DugongGraph, GraphOptions};
 use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
-use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphTransaction, NodeId,
-};
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, NodeId};
 
 use crate::engine::{
     DUGONG_LAYOUT_ENGINE_ID, LayoutContext, LayoutDirection, LayoutEdgeRoute, LayoutEngine,
     LayoutEngineId, LayoutError, LayoutNodePosition, LayoutOptions, LayoutRequest, LayoutResult,
-    node_rect_from_position, position_from_center, resolve_node_origin, resolve_node_size,
+    node_rect_from_position, normalized_node_origin, position_from_center, resolve_node_size,
     union_bounds, validate_request,
 };
 
@@ -37,27 +35,11 @@ impl LayoutEngine for DugongLayoutEngine {
         request: &LayoutRequest,
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_dugong_context(graph, request, context)
+        run_dugong_layout(graph, request, context)
     }
 }
 
-/// Runs a Dagre-compatible layout using the `dugong` backend.
-pub fn layout_graph_with_dugong(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_dugong_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs `dugong` and converts the node positions into a Jellyflow transaction.
-pub fn layout_graph_to_transaction_with_dugong(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_dugong(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_dugong_context(
+fn run_dugong_layout(
     graph: &Graph,
     request: &LayoutRequest,
     context: &LayoutContext,
@@ -129,7 +111,7 @@ impl DugongLayoutWorkspace {
                 id: *id,
                 key,
                 size,
-                origin: resolve_node_origin(node.origin, request.options.node_origin, context),
+                origin: normalized_node_origin(node.origin),
             });
         }
 

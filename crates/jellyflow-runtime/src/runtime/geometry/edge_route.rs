@@ -43,7 +43,6 @@ impl From<ResolvedEdgeRouteKind> for EdgeRouteKind {
 pub struct EdgeInteractionFacts {
     pub selectable: bool,
     pub selected: bool,
-    pub focusable: bool,
     pub deletable: bool,
     pub reconnect_source: bool,
     pub reconnect_target: bool,
@@ -114,7 +113,6 @@ pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<E
         interaction: EdgeInteractionFacts {
             selectable: false,
             selected: false,
-            focusable: false,
             deletable: false,
             reconnect_source: false,
             reconnect_target: false,

@@ -4,8 +4,8 @@ use jellyflow_core::{
 };
 
 use crate::{
-    LayoutContext, LayoutEngine, LayoutEngineId, LayoutRequest, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    MindMapRadialLayoutEngine, builtin_layout_engine_registry, layout_graph_with_mind_map_radial,
+    LayoutContext, LayoutEngine, LayoutEngineId, LayoutError, LayoutRequest, LayoutResult,
+    MIND_MAP_RADIAL_LAYOUT_ENGINE_ID, MindMapRadialLayoutEngine, builtin_layout_engine_registry,
 };
 
 #[test]
@@ -21,22 +21,9 @@ fn builtin_registry_contains_mind_map_radial_engine() {
 }
 
 #[test]
-fn wrapper_matches_engine_entry_point() {
-    let (graph, _root, _left, _right, _grandchild) = radial_tree_graph();
-    let request = LayoutRequest::all();
-
-    let wrapper = layout_graph_with_mind_map_radial(&graph, &request).expect("wrapper");
-    let engine = MindMapRadialLayoutEngine
-        .layout(&graph, &request, &LayoutContext::default())
-        .expect("engine");
-
-    assert_eq!(wrapper, engine);
-}
-
-#[test]
 fn layout_places_descendants_on_expanding_rings() {
     let (graph, root, left, right, grandchild) = radial_tree_graph();
-    let result = layout_graph_with_mind_map_radial(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_mind_map_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let root = result.node_position(root).expect("root");
     let left = result.node_position(left).expect("left");
@@ -56,13 +43,20 @@ fn layout_places_descendants_on_expanding_rings() {
 #[test]
 fn layout_separates_disconnected_roots() {
     let (graph, first, second) = disconnected_roots_graph();
-    let result = layout_graph_with_mind_map_radial(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_mind_map_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     let first = result.node_position(first).expect("first");
     let second = result.node_position(second).expect("second");
 
     assert!(distance(first.center, second.center) > 1.0);
     assert!(result.edge_routes.is_empty());
+}
+
+fn run_default_mind_map_layout(
+    graph: &Graph,
+    request: &LayoutRequest,
+) -> Result<LayoutResult, LayoutError> {
+    MindMapRadialLayoutEngine.layout(graph, request, &LayoutContext::default())
 }
 
 fn radial_tree_graph() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
@@ -116,7 +110,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

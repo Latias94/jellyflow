@@ -6,6 +6,47 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the single-view `NodeGraphStore` and portable node UI descriptor stack with an
+  authoritative `GraphRuntime`, independently revocable `ViewSession`s, owned render frames,
+  one-shot ordered feedback, and expected-revision graph commands.
+- Reduced node catalogs to semantic kind, creation, migration, real-port, search, and renderer-key
+  facts. Native controls, focus, IME, menus, popovers, scrolling, accessibility, themes, and local
+  component state now belong to each UI framework and application.
+- Removed the legacy UI DSL, projection and authoring facades, the shaped-data proof crate, the old
+  headless adapter template, duplicate product galleries, and superseded runtime and egui examples.
+- Replaced the version-suffixed graph-file API with the unversioned `GraphFile` facade and advanced the
+  graph-file envelope to V2. Released Jellyflow 0.3 V1 files are intentionally rejected with
+  `UnsupportedEnvelopeVersion` before payload decoding because removed focusability fields are not
+  migrated or silently discarded.
+
+### Added
+
+- Added `jellyflow-open-gpui` as the product-tier retained native adapter with a sealed renderer
+  registry, record-ordered scene host, selective bindings, native measurement, input arbitration,
+  activity leases, accessibility identifiers, revision-aware drafts, and structured connection
+  outcomes.
+- Added multi-view graph fan-out, versioned editor-state seeds, exact graph-file dispatch and scratch
+  migration, atomic save recovery, dynamic topology commands, typed connection queries, incremental
+  geometry and routing, and bounded lifecycle instrumentation to `jellyflow-runtime`.
+- Added the Open GPUI `canvas-jellyflow` product example with Dify-style workflow nodes, dynamic
+  condition branches, Shader Graph and Blueprint nodes, occupied-input reconnect, create-from-wire
+  search, and an application-owned native blackboard.
+- Added a narrow real egui protocol witness and a framework-neutral native-adapter template without
+  introducing a cross-framework widget trait.
+- Added deterministic scale, convergence, 256-entry eligible LRU, 64-instance protected overflow, and
+  1,000-cycle framework-resource release gates.
+
+### Changed
+
+- Made Open GPUI and egui consume the same framework-free graph/view protocol while retaining their
+  own component lifecycles and geometry values.
+- Made dirty workflow and shader drafts externalizable into application-owned stores when protected
+  capacity is exhausted; remount restores exact node identities without replaying pending submits.
+- Updated CI, package validation, external consumer smoke, release ordering, and documentation for
+  the six publishable crates and the nested Open GPUI product workspace.
+
 ## [0.3.0] - 2026-07-07
 
 ### Changed
@@ -107,3 +148,8 @@ adapter boundary, layout extension point, release documentation, and crates.io a
 
 - Fixed CI locked-check failures by committing the workspace lockfile and keeping the root
   `Cargo.lock` unignored.
+
+[Unreleased]: https://github.com/Latias94/jellyflow/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Latias94/jellyflow/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Latias94/jellyflow/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Latias94/jellyflow/releases/tag/v0.1.0

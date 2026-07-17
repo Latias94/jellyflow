@@ -1,9 +1,7 @@
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, btree_map};
-use std::iter::FusedIterator;
 use std::ops::Index;
 
-use serde::{Deserialize, Serialize};
+use rpds::RedBlackTreeMapSync;
 
 use crate::core::ids::{
     BindingId, EdgeId, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
@@ -19,41 +17,41 @@ use super::resources::{Group, StickyNote, Symbol};
 /// Graph schema version (v1).
 pub const GRAPH_VERSION: u32 = 1;
 
+type GraphMap<K, V> = RedBlackTreeMapSync<K, V>;
+type GraphMapIter<'a, K, V> = <&'a GraphMap<K, V> as IntoIterator>::IntoIter;
+
 /// Read-only view over one graph element collection.
 ///
 /// This keeps `Graph`'s public API from committing callers to its storage type while preserving the
 /// common map-like read operations adapters need for deterministic traversal and lookup.
 #[derive(Debug, Clone, Copy)]
-pub struct GraphElements<'a, K, V> {
-    entries: &'a BTreeMap<K, V>,
+pub struct GraphElements<'a, K: Ord, V> {
+    entries: &'a GraphMap<K, V>,
 }
 
 /// Iterator over graph element ids and values.
-#[derive(Debug, Clone)]
-pub struct GraphElementIter<'a, K, V> {
-    inner: btree_map::Iter<'a, K, V>,
+pub struct GraphElementIter<'a, K: Ord, V> {
+    inner: GraphMapIter<'a, K, V>,
 }
 
 /// Iterator over graph element ids.
-#[derive(Debug, Clone)]
-pub struct GraphElementKeys<'a, K, V> {
-    inner: btree_map::Keys<'a, K, V>,
+pub struct GraphElementKeys<'a, K: Ord, V> {
+    inner: GraphElementIter<'a, K, V>,
 }
 
 /// Iterator over graph element values.
-#[derive(Debug, Clone)]
-pub struct GraphElementValues<'a, K, V> {
-    inner: btree_map::Values<'a, K, V>,
+pub struct GraphElementValues<'a, K: Ord, V> {
+    inner: GraphElementIter<'a, K, V>,
 }
 
-impl<'a, K, V> GraphElements<'a, K, V> {
-    pub(crate) fn new(entries: &'a BTreeMap<K, V>) -> Self {
+impl<'a, K: Ord, V> GraphElements<'a, K, V> {
+    pub(crate) fn new(entries: &'a GraphMap<K, V>) -> Self {
         Self { entries }
     }
 
     /// Returns the number of elements.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.size()
     }
 
     /// Returns `true` when this collection has no elements.
@@ -82,22 +80,18 @@ impl<'a, K, V> GraphElements<'a, K, V> {
     /// Returns key-value pairs in deterministic id order.
     pub fn iter(&self) -> GraphElementIter<'a, K, V> {
         GraphElementIter {
-            inner: self.entries.iter(),
+            inner: self.entries.into_iter(),
         }
     }
 
     /// Returns ids in deterministic order.
     pub fn keys(&self) -> GraphElementKeys<'a, K, V> {
-        GraphElementKeys {
-            inner: self.entries.keys(),
-        }
+        GraphElementKeys { inner: self.iter() }
     }
 
     /// Returns element values in deterministic id order.
     pub fn values(&self) -> GraphElementValues<'a, K, V> {
-        GraphElementValues {
-            inner: self.entries.values(),
-        }
+        GraphElementValues { inner: self.iter() }
     }
 }
 
@@ -129,7 +123,7 @@ where
     }
 }
 
-impl<'a, K, V> IntoIterator for GraphElements<'a, K, V> {
+impl<'a, K: Ord, V> IntoIterator for GraphElements<'a, K, V> {
     type Item = (&'a K, &'a V);
     type IntoIter = GraphElementIter<'a, K, V>;
 
@@ -138,7 +132,7 @@ impl<'a, K, V> IntoIterator for GraphElements<'a, K, V> {
     }
 }
 
-impl<'a, K, V> Iterator for GraphElementIter<'a, K, V> {
+impl<'a, K: Ord, V> Iterator for GraphElementIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -150,20 +144,19 @@ impl<'a, K, V> Iterator for GraphElementIter<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for GraphElementIter<'a, K, V> {
+impl<'a, K: Ord, V> DoubleEndedIterator for GraphElementIter<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.inner.next_back()
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for GraphElementIter<'a, K, V> {}
-impl<'a, K, V> FusedIterator for GraphElementIter<'a, K, V> {}
+impl<K: Ord, V> ExactSizeIterator for GraphElementIter<'_, K, V> {}
 
-impl<'a, K, V> Iterator for GraphElementKeys<'a, K, V> {
+impl<'a, K: Ord, V> Iterator for GraphElementKeys<'a, K, V> {
     type Item = &'a K;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(|(key, _)| key)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -171,20 +164,19 @@ impl<'a, K, V> Iterator for GraphElementKeys<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for GraphElementKeys<'a, K, V> {
+impl<'a, K: Ord, V> DoubleEndedIterator for GraphElementKeys<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back()
+        self.inner.next_back().map(|(key, _)| key)
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for GraphElementKeys<'a, K, V> {}
-impl<'a, K, V> FusedIterator for GraphElementKeys<'a, K, V> {}
+impl<K: Ord, V> ExactSizeIterator for GraphElementKeys<'_, K, V> {}
 
-impl<'a, K, V> Iterator for GraphElementValues<'a, K, V> {
+impl<'a, K: Ord, V> Iterator for GraphElementValues<'a, K, V> {
     type Item = &'a V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(|(_, value)| value)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -192,17 +184,33 @@ impl<'a, K, V> Iterator for GraphElementValues<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for GraphElementValues<'a, K, V> {
+impl<'a, K: Ord, V> DoubleEndedIterator for GraphElementValues<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back()
+        self.inner.next_back().map(|(_, value)| value)
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for GraphElementValues<'a, K, V> {}
-impl<'a, K, V> FusedIterator for GraphElementValues<'a, K, V> {}
+impl<K: Ord, V> ExactSizeIterator for GraphElementValues<'_, K, V> {}
 
 /// Node graph document.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Graph` intentionally has no raw serde representation. Persisted documents must cross the
+/// frozen DTO and canonical loading path owned by `jellyflow-runtime`.
+///
+/// ```compile_fail
+/// use jellyflow_core::Graph;
+///
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<Graph>();
+/// ```
+///
+/// ```compile_fail
+/// use jellyflow_core::Graph;
+///
+/// fn require_deserialize<T: for<'de> serde::Deserialize<'de>>() {}
+/// require_deserialize::<Graph>();
+/// ```
+#[derive(Debug, Clone)]
 pub struct Graph {
     /// Stable identity for editor-state lookup and cross-graph references.
     graph_id: GraphId,
@@ -210,36 +218,28 @@ pub struct Graph {
     graph_version: u32,
 
     /// Transitive graph dependencies (semantic subgraphs / libraries).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) imports: BTreeMap<GraphId, GraphImport>,
+    pub(crate) imports: GraphMap<GraphId, GraphImport>,
 
     /// Graph-scoped symbols (blackboard/variables).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) symbols: BTreeMap<SymbolId, Symbol>,
+    pub(crate) symbols: GraphMap<SymbolId, Symbol>,
 
     /// Node instances.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) nodes: BTreeMap<NodeId, Node>,
+    pub(crate) nodes: GraphMap<NodeId, Node>,
 
     /// Port instances (owned by nodes, but stored in a flat map for stable lookup).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) ports: BTreeMap<PortId, Port>,
+    pub(crate) ports: GraphMap<PortId, Port>,
 
     /// Edges between ports.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) edges: BTreeMap<EdgeId, Edge>,
+    pub(crate) edges: GraphMap<EdgeId, Edge>,
 
     /// Optional groups.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) groups: BTreeMap<GroupId, Group>,
+    pub(crate) groups: GraphMap<GroupId, Group>,
 
     /// Optional sticky notes.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) sticky_notes: BTreeMap<StickyNoteId, StickyNote>,
+    pub(crate) sticky_notes: GraphMap<StickyNoteId, StickyNote>,
 
-    /// Optional knowledge-canvas bindings.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) bindings: BTreeMap<BindingId, Binding>,
+    /// Optional graph or external-source bindings.
+    pub(crate) bindings: GraphMap<BindingId, Binding>,
 }
 
 impl Default for Graph {
@@ -254,14 +254,14 @@ impl Graph {
         Self {
             graph_id,
             graph_version: GRAPH_VERSION,
-            imports: BTreeMap::new(),
-            symbols: BTreeMap::new(),
-            nodes: BTreeMap::new(),
-            ports: BTreeMap::new(),
-            edges: BTreeMap::new(),
-            groups: BTreeMap::new(),
-            sticky_notes: BTreeMap::new(),
-            bindings: BTreeMap::new(),
+            imports: GraphMap::new_sync(),
+            symbols: GraphMap::new_sync(),
+            nodes: GraphMap::new_sync(),
+            ports: GraphMap::new_sync(),
+            edges: GraphMap::new_sync(),
+            groups: GraphMap::new_sync(),
+            sticky_notes: GraphMap::new_sync(),
+            bindings: GraphMap::new_sync(),
         }
     }
 
@@ -290,33 +290,24 @@ impl Graph {
         self.imports.get_mut(id)
     }
 
-    /// Updates one graph import through a controlled mutable callback.
-    pub(crate) fn update_import<R>(
-        &mut self,
-        id: &GraphId,
-        f: impl FnOnce(&mut GraphImport) -> R,
-    ) -> Option<R> {
-        self.imports.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a graph import.
     pub(crate) fn insert_import(&mut self, id: GraphId, value: GraphImport) -> Option<GraphImport> {
-        self.imports.insert(id, value)
+        insert_map(&mut self.imports, id, value)
     }
 
     /// Removes a graph import.
     pub(crate) fn remove_import(&mut self, id: &GraphId) -> Option<GraphImport> {
-        self.imports.remove(id)
+        remove_map(&mut self.imports, id)
     }
 
     /// Clears all graph imports.
     pub(crate) fn clear_imports(&mut self) {
-        self.imports.clear();
+        clear_map(&mut self.imports);
     }
 
     /// Retains graph imports matching `f`.
-    pub(crate) fn retain_imports(&mut self, f: impl FnMut(&GraphId, &mut GraphImport) -> bool) {
-        self.imports.retain(f);
+    pub(crate) fn retain_imports(&mut self, mut f: impl FnMut(&GraphId, &mut GraphImport) -> bool) {
+        retain_map(&mut self.imports, &mut f);
     }
 
     /// Returns graph symbols.
@@ -334,33 +325,24 @@ impl Graph {
         self.symbols.get_mut(id)
     }
 
-    /// Updates one symbol through a controlled mutable callback.
-    pub(crate) fn update_symbol<R>(
-        &mut self,
-        id: &SymbolId,
-        f: impl FnOnce(&mut Symbol) -> R,
-    ) -> Option<R> {
-        self.symbols.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a symbol.
     pub(crate) fn insert_symbol(&mut self, id: SymbolId, value: Symbol) -> Option<Symbol> {
-        self.symbols.insert(id, value)
+        insert_map(&mut self.symbols, id, value)
     }
 
     /// Removes a symbol.
     pub(crate) fn remove_symbol(&mut self, id: &SymbolId) -> Option<Symbol> {
-        self.symbols.remove(id)
+        remove_map(&mut self.symbols, id)
     }
 
     /// Clears all graph symbols.
     pub(crate) fn clear_symbols(&mut self) {
-        self.symbols.clear();
+        clear_map(&mut self.symbols);
     }
 
     /// Retains graph symbols matching `f`.
-    pub(crate) fn retain_symbols(&mut self, f: impl FnMut(&SymbolId, &mut Symbol) -> bool) {
-        self.symbols.retain(f);
+    pub(crate) fn retain_symbols(&mut self, mut f: impl FnMut(&SymbolId, &mut Symbol) -> bool) {
+        retain_map(&mut self.symbols, &mut f);
     }
 
     /// Returns graph nodes.
@@ -378,33 +360,24 @@ impl Graph {
         self.nodes.get_mut(id)
     }
 
-    /// Updates one node through a controlled mutable callback.
-    pub(crate) fn update_node<R>(
-        &mut self,
-        id: &NodeId,
-        f: impl FnOnce(&mut Node) -> R,
-    ) -> Option<R> {
-        self.nodes.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a node.
     pub(crate) fn insert_node(&mut self, id: NodeId, value: Node) -> Option<Node> {
-        self.nodes.insert(id, value)
+        insert_map(&mut self.nodes, id, value)
     }
 
     /// Removes a node.
     pub(crate) fn remove_node(&mut self, id: &NodeId) -> Option<Node> {
-        self.nodes.remove(id)
+        remove_map(&mut self.nodes, id)
     }
 
     /// Clears all graph nodes.
     pub(crate) fn clear_nodes(&mut self) {
-        self.nodes.clear();
+        clear_map(&mut self.nodes);
     }
 
     /// Retains graph nodes matching `f`.
-    pub(crate) fn retain_nodes(&mut self, f: impl FnMut(&NodeId, &mut Node) -> bool) {
-        self.nodes.retain(f);
+    pub(crate) fn retain_nodes(&mut self, mut f: impl FnMut(&NodeId, &mut Node) -> bool) {
+        retain_map(&mut self.nodes, &mut f);
     }
 
     /// Returns graph ports.
@@ -422,33 +395,24 @@ impl Graph {
         self.ports.get_mut(id)
     }
 
-    /// Updates one port through a controlled mutable callback.
-    pub(crate) fn update_port<R>(
-        &mut self,
-        id: &PortId,
-        f: impl FnOnce(&mut Port) -> R,
-    ) -> Option<R> {
-        self.ports.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a port.
     pub(crate) fn insert_port(&mut self, id: PortId, value: Port) -> Option<Port> {
-        self.ports.insert(id, value)
+        insert_map(&mut self.ports, id, value)
     }
 
     /// Removes a port.
     pub(crate) fn remove_port(&mut self, id: &PortId) -> Option<Port> {
-        self.ports.remove(id)
+        remove_map(&mut self.ports, id)
     }
 
     /// Clears all graph ports.
     pub(crate) fn clear_ports(&mut self) {
-        self.ports.clear();
+        clear_map(&mut self.ports);
     }
 
     /// Retains graph ports matching `f`.
-    pub(crate) fn retain_ports(&mut self, f: impl FnMut(&PortId, &mut Port) -> bool) {
-        self.ports.retain(f);
+    pub(crate) fn retain_ports(&mut self, mut f: impl FnMut(&PortId, &mut Port) -> bool) {
+        retain_map(&mut self.ports, &mut f);
     }
 
     /// Returns graph edges.
@@ -466,33 +430,24 @@ impl Graph {
         self.edges.get_mut(id)
     }
 
-    /// Updates one edge through a controlled mutable callback.
-    pub(crate) fn update_edge<R>(
-        &mut self,
-        id: &EdgeId,
-        f: impl FnOnce(&mut Edge) -> R,
-    ) -> Option<R> {
-        self.edges.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces an edge.
     pub(crate) fn insert_edge(&mut self, id: EdgeId, value: Edge) -> Option<Edge> {
-        self.edges.insert(id, value)
+        insert_map(&mut self.edges, id, value)
     }
 
     /// Removes an edge.
     pub(crate) fn remove_edge(&mut self, id: &EdgeId) -> Option<Edge> {
-        self.edges.remove(id)
+        remove_map(&mut self.edges, id)
     }
 
     /// Clears all graph edges.
     pub(crate) fn clear_edges(&mut self) {
-        self.edges.clear();
+        clear_map(&mut self.edges);
     }
 
     /// Retains graph edges matching `f`.
-    pub(crate) fn retain_edges(&mut self, f: impl FnMut(&EdgeId, &mut Edge) -> bool) {
-        self.edges.retain(f);
+    pub(crate) fn retain_edges(&mut self, mut f: impl FnMut(&EdgeId, &mut Edge) -> bool) {
+        retain_map(&mut self.edges, &mut f);
     }
 
     /// Returns graph groups.
@@ -510,33 +465,24 @@ impl Graph {
         self.groups.get_mut(id)
     }
 
-    /// Updates one group through a controlled mutable callback.
-    pub(crate) fn update_group<R>(
-        &mut self,
-        id: &GroupId,
-        f: impl FnOnce(&mut Group) -> R,
-    ) -> Option<R> {
-        self.groups.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a group.
     pub(crate) fn insert_group(&mut self, id: GroupId, value: Group) -> Option<Group> {
-        self.groups.insert(id, value)
+        insert_map(&mut self.groups, id, value)
     }
 
     /// Removes a group.
     pub(crate) fn remove_group(&mut self, id: &GroupId) -> Option<Group> {
-        self.groups.remove(id)
+        remove_map(&mut self.groups, id)
     }
 
     /// Clears all graph groups.
     pub(crate) fn clear_groups(&mut self) {
-        self.groups.clear();
+        clear_map(&mut self.groups);
     }
 
     /// Retains graph groups matching `f`.
-    pub(crate) fn retain_groups(&mut self, f: impl FnMut(&GroupId, &mut Group) -> bool) {
-        self.groups.retain(f);
+    pub(crate) fn retain_groups(&mut self, mut f: impl FnMut(&GroupId, &mut Group) -> bool) {
+        retain_map(&mut self.groups, &mut f);
     }
 
     /// Returns sticky notes.
@@ -554,40 +500,31 @@ impl Graph {
         self.sticky_notes.get_mut(id)
     }
 
-    /// Updates one sticky note through a controlled mutable callback.
-    pub(crate) fn update_sticky_note<R>(
-        &mut self,
-        id: &StickyNoteId,
-        f: impl FnOnce(&mut StickyNote) -> R,
-    ) -> Option<R> {
-        self.sticky_notes.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a sticky note.
     pub(crate) fn insert_sticky_note(
         &mut self,
         id: StickyNoteId,
         value: StickyNote,
     ) -> Option<StickyNote> {
-        self.sticky_notes.insert(id, value)
+        insert_map(&mut self.sticky_notes, id, value)
     }
 
     /// Removes a sticky note.
     pub(crate) fn remove_sticky_note(&mut self, id: &StickyNoteId) -> Option<StickyNote> {
-        self.sticky_notes.remove(id)
+        remove_map(&mut self.sticky_notes, id)
     }
 
     /// Clears all sticky notes.
     pub(crate) fn clear_sticky_notes(&mut self) {
-        self.sticky_notes.clear();
+        clear_map(&mut self.sticky_notes);
     }
 
     /// Retains sticky notes matching `f`.
     pub(crate) fn retain_sticky_notes(
         &mut self,
-        f: impl FnMut(&StickyNoteId, &mut StickyNote) -> bool,
+        mut f: impl FnMut(&StickyNoteId, &mut StickyNote) -> bool,
     ) {
-        self.sticky_notes.retain(f);
+        retain_map(&mut self.sticky_notes, &mut f);
     }
 
     /// Returns bindings.
@@ -605,32 +542,64 @@ impl Graph {
         self.bindings.get_mut(id)
     }
 
-    /// Updates one binding through a controlled mutable callback.
-    pub(crate) fn update_binding<R>(
-        &mut self,
-        id: &BindingId,
-        f: impl FnOnce(&mut Binding) -> R,
-    ) -> Option<R> {
-        self.bindings.get_mut(id).map(f)
-    }
-
     /// Inserts or replaces a binding.
     pub(crate) fn insert_binding(&mut self, id: BindingId, value: Binding) -> Option<Binding> {
-        self.bindings.insert(id, value)
+        insert_map(&mut self.bindings, id, value)
     }
 
     /// Removes a binding.
     pub(crate) fn remove_binding(&mut self, id: &BindingId) -> Option<Binding> {
-        self.bindings.remove(id)
+        remove_map(&mut self.bindings, id)
     }
 
     /// Clears all bindings.
     pub(crate) fn clear_bindings(&mut self) {
-        self.bindings.clear();
+        clear_map(&mut self.bindings);
     }
 
     /// Retains bindings matching `f`.
-    pub(crate) fn retain_bindings(&mut self, f: impl FnMut(&BindingId, &mut Binding) -> bool) {
-        self.bindings.retain(f);
+    pub(crate) fn retain_bindings(&mut self, mut f: impl FnMut(&BindingId, &mut Binding) -> bool) {
+        retain_map(&mut self.bindings, &mut f);
     }
+}
+
+fn insert_map<K, V>(map: &mut GraphMap<K, V>, key: K, value: V) -> Option<V>
+where
+    K: Ord,
+    V: Clone,
+{
+    let previous = map.get(&key).cloned();
+    map.insert_mut(key, value);
+    previous
+}
+
+fn remove_map<K, V>(map: &mut GraphMap<K, V>, key: &K) -> Option<V>
+where
+    K: Ord,
+    V: Clone,
+{
+    let previous = map.get(key).cloned();
+    if previous.is_some() {
+        map.remove_mut(key);
+    }
+    previous
+}
+
+fn clear_map<K: Ord, V>(map: &mut GraphMap<K, V>) {
+    *map = GraphMap::new_sync();
+}
+
+fn retain_map<K, V>(map: &mut GraphMap<K, V>, f: &mut impl FnMut(&K, &mut V) -> bool)
+where
+    K: Ord + Clone,
+    V: Clone,
+{
+    let mut retained = GraphMap::new_sync();
+    for (key, value) in map.iter() {
+        let mut value = value.clone();
+        if f(key, &mut value) {
+            retained.insert_mut(key.clone(), value);
+        }
+    }
+    *map = retained;
 }

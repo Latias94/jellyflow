@@ -1,19 +1,28 @@
 use std::collections::BTreeSet;
 
+use crate::graph_kernel::GraphOp;
 use jellyflow_core::core::{Edge, EdgeId, EdgeKind, Graph, PortCapacity, PortId};
-use jellyflow_core::ops::{GraphMutationPlanner, GraphOp};
 
+use crate::rules::validate_delete_edge_policy;
+use crate::runtime::policy::GraphRuntimePolicy;
+
+use super::ConnectionPlanningContext;
 use super::endpoints::ConnectionEndpoints;
+use super::rejections::reject_missing_edge;
 
-pub(super) fn disconnect_for_endpoint_capacity(
+pub(in crate::rules::connection) fn disconnect_for_endpoint_capacity_using(
+    query: &mut dyn ConnectionPlanningContext,
     graph: &Graph,
     endpoints: &ConnectionEndpoints<'_>,
     skip_edge: Option<EdgeId>,
-) -> Vec<GraphOp> {
-    disconnect_for_capacity(
+    policy: &GraphRuntimePolicy,
+) -> Result<Vec<GraphOp>, crate::rules::ConnectPlan> {
+    disconnect_for_capacity_using(
+        query,
         graph,
         ConnectionCapacity::from_endpoints(endpoints),
         skip_edge,
+        policy,
     )
 }
 
@@ -54,28 +63,34 @@ impl ConnectionCapacity {
     }
 }
 
-fn disconnect_for_capacity(
+fn disconnect_for_capacity_using(
+    query: &mut dyn ConnectionPlanningContext,
     graph: &Graph,
     connection: ConnectionCapacity,
     skip_edge: Option<EdgeId>,
-) -> Vec<GraphOp> {
+    policy: &GraphRuntimePolicy,
+) -> Result<Vec<GraphOp>, crate::rules::ConnectPlan> {
     let mut plan = CapacityDisconnectPlan::new();
     plan.extend_endpoint(
+        query,
         graph,
         connection.edge_kind,
         CapacityEndpoint::Source(connection.from_id),
         connection.from_capacity,
         skip_edge,
-    );
+        policy,
+    )?;
     plan.extend_endpoint(
+        query,
         graph,
         connection.edge_kind,
         CapacityEndpoint::Target(connection.to_id),
         connection.to_capacity,
         skip_edge,
-    );
+        policy,
+    )?;
 
-    plan.into_ops()
+    Ok(plan.into_ops())
 }
 
 #[derive(Clone, Copy)]
@@ -99,30 +114,48 @@ impl CapacityDisconnectPlan {
 
     fn extend_endpoint(
         &mut self,
+        query: &mut dyn ConnectionPlanningContext,
         graph: &Graph,
         edge_kind: EdgeKind,
         endpoint: CapacityEndpoint,
         capacity: PortCapacity,
         skip_edge: Option<EdgeId>,
-    ) {
+        policy: &GraphRuntimePolicy,
+    ) -> Result<(), crate::rules::ConnectPlan> {
         if capacity != PortCapacity::Single {
-            return;
+            return Ok(());
         }
 
-        for (edge_id, edge) in graph.edges().iter() {
-            if Some(*edge_id) == skip_edge {
+        for edge_id in query.incident_edge_ids(graph, endpoint.port()) {
+            if Some(edge_id) == skip_edge {
                 continue;
             }
+            let Some(edge) = graph.edge(&edge_id) else {
+                return Err(reject_missing_edge(edge_id));
+            };
             if endpoint.matches(edge_kind, edge) {
-                self.push_remove_edge(graph, *edge_id);
+                self.push_remove_edge(query, graph, edge_id, policy)?;
             }
         }
+        Ok(())
     }
 
-    fn push_remove_edge(&mut self, graph: &Graph, edge_id: EdgeId) {
+    fn push_remove_edge(
+        &mut self,
+        query: &mut dyn ConnectionPlanningContext,
+        graph: &Graph,
+        edge_id: EdgeId,
+        policy: &GraphRuntimePolicy,
+    ) -> Result<(), crate::rules::ConnectPlan> {
         if self.removed_edges.insert(edge_id) {
-            self.ops.push(remove_edge_op(graph, edge_id));
+            if let Some(diagnostic) = validate_delete_edge_policy(graph, edge_id, policy) {
+                return Err(crate::rules::ConnectPlan::reject_with_diagnostic(
+                    diagnostic,
+                ));
+            }
+            self.ops.push(query.remove_edge_op(graph, edge_id)?);
         }
+        Ok(())
     }
 
     fn into_ops(self) -> Vec<GraphOp> {
@@ -131,6 +164,12 @@ impl CapacityDisconnectPlan {
 }
 
 impl CapacityEndpoint {
+    fn port(self) -> PortId {
+        match self {
+            Self::Source(port) | Self::Target(port) => port,
+        }
+    }
+
     fn matches(self, edge_kind: EdgeKind, edge: &Edge) -> bool {
         if edge.kind != edge_kind {
             return false;
@@ -140,42 +179,5 @@ impl CapacityEndpoint {
             Self::Source(port) => edge.from == port,
             Self::Target(port) => edge.to == port,
         }
-    }
-}
-
-fn remove_edge_op(graph: &Graph, edge_id: EdgeId) -> GraphOp {
-    GraphMutationPlanner::new(graph)
-        .remove_edge_op(edge_id)
-        .expect("edge id came from the current graph")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::rules::connection::common::edge_between;
-    use jellyflow_core::core::GraphBuilder;
-
-    #[test]
-    fn capacity_disconnects_deduplicate_edges_matching_both_endpoints() {
-        let mut graph = GraphBuilder::default();
-        let port_id = PortId::from_u128(1);
-        let edge_id = EdgeId::from_u128(2);
-        graph.insert_edge(edge_id, edge_between(EdgeKind::Data, port_id, port_id));
-        let graph = graph.build_unchecked();
-
-        let ops = disconnect_for_capacity(
-            &graph,
-            ConnectionCapacity::new(
-                EdgeKind::Data,
-                port_id,
-                PortCapacity::Single,
-                port_id,
-                PortCapacity::Single,
-            ),
-            None,
-        );
-
-        assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], GraphOp::RemoveEdge { id, .. } if id == edge_id));
     }
 }

@@ -1,12 +1,12 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, Graph, GraphTransaction, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, Graph, NodeId};
 
 use crate::engine::{
     LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
     LayoutOptions, LayoutRequest, LayoutResult, MIND_MAP_FREEFORM_LAYOUT_ENGINE_ID,
-    node_rect_from_position, position_from_center, resolve_node_origin, resolve_node_size,
+    node_rect_from_position, normalized_node_origin, position_from_center, resolve_node_size,
     validate_request,
 };
 use crate::projection::{
@@ -28,27 +28,11 @@ impl LayoutEngine for MindMapFreeformLayoutEngine {
         request: &LayoutRequest,
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_mind_map_freeform_context(graph, request, context)
+        run_mind_map_freeform_layout(graph, request, context)
     }
 }
 
-/// Runs the native freeform mind-map engine.
-pub fn layout_graph_with_mind_map_freeform(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_mind_map_freeform_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs the native freeform mind-map engine and converts the result into a transaction.
-pub fn layout_graph_to_transaction_with_mind_map_freeform(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_mind_map_freeform(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_mind_map_freeform_context(
+fn run_mind_map_freeform_layout(
     graph: &Graph,
     request: &LayoutRequest,
     context: &LayoutContext,
@@ -91,7 +75,7 @@ impl<'a> FreeformProjection<'a> {
             }
 
             let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = resolve_node_origin(node.origin, request.options.node_origin, context);
+            let origin = normalized_node_origin(node.origin);
             let current_center = center_from_position(node.pos, size, origin);
 
             node_infos.insert(

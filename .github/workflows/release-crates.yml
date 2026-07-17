@@ -1,60 +1,133 @@
 name: Release Crates (crates.io)
 
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag to publish, for example v0.1.0"
-        required: true
-        type: string
-      source_ref:
-        description: "Git ref to publish from"
-        required: true
-        default: "main"
-        type: string
+  repository_dispatch:
+    types: [release-crates]
 
 permissions:
+  actions: read
   contents: read
+
+concurrency:
+  group: crates-io-release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  GH_HTTP_TIMEOUT: "120"
 
 jobs:
-  publish:
+  resolve:
+    name: resolve-and-guard-source
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      tag_oid: ${{ steps.source.outputs.tag_oid }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Read version from tag
+        id: release
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.client_payload.release_tag }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_EVENT_NAME" != "repository_dispatch" ]; then
+            echo "::error::Crate publication must be triggered by the release-crates repository dispatch."
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '$RELEASE_TAG' must look like v0.1.0 or v0.1.0-alpha.1."
+            exit 1
+          fi
+          if [[ ! "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The default-branch workflow SHA is not a full Git commit SHA."
+            exit 1
+          fi
+
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Guard release source
+        id: source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null
+          timeout --signal=TERM --kill-after=10s 120s \
+            git fetch --force --no-tags origin \
+              "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/release-default" \
+              "+refs/tags/$RELEASE_TAG:refs/release-tags/$RELEASE_TAG"
+          trusted_workflow_commit="$(git rev-parse "$TRUSTED_WORKFLOW_SHA^{commit}")"
+          checkout_sha="$(git rev-parse "HEAD^{commit}")"
+          tag_oid="$(git rev-parse "refs/release-tags/$RELEASE_TAG")"
+          source_sha="$(git rev-parse "refs/release-tags/$RELEASE_TAG^{commit}")"
+          if [ "$trusted_workflow_commit" != "$checkout_sha" ]; then
+            echo "::error::Checked out '$checkout_sha', but repository dispatch selected '$trusted_workflow_commit'."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" refs/remotes/origin/release-default; then
+            echo "::error::Trusted workflow commit $TRUSTED_WORKFLOW_SHA is not reachable from origin/$DEFAULT_BRANCH."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$source_sha" "$TRUSTED_WORKFLOW_SHA"; then
+            echo "::error::Release tag $RELEASE_TAG at $source_sha is newer than or unrelated to trusted default-branch commit $TRUSTED_WORKFLOW_SHA."
+            exit 1
+          fi
+          {
+            echo "sha=$source_sha"
+            echo "tag_oid=$tag_oid"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require protected default branch and successful CI
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: bash scripts/verify-release-source-trust.sh
+
+  preflight:
+    name: release-preflight
+    needs: resolve
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.source_sha }}
+      version: ${{ needs.resolve.outputs.version }}
+
+  publish:
+    needs:
+      - resolve
+      - preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
     environment: crates.io
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
-
-      - name: Read version from tag
-        id: version
-        env:
-          RELEASE_TAG_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            release_tag="$RELEASE_TAG_INPUT"
-          else
-            release_tag="${GITHUB_REF_NAME}"
-          fi
-
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tag '$release_tag' must look like v0.1.0 or v0.1.0-alpha.1."
-            exit 1
-          fi
-
-          version="${release_tag#v}"
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Tag version: $version"
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.source_sha }}
 
       - name: Verify release versions
-        run: python3 scripts/release-version.py check --version "${{ steps.version.outputs.version }}"
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: python3 scripts/release-version.py check --version "$RELEASE_VERSION"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -68,39 +141,48 @@ jobs:
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TAG_OID: ${{ needs.resolve.outputs.tag_oid }}
         run: |
           set -euo pipefail
           version="$RELEASE_VERSION"
+
+          mapfile -t crates < scripts/release-crates.txt
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::The ordered release crate set is empty."
+            exit 1
+          fi
+
+          candidate_root="${RUNNER_TEMP:?}/release-candidates"
+          published_root="${RUNNER_TEMP:?}/published-archives"
+          mkdir -p "$candidate_root" "$published_root"
+          PREPARED_ARCHIVE=""
+
+          assert_release_tag_unchanged() {
+            RELEASE_STAGE=publication bash scripts/verify-release-tag-unchanged.sh
+          }
 
           crate_version_available() {
             local crate="$1"
             local crate_version="$2"
             local tmpdir="${RUNNER_TEMP:-/tmp}"
+            local status
 
             (
               cd "$tmpdir"
-              cargo info "$crate@$crate_version" --registry crates-io >/dev/null 2>&1
+              if timeout --signal=TERM --kill-after=10s 120s \
+                cargo info "$crate@$crate_version" --registry crates-io >/dev/null 2>&1; then
+                exit 0
+              else
+                status=$?
+              fi
+              if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+                echo "::warning::Timed out checking crates.io for $crate $crate_version."
+              fi
+              exit "$status"
             )
-          }
-
-          wait_for_crate_version() {
-            local crate="$1"
-            local crate_version="$2"
-
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              if crate_version_available "$crate" "$crate_version"; then
-                echo "$crate $crate_version is visible in crates.io"
-                return 0
-              fi
-
-              if [ "$attempt" = 12 ]; then
-                echo "::error::$crate $crate_version was published but did not become visible in crates.io in time."
-                return 1
-              fi
-
-              sleep 15
-            done
           }
 
           workspace_crate_version() {
@@ -109,47 +191,331 @@ jobs:
             python3 scripts/release-version.py crate-version --crate "$crate"
           }
 
+          prepare_candidate_archive() {
+            local crate="$1"
+            local crate_version="$2"
+            local target_dir="$candidate_root/$crate"
+            local archive="$target_dir/package/$crate-$crate_version.crate"
+
+            mkdir -p "$target_dir"
+            echo "Assembling candidate archive for $crate $crate_version"
+            timeout --signal=TERM --kill-after=10s 900s \
+              cargo package --locked --no-verify --target-dir "$target_dir" -p "$crate"
+            if [ ! -f "$archive" ]; then
+              echo "::error::Cargo did not produce expected candidate archive $archive"
+              return 1
+            fi
+            PREPARED_ARCHIVE="$archive"
+          }
+
+          download_published_archive() {
+            local crate="$1"
+            local crate_version="$2"
+            local archive="$published_root/$crate-$crate_version.crate"
+
+            rm -f "$archive"
+            if ! curl --fail --location --retry 5 --retry-all-errors --retry-max-time 180 \
+              --connect-timeout 10 --max-time 120 --silent --show-error \
+              --user-agent "jellyflow-release-workflow/$crate_version (+https://github.com/Latias94/jellyflow)" \
+              --output "$archive" \
+              "https://crates.io/api/v1/crates/$crate/$crate_version/download"; then
+              return 1
+            fi
+            printf '%s\n' "$archive"
+          }
+
+          verify_published_archive() {
+            local crate="$1"
+            local crate_version="$2"
+            local candidate_archive="$3"
+            local published_archive
+            local candidate_sha
+            local published_sha
+
+            if ! published_archive="$(download_published_archive "$crate" "$crate_version")"; then
+              echo "::warning::The crates.io index exposes $crate $crate_version, but its archive is not downloadable yet; retrying."
+              return 2
+            fi
+            if ! candidate_sha="$(sha256sum "$candidate_archive" | awk '{print $1}')"; then
+              echo "::error::Unable to hash candidate archive $candidate_archive"
+              return 1
+            fi
+            if ! published_sha="$(sha256sum "$published_archive" | awk '{print $1}')"; then
+              echo "::error::Unable to hash downloaded crates.io archive $published_archive"
+              return 1
+            fi
+            if [ "$candidate_sha" != "$published_sha" ]; then
+              echo "::error::Published archive for $crate $crate_version differs from the candidate archive ($published_sha != $candidate_sha). Bump the crate version before publishing."
+              return 1
+            fi
+            echo "Verified crates.io archive for $crate $crate_version ($candidate_sha)"
+          }
+
+          wait_for_crate_version() {
+            local crate="$1"
+            local crate_version="$2"
+            local candidate_archive="$3"
+            local index_visible=false
+            local verify_status
+
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if crate_version_available "$crate" "$crate_version"; then
+                index_visible=true
+                if verify_published_archive "$crate" "$crate_version" "$candidate_archive"; then
+                  echo "$crate $crate_version is visible in crates.io"
+                  return 0
+                else
+                  verify_status=$?
+                  if [ "$verify_status" -ne 2 ]; then
+                    return "$verify_status"
+                  fi
+                fi
+              fi
+
+              if [ "$attempt" = 12 ]; then
+                if [ "$index_visible" = true ]; then
+                  echo "::error::$crate $crate_version became visible in the crates.io index, but its archive did not become downloadable in time."
+                else
+                  echo "::error::$crate $crate_version was published but did not become visible in crates.io in time."
+                fi
+                return 2
+              fi
+
+              sleep 15
+            done
+          }
+
           publish_crate_version() {
             local crate="$1"
             local crate_version="$2"
+            local candidate_archive="$3"
 
             if crate_version_available "$crate" "$crate_version"; then
-              echo "Skipping $crate $crate_version because it is already published"
+              if ! wait_for_crate_version "$crate" "$crate_version" "$candidate_archive"; then
+                return 1
+              fi
+              echo "Skipping $crate $crate_version because the published archive is identical"
               return 0
             fi
 
             echo "Publishing $crate $crate_version"
             for attempt in 1 2 3; do
-              if cargo publish -p "$crate" --locked --registry crates-io --token "$CARGO_REGISTRY_TOKEN"; then
-                wait_for_crate_version "$crate" "$crate_version"
+              assert_release_tag_unchanged
+              if timeout --signal=TERM --kill-after=10s 900s \
+                cargo publish -p "$crate" --locked --registry crates-io \
+                  --token "$CARGO_REGISTRY_TOKEN"; then
+                if ! wait_for_crate_version "$crate" "$crate_version" "$candidate_archive"; then
+                  return 1
+                fi
                 return 0
               fi
 
-              if crate_version_available "$crate" "$crate_version"; then
-                echo "$crate $crate_version became visible after a failed publish attempt; continuing"
+              # The registry may have accepted the upload even when the client saw an error.
+              if wait_for_crate_version "$crate" "$crate_version" "$candidate_archive"; then
+                echo "$crate $crate_version became verifiable after a failed publish attempt"
                 return 0
+              else
+                wait_status=$?
+                if [ "$wait_status" -ne 2 ]; then
+                  return "$wait_status"
+                fi
               fi
 
               if [ "$attempt" = 3 ]; then
+                echo "::error::Unable to publish or verify $crate $crate_version after $attempt attempts."
                 return 1
               fi
               sleep $((attempt * 30))
             done
           }
 
-          crates=(
-            jellyflow-core
-            jellyflow-layout
-            jellyflow-runtime
-            jellyflow
-            jellyflow-egui
-          )
-
           for crate in "${crates[@]}"; do
+            assert_release_tag_unchanged
             crate_version="$(workspace_crate_version "$crate")"
             if [ "$crate_version" != "$version" ]; then
               echo "::error::$crate version '$crate_version' does not match tag version '$version'"
               exit 1
             fi
-            publish_crate_version "$crate" "$crate_version"
+
+            # Cargo resolves registry dependencies while packaging. Publish and wait for each
+            # dependency before assembling the next crate in this ordered release set.
+            prepare_candidate_archive "$crate" "$crate_version"
+            publish_crate_version "$crate" "$crate_version" "$PREPARED_ARCHIVE"
           done
+
+  github-release:
+    name: github-release
+    needs:
+      - resolve
+      - preflight
+      - publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: crates.io
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.source_sha }}
+
+      - name: Revalidate release tag
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_STAGE: publication
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TAG_OID: ${{ needs.resolve.outputs.tag_oid }}
+        run: bash scripts/verify-release-tag-unchanged.sh
+
+      - name: Build release notes
+        id: notes
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$RELEASE_VERSION"
+          notes="$RUNNER_TEMP/release-notes.md"
+
+          awk -v version="$version" '
+            $0 ~ "^## \\[" version "\\]" { in_section = 1; next }
+            in_section && /^## \\[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$notes"
+
+          if [ ! -s "$notes" ]; then
+            echo "Jellyflow $version" > "$notes"
+          fi
+
+          echo "path=$notes" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.path }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TAG_OID: ${{ needs.resolve.outputs.tag_oid }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          version="$RELEASE_VERSION"
+          title="Jellyflow $version"
+          notes="$RELEASE_NOTES"
+          prerelease_flag=()
+
+          assert_release_tag_unchanged() {
+            RELEASE_STAGE="GitHub Release publication" \
+              bash scripts/verify-release-tag-unchanged.sh
+          }
+
+          is_transient_release_query_failure() {
+            local status="$1"
+            local diagnostics="$2"
+
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              return 0
+            fi
+
+            grep -Eiq \
+              'HTTP (408|429|5[0-9]{2})|timed? out|timeout|connection (reset|refused|closed)|temporary failure|temporarily unavailable|TLS handshake timeout|rate limit|could not resolve host|no such host|network is unreachable|unexpected EOF|broken pipe|dial tcp' \
+              "$diagnostics"
+          }
+
+          query_github_release() {
+            local repository_slug="${GITHUB_REPOSITORY:-}"
+            local owner="${repository_slug%%/*}"
+            local repository="${repository_slug#*/}"
+            local diagnostics="${RUNNER_TEMP:?}/github-release-query-error.log"
+            local attempt
+            local release_state
+            local status
+
+            if [ -z "$owner" ] || [ -z "$repository" ] || [ "$owner" = "$repository" ]; then
+              echo "::error::GITHUB_REPOSITORY must contain an owner and repository name." >&2
+              return 1
+            fi
+
+            for attempt in 1 2 3; do
+              rm -f "$diagnostics"
+              # GraphQL variables are intentionally expanded by GitHub, not Bash.
+              # shellcheck disable=SC2016
+              if release_state="$(
+                timeout --signal=TERM --kill-after=10s 120s \
+                  gh api graphql \
+                    -f query='query($owner: String!, $repository: String!, $tagName: String!) {
+                      repository(owner: $owner, name: $repository) {
+                        release(tagName: $tagName) { id }
+                      }
+                    }' \
+                    -F owner="$owner" \
+                    -F repository="$repository" \
+                    -F tagName="$tag" \
+                    --jq 'if .data.repository == null then "repository-unavailable" elif .data.repository.release == null then "missing" else "existing" end' \
+                    2>"$diagnostics"
+              )"; then
+                if [ -s "$diagnostics" ]; then
+                  cat "$diagnostics" >&2
+                fi
+                case "$release_state" in
+                  existing|missing)
+                    printf '%s\n' "$release_state"
+                    return 0
+                    ;;
+                  *)
+                    echo "::error::GitHub returned an invalid release query result '$release_state'; refusing to infer that release $tag is absent." >&2
+                    return 1
+                    ;;
+                esac
+              else
+                status=$?
+              fi
+
+              if [ -s "$diagnostics" ]; then
+                cat "$diagnostics" >&2
+              fi
+              if ! is_transient_release_query_failure "$status" "$diagnostics"; then
+                echo "::error::Unable to query GitHub Release $tag (exit $status); refusing to infer that it is absent." >&2
+                return "$status"
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Unable to query GitHub Release $tag after $attempt transient failures (exit $status)." >&2
+                return "$status"
+              fi
+
+              echo "::warning::Transient failure querying GitHub Release $tag (attempt $attempt of 3, exit $status); retrying." >&2
+              sleep $((attempt * 5))
+            done
+          }
+
+          if [[ "$version" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+
+          # These adjacent checks detect tag movement but cannot make the remote mutation atomic.
+          assert_release_tag_unchanged
+          release_state="$(query_github_release)"
+          assert_release_tag_unchanged
+          case "$release_state" in
+            existing)
+              timeout --signal=TERM --kill-after=10s 120s gh release edit "$tag" \
+                --target "$SOURCE_SHA" \
+                --title "$title" \
+                --notes-file "$notes" \
+                "${prerelease_flag[@]}"
+              ;;
+            missing)
+              timeout --signal=TERM --kill-after=10s 120s gh release create "$tag" \
+                --verify-tag \
+                --target "$SOURCE_SHA" \
+                --title "$title" \
+                --notes-file "$notes" \
+                "${prerelease_flag[@]}"
+              ;;
+            *)
+              echo "::error::Unexpected GitHub Release state '$release_state'."
+              exit 1
+              ;;
+          esac
+          assert_release_tag_unchanged

@@ -9,12 +9,10 @@ use jellyflow_core::{
     PortKind,
 };
 #[cfg(feature = "benchmark-internals")]
-use jellyflow_layout::LayoutContext;
-#[cfg(feature = "benchmark-internals")]
 use jellyflow_layout::benchmark_internals::DugongBenchmarkWorkspace;
 use jellyflow_layout::{
-    LayoutOptions, LayoutRequest, LayoutSpacing, layout_graph_with_dugong,
-    layout_graph_with_tidy_tree,
+    DugongLayoutEngine, LayoutContext, LayoutEngine, LayoutOptions, LayoutRequest, LayoutSpacing,
+    TidyTreeLayoutEngine,
 };
 
 const NODE_SIZE: CanvasSize = CanvasSize {
@@ -32,6 +30,8 @@ fn layout_engine_benchmarks(c: &mut Criterion) {
 
 fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_tidy_tree_balanced");
+    let engine = TidyTreeLayoutEngine;
+    let context = LayoutContext::new();
 
     for depth in [4_usize, 6, 8] {
         let graph = balanced_tree_fixture(depth, 3);
@@ -45,7 +45,8 @@ fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
             |b, graph| {
                 b.iter(|| {
                     black_box(
-                        layout_graph_with_tidy_tree(black_box(graph), black_box(&request))
+                        engine
+                            .layout(black_box(graph), black_box(&request), black_box(&context))
                             .expect("tidy tree layout"),
                     )
                 })
@@ -58,6 +59,8 @@ fn benchmark_tidy_tree_balanced(c: &mut Criterion) {
 
 fn benchmark_tidy_tree_wide(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_tidy_tree_wide");
+    let engine = TidyTreeLayoutEngine;
+    let context = LayoutContext::new();
 
     for child_count in [100_usize, 1_000, 5_000] {
         let graph = wide_tree_fixture(child_count);
@@ -71,7 +74,8 @@ fn benchmark_tidy_tree_wide(c: &mut Criterion) {
             |b, graph| {
                 b.iter(|| {
                     black_box(
-                        layout_graph_with_tidy_tree(black_box(graph), black_box(&request))
+                        engine
+                            .layout(black_box(graph), black_box(&request), black_box(&context))
                             .expect("tidy tree layout"),
                     )
                 })
@@ -84,50 +88,26 @@ fn benchmark_tidy_tree_wide(c: &mut Criterion) {
 
 fn benchmark_dugong_layered(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_dugong_layered");
+    let engine = DugongLayoutEngine;
+    let context = LayoutContext::new();
 
     for layer_count in [10_usize, 25, 50] {
         let graph = layered_dag_fixture(layer_count, 10);
         let node_count = graph.nodes().len();
         let request = workflow_request();
-        let layout = layout_graph_with_dugong(&graph, &request)
-            .expect("dugong layout for benchmark fixture");
 
         group.throughput(Throughput::Elements(node_count as u64));
 
-        group.bench_with_input(BenchmarkId::new("plan", node_count), &graph, |b, graph| {
-            b.iter(|| {
-                black_box(
-                    layout_graph_with_dugong(black_box(graph), black_box(&request))
-                        .expect("dugong layout"),
-                )
-            })
-        });
-
         group.bench_with_input(
-            BenchmarkId::new("to_transaction", node_count),
-            &layout,
-            |b, layout| {
-                b.iter(|| {
-                    black_box(
-                        layout
-                            .to_transaction(black_box(&graph))
-                            .expect("transaction"),
-                    );
-                })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("plan_then_to_transaction", node_count),
+            BenchmarkId::new("layout_result", node_count),
             &graph,
             |b, graph| {
                 b.iter(|| {
-                    let layout = layout_graph_with_dugong(black_box(graph), black_box(&request))
-                        .expect("dugong layout");
-                    let tx = layout
-                        .to_transaction(black_box(graph))
-                        .expect("transaction");
-                    black_box((layout, tx));
+                    black_box(
+                        engine
+                            .layout(black_box(graph), black_box(&request), black_box(&context))
+                            .expect("dugong layout result"),
+                    )
                 })
             },
         );
@@ -351,7 +331,8 @@ impl FixtureGraphBuilder {
             },
         );
         self.graph
-            .update_node(&node, |node| node.ports.push(port))
+            .node_mut(&node)
+            .map(|node| node.ports.push(port))
             .expect("node exists");
 
         port
@@ -369,7 +350,6 @@ fn node_fixture(node: NodeId, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

@@ -1,34 +1,16 @@
-//! Node and port schema registry.
+//! Semantic node-kind catalog and migration contracts.
 
-pub mod kit;
+mod catalog;
 mod migration;
-mod registry;
-mod types;
 
-pub use kit::{
-    NodeKitAdapterKey, NodeKitContentDensity, NodeKitFixture, NodeKitFixtureEdge,
-    NodeKitFixtureError, NodeKitFixtureNode, NodeKitKey, NodeKitLayoutHints, NodeKitManifest,
-    NodeKitRegistry,
+pub use catalog::{
+    CanonicalGraph, CreateFromWireCandidate, NodeCatalog, NodeCatalogInstantiationError,
+    NodeCatalogMigrationError, NodeCatalogMigrationReport, NodeCatalogRegistrationError,
+    NodeCreation, NodeKindCanonicalization, NodeKindMigrationIssue, NodeKindSpec,
+    NodeKindSpecBuilder, NodeKindUpgrade, NodePortSpec, OpaqueNodeKind, PortPresentationHint,
+    PortSide,
 };
-pub use migration::{
-    CanonicalizeKindsPlan, MigrateNodesPlan, MigrateNodesReport, NodeKindMigrateError,
-    NodeKindMigrator, NodeKindRewrite, NodeMigrationErrorEntry, NodeMigrationMissingMigrator,
-    NodeMigrationMissingSchema, NodeMigrationNewerThanSchema, NodeMigrationUpgraded,
-};
-pub use registry::NodeRegistry;
-pub use types::{
-    ActionAvailability, ActionIntent, ActionShortcut, ActionTarget, BlackboardDescriptor,
-    InspectorDescriptor, InspectorTarget, MenuDescriptor, MenuSurface, NodeActionDescriptor,
-    NodeChromeDescriptor, NodeChromeKind, NodeChromePlacement, NodeChromeVisibility,
-    NodeControlBinding, NodeControlBindingSource, NodeControlDescriptor, NodeControlEditability,
-    NodeControlKind, NodeControlOption, NodeControlOptionSource, NodeControlPresentation,
-    NodeControlValidation, NodeControlValidationRule, NodeInstantiation, NodeInstantiationError,
-    NodeKindViewDescriptor, NodeRepeatableAnchorRule, NodeRepeatableCollectionDescriptor,
-    NodeRepeatableItemProjection, NodeSchema, NodeSchemaBuilder, NodeSurfaceLayoutBudget,
-    NodeSurfaceOverflowIndicator, NodeSurfaceProjection, NodeSurfaceSlotDescriptor,
-    NodeSurfaceSlotKind, NodeSurfaceSlotProjection, NodeSurfaceSlotVisibility, PortDecl,
-    PortHandleVisibility, PortViewDescriptor, PortViewSide,
-};
+pub use migration::{NodeKindMigrateError, NodeKindMigrator};
 
 #[cfg(test)]
 mod tests;

@@ -3,6 +3,7 @@
 mod ids;
 mod imports;
 mod model;
+mod mutation_footprint;
 mod subgraph;
 mod symbol_ref;
 mod validate;
@@ -14,11 +15,12 @@ pub use ids::{
 pub use imports::{GraphImport, GraphImportClosure, GraphImportError, resolve_import_closure};
 pub use model::{
     Binding, BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeLabelAnchor,
-    EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteKind, EdgeViewDescriptor, Graph,
-    GraphBuilder, GraphElementIter, GraphElementKeys, GraphElementValues, GraphElements,
+    EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteKind, EdgeViewDescriptor, GRAPH_VERSION,
+    Graph, GraphBuilder, GraphElementIter, GraphElementKeys, GraphElementValues, GraphElements,
     GraphLocalBindingTarget, Group, Node, NodeExtent, NodeOrigin, Port, PortCapacity,
     PortDirection, PortKind, SourceAnchor, StickyNote, Symbol,
 };
+pub use mutation_footprint::GraphMutationFootprint;
 pub use subgraph::{
     SUBGRAPH_NODE_KIND, SubgraphBindingError, SubgraphNodeError, collect_subgraph_targets,
     is_subgraph_node, subgraph_node_data, subgraph_target_graph_id,

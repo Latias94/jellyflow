@@ -1,0 +1,65 @@
+{
+  "graph_id": "00000000-0000-0000-0000-000000000301",
+  "graph_version": 1,
+  "graph": {
+    "graph_id": "00000000-0000-0000-0000-000000000301",
+    "graph_version": 1,
+    "nodes": {
+      "00000000-0000-0000-0000-000000000011": {
+        "kind": "legacy.focusable.source",
+        "kind_version": 1,
+        "pos": {
+          "x": 40.0,
+          "y": 80.0
+        },
+        "focusable": false,
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000001011"
+        ],
+        "data": null
+      },
+      "00000000-0000-0000-0000-000000000012": {
+        "kind": "legacy.focusable.target",
+        "kind_version": 1,
+        "pos": {
+          "x": 320.0,
+          "y": 80.0
+        },
+        "focusable": true,
+        "collapsed": false,
+        "ports": [
+          "00000000-0000-0000-0000-000000001012"
+        ],
+        "data": null
+      }
+    },
+    "ports": {
+      "00000000-0000-0000-0000-000000001011": {
+        "node": "00000000-0000-0000-0000-000000000011",
+        "key": "output",
+        "dir": "out",
+        "kind": "data",
+        "capacity": "multi",
+        "data": null
+      },
+      "00000000-0000-0000-0000-000000001012": {
+        "node": "00000000-0000-0000-0000-000000000012",
+        "key": "input",
+        "dir": "in",
+        "kind": "data",
+        "capacity": "single",
+        "data": null
+      }
+    },
+    "edges": {
+      "00000000-0000-0000-0000-00000000e011": {
+        "kind": "data",
+        "from": "00000000-0000-0000-0000-000000001011",
+        "to": "00000000-0000-0000-0000-000000001012",
+        "focusable": false,
+        "data": null
+      }
+    }
+  }
+}

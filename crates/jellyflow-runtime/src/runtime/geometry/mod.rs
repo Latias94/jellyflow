@@ -5,7 +5,6 @@ mod edge_route;
 mod endpoints;
 mod hit_test;
 mod paths;
-mod viewport;
 
 pub(crate) use bounds::CanvasBounds;
 pub use edge_route::{
@@ -20,4 +19,3 @@ pub use paths::{
     BezierEdgeOptions, EdgePath, EdgePathLabel, PathCommand, SmoothStepEdgeOptions,
     bezier_edge_path, smoothstep_edge_path, straight_edge_path,
 };
-pub(crate) use viewport::ViewportFitFrame;

@@ -1,0 +1,532 @@
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::graph_kernel::{
+    GraphHistory, GraphMutationError, GraphMutationFootprint, GraphOp, GraphTransaction,
+};
+use jellyflow_core::core::{Graph, NodeId, validate_graph_structural};
+
+use crate::profile::{ApplyPipelineError, validate_profile_graph};
+use crate::rules::{Diagnostic, DiagnosticTarget};
+use crate::runtime::commands::{
+    GraphCommand, GraphCommandConflict, GraphCommandExecutionKind, GraphCommandNoop,
+    GraphCommandOutcome, GraphCommandPlanningError, GraphCommandRejection, PlannedGraphCommand,
+    plan_graph_command,
+};
+use crate::runtime::middleware::GraphRuntimeMiddlewareSnapshot;
+use crate::runtime::transaction_gate::GraphTransactionGate;
+use crate::runtime::view_session::{ViewGeneration, ViewShared};
+use crate::schema::NodeCatalog;
+
+use super::{
+    GraphRuntimeError, GraphSnapshot, HistoryState, NodeIncarnation, RuntimePatch, RuntimeShared,
+    RuntimeState,
+};
+
+pub(super) struct MutationGuard<'a>(&'a Cell<bool>);
+
+impl<'a> MutationGuard<'a> {
+    pub(super) fn acquire(runtime: &'a RuntimeShared) -> Result<Self, GraphRuntimeError> {
+        if runtime.notifications.draining.get() || runtime.mutating.replace(true) {
+            return Err(GraphRuntimeError::ReentrantMutation);
+        }
+        Ok(Self(&runtime.mutating))
+    }
+}
+
+impl Drop for MutationGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+pub(super) struct NotificationDrainGuard<'a>(pub(super) &'a Cell<bool>);
+
+impl Drop for NotificationDrainGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HistoryDirection {
+    Undo,
+    Redo,
+}
+
+impl HistoryDirection {
+    fn prepare(self, history: &GraphHistory) -> Option<GraphTransaction> {
+        match self {
+            Self::Undo => history.prepare_undo(),
+            Self::Redo => history.prepare_redo(),
+        }
+    }
+
+    fn commit(self, history: &mut GraphHistory) {
+        match self {
+            Self::Undo => history.commit_undo(),
+            Self::Redo => history.commit_redo(),
+        }
+    }
+}
+
+pub(super) enum CommandExecution {
+    Outcome(GraphCommandOutcome),
+    Committed {
+        patch: RuntimePatch,
+        sessions: Vec<(Rc<ViewShared>, ViewGeneration)>,
+        footprint: GraphMutationFootprint,
+    },
+}
+
+pub(super) fn execute_command_locked(
+    state: &mut RuntimeState,
+    catalog: &NodeCatalog,
+    command: &GraphCommand,
+) -> Result<CommandExecution, GraphRuntimeError> {
+    let mut declared_footprint = command.conflict_footprint(&state.graph, &state.index);
+    if state.profile.is_some() {
+        declared_footprint.touch_graph();
+    }
+    if state.revision != command.expected_revision() {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Conflict(
+            GraphCommandConflict::new(
+                command.expected_revision(),
+                GraphSnapshot::new(state.graph.clone(), state.revision, state.document_epoch),
+                declared_footprint,
+            ),
+        )));
+    }
+
+    match command.execution_kind() {
+        GraphCommandExecutionKind::Undo => {
+            return execute_history_command_locked(state, command, HistoryDirection::Undo);
+        }
+        GraphCommandExecutionKind::Redo => {
+            return execute_history_command_locked(state, command, HistoryDirection::Redo);
+        }
+        GraphCommandExecutionKind::Mutation => {}
+    }
+
+    let planned = plan_graph_command(
+        &state.graph,
+        &state.index,
+        catalog,
+        command,
+        state.profile.as_deref(),
+        &state.policy,
+    );
+    let PlannedGraphCommand {
+        transaction,
+        footprint,
+        graph,
+        planning_stats,
+    } = match planned {
+        Ok(planned) => planned,
+        Err(error) => {
+            return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+                command_rejection_from_planning(error),
+            )));
+        }
+    };
+    if let Err(error) = run_before_command_middleware(state, command) {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+            command_rejection_from_apply(error),
+        )));
+    }
+    state.stats.command_planning_fact_reads = state
+        .stats
+        .command_planning_fact_reads
+        .saturating_add(planning_stats.fact_reads);
+    state.stats.command_planning_index_bucket_reads = state
+        .stats
+        .command_planning_index_bucket_reads
+        .saturating_add(planning_stats.index_bucket_reads);
+    state.stats.command_planning_index_entries_read = state
+        .stats
+        .command_planning_index_entries_read
+        .saturating_add(planning_stats.index_entries_read);
+    state.stats.command_planning_operations_emitted = state
+        .stats
+        .command_planning_operations_emitted
+        .saturating_add(planning_stats.operations_emitted);
+    state.stats.command_planning_full_type_revalidations = state
+        .stats
+        .command_planning_full_type_revalidations
+        .saturating_add(planning_stats.full_type_revalidations);
+
+    if transaction.is_empty() {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
+            GraphCommandNoop::new(state.revision, footprint),
+        )));
+    }
+
+    let (patch, sessions) = install_incremental(state, graph, transaction, true)?;
+
+    Ok(CommandExecution::Committed {
+        patch,
+        sessions,
+        footprint,
+    })
+}
+
+fn execute_history_command_locked(
+    state: &mut RuntimeState,
+    command: &GraphCommand,
+    direction: HistoryDirection,
+) -> Result<CommandExecution, GraphRuntimeError> {
+    if let Err(error) = run_before_command_middleware(state, command) {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+            command_rejection_from_apply(error),
+        )));
+    }
+    state
+        .revision
+        .checked_add(1)
+        .ok_or(GraphRuntimeError::RevisionExhausted)?;
+    let Some(transaction) = direction.prepare(&state.history) else {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
+            GraphCommandNoop::new(state.revision, GraphMutationFootprint::new()),
+        )));
+    };
+    let replayed = match GraphTransactionGate::normalize_and_validate(transaction) {
+        Ok(replayed) => replayed,
+        Err(error) => {
+            return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+                command_rejection_from_apply(error),
+            )));
+        }
+    };
+    if replayed.is_empty() {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Noop(
+            GraphCommandNoop::new(state.revision, GraphMutationFootprint::new()),
+        )));
+    }
+
+    let mut after = (*state.graph).clone();
+    let replay_result: Result<(), ApplyPipelineError> = (|| {
+        replayed.apply_prevalidated_batch(&mut after)?;
+        if let Some(profile) = state.profile.as_deref() {
+            validate_profile_graph(profile, &after)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = replay_result {
+        return Ok(CommandExecution::Outcome(GraphCommandOutcome::Rejected(
+            command_rejection_from_apply(error),
+        )));
+    }
+
+    let footprint = replayed.footprint();
+    let (patch, sessions) = install_incremental(state, after, replayed, false)?;
+    direction.commit(&mut state.history);
+    Ok(CommandExecution::Committed {
+        patch,
+        sessions,
+        footprint,
+    })
+}
+
+fn run_before_command_middleware(
+    state: &mut RuntimeState,
+    command: &GraphCommand,
+) -> Result<(), ApplyPipelineError> {
+    if state.middleware.is_none() {
+        return Ok(());
+    }
+    let snapshot = middleware_snapshot(state);
+    state
+        .middleware
+        .as_deref_mut()
+        .expect("middleware presence was checked before snapshot creation")
+        .before_command(snapshot, command)
+}
+
+pub(super) fn command_rejection_from_planning(
+    error: GraphCommandPlanningError,
+) -> GraphCommandRejection {
+    if let GraphCommandPlanningError::RuleRejected {
+        message,
+        diagnostics,
+    } = error
+    {
+        return GraphCommandRejection::new(message, diagnostics);
+    }
+    if let GraphCommandPlanningError::Profile(error) = error {
+        return command_rejection_from_apply(error);
+    }
+    let (key, target) = planning_error_diagnostic(&error);
+    let message = error.to_string();
+    GraphCommandRejection::new(
+        message.clone(),
+        vec![Diagnostic::error(key, target, message)],
+    )
+}
+
+fn planning_error_diagnostic(
+    error: &GraphCommandPlanningError,
+) -> (&'static str, DiagnosticTarget) {
+    match error {
+        GraphCommandPlanningError::Mutation(error) => mutation_error_diagnostic(error),
+        GraphCommandPlanningError::MissingNode(id) => {
+            ("topology.node_missing", DiagnosticTarget::Node { id: *id })
+        }
+        GraphCommandPlanningError::DuplicateNodeGeometry(id) => (
+            "geometry.node_duplicate",
+            DiagnosticTarget::Node { id: *id },
+        ),
+        GraphCommandPlanningError::MissingPort(id) => {
+            ("topology.port_missing", DiagnosticTarget::Port { id: *id })
+        }
+        GraphCommandPlanningError::DuplicatePort(id) => (
+            "topology.port_duplicate",
+            DiagnosticTarget::Port { id: *id },
+        ),
+        GraphCommandPlanningError::PortOwnerMismatch { port, .. } => (
+            "topology.port_owner_mismatch",
+            DiagnosticTarget::Port { id: *port },
+        ),
+        GraphCommandPlanningError::PortIdentityChanged { port } => (
+            "topology.port_identity_changed",
+            DiagnosticTarget::Port { id: *port },
+        ),
+        GraphCommandPlanningError::PortConnected(id) => (
+            "topology.port_connected",
+            DiagnosticTarget::Port { id: *id },
+        ),
+        GraphCommandPlanningError::NodeConnected(id) => (
+            "topology.node_connected",
+            DiagnosticTarget::Node { id: *id },
+        ),
+        GraphCommandPlanningError::NodeLifecycleConflict(id) => (
+            "topology.node_lifecycle_conflict",
+            DiagnosticTarget::Node { id: *id },
+        ),
+        GraphCommandPlanningError::NonCanonicalNodeKind { node, .. } => (
+            "topology.node_kind_not_canonical",
+            DiagnosticTarget::Node { id: *node },
+        ),
+        GraphCommandPlanningError::PortLifecycleConflict(id) => (
+            "topology.port_lifecycle_conflict",
+            DiagnosticTarget::Port { id: *id },
+        ),
+        GraphCommandPlanningError::EdgeLifecycleConflict(id) => (
+            "topology.edge_lifecycle_conflict",
+            DiagnosticTarget::Edge { id: *id },
+        ),
+        GraphCommandPlanningError::SymbolAlreadyExists(id) => (
+            "symbol.already_exists",
+            DiagnosticTarget::Symbol { id: *id },
+        ),
+        GraphCommandPlanningError::MissingSymbol(id) => {
+            ("symbol.missing", DiagnosticTarget::Symbol { id: *id })
+        }
+        GraphCommandPlanningError::SymbolReferenced { symbol, .. } => (
+            "symbol.referenced",
+            DiagnosticTarget::Symbol { id: *symbol },
+        ),
+        GraphCommandPlanningError::SymbolLifecycleConflict(id) => (
+            "symbol.lifecycle_conflict",
+            DiagnosticTarget::Symbol { id: *id },
+        ),
+        GraphCommandPlanningError::MissingProfileTypeDependency(id) => (
+            "profile.port_type_dependency_missing",
+            DiagnosticTarget::Port { id: *id },
+        ),
+        GraphCommandPlanningError::Apply(_) => {
+            ("graph.command.invalid_operation", DiagnosticTarget::Graph)
+        }
+        GraphCommandPlanningError::RuleRejected { .. } | GraphCommandPlanningError::Profile(_) => {
+            unreachable!("structured planning errors are handled before fallback mapping")
+        }
+    }
+}
+
+fn mutation_error_diagnostic(error: &GraphMutationError) -> (&'static str, DiagnosticTarget) {
+    match error {
+        GraphMutationError::NodeAlreadyExists(id) => (
+            "topology.node_already_exists",
+            DiagnosticTarget::Node { id: *id },
+        ),
+        GraphMutationError::PortAlreadyExists(id) => (
+            "topology.port_already_exists",
+            DiagnosticTarget::Port { id: *id },
+        ),
+        GraphMutationError::MissingPort(id) => {
+            ("topology.port_missing", DiagnosticTarget::Port { id: *id })
+        }
+        GraphMutationError::MissingEdge(id) => {
+            ("topology.edge_missing", DiagnosticTarget::Edge { id: *id })
+        }
+        GraphMutationError::MissingGroup(_) | GraphMutationError::MissingBinding(_) => {
+            ("topology.related_fact_invalid", DiagnosticTarget::Graph)
+        }
+    }
+}
+
+fn command_rejection_from_apply(error: ApplyPipelineError) -> GraphCommandRejection {
+    match error {
+        ApplyPipelineError::Rejected {
+            message,
+            diagnostics,
+        } => GraphCommandRejection::new(message, diagnostics),
+        error => {
+            let message = error.to_string();
+            GraphCommandRejection::new(
+                message.clone(),
+                vec![Diagnostic::error(
+                    "graph.command.apply_failed",
+                    DiagnosticTarget::Graph,
+                    message,
+                )],
+            )
+        }
+    }
+}
+
+pub(super) fn middleware_snapshot(state: &RuntimeState) -> GraphRuntimeMiddlewareSnapshot {
+    GraphRuntimeMiddlewareSnapshot::new(
+        GraphSnapshot::new(state.graph.clone(), state.revision, state.document_epoch),
+        HistoryState {
+            undo_len: state.history.undo_len(),
+            redo_len: state.history.redo_len(),
+        },
+    )
+}
+
+pub(super) fn install_incremental(
+    state: &mut RuntimeState,
+    graph: Graph,
+    committed: GraphTransaction,
+    record_history: bool,
+) -> Result<(RuntimePatch, Vec<(Rc<ViewShared>, ViewGeneration)>), GraphRuntimeError> {
+    let to_revision = state
+        .revision
+        .checked_add(1)
+        .ok_or(GraphRuntimeError::RevisionExhausted)?;
+    let before = state.graph.clone();
+    let mut next_incarnation = state.next_incarnation;
+    let mut incarnation_delta = BTreeMap::new();
+    let (retired, added) = node_incarnation_changes(&before, &graph, &committed);
+    for node in &retired {
+        incarnation_delta.insert(*node, None);
+    }
+    for node in &added {
+        incarnation_delta.insert(*node, Some(allocate_incarnation(&mut next_incarnation)?));
+    }
+
+    let graph = Arc::new(graph);
+    let snapshot = GraphSnapshot::new(graph.clone(), to_revision, state.document_epoch);
+    let patch = RuntimePatch::incremental(
+        &before,
+        &graph,
+        &state.index,
+        &committed,
+        state.revision,
+        to_revision,
+        state.document_epoch,
+        snapshot,
+        incarnation_delta.clone(),
+    );
+    state.index.apply_transaction(&graph, &committed);
+    state.graph = graph;
+    state.revision = to_revision;
+    for node in retired {
+        state.incarnations.remove(&node);
+    }
+    for (node, incarnation) in incarnation_delta {
+        if let Some(incarnation) = incarnation {
+            state.incarnations.insert(node, incarnation);
+        }
+    }
+    state.next_incarnation = next_incarnation;
+    if record_history {
+        state.history.record(committed);
+    }
+    state.stats.patch_builds = state.stats.patch_builds.saturating_add(1);
+    let sessions = collect_live_sessions(state);
+    state.stats.patch_deliveries = state
+        .stats
+        .patch_deliveries
+        .saturating_add(sessions.len() as u64);
+    Ok((patch, sessions))
+}
+
+fn node_incarnation_changes(
+    before: &Graph,
+    after: &Graph,
+    transaction: &GraphTransaction,
+) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
+    let (mut retired, mut added) = node_incarnation_candidates(transaction);
+    retired.retain(|node| before.node(node).is_some());
+    added.retain(|node| after.node(node).is_some());
+    (retired, added)
+}
+
+fn node_incarnation_candidates(
+    transaction: &GraphTransaction,
+) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
+    let mut retired = BTreeSet::new();
+    let mut added = BTreeSet::new();
+    for operation in transaction.ops() {
+        match operation {
+            GraphOp::AddNode { id, .. } => {
+                added.insert(*id);
+            }
+            GraphOp::RemoveNode { id, .. } => {
+                retired.insert(*id);
+            }
+            GraphOp::SetNodeKind { id, .. } | GraphOp::SetNodeKindVersion { id, .. } => {
+                // The current graph model carries a kind rather than a runtime renderer identity.
+                // Treat a kind change as hard retirement until the view protocol carries renderer keys.
+                retired.insert(*id);
+                added.insert(*id);
+            }
+            _ => {}
+        }
+    }
+    (retired, added)
+}
+
+pub(super) fn collect_live_sessions(
+    state: &mut RuntimeState,
+) -> Vec<(Rc<ViewShared>, ViewGeneration)> {
+    let mut dead = Vec::new();
+    let mut live = Vec::new();
+    for (id, session) in &state.sessions {
+        let Some(session) = session.upgrade() else {
+            dead.push(*id);
+            continue;
+        };
+        let Some(generation) = session.open_generation() else {
+            dead.push(*id);
+            continue;
+        };
+        live.push((session, generation));
+    }
+    for id in dead {
+        state.sessions.remove(&id);
+    }
+    live
+}
+
+pub(super) fn allocate_incarnation(next: &mut u64) -> Result<NodeIncarnation, GraphRuntimeError> {
+    let value = *next;
+    *next = next
+        .checked_add(1)
+        .ok_or(GraphRuntimeError::IdentityExhausted)?;
+    Ok(NodeIncarnation(value))
+}
+
+pub(super) fn validate_graph(graph: &Graph) -> Result<(), GraphRuntimeError> {
+    let report = validate_graph_structural(graph);
+    if report.is_ok() {
+        Ok(())
+    } else {
+        Err(GraphRuntimeError::InvalidGraph {
+            errors: report.into_errors(),
+        })
+    }
+}

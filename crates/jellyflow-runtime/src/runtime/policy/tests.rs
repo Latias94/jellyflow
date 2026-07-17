@@ -1,11 +1,8 @@
 use super::*;
 use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeReconnectable,
-    EdgeReconnectableEndpoint, Node, NodeExtent, NodeId, NodeKindKey, Port, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, Edge, EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint, Node, NodeId,
+    NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-
-use crate::io::NodeGraphInteractionState;
 
 fn node() -> Node {
     Node {
@@ -14,7 +11,6 @@ fn node() -> Node {
         pos: CanvasPoint::default(),
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,
@@ -49,224 +45,67 @@ fn edge(from: PortId, to: PortId) -> Edge {
 }
 
 #[test]
-fn policy_node_overrides_global_defaults() {
-    let mut state = NodeGraphInteractionState {
-        elements_selectable: false,
-        nodes_draggable: false,
-        nodes_connectable: false,
-        nodes_deletable: false,
-        nodes_focusable: false,
-        node_extent: Some(CanvasRect {
-            origin: CanvasPoint { x: 1.0, y: 2.0 },
-            size: CanvasSize {
-                width: 10.0,
-                height: 20.0,
-            },
-        }),
-        ..NodeGraphInteractionState::default()
-    };
+fn default_policy_allows_authoritative_graph_mutations() {
+    let policy = GraphRuntimePolicy::default();
 
-    let selection = state.selection_interaction();
-    let node_drag = state.node_drag_interaction();
-    let connection = state.connection_interaction();
-    let delete = state.delete_interaction();
-    let default_policy = resolve_node_interaction_policy(&node(), &state);
-    assert_eq!(
-        default_policy,
-        NodeGraphNodeInteractionPolicy {
-            selectable: selection.elements_selectable,
-            focusable: false,
-            draggable: node_drag.nodes_draggable,
-            connectable: connection.nodes_connectable,
-            deletable: delete.nodes_deletable,
-            extent: node_drag.node_extent.map(|rect| NodeExtent::Rect { rect }),
-            expand_parent: false,
-        }
-    );
-    assert!(!default_policy.can_delete());
-
-    state.node_extent = None;
-    let mut n = node();
-    n.selectable = Some(true);
-    n.focusable = Some(true);
-    n.draggable = Some(true);
-    n.connectable = Some(true);
-    n.deletable = Some(true);
-    n.extent = Some(NodeExtent::Parent);
-    n.expand_parent = Some(true);
-
-    assert_eq!(
-        resolve_node_interaction_policy(&n, &state),
-        NodeGraphNodeInteractionPolicy {
-            selectable: true,
-            focusable: true,
-            draggable: true,
-            connectable: true,
-            deletable: true,
-            extent: Some(NodeExtent::Parent),
-            expand_parent: true,
-        }
-    );
-    assert!(resolve_node_interaction_policy(&n, &state).can_delete());
+    assert!(policy.node_connections_enabled());
+    assert!(policy.node_deletion_enabled());
+    assert!(policy.edge_deletion_enabled());
+    assert!(policy.edge_reconnection_enabled());
 }
 
 #[test]
-fn policy_port_requires_node_and_port_connectability() {
-    let node_id = NodeId::new();
-    let state = NodeGraphInteractionState {
-        nodes_connectable: true,
-        ..NodeGraphInteractionState::default()
-    };
+fn persisted_element_overrides_take_precedence_over_runtime_fallbacks() {
+    let disabled = GraphRuntimePolicy::default()
+        .with_node_connections(false)
+        .with_node_deletion(false)
+        .with_edge_deletion(false)
+        .with_edge_reconnection(false);
 
-    let mut n = node();
-    n.connectable = Some(false);
-    let mut p = port(node_id);
-    p.connectable = Some(true);
-    p.connectable_start = Some(true);
-    p.connectable_end = Some(true);
-    assert_eq!(
-        resolve_port_interaction_policy(&n, &p, &state),
-        NodeGraphPortInteractionPolicy {
-            connectable: false,
-            connectable_start: false,
-            connectable_end: false,
-        }
-    );
-    assert!(!resolve_port_interaction_policy(&n, &p, &state).can_start_connection());
+    let default_node = resolve_node_policy(&node(), &disabled);
+    assert!(!default_node.connectable);
+    assert!(!default_node.can_delete());
 
-    n.connectable = Some(true);
-    p.connectable = Some(false);
-    assert!(!resolve_port_interaction_policy(&n, &p, &state).connectable);
+    let mut enabled_node = node();
+    enabled_node.connectable = Some(true);
+    enabled_node.deletable = Some(true);
+    let enabled_node_policy = resolve_node_policy(&enabled_node, &disabled);
+    assert!(enabled_node_policy.connectable);
+    assert!(enabled_node_policy.can_delete());
 
-    p.connectable = None;
-    p.connectable_start = Some(false);
-    p.connectable_end = Some(true);
-    assert_eq!(
-        resolve_port_interaction_policy(&n, &p, &state),
-        NodeGraphPortInteractionPolicy {
-            connectable: true,
-            connectable_start: false,
-            connectable_end: true,
-        }
-    );
-    let policy = resolve_port_interaction_policy(&n, &p, &state);
-    assert!(!policy.can_start_connection());
-    assert!(policy.can_accept_connection());
-}
-
-#[test]
-fn policy_edge_overrides_global_defaults_and_preserves_endpoint_reconnectability() {
     let from = PortId::new();
     let to = PortId::new();
-    let disabled_state = NodeGraphInteractionState {
-        edges_selectable: false,
-        edges_deletable: false,
-        edges_focusable: false,
-        edges_reconnectable: false,
-        ..NodeGraphInteractionState::default()
-    };
-
-    let selection = disabled_state.selection_interaction();
-    let connection = disabled_state.connection_interaction();
-    let delete = disabled_state.delete_interaction();
-    let default_policy = resolve_edge_interaction_policy(&edge(from, to), &disabled_state);
-    assert_eq!(
-        default_policy,
-        NodeGraphEdgeInteractionPolicy {
-            selectable: selection.edges_selectable,
-            focusable: false,
-            deletable: delete.edges_deletable,
-            reconnect_source: connection.edges_reconnectable,
-            reconnect_target: connection.edges_reconnectable,
-        }
-    );
-    assert!(!default_policy.can_delete());
-    assert!(!default_policy.focusable);
-    assert!(!default_policy.reconnectable());
-    assert!(!default_policy.can_reconnect_source());
-    assert!(!default_policy.can_reconnect_target());
-
-    let mut e = edge(from, to);
-    e.selectable = Some(true);
-    e.focusable = Some(true);
-    e.deletable = Some(true);
-    e.reconnectable = Some(EdgeReconnectable::Bool(true));
-    let enabled_policy = resolve_edge_interaction_policy(&e, &disabled_state);
-    assert!(enabled_policy.selectable);
-    assert!(enabled_policy.focusable);
-    assert!(enabled_policy.deletable);
-    assert!(enabled_policy.can_delete());
-    assert!(enabled_policy.reconnect_source);
-    assert!(enabled_policy.reconnect_target);
-    assert!(enabled_policy.reconnectable());
-
-    e.reconnectable = Some(EdgeReconnectable::Endpoint(
+    let mut enabled_edge = edge(from, to);
+    enabled_edge.deletable = Some(true);
+    enabled_edge.reconnectable = Some(EdgeReconnectable::Endpoint(
         EdgeReconnectableEndpoint::Source,
     ));
-    let source_only = resolve_edge_interaction_policy(&e, &disabled_state);
-    assert!(source_only.reconnect_source);
-    assert!(!source_only.reconnect_target);
-    assert!(source_only.can_reconnect_source());
-    assert!(!source_only.can_reconnect_target());
-
-    e.reconnectable = Some(EdgeReconnectable::Endpoint(
-        EdgeReconnectableEndpoint::Target,
-    ));
-    let target_only = resolve_edge_interaction_policy(&e, &disabled_state);
-    assert!(!target_only.reconnect_source);
-    assert!(target_only.reconnect_target);
-    assert!(!target_only.can_reconnect_source());
-    assert!(target_only.can_reconnect_target());
+    let enabled_edge_policy = resolve_edge_policy(&enabled_edge, &disabled);
+    assert!(enabled_edge_policy.can_delete());
+    assert!(enabled_edge_policy.reconnectable());
+    assert!(enabled_edge_policy.can_reconnect_source());
+    assert!(!enabled_edge_policy.can_reconnect_target());
 }
 
 #[test]
-fn policy_edge_hit_test_options_use_edge_interaction_width_override() {
-    let from = PortId::new();
-    let to = PortId::new();
-    let mut state = NodeGraphInteractionState {
-        edge_interaction_width: 18.0,
-        bezier_hit_test_steps: 32,
-        ..NodeGraphInteractionState::default()
-    };
-    let mut e = edge(from, to);
-
-    let global = resolve_edge_hit_test_options(&e, &state);
-    assert!((global.interaction_width - 18.0).abs() <= 1.0e-6);
-    assert_eq!(global.curve_samples, 32);
-
-    e.interaction_width = Some(30.0);
-    state.edge_interaction_width = 12.0;
-
-    let override_options = resolve_edge_hit_test_options(&e, &state);
-    assert!((override_options.interaction_width - 30.0).abs() <= 1.0e-6);
-    assert_eq!(override_options.curve_samples, 32);
-    assert_eq!(state.edge_hit_test_options_for(&e), override_options);
-}
-
-#[test]
-fn interaction_state_exposes_policy_facades() {
+fn port_overrides_can_only_restrict_the_resolved_node_connection_policy() {
     let node_id = NodeId::new();
-    let from = PortId::new();
-    let to = PortId::new();
-    let state = NodeGraphInteractionState::default();
-    let n = node();
-    let p = port(node_id);
-    let e = edge(from, to);
+    let mut current_node = node();
+    current_node.connectable = Some(true);
+    let mut current_port = port(node_id);
+    current_port.connectable_start = Some(false);
+    current_port.connectable_end = Some(true);
 
-    assert_eq!(
-        state.node_interaction_policy(&n),
-        resolve_node_interaction_policy(&n, &state)
-    );
-    assert_eq!(
-        state.port_interaction_policy(&n, &p),
-        resolve_port_interaction_policy(&n, &p, &state)
-    );
-    assert_eq!(
-        state.edge_interaction_policy(&e),
-        resolve_edge_interaction_policy(&e, &state)
-    );
-    assert_eq!(
-        state.edge_hit_test_options_for(&e),
-        resolve_edge_hit_test_options(&e, &state)
-    );
+    let policy = resolve_port_policy(&current_node, &current_port, &GraphRuntimePolicy::default());
+    assert!(policy.connectable);
+    assert!(!policy.can_start_connection());
+    assert!(policy.can_accept_connection());
+
+    current_node.connectable = Some(false);
+    current_port.connectable_start = Some(true);
+    let disabled =
+        resolve_port_policy(&current_node, &current_port, &GraphRuntimePolicy::default());
+    assert!(!disabled.connectable);
+    assert!(!disabled.can_start_connection());
+    assert!(!disabled.can_accept_connection());
 }

@@ -1,36 +1,19 @@
 //! B-layer runtime building blocks.
 //!
 //! This module is intentionally **headless-safe**: it must not depend on `fret-ui`.
-//! The goal is to provide a stable, ergonomic "runtime/store" surface without coupling to
-//! a specific rendering or widget layer. XyFlow-compatible projections live in [`xyflow`].
+//! The runtime owns the graph command engine and explicit view-session protocol.
 
-pub mod auto_pan;
-pub mod binding;
-pub mod chrome;
-pub mod commit;
-pub mod conformance;
-pub mod connection;
-pub mod create_node;
-pub mod delete;
-pub mod drag;
-pub mod events;
-pub mod fit_view;
+pub mod adapter_protocol;
+pub mod commands;
 pub mod geometry;
-pub mod gesture;
-pub mod keyboard;
+pub mod graph_runtime;
 pub mod layout;
-pub mod lookups;
-pub mod measurement;
 pub mod middleware;
 pub mod policy;
-pub(crate) mod query;
-pub mod rendering;
-pub mod resize;
-pub mod selection;
-pub mod store;
-pub mod utils;
+pub(crate) mod transaction_gate;
+mod unwind;
+pub mod view_session;
 pub mod viewport;
-pub mod xyflow;
 
 #[cfg(test)]
 mod tests;

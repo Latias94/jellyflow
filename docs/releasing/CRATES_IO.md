@@ -1,18 +1,20 @@
 # Publishing To crates.io
 
-Jellyflow is a Cargo workspace with five publishable crates:
+Jellyflow is a Cargo workspace with six publishable crates:
 
 1. `jellyflow-core`
 2. `jellyflow-layout`
 3. `jellyflow-runtime`
 4. `jellyflow`
 5. `jellyflow-egui`
+6. `jellyflow-open-gpui`
 
 `jellyflow-layout` depends on `jellyflow-core`, `jellyflow-runtime` depends on
 `jellyflow-core` and `jellyflow-layout`, and the top-level `jellyflow` facade
 depends on all three lower-level crates. `jellyflow-egui` depends on the facade
-crate and must publish after it. Publish and dry-run checks must respect that
-order.
+crate and must publish after it. `jellyflow-open-gpui` also depends on the
+facade and publishes after `jellyflow-egui`. Publish and dry-run checks must
+respect that order.
 
 ## Release Gates
 
@@ -21,52 +23,100 @@ Run these before any publish attempt:
 ```text
 cargo fmt --all --check
 cargo check --workspace --locked
-cargo nextest run --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines -- --test
-cargo bench -p jellyflow-runtime --bench rendering_query -- --test
-cargo bench -p jellyflow-runtime --bench schema_create_node -- --test
-cargo bench -p jellyflow-runtime --bench layout_pipeline -- --test
+cargo nextest run --workspace --locked
+cargo test --workspace --doc --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines --locked -- --test
 python3 tools/check_no_fret_dependencies.py
+python3 -m unittest discover -s tools/tests -p "test_*.py"
+python3 tools/check_no_legacy_ui_surfaces.py
 python3 tools/check_external_consumer_smoke.py
+cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
+cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
+cargo clippy --manifest-path templates/native-adapter/Cargo.toml --workspace --all-targets --locked -- -D warnings
+cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
+cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
+cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 git diff --check
 ```
 
-The CI workflow runs common gates on pull requests and pushes. The manual
+The CI workflow runs common gates on pull requests and pushes. The reusable
 release preflight workflow additionally verifies versions and writes package
-file lists as artifacts for release review. The crates publishing workflow
-publishes in dependency order from a `v*` tag or manual dispatch. The GitHub
-Release workflow creates or updates release notes for the same tag.
+file lists as artifacts for release review. The package-derived consumer smoke
+assembles all six `.crate` archives, serves them from a temporary sparse
+registry, and compiles a locked external consumer. Its dependency declarations
+contain versions and a registry name, never workspace or path dependencies.
+The production Open GPUI dependency disables default features and does not
+enable `test-support`; the additional source smoke owns framework test-support
+interaction coverage.
+
+The crates publishing workflow exists only on the default branch and accepts a
+fixed `release-crates` repository-dispatch event. Its `release_tag` payload is
+untrusted input: the workflow fetches that existing tag independently, resolves
+its exact object and commit IDs, requires the tag commit to be an ancestor of
+the default-branch commit that received the dispatch, and requires a successful
+CI push run for the exact release SHA. The same SHA must pass the reusable
+release preflight workflow before the `crates.io` environment can publish.
+
+Trigger a release only after pushing the reviewed tag:
+
+```text
+gh api repos/OWNER/REPOSITORY/dispatches \
+  -f event_type=release-crates \
+  -F 'client_payload[release_tag]=v0.1.0'
+```
+
+Configure the `crates.io` environment with required reviewers, prevent
+self-review, keep `CARGO_REGISTRY_TOKEN` as an environment secret rather than a
+repository-wide secret, and restrict deployments to the protected default
+branch used by repository dispatch. Separately protect `refs/tags/v*` creation,
+update, and deletion.
+These repository settings are required because workflow YAML cannot enforce
+environment approval, dispatch authorization, or tag policy by itself. The
+GitHub Release job creates or updates release notes for the same tag. It
+revalidates the tag immediately before and after the GitHub Release mutation; a
+post-operation mismatch fails the job. This detects movement but cannot make the
+remote tag and release update atomic, so release tags must still be protected
+against movement or deletion.
 
 ## Package Contents
 
 Review the files Cargo would package:
 
 ```text
-cargo package --locked --no-verify --list -p jellyflow-core
-cargo package --locked --no-verify --list -p jellyflow-layout
-cargo package --locked --no-verify --list -p jellyflow-runtime
-cargo package --locked --no-verify --list -p jellyflow
-cargo package --locked --no-verify --list -p jellyflow-egui
+cargo package --locked --list -p jellyflow-core
+cargo package --locked --list -p jellyflow-layout
+cargo package --locked --list -p jellyflow-runtime
+cargo package --locked --list -p jellyflow
+cargo package --locked --list -p jellyflow-egui
+cargo package --locked --list -p jellyflow-open-gpui
 ```
 
-The package list should not include Trellis task files, `repo-ref`, historical
-workstream archives, or renderer/platform assets. Each crate package should
-include its crate README and the files needed to build that crate from crates.io.
-`--no-verify` is used for package-list review so same-version dependent crates
-do not fail only because earlier Jellyflow crates are not visible on crates.io
-yet.
+The package list should not include `repo-ref`, historical workstream archives,
+or renderer/platform assets. Each crate package should include its crate README
+and the files needed to build that crate from crates.io.
+
+Do not use a successful `cargo package --no-verify` invocation as build
+evidence. The external consumer smoke uses `--no-verify` only to assemble the
+candidate archives because Cargo's built-in verification resolves same-version
+workspace dependencies from crates.io. It then verifies the actual archives by
+checksum, resolves them through the temporary registry, generates a consumer
+lockfile, and runs that consumer with `--locked`. A missing file, invalid
+normalized manifest, stale public API, or cross-crate mismatch fails that later
+compile.
 
 ## Dry Runs
 
 Run dry-runs in dependency order:
 
 ```text
-cargo publish --dry-run -p jellyflow-core
-cargo publish --dry-run -p jellyflow-layout
-cargo publish --dry-run -p jellyflow-runtime
-cargo publish --dry-run -p jellyflow
-cargo publish --dry-run -p jellyflow-egui
+cargo publish --locked --dry-run -p jellyflow-core
+cargo publish --locked --dry-run -p jellyflow-layout
+cargo publish --locked --dry-run -p jellyflow-runtime
+cargo publish --locked --dry-run -p jellyflow
+cargo publish --locked --dry-run -p jellyflow-egui
+cargo publish --locked --dry-run -p jellyflow-open-gpui
 ```
 
 Cargo rewrites workspace path dependencies into registry dependencies during
@@ -74,21 +124,43 @@ packaging and publishing. For a first release or same-version multi-crate
 release, dry-runs for crates that depend on unpublished workspace crates may
 fail because those dependency versions are not available on crates.io yet. Treat
 that as an expected dependency-order blocker only after confirming no unrelated
-metadata or packaging error appears earlier in the output.
+metadata or packaging error appears earlier in the output. The package-derived
+external consumer remains the local proof that the complete candidate archive
+set compiles before those versions are visible on crates.io.
 
 ## Publish Order
 
 Publish leaf crates first:
 
 ```text
-cargo publish -p jellyflow-core
-cargo publish -p jellyflow-layout
-cargo publish -p jellyflow-runtime
-cargo publish -p jellyflow
-cargo publish -p jellyflow-egui
+cargo publish --locked -p jellyflow-core
+cargo publish --locked -p jellyflow-layout
+cargo publish --locked -p jellyflow-runtime
+cargo publish --locked -p jellyflow
+cargo publish --locked -p jellyflow-egui
+cargo publish --locked -p jellyflow-open-gpui
 ```
 
-Actual crates.io publishing is handled by
+Actual crates.io publishing and GitHub Release creation are handled by
 `.github/workflows/release-crates.yml`. It waits for each published crate
-version to become visible before publishing the next dependent crate. GitHub
-Release notes are handled separately by `.github/workflows/release.yml`.
+version to become visible before publishing the next dependent crate, then
+creates or updates the GitHub Release from the same guarded tag and commit.
+
+Before creating the tag, update `workspace.package.version`, every internal
+workspace dependency constraint, and the nested Open GPUI product package
+version. Refresh the root, `examples/canvas-jellyflow`, and
+`templates/native-adapter` lockfiles, then run:
+
+```text
+python3 scripts/release-version.py check --version <version>
+cargo metadata --locked --format-version 1
+cargo metadata --manifest-path examples/canvas-jellyflow/Cargo.toml --locked --format-version 1
+cargo metadata --manifest-path templates/native-adapter/Cargo.toml --locked --format-version 1
+```
+
+A candidate archive smoke can validate an uncommitted working tree and can
+intentionally shadow an already-published version in its temporary registry;
+crates.io cannot. The release workflow therefore still requires workspace and
+product versions to match the tag and skips only versions already present on
+crates.io with a byte-identical archive. A same-version archive with different
+contents fails the release rather than mixing commits.

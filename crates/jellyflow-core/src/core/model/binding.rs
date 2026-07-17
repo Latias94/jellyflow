@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::core::ids::{EdgeId, GroupId, NodeId, PortId, StickyNoteId};
 
-/// Persisted relationship between graph-local content and a knowledge source anchor.
+/// Persisted relationship between graph-local content and a host-owned source anchor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Binding {
     /// Stable local endpoint inside this graph.

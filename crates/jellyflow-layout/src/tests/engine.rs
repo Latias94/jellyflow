@@ -1,7 +1,7 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeEndpoints, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
-    GraphOp, GraphOpBuilderExt, GraphTransaction, Node, NodeId, NodeKindKey, Port, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
+    GraphMutationFootprint, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
 };
 
 use crate::{
@@ -101,8 +101,9 @@ fn registry_reports_missing_engine() {
 fn engine_request_serializes_engine_id() {
     let request = LayoutEngineRequest::new("custom.test", LayoutRequest::all());
 
-    let encoded = serde_json::to_string(&request).expect("serialize");
-    let decoded: LayoutEngineRequest = serde_json::from_str(&encoded).expect("deserialize");
+    let encoded = serde_json::to_value(&request).expect("serialize");
+    assert!(encoded["layout"]["options"].get("node_origin").is_none());
+    let decoded: LayoutEngineRequest = serde_json::from_value(encoded).expect("deserialize");
 
     assert_eq!(decoded.engine.as_str(), "custom.test");
 }
@@ -126,14 +127,12 @@ fn context_pinned_nodes_are_visible_to_engines() {
     let context = LayoutContext::new().with_pinned_nodes([pinned]);
 
     let result = layout_graph_with_engine(&graph, &request, &registry, &context).unwrap();
-    let tx = result.to_transaction(&graph).unwrap();
 
     assert!(result.nodes.is_empty());
-    assert!(tx.is_empty());
 }
 
 #[test]
-fn generic_result_converts_to_transaction() {
+fn generic_engine_returns_layout_result() {
     let mut registry = LayoutEngineRegistry::new();
     let engine = LayoutEngineId::new("custom.test");
     registry.insert(TestEngine::new(engine.clone())).unwrap();
@@ -143,21 +142,20 @@ fn generic_result_converts_to_transaction() {
 
     let result =
         layout_graph_with_engine(&graph, &request, &registry, &LayoutContext::default()).unwrap();
-    let tx = result.to_transaction(&graph).unwrap();
 
-    assert!(matches!(tx.ops()[0], GraphOp::SetNodePos { id, .. } if id == node));
+    assert_eq!(
+        result.node_position(node).expect("node position").pos,
+        CanvasPoint { x: 10.0, y: 20.0 }
+    );
 }
 
 #[test]
-fn dirty_scope_expands_edge_change_to_endpoint_nodes() {
+fn dirty_scope_expands_touched_edge_to_endpoint_nodes() {
     let graph = connected_graph();
-    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeHidden {
-        id: EdgeId::from_u128(5),
-        from: false,
-        to: true,
-    }]);
+    let mut footprint = GraphMutationFootprint::new();
+    footprint.touch_edge(EdgeId::from_u128(5));
 
-    let scope = LayoutScope::from_transaction(&graph, &tx);
+    let scope = LayoutScope::from_footprint(&graph, &footprint);
 
     assert_eq!(
         scope.nodes(),
@@ -170,15 +168,15 @@ fn dirty_scope_expands_edge_change_to_endpoint_nodes() {
 }
 
 #[test]
-fn dirty_scope_expands_reconnect_to_old_and_new_endpoint_nodes() {
+fn dirty_scope_expands_reconnect_footprint_to_old_and_new_endpoint_nodes() {
     let graph = connected_graph_with_third_node();
-    let tx = GraphTransaction::from_ops([GraphOp::SetEdgeEndpoints {
-        id: EdgeId::from_u128(5),
-        from: EdgeEndpoints::new(PortId::from_u128(3), PortId::from_u128(4)),
-        to: EdgeEndpoints::new(PortId::from_u128(3), PortId::from_u128(7)),
-    }]);
+    let mut footprint = GraphMutationFootprint::new();
+    footprint.touch_edge(EdgeId::from_u128(5));
+    footprint.touch_port(PortId::from_u128(3));
+    footprint.touch_port(PortId::from_u128(4));
+    footprint.touch_port(PortId::from_u128(7));
 
-    let request = LayoutRequest::all().with_dirty_scope_from_transaction(&graph, &tx);
+    let request = LayoutRequest::all().with_dirty_scope_from_footprint(&graph, &footprint);
 
     assert_eq!(
         request.scope.nodes(),
@@ -196,14 +194,14 @@ fn dirty_scope_expands_reconnect_to_old_and_new_endpoint_nodes() {
 
 #[test]
 fn dirty_scope_omits_removed_node_ids_and_keeps_remaining_neighbors() {
-    let before = connected_graph();
-    let tx = before
-        .build_remove_node_tx(NodeId::from_u128(1), "remove source")
-        .expect("remove tx");
-    let mut after = before.clone();
-    tx.apply_to(&mut after).expect("apply tx");
+    let after = graph_after_source_removed();
+    let mut footprint = GraphMutationFootprint::new();
+    footprint.touch_node(NodeId::from_u128(1));
+    footprint.touch_port(PortId::from_u128(3));
+    footprint.touch_port(PortId::from_u128(4));
+    footprint.touch_edge(EdgeId::from_u128(5));
 
-    let scope = LayoutScope::from_transaction(&after, &tx);
+    let scope = LayoutScope::from_footprint(&after, &footprint);
 
     assert_eq!(
         scope.nodes(),
@@ -214,15 +212,22 @@ fn dirty_scope_omits_removed_node_ids_and_keeps_remaining_neighbors() {
 #[test]
 fn dirty_scope_can_be_empty_for_non_layout_metadata_changes() {
     let graph = connected_graph();
-    let tx = GraphTransaction::from_ops([GraphOp::SetImportAlias {
-        id: GraphId::from_u128(2),
-        from: None,
-        to: Some("demo".to_string()),
-    }]);
+    let mut footprint = GraphMutationFootprint::new();
+    footprint.imports.insert(GraphId::from_u128(2));
 
-    let scope = LayoutScope::from_transaction(&graph, &tx);
+    let scope = LayoutScope::from_footprint(&graph, &footprint);
 
     assert!(scope.is_empty());
+}
+
+fn graph_after_source_removed() -> Graph {
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    let node_id = NodeId::from_u128(2);
+    let port_id = PortId::from_u128(4);
+
+    graph.insert_node(node_id, node("demo.b", vec![port_id]));
+    graph.insert_port(port_id, port(node_id, "in", PortDirection::In));
+    graph.build_unchecked()
 }
 
 fn graph_with_one_node(node: NodeId) -> Graph {
@@ -235,7 +240,6 @@ fn graph_with_one_node(node: NodeId) -> Graph {
             pos: CanvasPoint { x: 0.0, y: 0.0 },
             origin: None,
             selectable: None,
-            focusable: None,
             draggable: None,
             connectable: None,
             deletable: None,
@@ -295,7 +299,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

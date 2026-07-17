@@ -61,27 +61,15 @@ pub struct Edge {
     #[serde(default, skip_serializing_if = "is_false")]
     pub hidden: bool,
 
-    /// Whether the edge can be selected (XyFlow `edge.selectable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.edges_selectable` decides.
+    /// Optional adapter-facing selection override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selectable: Option<bool>,
 
-    /// Whether the edge can receive keyboard focus (XyFlow `edge.focusable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.edges_focusable` decides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focusable: Option<bool>,
-
-    /// Optional edge hit-test interaction width in logical pixels (XyFlow `edge.interactionWidth`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.edge_interaction_width` decides.
+    /// Optional adapter-facing edge hit-test width in logical pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interaction_width: Option<f32>,
 
-    /// Whether the edge can be deleted via editor interactions (XyFlow `edge.deletable`).
-    ///
-    /// When omitted, the global `NodeGraphInteractionState.edges_deletable` decides.
+    /// Whether graph commands may delete this edge. Runtime policy supplies the fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletable: Option<bool>,
 
@@ -91,7 +79,7 @@ pub struct Edge {
     /// endpoints, `'source'` only enables reconnecting the source endpoint and `'target'` only
     /// enables reconnecting the target endpoint.
     ///
-    /// When omitted, the global `NodeGraphInteractionState.edges_reconnectable` decides.
+    /// When omitted, runtime policy supplies the fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconnectable: Option<EdgeReconnectable>,
 
@@ -119,7 +107,6 @@ impl Edge {
             to,
             hidden: false,
             selectable: None,
-            focusable: None,
             interaction_width: None,
             deletable: None,
             reconnectable: None,

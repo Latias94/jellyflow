@@ -1,0 +1,6 @@
+jellyflow-core
+jellyflow-layout
+jellyflow-runtime
+jellyflow
+jellyflow-egui
+jellyflow-open-gpui

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::f32::consts::{PI, TAU};
 
-use jellyflow_core::{CanvasPoint, CanvasSize, Graph, GraphTransaction, NodeId};
+use jellyflow_core::{CanvasPoint, CanvasSize, Graph, NodeId};
 
 use crate::engine::{
     LayoutContext, LayoutDirection, LayoutEngine, LayoutEngineId, LayoutError, LayoutNodePosition,
     LayoutOptions, LayoutRequest, LayoutResult, MIND_MAP_RADIAL_LAYOUT_ENGINE_ID,
-    position_from_center, resolve_node_origin, resolve_node_size, validate_request,
+    normalized_node_origin, position_from_center, resolve_node_size, validate_request,
 };
 use crate::projection::{
     VisibleLayoutEdge, build_visible_edge_projection, center_from_position, result_from_placements,
@@ -27,27 +27,11 @@ impl LayoutEngine for MindMapRadialLayoutEngine {
         request: &LayoutRequest,
         context: &LayoutContext,
     ) -> Result<LayoutResult, LayoutError> {
-        layout_graph_with_mind_map_radial_context(graph, request, context)
+        run_mind_map_radial_layout(graph, request, context)
     }
 }
 
-/// Runs the native radial mind-map engine.
-pub fn layout_graph_with_mind_map_radial(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<LayoutResult, LayoutError> {
-    layout_graph_with_mind_map_radial_context(graph, request, &LayoutContext::default())
-}
-
-/// Runs the native radial mind-map engine and converts the result into a transaction.
-pub fn layout_graph_to_transaction_with_mind_map_radial(
-    graph: &Graph,
-    request: &LayoutRequest,
-) -> Result<GraphTransaction, LayoutError> {
-    layout_graph_with_mind_map_radial(graph, request)?.to_transaction(graph)
-}
-
-fn layout_graph_with_mind_map_radial_context(
+fn run_mind_map_radial_layout(
     graph: &Graph,
     request: &LayoutRequest,
     context: &LayoutContext,
@@ -111,7 +95,7 @@ impl<'a> MindMapProjection<'a> {
             }
 
             let size = resolve_node_size(graph, request, context, *id)?;
-            let origin = resolve_node_origin(node.origin, request.options.node_origin, context);
+            let origin = normalized_node_origin(node.origin);
             let current_center = center_from_position(node.pos, size, origin);
             let arc_demand = node_arc_demand(size, request.options);
 

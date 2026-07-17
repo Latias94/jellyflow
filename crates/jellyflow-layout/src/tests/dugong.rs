@@ -1,19 +1,19 @@
 use jellyflow_core::{
-    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, GraphOp, Node, NodeId,
+    CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node, NodeId,
     NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 
 use crate::{
-    DugongLayoutEngine, LayoutContext, LayoutDirection, LayoutEngine, LayoutError,
-    LayoutNodePosition, LayoutOptions, LayoutRequest, LayoutResult, LayoutSpacing,
-    layout_graph_to_transaction_with_dugong, layout_graph_with_dugong,
+    DugongLayoutEngine, LayoutContext, LayoutDirection, LayoutEngine, LayoutError, LayoutOptions,
+    LayoutRequest, LayoutResult, LayoutSpacing,
 };
 
 #[test]
-fn dugong_layout_emits_node_position_transaction() {
+fn dugong_layout_emits_node_positions() {
     let (mut graph, a, b, _edge) = connected_graph();
     graph
-        .update_node(&a, |node| {
+        .node_mut(&a)
+        .map(|node| {
             node.pos = CanvasPoint {
                 x: 1000.0,
                 y: 1000.0,
@@ -21,7 +21,8 @@ fn dugong_layout_emits_node_position_transaction() {
         })
         .expect("node exists");
     graph
-        .update_node(&b, |node| {
+        .node_mut(&b)
+        .map(|node| {
             node.pos = CanvasPoint {
                 x: 2000.0,
                 y: 2000.0,
@@ -33,40 +34,28 @@ fn dugong_layout_emits_node_position_transaction() {
         ..LayoutOptions::default()
     });
 
-    let tx = layout_graph_to_transaction_with_dugong(&graph, &request).expect("layout");
+    let result = run_default_dugong_layout(&graph, &request).expect("layout");
 
-    assert_eq!(tx.label(), Some("Layout graph"));
-    assert_eq!(tx.ops().len(), 2);
+    assert_eq!(result.nodes.len(), 2);
     assert!(
-        tx.ops()
+        result
+            .nodes
             .iter()
-            .any(|op| matches!(op, GraphOp::SetNodePos { id, .. } if *id == a))
+            .any(|position| position.node == a && position.pos != graph.nodes()[&a].pos)
     );
     assert!(
-        tx.ops()
+        result
+            .nodes
             .iter()
-            .any(|op| matches!(op, GraphOp::SetNodePos { id, .. } if *id == b))
+            .any(|position| position.node == b && position.pos != graph.nodes()[&b].pos)
     );
-}
-
-#[test]
-fn dugong_engine_matches_compatibility_wrapper() {
-    let (graph, a, _b, _edge) = connected_graph();
-    let request = LayoutRequest::all();
-    let wrapper = layout_graph_with_dugong(&graph, &request).expect("wrapper");
-    let engine = DugongLayoutEngine
-        .layout(&graph, &request, &LayoutContext::default())
-        .expect("engine");
-
-    assert_eq!(wrapper.node_position(a), engine.node_position(a));
-    assert_eq!(wrapper.edge_routes.len(), engine.edge_routes.len());
 }
 
 #[test]
 fn layout_direction_changes_axis_ordering() {
     let (graph, a, b, _edge) = connected_graph();
-    let tb = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("tb layout");
-    let lr = layout_graph_with_dugong(
+    let tb = run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("tb layout");
+    let lr = run_default_dugong_layout(
         &graph,
         &LayoutRequest::all()
             .with_options(LayoutOptions::default().with_direction(LayoutDirection::LeftToRight)),
@@ -88,16 +77,15 @@ fn layout_direction_changes_axis_ordering() {
 fn node_origin_controls_written_position_from_dugong_center() {
     let (mut graph, a, _b, _edge) = connected_graph();
     graph
-        .update_node(&a, |node| {
-            node.origin = Some(jellyflow_core::NodeOrigin { x: 0.5, y: 0.5 })
-        })
+        .node_mut(&a)
+        .map(|node| node.origin = Some(jellyflow_core::NodeOrigin { x: 0.5, y: 0.5 }))
         .expect("node exists");
     let request = LayoutRequest::all().with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
         ..LayoutOptions::default()
     });
 
-    let result = layout_graph_with_dugong(&graph, &request).expect("layout");
+    let result = run_default_dugong_layout(&graph, &request).expect("layout");
     let node = result.node_position(a).expect("node");
 
     assert!((node.pos.x - node.center.x).abs() <= 1.0e-3);
@@ -105,7 +93,7 @@ fn node_origin_controls_written_position_from_dugong_center() {
 }
 
 #[test]
-fn context_node_origin_controls_fallback_origin() {
+fn missing_node_origin_uses_top_left_anchor() {
     let (graph, a, _b, _edge) = connected_graph();
     let request = LayoutRequest::nodes([a]).with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
@@ -113,23 +101,19 @@ fn context_node_origin_controls_fallback_origin() {
     });
 
     let result = DugongLayoutEngine
-        .layout(
-            &graph,
-            &request,
-            &LayoutContext::new().with_node_origin((0.5, 0.5)),
-        )
+        .layout(&graph, &request, &LayoutContext::new())
         .expect("layout");
     let node = result.node_position(a).expect("node");
 
-    assert!((node.pos.x - node.center.x).abs() <= 1.0e-3);
-    assert!((node.pos.y - node.center.y).abs() <= 1.0e-3);
+    assert!((node.pos.x - (node.center.x - node.size.width * 0.5)).abs() <= 1.0e-3);
+    assert!((node.pos.y - (node.center.y - node.size.height * 0.5)).abs() <= 1.0e-3);
 }
 
 #[test]
 fn layout_scope_uses_only_requested_nodes_and_internal_edges() {
     let (graph, a, b, _edge) = connected_graph();
 
-    let result = layout_graph_with_dugong(&graph, &LayoutRequest::nodes([a])).expect("layout");
+    let result = run_default_dugong_layout(&graph, &LayoutRequest::nodes([a])).expect("layout");
 
     assert!(result.node_position(a).is_some());
     assert!(result.node_position(b).is_none());
@@ -143,7 +127,8 @@ fn node_size_resolution_prefers_graph_then_request_then_context_then_default() {
     let request_size = size(80.0, 50.0);
     let context_size = size(60.0, 30.0);
     graph
-        .update_node(&a, |node| node.size = Some(graph_size))
+        .node_mut(&a)
+        .map(|node| node.size = Some(graph_size))
         .expect("node exists");
     let request = LayoutRequest::all()
         .with_measured_node_sizes([(a, size(10.0, 10.0)), (b, request_size)])
@@ -182,25 +167,28 @@ fn context_measured_size_is_used_when_request_has_none() {
 fn hidden_nodes_and_edges_are_excluded_from_projection() {
     let (mut graph, a, b, edge) = connected_graph();
     graph
-        .update_node(&b, |node| node.hidden = true)
+        .node_mut(&b)
+        .map(|node| node.hidden = true)
         .expect("node exists");
 
     let hidden_node_result =
-        layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("hidden node layout");
+        run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("hidden node layout");
 
     assert!(hidden_node_result.node_position(a).is_some());
     assert!(hidden_node_result.node_position(b).is_none());
     assert!(hidden_node_result.edge_routes.is_empty());
 
     graph
-        .update_node(&b, |node| node.hidden = false)
+        .node_mut(&b)
+        .map(|node| node.hidden = false)
         .expect("node exists");
     graph
-        .update_edge(&edge, |edge| edge.hidden = true)
+        .edge_mut(&edge)
+        .map(|edge| edge.hidden = true)
         .expect("edge exists");
 
     let hidden_edge_result =
-        layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("hidden edge layout");
+        run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("hidden edge layout");
 
     assert!(hidden_edge_result.node_position(a).is_some());
     assert!(hidden_edge_result.node_position(b).is_some());
@@ -211,7 +199,7 @@ fn hidden_nodes_and_edges_are_excluded_from_projection() {
 fn layout_reports_projected_edge_routes() {
     let (graph, _a, _b, edge) = connected_graph();
 
-    let result = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("layout");
     let route = result
         .edge_routes
         .iter()
@@ -233,7 +221,7 @@ fn parallel_edges_between_same_nodes_keep_distinct_routes() {
     graph.insert_edge(second_edge, data_edge(endpoints.0, endpoints.1));
     let graph = graph.build_unchecked();
 
-    let result = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("layout");
+    let result = run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     assert_eq!(result.edge_routes.len(), 2);
     assert!(
@@ -254,13 +242,11 @@ fn parallel_edges_between_same_nodes_keep_distinct_routes() {
 fn empty_graph_layout_is_empty() {
     let graph = GraphBuilder::new(GraphId::from_u128(42));
 
-    let result = layout_graph_with_dugong(&graph, &LayoutRequest::all()).expect("layout");
-    let tx = layout_graph_to_transaction_with_dugong(&graph, &LayoutRequest::all()).expect("tx");
+    let result = run_default_dugong_layout(&graph, &LayoutRequest::all()).expect("layout");
 
     assert!(result.nodes.is_empty());
     assert!(result.edge_routes.is_empty());
     assert!(result.bounds.is_none());
-    assert!(tx.ops().is_empty());
 }
 
 #[test]
@@ -274,7 +260,7 @@ fn invalid_size_is_reported_before_layout() {
         },
     )]);
 
-    let err = layout_graph_with_dugong(&graph, &request).expect_err("invalid size");
+    let err = run_default_dugong_layout(&graph, &request).expect_err("invalid size");
 
     assert_eq!(
         err,
@@ -292,7 +278,8 @@ fn invalid_size_is_reported_before_layout() {
 fn unused_context_measured_sizes_do_not_fail_scoped_layout() {
     let (mut graph, a, b, _edge) = connected_graph();
     graph
-        .update_node(&b, |node| node.hidden = true)
+        .node_mut(&b)
+        .map(|node| node.hidden = true)
         .expect("node exists");
     let context = LayoutContext::new().with_measured_node_sizes([
         (
@@ -331,7 +318,7 @@ fn invalid_spacing_and_margin_are_reported_before_layout() {
         ..LayoutOptions::default()
     });
 
-    let err = layout_graph_with_dugong(&graph, &spacing_request).expect_err("spacing");
+    let err = run_default_dugong_layout(&graph, &spacing_request).expect_err("spacing");
 
     assert_eq!(err, LayoutError::InvalidSpacing(spacing));
 
@@ -344,7 +331,7 @@ fn invalid_spacing_and_margin_are_reported_before_layout() {
         ..LayoutOptions::default()
     });
 
-    let err = layout_graph_with_dugong(&graph, &margin_request).expect_err("margin");
+    let err = run_default_dugong_layout(&graph, &margin_request).expect_err("margin");
 
     assert_eq!(err, LayoutError::InvalidMargin(margin));
 }
@@ -354,7 +341,7 @@ fn invalid_scope_node_is_reported_before_layout() {
     let (graph, _a, _b, _edge) = connected_graph();
     let missing = NodeId::from_u128(99);
 
-    let err = layout_graph_with_dugong(&graph, &LayoutRequest::nodes([missing]))
+    let err = run_default_dugong_layout(&graph, &LayoutRequest::nodes([missing]))
         .expect_err("missing scope node");
 
     assert_eq!(err, LayoutError::MissingScopeNode(missing));
@@ -367,7 +354,7 @@ fn missing_source_and_target_ports_are_reported() {
     missing_source.remove_port(&source_port);
     let missing_source = missing_source.build_unchecked();
 
-    let err = layout_graph_with_dugong(&missing_source, &LayoutRequest::all())
+    let err = run_default_dugong_layout(&missing_source, &LayoutRequest::all())
         .expect_err("missing source port");
 
     assert_eq!(err, LayoutError::MissingSourcePort(edge));
@@ -377,7 +364,7 @@ fn missing_source_and_target_ports_are_reported() {
     missing_target.remove_port(&target_port);
     let missing_target = missing_target.build_unchecked();
 
-    let err = layout_graph_with_dugong(&missing_target, &LayoutRequest::all())
+    let err = run_default_dugong_layout(&missing_target, &LayoutRequest::all())
         .expect_err("missing target port");
 
     assert_eq!(err, LayoutError::MissingTargetPort(edge));
@@ -389,7 +376,7 @@ fn missing_source_and_target_nodes_are_reported() {
     missing_source.remove_node(&a);
     let missing_source = missing_source.build_unchecked();
 
-    let err = layout_graph_with_dugong(&missing_source, &LayoutRequest::all())
+    let err = run_default_dugong_layout(&missing_source, &LayoutRequest::all())
         .expect_err("missing source node");
 
     assert_eq!(err, LayoutError::MissingSourceNode { edge });
@@ -398,64 +385,25 @@ fn missing_source_and_target_nodes_are_reported() {
     missing_target.remove_node(&b);
     let missing_target = missing_target.build_unchecked();
 
-    let err = layout_graph_with_dugong(&missing_target, &LayoutRequest::all())
+    let err = run_default_dugong_layout(&missing_target, &LayoutRequest::all())
         .expect_err("missing target node");
 
     assert_eq!(err, LayoutError::MissingTargetNode { edge });
 }
 
 #[test]
-fn result_to_transaction_rejects_duplicates_and_missing_nodes() {
-    let (graph, a, _b, _edge) = connected_graph();
-    let first = LayoutNodePosition {
-        node: a,
-        pos: CanvasPoint { x: 1.0, y: 2.0 },
-        center: CanvasPoint { x: 51.0, y: 22.0 },
-        size: size(100.0, 40.0),
-    };
-    let duplicate = LayoutResult {
-        nodes: vec![first, first],
-        edge_routes: Vec::new(),
-        bounds: None,
-    };
-
-    let err = duplicate
-        .to_transaction(&graph)
-        .expect_err("duplicate node");
-
-    assert_eq!(err, LayoutError::DuplicateResultNode(a));
-
-    let missing = NodeId::from_u128(99);
-    let missing_result = LayoutResult {
-        nodes: vec![LayoutNodePosition {
-            node: missing,
-            ..first
-        }],
-        edge_routes: Vec::new(),
-        bounds: None,
-    };
-
-    let err = missing_result
-        .to_transaction(&graph)
-        .expect_err("missing transaction node");
-
-    assert_eq!(err, LayoutError::MissingTransactionNode(missing));
-}
-
-#[test]
 fn bounds_track_visual_rect_independent_of_node_origin_anchor() {
     let (mut graph, a, _b, _edge) = connected_graph();
     graph
-        .update_node(&a, |node| {
-            node.origin = Some(jellyflow_core::NodeOrigin { x: 1.0, y: 1.0 })
-        })
+        .node_mut(&a)
+        .map(|node| node.origin = Some(jellyflow_core::NodeOrigin { x: 1.0, y: 1.0 }))
         .expect("node exists");
     let request = LayoutRequest::nodes([a]).with_options(LayoutOptions {
         default_node_size: size(100.0, 40.0),
         ..LayoutOptions::default()
     });
 
-    let result = layout_graph_with_dugong(&graph, &request).expect("layout");
+    let result = run_default_dugong_layout(&graph, &request).expect("layout");
     let node = result.node_position(a).expect("node");
     let bounds = result.bounds.expect("bounds");
 
@@ -464,6 +412,13 @@ fn bounds_track_visual_rect_independent_of_node_origin_anchor() {
     assert!((bounds.origin.x - (node.center.x - node.size.width * 0.5)).abs() <= 1.0e-3);
     assert!((bounds.origin.y - (node.center.y - node.size.height * 0.5)).abs() <= 1.0e-3);
     assert_eq!(bounds.size, node.size);
+}
+
+fn run_default_dugong_layout(
+    graph: &Graph,
+    request: &LayoutRequest,
+) -> Result<LayoutResult, LayoutError> {
+    DugongLayoutEngine.layout(graph, request, &LayoutContext::default())
 }
 
 fn connected_graph() -> (GraphBuilder, NodeId, NodeId, EdgeId) {
@@ -498,7 +453,6 @@ fn node(kind: &str, ports: Vec<PortId>) -> Node {
         pos: CanvasPoint { x: 0.0, y: 0.0 },
         origin: None,
         selectable: None,
-        focusable: None,
         draggable: None,
         connectable: None,
         deletable: None,

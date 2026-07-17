@@ -1,0 +1,63 @@
+use crate::graph_kernel::GraphOp;
+
+use super::coalesce_value;
+
+pub(super) fn try_coalesce_edge_setter(last: &mut GraphOp, next: &GraphOp) -> bool {
+    match (last, next) {
+        (
+            GraphOp::SetEdgeKind {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeKind { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeSelectable {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeSelectable { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeHidden {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeHidden { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeInteractionWidth {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeInteractionWidth { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeDeletable {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeDeletable { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeReconnectable {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeReconnectable { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeData {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeData { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeView {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeView { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        (
+            GraphOp::SetEdgeEndpoints {
+                id: a, to: last_to, ..
+            },
+            GraphOp::SetEdgeEndpoints { id: b, from, to },
+        ) => coalesce_value(a, last_to, b, from, to),
+        _ => false,
+    }
+}

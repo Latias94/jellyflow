@@ -9,36 +9,27 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/jellyflow-runtime"
 readme = "README.md"
-description = "Headless store, rules, schema, profile, and change pipeline for Jellyflow."
+description = "Renderer-neutral graph runtime and native view protocol for Jellyflow."
 keywords = ["graph", "node-graph", "flow", "headless"]
 categories = ["data-structures", "gui"]
 
 [dependencies]
 jellyflow-core.workspace = true
 jellyflow-layout.workspace = true
-keyboard-types.workspace = true
+rpds.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
+tempfile.workspace = true
 
-[dev-dependencies]
-criterion = "0.8.2"
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
-[[bench]]
-name = "rendering_query"
-harness = false
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+xattr.workspace = true
 
-[[bench]]
-name = "schema_create_node"
-harness = false
-
-[[bench]]
-name = "layout_pipeline"
-harness = false
-
-[lints.rust]
-dead_code = "allow"
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [lints.clippy]
 arc_with_non_send_sync = "allow"

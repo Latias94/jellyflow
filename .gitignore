@@ -2,6 +2,8 @@
 target/
 Cargo.lock
 !/Cargo.lock
+!/examples/canvas-jellyflow/Cargo.lock
+!/templates/native-adapter/Cargo.lock
 repo-ref/
 __pycache__/
 *.pyc

@@ -3,11 +3,15 @@
 `jellyflow-core` contains the portable graph document model for Jellyflow:
 
 - stable graph, node, port, edge, symbol, group, and sticky-note IDs;
-- serializable node graph data structures;
+- canonical in-memory graph facts with persistence-owned versioned DTOs;
 - first-class binding records for graph-local objects and opaque host-owned source anchors;
 - type descriptors and compatibility checks;
 - interaction-policy value types;
-- undoable graph operations, transactions, fragments, and history.
+- renderer-neutral mutation footprints for incremental consumers.
+
+Authoritative mutation, reversible operation journals, and history belong to
+`jellyflow-runtime`. `Graph` intentionally has no raw Serde representation; applications persist
+it through the runtime's versioned graph-file API.
 
 The crate is headless by contract. It must not depend on Fret, GPU, renderer, platform, or windowing
 crates.

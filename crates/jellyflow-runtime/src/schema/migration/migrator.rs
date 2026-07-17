@@ -21,4 +21,10 @@ impl NodeKindMigrateError {
     pub fn message(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
     }
+
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Message(message) => message,
+        }
+    }
 }

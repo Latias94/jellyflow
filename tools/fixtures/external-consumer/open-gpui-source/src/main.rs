@@ -1,0 +1,315 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
+use jellyflow::core::{
+    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeId, NodeKindKey, PortCapacity,
+    PortDirection, PortId, PortKey, PortKind,
+};
+use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
+use jellyflow::runtime::{
+    GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome, TopologyEdit,
+    TopologyPort, ViewSessionOptions,
+};
+use jellyflow_open_gpui::{
+    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
+    OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+};
+use open_gpui::{
+    AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
+    Task, Window, div, px,
+};
+
+const KIND: &str = "external.dynamic-workflow";
+const RENDERER: &str = "external.native.dynamic-workflow";
+const NODE_SELECTOR: &str = "external-product-node";
+const CONTROL_SELECTOR: &str = "external-product-control";
+const BASE_PORT_SELECTOR: &str = "external-product-base-port";
+const DYNAMIC_PORT_SELECTOR: &str = "external-product-dynamic-port";
+
+struct ProductNodeState {
+    title: String,
+    mount_count: Cell<u64>,
+    render_count: Cell<u64>,
+    click_count: Cell<u64>,
+    command_count: Cell<u64>,
+}
+
+struct ProductNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    state: Rc<ProductNodeState>,
+    command_task: Option<Task<()>>,
+}
+
+impl Render for ProductNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        self.state
+            .render_count
+            .set(self.state.render_count.get().saturating_add(1));
+        let binding = self.binding.read(cx);
+        let base = binding
+            .port_handle(base_port_id())
+            .expect("catalog-created real port belongs to the retained node");
+        let dynamic = binding.port_handle(dynamic_port_id());
+        let command_binding = self.binding.clone();
+        let product_node = cx.weak_entity();
+        let clicks = Rc::clone(&self.state);
+
+        let mut root = div()
+            .debug_selector(|| NODE_SELECTOR.to_owned())
+            .relative()
+            .size_full()
+            .child(
+                div().absolute().left(px(16.0)).top(px(16.0)).child(
+                    OpenGpuiNodeInteractionGuard::control(
+                        div()
+                            .debug_selector(|| CONTROL_SELECTOR.to_owned())
+                            .w(px(156.0))
+                            .h(px(28.0))
+                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                clicks
+                                    .click_count
+                                    .set(clicks.click_count.get().saturating_add(1));
+                                let snapshot = command_binding.read(cx).snapshot().clone();
+                                let read = snapshot.read().expect("command binding stays live");
+                                let ticket = read
+                                    .enqueue_command(cx, |read| {
+                                        let base = read
+                                            .port(base_port_id())
+                                            .expect("base port remains in the binding snapshot")
+                                            .clone();
+                                        let mut dynamic = base.clone();
+                                        dynamic.key = PortKey::new("dynamic-result");
+                                        GraphCommand::topology(
+                                            read.graph_revision(),
+                                            TopologyEdit::new().replace_node_ports(
+                                                node_id(),
+                                                [
+                                                    TopologyPort::new(base_port_id(), base),
+                                                    TopologyPort::new(dynamic_port_id(), dynamic),
+                                                ],
+                                                IncidentEdgePolicy::Reject,
+                                            ),
+                                        )
+                                        .with_label("add external dynamic port")
+                                    })
+                                    .expect("native command enters the host feedback journal");
+                                let command_state = Rc::clone(&clicks);
+                                let completion_node = product_node.clone();
+                                let task = cx.spawn(async move |cx| {
+                                    let applied = ticket
+                                        .await
+                                        .is_ok_and(|outcome| outcome.applied().is_some());
+                                    let _ = completion_node.update(cx, |node, cx| {
+                                        node.command_task = None;
+                                        if applied {
+                                            command_state.command_count.set(
+                                                command_state.command_count.get().saturating_add(1),
+                                            );
+                                        }
+                                        cx.notify();
+                                    });
+                                });
+                                let _ = product_node.update(cx, |node, _| {
+                                    node.command_task = Some(task);
+                                });
+                            })
+                            .child(self.state.title.clone()),
+                    ),
+                ),
+            )
+            .child(
+                div().absolute().right(px(0.0)).top(px(72.0)).child(
+                    base.measure(
+                        div()
+                            .debug_selector(|| BASE_PORT_SELECTOR.to_owned())
+                            .w(px(14.0))
+                            .h(px(14.0)),
+                    ),
+                ),
+            );
+        if let Some(dynamic) = dynamic {
+            root = root.child(
+                div().absolute().right(px(0.0)).top(px(108.0)).child(
+                    dynamic.measure(
+                        div()
+                            .debug_selector(|| DYNAMIC_PORT_SELECTOR.to_owned())
+                            .w(px(14.0))
+                            .h(px(14.0)),
+                    ),
+                ),
+            );
+        }
+        root
+    }
+}
+
+fn node_id() -> NodeId {
+    NodeId::from_u128(20)
+}
+
+fn base_port_id() -> PortId {
+    PortId::from_u128(21)
+}
+
+fn dynamic_port_id() -> PortId {
+    PortId::from_u128(22)
+}
+
+#[open_gpui::test]
+fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::TestAppContext) {
+    let kind = NodeKindKey::new(KIND);
+    let node = node_id();
+    let base_port = base_port_id();
+    let dynamic_port = dynamic_port_id();
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(
+            NodeKindSpec::builder(kind.clone(), "Dynamic workflow", RENDERER)
+                .default_size(CanvasSize {
+                    width: 260.0,
+                    height: 180.0,
+                })
+                .port(NodePortSpec::new(
+                    "base",
+                    PortDirection::Out,
+                    PortKind::Data,
+                    PortCapacity::Multi,
+                ))
+                .build(),
+        )
+        .expect("register external dynamic node kind");
+
+    let creation = catalog
+        .instantiate_node_with_ids(&kind, node, CanvasPoint { x: 40.0, y: 48.0 }, [base_port])
+        .expect("instantiate external dynamic node");
+    let (created_id, created_node, created_ports) = creation.into_parts();
+    let mut graph = GraphBuilder::new(GraphId::from_u128(4));
+    graph.insert_node(created_id, created_node);
+    for (port_id, port) in created_ports {
+        graph.insert_port(port_id, port);
+    }
+    let runtime = GraphRuntime::builder(catalog)
+        .build(graph.build().expect("external fixture graph must validate"))
+        .expect("create external graph runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach external view");
+    let weak_view = view.downgrade();
+
+    let state = Rc::new(ProductNodeState {
+        title: "Application-owned dynamic node".to_owned(),
+        mount_count: Cell::new(0),
+        render_count: Cell::new(0),
+        click_count: Cell::new(0),
+        command_count: Cell::new(0),
+    });
+    let factory_state = Rc::clone(&state);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        let state = Rc::clone(&factory_state);
+        state
+            .mount_count
+            .set(state.mount_count.get().saturating_add(1));
+        cx.new(|_| ProductNode {
+            binding,
+            state,
+            command_task: None,
+        })
+    });
+    let registry = registry
+        .seal()
+        .expect("source renderer registrations must be valid");
+    assert_eq!(
+        registry.status(RENDERER),
+        OpenGpuiRendererRegistrationStatus::Registered
+    );
+
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry,
+            CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 1024.0,
+                    height: 768.0,
+                },
+            },
+        )
+    });
+    draw(cx);
+    draw(cx);
+
+    assert_eq!(state.mount_count.get(), 1);
+    assert!(state.render_count.get() > 0);
+    assert!(cx.debug_bounds(NODE_SELECTOR).is_some());
+    let control = cx
+        .debug_bounds(CONTROL_SELECTOR)
+        .expect("application-owned native control rendered");
+    assert!(cx.debug_bounds(BASE_PORT_SELECTOR).is_some());
+    assert!(cx.debug_bounds(DYNAMIC_PORT_SELECTOR).is_none());
+
+    let geometry = weak_view
+        .geometry_snapshot()
+        .expect("external native geometry published");
+    let node_geometry = geometry.node(node).expect("external node geometry");
+    assert!(node_geometry.is_fresh());
+    assert_eq!(node_geometry.port_outcomes().len(), 1);
+    assert!(matches!(
+        geometry.port_outcome(base_port),
+        Some(PublishedPortOutcome::Rendered(_))
+    ));
+
+    cx.simulate_click(control.center(), Default::default());
+    draw(cx);
+    draw(cx);
+    assert_eq!(state.click_count.get(), 1);
+    assert_eq!(state.command_count.get(), 1);
+    assert!(cx.debug_bounds(DYNAMIC_PORT_SELECTOR).is_some());
+
+    let geometry = weak_view
+        .geometry_snapshot()
+        .expect("dynamic native geometry published");
+    let node_geometry = geometry.node(node).expect("dynamic node geometry");
+    assert!(node_geometry.is_fresh());
+    assert_eq!(node_geometry.port_outcomes().len(), 2);
+    for port in [base_port, dynamic_port] {
+        assert!(matches!(
+            geometry.port_outcome(port),
+            Some(PublishedPortOutcome::Rendered(_))
+        ));
+        let layout = geometry.port(port).expect("real port geometry");
+        assert_eq!(layout.node(), node);
+        assert!(layout.visual_bounds().size.is_positive_finite());
+    }
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().mounts(), 1);
+        assert_eq!(host.stats().active_nodes(), 1);
+        assert!(host.stats().feedback_submissions() >= 1);
+        assert_eq!(host.stats().feedback_failures(), 0);
+    });
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("runtime snapshot after native render")
+            .graph()
+            .node(&node)
+            .expect("dynamic node remains in runtime")
+            .ports,
+        vec![base_port, dynamic_port]
+    );
+}
+
+fn draw(cx: &mut open_gpui::VisualTestContext) {
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    cx.run_until_parked();
+}
+
+fn main() {}

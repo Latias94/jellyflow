@@ -1,63 +1,42 @@
-use crate::io::NodeGraphInteractionState;
-use crate::runtime::geometry::EdgeHitTestOptions;
 use jellyflow_core::core::{Edge, EdgeReconnectable};
 
+use super::GraphRuntimePolicy;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NodeGraphEdgeInteractionPolicy {
-    pub selectable: bool,
-    pub focusable: bool,
-    pub deletable: bool,
-    pub reconnect_source: bool,
-    pub reconnect_target: bool,
+pub(crate) struct ResolvedEdgePolicy {
+    pub(crate) deletable: bool,
+    pub(crate) reconnect_source: bool,
+    pub(crate) reconnect_target: bool,
 }
 
-impl NodeGraphEdgeInteractionPolicy {
-    pub fn can_delete(self) -> bool {
+impl ResolvedEdgePolicy {
+    pub(crate) fn can_delete(self) -> bool {
         self.deletable
     }
 
-    pub fn reconnectable(self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn reconnectable(self) -> bool {
         self.reconnect_source || self.reconnect_target
     }
 
-    pub fn can_reconnect_source(self) -> bool {
+    pub(crate) fn can_reconnect_source(self) -> bool {
         self.reconnect_source
     }
 
-    pub fn can_reconnect_target(self) -> bool {
+    pub(crate) fn can_reconnect_target(self) -> bool {
         self.reconnect_target
     }
 }
 
-pub fn resolve_edge_interaction_policy(
-    edge: &Edge,
-    state: &NodeGraphInteractionState,
-) -> NodeGraphEdgeInteractionPolicy {
-    let connection = state.connection_interaction();
-    let keyboard = state.keyboard_interaction();
-    let selection = state.selection_interaction();
-    let delete = state.delete_interaction();
+pub(crate) fn resolve_edge_policy(edge: &Edge, policy: &GraphRuntimePolicy) -> ResolvedEdgePolicy {
     let reconnectable = edge
         .reconnectable
-        .unwrap_or(EdgeReconnectable::Bool(connection.edges_reconnectable));
+        .unwrap_or(EdgeReconnectable::Bool(policy.edge_reconnection_enabled()));
     let (reconnect_source, reconnect_target) = reconnectable.endpoint_flags();
 
-    NodeGraphEdgeInteractionPolicy {
-        selectable: edge.selectable.unwrap_or(selection.edges_selectable),
-        focusable: edge.focusable.unwrap_or(keyboard.edges_focusable),
-        deletable: edge.deletable.unwrap_or(delete.edges_deletable),
+    ResolvedEdgePolicy {
+        deletable: edge.deletable.unwrap_or(policy.edge_deletion_enabled()),
         reconnect_source,
         reconnect_target,
     }
-}
-
-pub fn resolve_edge_hit_test_options(
-    edge: &Edge,
-    state: &NodeGraphInteractionState,
-) -> EdgeHitTestOptions {
-    EdgeHitTestOptions::new(
-        edge.interaction_width
-            .unwrap_or(state.edge_interaction_width),
-        usize::from(state.bezier_hit_test_steps),
-    )
 }
