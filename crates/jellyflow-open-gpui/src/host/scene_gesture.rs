@@ -35,6 +35,7 @@ struct CanvasSelectionWork {
 #[derive(Debug, Default)]
 pub(super) struct SceneGestureController {
     state: Option<SceneGestureState>,
+    pending_node_drag: Option<PendingNodeDrag>,
 }
 
 impl SceneGestureController {
@@ -49,7 +50,7 @@ impl SceneGestureController {
         start_screen: CanvasPoint,
         view: &ViewSession,
     ) -> bool {
-        if self.state.is_some() {
+        if self.state.is_some() || self.pending_node_drag.is_some() {
             return false;
         }
         let Ok(transform) = view.viewport_transform() else {
@@ -263,13 +264,24 @@ impl SceneGestureController {
         if !drag.moved || !drag.delta.is_finite() {
             return None;
         }
-        let edits = drag.positions.into_iter().filter_map(|(node, position)| {
-            let next = CanvasPoint {
-                x: position.x + drag.delta.x,
-                y: position.y + drag.delta.y,
-            };
-            next.is_finite()
-                .then_some(NodeGeometryEdit::new(node).with_position(next))
+        let edits = drag
+            .positions
+            .into_iter()
+            .filter_map(|(node, position)| {
+                let next = CanvasPoint {
+                    x: position.x + drag.delta.x,
+                    y: position.y + drag.delta.y,
+                };
+                next.is_finite()
+                    .then_some(NodeGeometryEdit::new(node).with_position(next))
+            })
+            .collect::<Vec<_>>();
+        if edits.is_empty() {
+            return None;
+        }
+        self.pending_node_drag = Some(PendingNodeDrag {
+            nodes: edits.iter().map(NodeGeometryEdit::node).collect(),
+            delta: drag.delta,
         });
         Some(
             GraphCommand::set_node_geometry(drag.expected_revision, edits).with_label("Move nodes"),
@@ -277,6 +289,7 @@ impl SceneGestureController {
     }
 
     pub(super) fn cancel(&mut self, view: &ViewSession) {
+        self.settle_node_drag();
         let Some(state) = self.state.take() else {
             return;
         };
@@ -296,10 +309,36 @@ impl SceneGestureController {
     }
 
     pub(super) fn node_drag_delta(&self, node: NodeId) -> Option<CanvasPoint> {
-        let Some(SceneGestureState::NodeDrag(drag)) = self.state.as_ref() else {
-            return None;
-        };
-        drag.positions.contains_key(&node).then_some(drag.delta)
+        self.state
+            .as_ref()
+            .and_then(|state| match state {
+                SceneGestureState::NodeDrag(drag) if drag.positions.contains_key(&node) => {
+                    Some(drag.delta)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                self.pending_node_drag
+                    .as_ref()
+                    .and_then(|drag| drag.nodes.contains(&node).then_some(drag.delta))
+            })
+    }
+
+    pub(super) fn settle_node_drag(&mut self) {
+        self.pending_node_drag = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn retain_node_drag_for_test(&mut self, node: NodeId, delta: CanvasPoint) {
+        self.pending_node_drag = Some(PendingNodeDrag {
+            nodes: BTreeSet::from([node]),
+            delta,
+        });
+    }
+
+    pub(super) fn has_node_drag_visual(&self) -> bool {
+        matches!(self.state, Some(SceneGestureState::NodeDrag(_)))
+            || self.pending_node_drag.is_some()
     }
 
     pub(super) fn selection_rectangle(&self) -> Option<CanvasRect> {
@@ -338,6 +377,12 @@ struct NodeDragGesture {
     positions: BTreeMap<NodeId, CanvasPoint>,
     delta: CanvasPoint,
     moved: bool,
+}
+
+#[derive(Debug)]
+struct PendingNodeDrag {
+    nodes: BTreeSet<NodeId>,
+    delta: CanvasPoint,
 }
 
 #[derive(Debug)]
@@ -523,6 +568,7 @@ impl OpenGpuiSceneHost {
             .commands
             .enqueue_detached(command, OpenGpuiCommandOrigin::NodeDrag)
         {
+            self.scene_gesture.settle_node_drag();
             self.record_command_diagnostic(error.to_string());
         } else {
             cx.notify();
@@ -616,10 +662,39 @@ impl OpenGpuiSceneHost {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use jellyflow::core::{CanvasPoint, NodeId};
     use jellyflow::runtime::runtime::viewport::ViewportTransform;
 
-    use super::CanvasSelectionGesture;
+    use super::{
+        CanvasSelectionGesture, NodeDragGesture, SceneGestureController, SceneGestureState,
+    };
+
+    #[test]
+    fn finished_node_drag_retains_visual_delta_until_command_settlement() {
+        let node = NodeId::from_u128(1);
+        let delta = CanvasPoint { x: 42.0, y: 18.0 };
+        let mut controller = SceneGestureController {
+            state: Some(SceneGestureState::NodeDrag(NodeDragGesture {
+                start_screen: CanvasPoint::default(),
+                start_zoom: 1.0,
+                expected_revision: 7,
+                positions: BTreeMap::from([(node, CanvasPoint { x: 10.0, y: 20.0 })]),
+                delta,
+                moved: true,
+            })),
+            pending_node_drag: None,
+        };
+
+        controller
+            .finish_command()
+            .expect("moved drag creates a geometry command");
+        assert_eq!(controller.node_drag_delta(node), Some(delta));
+
+        controller.settle_node_drag();
+        assert_eq!(controller.node_drag_delta(node), None);
+    }
 
     #[test]
     fn additive_selection_has_bounded_copy_and_handoff_work_across_pointer_moves() {

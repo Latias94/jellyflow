@@ -489,6 +489,7 @@ impl Render for OpenGpuiSceneHost {
                 measurements,
                 Rc::clone(&self.commands),
                 command_batch,
+                !self.scene_gesture.has_node_drag_visual(),
             )),
             frame.transform(),
             focus_handle,

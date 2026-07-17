@@ -17,11 +17,13 @@ use open_gpui::{
 };
 
 use crate::binding::OpenGpuiMountCapability;
+use crate::command_journal::OpenGpuiCommandBatchStateError;
 use crate::interaction::{
     OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortEvent, port_drag_owner,
 };
 use crate::{OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiPortHandle};
 
+use super::scene_render::edge_path_endpoints;
 use super::{
     LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
     OpenGpuiConnectionPreviewEvidence, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
@@ -932,6 +934,221 @@ fn node_chrome_drag_commits_one_geometry_command_and_canvas_pan_zoom_stay_view_l
 
     cx.read_entity(&host, |host, _| {
         assert!(!host.active_scene_gesture());
+    });
+}
+
+#[open_gpui::test]
+fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let weak_view = view.downgrade();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        cx.new(|_| RoutedNode { binding })
+    });
+    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let scene_host = captured_host.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                viewport(),
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    draw(cx);
+
+    let output_before = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("source output before drag");
+    assert_eq!(
+        weak_view
+            .geometry_snapshot()
+            .expect("initial geometry")
+            .routes()
+            .len(),
+        1,
+    );
+    let initial_route = weak_view
+        .geometry_snapshot()
+        .expect("initial route geometry")
+        .route(EdgeId::from_u128(30))
+        .expect("initial route")
+        .facts()
+        .path
+        .clone();
+    let (initial_source, initial_target) =
+        edge_path_endpoints(&initial_route).expect("initial route endpoints");
+
+    let drag_start = point(px(100.0), px(100.0));
+    let drag_end = point(px(150.0), px(140.0));
+    cx.simulate_mouse_down(drag_start, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(drag_end, Some(MouseButton::Left), Default::default());
+    let dragged_path = cx.update_entity(&host, |host, _| {
+        host.scene_wires()
+            .expect("dragged scene wires")
+            .published
+            .into_iter()
+            .find(|wire| wire.edge == EdgeId::from_u128(30))
+            .and_then(|wire| wire.drag_path)
+            .expect("incident edge has an optimistic drag path")
+    });
+    let (dragged_source, dragged_target) =
+        edge_path_endpoints(&dragged_path).expect("dragged route endpoints");
+    assert_eq!(
+        dragged_source,
+        CanvasPoint {
+            x: initial_source.x + 50.0,
+            y: initial_source.y + 40.0,
+        },
+    );
+    assert_eq!(dragged_target, initial_target);
+    draw(cx);
+    let output_during_drag = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("source output during drag");
+    assert_eq!(
+        output_during_drag.origin.x,
+        output_before.origin.x + px(50.0)
+    );
+    assert_eq!(
+        output_during_drag.origin.y,
+        output_before.origin.y + px(40.0)
+    );
+    assert_eq!(
+        weak_view
+            .geometry_snapshot()
+            .expect("geometry during optimistic drag")
+            .route(EdgeId::from_u128(30))
+            .expect("published route stays available")
+            .facts()
+            .path,
+        initial_route,
+        "optimistic drag measurements must not replace authoritative geometry",
+    );
+
+    cx.read_entity(&host, |host, _| {
+        host.scene_evidence.painted_wire_counts.borrow_mut().clear();
+    });
+
+    cx.simulate_mouse_up(drag_end, MouseButton::Left, Default::default());
+    cx.read_entity(&host, |host, _| {
+        let visual_delta = host.scene_gesture.node_drag_delta(NodeId::from_u128(10));
+        let authoritative_position = runtime
+            .snapshot()
+            .expect("snapshot at release")
+            .graph()
+            .node(&NodeId::from_u128(10))
+            .expect("source at release")
+            .pos;
+        assert!(
+            visual_delta == Some(CanvasPoint { x: 50.0, y: 40.0 })
+                || authoritative_position == CanvasPoint { x: 90.0, y: 120.0 },
+            "release must retain the visual delta until the authoritative position takes over",
+        );
+    });
+    draw_once(cx);
+    let output_on_release = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("source output on release frame");
+    assert_eq!(
+        output_on_release, output_during_drag,
+        "releasing the pointer must not paint the node at its pre-drag position",
+    );
+
+    cx.run_until_parked();
+    cx.read_entity(&host, |host, _| {
+        assert!(
+            !host.scene_evidence.painted_wire_counts.borrow().is_empty(),
+            "release-to-commit must paint at least one frame",
+        );
+        assert!(
+            host.scene_evidence
+                .painted_wire_counts
+                .borrow()
+                .iter()
+                .all(|count| *count == 1),
+            "the routed edge must remain present in every release-to-commit paint",
+        );
+    });
+    assert_eq!(
+        weak_view
+            .geometry_snapshot()
+            .expect("geometry after drag command")
+            .routes()
+            .len(),
+        1,
+        "a command frame must not withdraw the route using pre-command measurements",
+    );
+    draw(cx);
+    assert_eq!(
+        cx.debug_bounds("jellyflow-test-output-port")
+            .expect("source output after drag"),
+        output_during_drag,
+    );
+}
+
+#[open_gpui::test]
+fn command_batch_state_error_releases_pending_node_drag_visual(cx: &mut open_gpui::TestAppContext) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        cx.new(|_| RoutedNode { binding })
+    });
+    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let scene_host = captured_host.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                viewport(),
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    draw(cx);
+
+    cx.update_entity(&host, |host, _| {
+        host.scene_gesture
+            .retain_node_drag_for_test(NodeId::from_u128(10), CanvasPoint { x: 50.0, y: 40.0 });
+        assert_eq!(
+            host.scene_gesture.node_drag_delta(NodeId::from_u128(10)),
+            Some(CanvasPoint { x: 50.0, y: 40.0 }),
+        );
+        let failures_before = host.stats.feedback_failures();
+        let resolutions =
+            host.settle_command_batch(Err(OpenGpuiCommandBatchStateError::UnknownBatch));
+        assert!(resolutions.is_empty());
+        assert!(
+            host.scene_gesture
+                .node_drag_delta(NodeId::from_u128(10))
+                .is_none()
+        );
+        assert_eq!(host.stats.feedback_failures(), failures_before + 1);
+        assert!(
+            host.last_diagnostic()
+                .expect("batch-state diagnostic")
+                .message()
+                .contains("failed to settle native command batch")
+        );
     });
 }
 
@@ -3936,10 +4153,14 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {
+    draw_once(cx);
+    cx.run_until_parked();
+}
+
+fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
-    cx.run_until_parked();
 }
 
 #[open_gpui::test]

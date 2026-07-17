@@ -747,6 +747,7 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
     assert_eq!(receipt.publication().unwrap().layout_revision(), 1);
     assert_eq!(receipt.publication().unwrap().spatial_updates(), 1);
     assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert!(receipt.request_next_frame());
     assert_eq!(
         receipt.publication().unwrap().published_nodes(),
         &[ids.source]
@@ -794,6 +795,7 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
     assert_eq!(receipt.publication().unwrap().layout_revision(), 2);
     assert_eq!(receipt.publication().unwrap().spatial_updates(), 1);
     assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert!(receipt.request_next_frame());
     assert!(
         session
             .geometry_snapshot()
@@ -828,6 +830,7 @@ fn valid_subset_is_published_atomically_with_complete_port_coverage() {
     assert_eq!(receipt.publication().unwrap().layout_revision(), 3);
     assert_eq!(receipt.publication().unwrap().spatial_updates(), 0);
     assert_eq!(receipt.publication().unwrap().route_recomputations(), 1);
+    assert!(receipt.request_next_frame());
     let geometry = session.geometry_snapshot().unwrap();
     assert!(!geometry.node(ids.target).unwrap().is_fresh());
     assert!(geometry.port(ids.target_port).is_none());

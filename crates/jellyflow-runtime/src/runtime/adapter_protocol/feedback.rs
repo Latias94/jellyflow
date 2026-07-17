@@ -604,11 +604,14 @@ impl FeedbackReceipt {
     }
 
     pub fn request_next_frame(&self) -> bool {
-        self.operations.iter().any(|receipt| {
-            receipt
-                .layout_status()
-                .is_some_and(|status| matches!(status, LayoutNodeStatus::Stale))
-        })
+        self.publication
+            .as_ref()
+            .is_some_and(|publication| publication.route_recomputations() > 0)
+            || self.operations.iter().any(|receipt| {
+                receipt
+                    .layout_status()
+                    .is_some_and(|status| matches!(status, LayoutNodeStatus::Stale))
+            })
     }
 
     /// Consumes this feedback receipt and preserves operation ordering.

@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 #[cfg(test)]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, EdgeId};
-use jellyflow::runtime::runtime::geometry::{EdgePath, PathCommand};
+use jellyflow::core::{CanvasPoint, CanvasRect, EdgeId, Graph, NodeId};
+use jellyflow::runtime::runtime::geometry::{
+    EdgePath, EdgeRouteFacts, PathCommand, resolve_edge_route_path,
+};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{FeedbackSubmissionError, GeometrySnapshot, ViewSessionError, ViewSize};
 use open_gpui::{
@@ -58,6 +60,7 @@ pub(super) const OPEN_GPUI_SCENE_LAYER_ORDER: [OpenGpuiSceneLayer; 4] = [
 pub(super) struct OpenGpuiSceneWire {
     pub(super) edge: EdgeId,
     pub(super) selected: bool,
+    pub(super) drag_path: Option<EdgePath>,
 }
 
 pub(super) struct OpenGpuiSceneWires {
@@ -85,6 +88,7 @@ pub(super) struct OpenGpuiSceneEvidence {
     pub(super) last_painted_wire_count: Cell<usize>,
     pub(super) last_connection_preview: Cell<Option<OpenGpuiConnectionPreviewEvidence>>,
     pub(super) last_painted_connection_preview_count: Cell<usize>,
+    pub(super) painted_wire_counts: RefCell<Vec<usize>>,
     pub(super) last_scene_phase: Cell<Option<OpenGpuiSceneGesturePhase>>,
     pub(super) host_closed_scene_cancellations: Cell<u64>,
 }
@@ -101,6 +105,7 @@ impl OpenGpuiSceneEvidence {
             last_painted_wire_count: Cell::new(0),
             last_connection_preview: Cell::new(None),
             last_painted_connection_preview_count: Cell::new(0),
+            painted_wire_counts: RefCell::new(Vec::new()),
             last_scene_phase: Cell::new(None),
             host_closed_scene_cancellations: Cell::new(0),
         }
@@ -121,6 +126,7 @@ impl OpenGpuiSceneEvidence {
             self.first_non_empty_paint_pass.set(Some(pass));
         }
         self.last_painted_wire_count.set(wire_count);
+        self.painted_wire_counts.borrow_mut().push(wire_count);
     }
 
     pub(super) fn record_scene_event(&self, event: &OpenGpuiSceneGestureEvent) {
@@ -147,6 +153,11 @@ impl OpenGpuiSceneHost {
             return Err(error);
         }
         let geometry = self.view.geometry_snapshot()?;
+        let graph = self
+            .scene_gesture
+            .has_node_drag_visual()
+            .then(|| self.view.graph_snapshot())
+            .transpose()?;
         let connection_preview = self.connection_preview_plan(&geometry);
         let suppressed_edge = connection_preview
             .as_ref()
@@ -185,13 +196,20 @@ impl OpenGpuiSceneHost {
                 if Some(edge) == suppressed_edge {
                     return;
                 }
-                if !edge_path_intersects_viewport(&route.facts().path, self.viewport, cull_margin) {
+                let drag_path = graph.as_ref().and_then(|graph| {
+                    dragged_edge_path(graph.graph(), edge, route.facts(), |node| {
+                        self.scene_gesture.node_drag_delta(node)
+                    })
+                });
+                let visible_path = drag_path.as_ref().unwrap_or(&route.facts().path);
+                if !edge_path_intersects_viewport(visible_path, self.viewport, cull_margin) {
                     viewport_culled = viewport_culled.saturating_add(1);
                     return;
                 }
                 let wire = OpenGpuiSceneWire {
                     edge,
                     selected: selected_route,
+                    drag_path,
                 };
                 if selected_route {
                     selected.push(wire);
@@ -302,12 +320,8 @@ impl OpenGpuiSceneHost {
                     .iter()
                     .filter_map(|wire| {
                         let route = geometry.route(wire.edge)?;
-                        build_scene_wire_path(
-                            &route.facts().path,
-                            wire.selected,
-                            transform,
-                            bounds.origin,
-                        )
+                        let path = wire.drag_path.as_ref().unwrap_or(&route.facts().path);
+                        build_scene_wire_path(path, wire.selected, transform, bounds.origin)
                     })
                     .collect::<Vec<_>>()
             },
@@ -604,72 +618,76 @@ impl OpenGpuiSceneHost {
                         }
                         let measurement_errors =
                             host.take_prepaint_measurement_errors(&feedback.measurements);
-                        let mut request_next_frame = viewport_changed;
+                        let mut request_next_frame =
+                            viewport_changed || feedback.requires_follow_up_frame();
                         let mut submission_panic = None;
                         match feedback.submit(&host.view) {
                             DeferredFeedbackSubmission::Submitted(receipt) => {
                                 host.stats.feedback_submissions =
                                     host.stats.feedback_submissions.saturating_add(1);
                                 request_next_frame |= host.handle_feedback_receipt(&receipt);
-                                match feedback.complete_commands(receipt) {
-                                    Ok(completed) => resolutions
-                                        .extend(host.handle_completed_commands(completed)),
-                                    Err(error) => host.record_feedback_failure(
-                                        None,
-                                        format!("failed to pair native command receipts: {error}"),
-                                    ),
-                                }
+                                let completed = match feedback.complete_commands(receipt) {
+                                    Ok(completed) => Ok(completed),
+                                    Err(error) => {
+                                        let message = format!(
+                                            "failed to pair native command receipts: {error}"
+                                        );
+                                        host.record_feedback_failure(None, message.clone());
+                                        feedback.fail_commands(|| {
+                                            OpenGpuiCommandTicketError::FramePreparation {
+                                                message: message.clone(),
+                                            }
+                                        })
+                                    }
+                                };
+                                resolutions.extend(host.settle_command_batch(completed));
                             }
                             DeferredFeedbackSubmission::Failed(
                                 DeferredFeedbackError::Measurement(error),
                             ) => {
                                 let message = error.to_string();
-                                if let Ok(completed) = feedback.fail_commands(|| {
+                                let completed = feedback.fail_commands(|| {
                                     OpenGpuiCommandTicketError::FramePreparation {
                                         message: message.clone(),
                                     }
-                                }) {
-                                    resolutions.extend(host.handle_completed_commands(completed));
-                                }
+                                });
+                                resolutions.extend(host.settle_command_batch(completed));
                                 host.record_measurement_failure(error);
                             }
                             DeferredFeedbackSubmission::Failed(
                                 DeferredFeedbackError::Collector(error),
                             ) => {
                                 let message = error.to_string();
-                                if let Ok(completed) = feedback.fail_commands(|| {
+                                let completed = feedback.fail_commands(|| {
                                     OpenGpuiCommandTicketError::FramePreparation {
                                         message: message.clone(),
                                     }
-                                }) {
-                                    resolutions.extend(host.handle_completed_commands(completed));
-                                }
+                                });
+                                resolutions.extend(host.settle_command_batch(completed));
                                 host.record_feedback_failure(None, error.to_string());
                             }
                             DeferredFeedbackSubmission::Failed(
                                 DeferredFeedbackError::CommandBatch(error),
                             ) => {
                                 let message = error.to_string();
-                                if let Ok(completed) = feedback.fail_commands(|| {
+                                let completed = feedback.fail_commands(|| {
                                     OpenGpuiCommandTicketError::FramePreparation {
                                         message: message.clone(),
                                     }
-                                }) {
-                                    resolutions.extend(host.handle_completed_commands(completed));
-                                }
+                                });
+                                resolutions.extend(host.settle_command_batch(completed));
                                 host.record_feedback_failure(None, message);
                             }
                             DeferredFeedbackSubmission::Failed(
                                 DeferredFeedbackError::Submission(error),
                             ) => {
                                 let error = Rc::new(error);
-                                if let Ok(completed) = feedback.fail_commands(|| {
+                                let completed = feedback.fail_commands(|| {
                                     OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(
                                         &error,
                                     ))
-                                }) {
-                                    resolutions.extend(host.handle_completed_commands(completed));
-                                }
+                                });
+                                resolutions.extend(host.settle_command_batch(completed));
                                 match error.as_ref() {
                                     FeedbackSubmissionError::StaleFrame { .. } => {
                                         request_next_frame = true;
@@ -692,11 +710,10 @@ impl OpenGpuiSceneHost {
                             DeferredFeedbackSubmission::Panicked(payload) => {
                                 let message =
                                     OpenGpuiCommandTicketError::FeedbackOutcomeUnknown.to_string();
-                                if let Ok(completed) = feedback.fail_commands(|| {
+                                let completed = feedback.fail_commands(|| {
                                     OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
-                                }) {
-                                    resolutions.extend(host.handle_completed_commands(completed));
-                                }
+                                });
+                                resolutions.extend(host.settle_command_batch(completed));
                                 host.record_feedback_failure(None, message);
                                 request_next_frame = true;
                                 submission_panic = Some(payload);
@@ -748,8 +765,35 @@ impl OpenGpuiSceneHost {
     }
 }
 
+fn dragged_edge_path(
+    graph: &Graph,
+    edge_id: EdgeId,
+    route: &EdgeRouteFacts,
+    mut node_delta: impl FnMut(NodeId) -> Option<CanvasPoint>,
+) -> Option<EdgePath> {
+    let edge = graph.edge(&edge_id)?;
+    let source_node = graph.port(&edge.from)?.node;
+    let target_node = graph.port(&edge.to)?.node;
+    let source_delta = node_delta(source_node);
+    let target_delta = node_delta(target_node);
+    if source_delta.is_none() && target_delta.is_none() {
+        return None;
+    }
+
+    let mut endpoints = route.endpoints;
+    if let Some(delta) = source_delta {
+        endpoints.source.point.x += delta.x;
+        endpoints.source.point.y += delta.y;
+    }
+    if let Some(delta) = target_delta {
+        endpoints.target.point.x += delta.x;
+        endpoints.target.point.y += delta.y;
+    }
+    resolve_edge_route_path(edge, endpoints).map(|facts| facts.path)
+}
+
 #[cfg(test)]
-fn edge_path_endpoints(path: &EdgePath) -> Option<(CanvasPoint, CanvasPoint)> {
+pub(super) fn edge_path_endpoints(path: &EdgePath) -> Option<(CanvasPoint, CanvasPoint)> {
     let source = match path.commands.first()? {
         PathCommand::MoveTo(point) => *point,
         PathCommand::LineTo(_) | PathCommand::CubicTo { .. } => return None,

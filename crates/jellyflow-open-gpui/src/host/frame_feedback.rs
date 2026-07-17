@@ -42,6 +42,7 @@ pub(super) struct DeferredFrameFeedback {
     pub(super) measurements: Rc<OpenGpuiPendingMeasurements>,
     commands: Rc<OpenGpuiCommandJournal>,
     command_batch: Option<OpenGpuiCommandBatch>,
+    publish_layouts: bool,
     scheduled: Cell<bool>,
 }
 
@@ -51,12 +52,14 @@ impl DeferredFrameFeedback {
         measurements: Rc<OpenGpuiPendingMeasurements>,
         commands: Rc<OpenGpuiCommandJournal>,
         command_batch: Option<OpenGpuiCommandBatch>,
+        publish_layouts: bool,
     ) -> Self {
         Self {
             collector,
             measurements,
             commands,
             command_batch,
+            publish_layouts,
             scheduled: Cell::new(false),
         }
     }
@@ -67,8 +70,10 @@ impl DeferredFrameFeedback {
 
     pub(super) fn submit(&self, view: &ViewSession) -> DeferredFeedbackSubmission {
         let feedback: Result<_, DeferredFeedbackError> = (|| {
-            for layout in self.measurements.layouts()? {
-                self.collector.layout(layout)?;
+            if self.publish_layouts && self.command_batch.is_none() {
+                for layout in self.measurements.layouts()? {
+                    self.collector.layout(layout)?;
+                }
             }
 
             let feedback = self.collector.finish()?;
@@ -90,6 +95,10 @@ impl DeferredFrameFeedback {
             Ok(Err(error)) => DeferredFeedbackSubmission::Failed(error.into()),
             Err(payload) => DeferredFeedbackSubmission::Panicked(payload),
         }
+    }
+
+    pub(super) fn requires_follow_up_frame(&self) -> bool {
+        self.command_batch.is_some()
     }
 
     pub(super) fn complete_commands(
@@ -147,6 +156,23 @@ impl OpenGpuiSceneHost {
         refresh
     }
 
+    pub(super) fn settle_command_batch(
+        &mut self,
+        result: Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError>,
+    ) -> Vec<OpenGpuiPendingCommandResolution> {
+        match result {
+            Ok(completed) => self.handle_completed_commands(completed),
+            Err(error) => {
+                self.scene_gesture.settle_node_drag();
+                self.record_feedback_failure(
+                    None,
+                    format!("failed to settle native command batch: {error}"),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     pub(super) fn take_prepaint_measurement_errors(
         &self,
         measurements: &OpenGpuiPendingMeasurements,
@@ -197,6 +223,7 @@ impl OpenGpuiSceneHost {
         &mut self,
         result: Result<GraphCommandOutcome, OpenGpuiCommandTicketError>,
     ) {
+        self.scene_gesture.settle_node_drag();
         match result {
             Ok(GraphCommandOutcome::Applied(_) | GraphCommandOutcome::Noop(_)) => {}
             Ok(GraphCommandOutcome::Conflict(conflict)) => {
