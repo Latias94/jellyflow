@@ -163,7 +163,8 @@ pub(super) fn execute_command_locked(
         )));
     }
 
-    let (patch, sessions) = install_incremental(state, graph, transaction, true)?;
+    let (patch, sessions) =
+        install_incremental(state, graph, transaction, command.records_history())?;
 
     Ok(CommandExecution::Committed {
         patch,

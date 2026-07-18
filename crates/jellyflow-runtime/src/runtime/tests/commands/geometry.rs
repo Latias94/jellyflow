@@ -150,6 +150,33 @@ fn empty_or_unchanged_batch_geometry_is_a_zero_side_effect_noop() {
 }
 
 #[test]
+fn derived_geometry_advances_revision_without_polluting_user_history() {
+    let (graph, nodes) = graph_with_nodes(1);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let derived_size = CanvasSize {
+        width: 240.0,
+        height: 176.0,
+    };
+
+    runtime
+        .execute(GraphCommand::set_node_size(0, nodes[0], Some(derived_size)).without_history())
+        .unwrap()
+        .applied()
+        .expect("derived geometry applies");
+
+    let snapshot = runtime.snapshot().unwrap();
+    assert_eq!(snapshot.revision(), 1);
+    assert_eq!(
+        snapshot.graph().node(&nodes[0]).unwrap().size,
+        Some(derived_size)
+    );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
+}
+
+#[test]
 fn batch_geometry_planning_reads_only_declared_nodes_at_scale() {
     let (graph, nodes) = graph_with_nodes(10_000);
     let runtime = GraphRuntime::builder(Default::default())

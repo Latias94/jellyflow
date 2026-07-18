@@ -207,6 +207,7 @@ impl OpenGpuiSceneHost {
                         instance.node(),
                         Some(size_command.size()),
                     )
+                    .without_history()
                 })
             });
             if let Some(command) = command {

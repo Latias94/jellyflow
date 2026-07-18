@@ -400,6 +400,11 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
             height: 176.0,
         })
     );
+    assert_eq!(
+        runtime.history_state().unwrap().undo_len(),
+        0,
+        "content-derived geometry must not create a user-facing undo step"
+    );
 
     height.set(244.0);
     cx.update_entity(&host, |host, cx| {
@@ -422,6 +427,7 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
             height: 244.0,
         })
     );
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     let settled_graph_revision = snapshot.revision();
     let settled_layout_revision = weak_view
         .geometry_snapshot()

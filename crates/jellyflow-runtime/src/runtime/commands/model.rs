@@ -15,6 +15,7 @@ use crate::runtime::graph_runtime::{GraphIndex, GraphRevision, GraphSnapshot, Ru
 pub struct GraphCommand {
     pub(super) expected_revision: GraphRevision,
     pub(super) label: Option<String>,
+    pub(super) record_history: bool,
     pub(super) action: GraphCommandAction,
 }
 
@@ -86,6 +87,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: Some("undo".to_owned()),
+            record_history: true,
             action: GraphCommandAction::Undo,
         }
     }
@@ -94,6 +96,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: Some("redo".to_owned()),
+            record_history: true,
             action: GraphCommandAction::Redo,
         }
     }
@@ -106,6 +109,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: None,
+            record_history: true,
             action: GraphCommandAction::SetNodeData { node, data },
         }
     }
@@ -144,6 +148,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: None,
+            record_history: true,
             action: GraphCommandAction::SetNodeGeometry(edits.into_iter().collect()),
         }
     }
@@ -156,6 +161,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: None,
+            record_history: true,
             action: GraphCommandAction::SetPortData { port, data },
         }
     }
@@ -165,6 +171,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: None,
+            record_history: true,
             action: GraphCommandAction::Symbols(edit),
         }
     }
@@ -173,6 +180,7 @@ impl GraphCommand {
         Self {
             expected_revision,
             label: None,
+            record_history: true,
             action: GraphCommandAction::Topology(edit),
         }
     }
@@ -214,6 +222,21 @@ impl GraphCommand {
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
+    }
+
+    /// Omits a derived mutation from user-facing undo and redo history.
+    ///
+    /// The command still advances the graph revision and publishes the normal patch. Use this only
+    /// for state that is deterministically reconstructed from authoritative graph or adapter facts,
+    /// such as a content-driven node size. Ordinary user edits should remain undoable.
+    #[must_use]
+    pub fn without_history(mut self) -> Self {
+        self.record_history = false;
+        self
+    }
+
+    pub(crate) fn records_history(&self) -> bool {
+        self.record_history
     }
 
     pub fn expected_revision(&self) -> GraphRevision {

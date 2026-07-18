@@ -126,7 +126,10 @@ impl NativeGraphSurface {
         cx: &mut Context<Self>,
     ) -> Self {
         let catalog = view.catalog().clone();
-        let host = cx.new(|_| OpenGpuiSceneHost::new_measured_surface(view, registry));
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new_measured_surface(view, registry)
+                .with_graph_theme(crate::nodes::native_graph_theme())
+        });
         let query_controller = cx.new(TextInputController::new);
         let host_subscription = cx.observe(&host, |surface, _, cx| {
             if surface.sync_host_state(cx) {

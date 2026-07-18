@@ -279,6 +279,11 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
         .expect("native model select");
     let initial = host_runtime.snapshot().unwrap();
     let initial_branches = condition_branches(&initial, condition).unwrap();
+    let initial_condition_size = initial
+        .graph()
+        .node(&condition)
+        .and_then(|node| node.size)
+        .expect("content-height condition has a converged persisted size");
     assert_eq!(initial_branches.len(), 2);
     for branch in &initial_branches {
         assert!(
@@ -350,7 +355,23 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
     let branches = condition_branches(&updated, condition).unwrap();
     assert_eq!(branches.len(), 3);
     assert_eq!(updated.graph().node(&condition).unwrap().ports.len(), 4);
+    let updated_condition_size = updated
+        .graph()
+        .node(&condition)
+        .and_then(|node| node.size)
+        .expect("resized condition keeps a persisted size");
+    assert!(
+        updated_condition_size.height > initial_condition_size.height,
+        "adding a visible branch must grow the content-authoritative condition node"
+    );
     let geometry = weak_view.geometry_snapshot().unwrap();
+    let condition_geometry = geometry
+        .node(condition)
+        .expect("resized condition geometry remains published");
+    assert!(
+        (condition_geometry.bounds().size.height - updated_condition_size.height).abs() <= 1.0,
+        "published node geometry must agree with the converged graph size"
+    );
     for branch in &branches {
         assert!(updated.graph().port(&branch.port_id()).is_some());
         let layout = geometry
@@ -505,7 +526,25 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
 
     let after_remove = runtime.snapshot().unwrap();
     let after_remove_graph = frozen_graph_value(after_remove.graph());
-    assert_eq!(after_remove.revision(), redone_up.revision() + 1);
+    assert!(
+        after_remove.revision() >= redone_up.revision() + 2,
+        "remove plus derived content-height convergence must both publish revisions"
+    );
+    assert!(
+        after_remove
+            .graph()
+            .node(&condition)
+            .and_then(|node| node.size)
+            .expect("condition size after remove")
+            .height
+            < redone_up
+                .graph()
+                .node(&condition)
+                .and_then(|node| node.size)
+                .expect("condition size before remove")
+                .height,
+        "removing a visible branch must shrink the content-authoritative condition node"
+    );
     assert_eq!(
         condition_branches(&after_remove, condition).unwrap(),
         vec![first.clone()]
@@ -576,6 +615,7 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
+    let mounted_revision = runtime.snapshot().unwrap().revision();
 
     let llm = workflow_llm_node_id();
     let prompt = cx
@@ -601,7 +641,7 @@ fn prompt_conflict_can_explicitly_reapply_local_text_after_another_view_wins(
     cx.simulate_click(reapply.center(), Default::default());
 
     assert_eq!(prompt_value(&runtime), "local prompt");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 2);
     draw(cx);
     assert!(
         cx.debug_bounds(&workflow_prompt_conflict_selector(llm))
@@ -622,6 +662,7 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
+    let mounted_revision = runtime.snapshot().unwrap().revision();
 
     let llm = workflow_llm_node_id();
     let prompt = cx
@@ -638,7 +679,7 @@ fn prompt_conflict_can_discard_local_text_without_writing_the_graph(
     draw(cx);
 
     assert_eq!(prompt_value(&runtime), "authoritative prompt");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 1);
     assert!(
         cx.debug_bounds(&workflow_prompt_conflict_selector(llm))
             .is_none()
@@ -658,6 +699,7 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
+    let mounted_revision = runtime.snapshot().unwrap().revision();
 
     let llm = workflow_llm_node_id();
     let model = cx
@@ -673,7 +715,7 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
     draw(cx);
 
     assert_eq!(model_value(&runtime), "remote-provider-model");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     assert!(
         cx.debug_bounds(&workflow_model_conflict_selector(llm))
@@ -685,7 +727,7 @@ fn model_selection_requires_explicit_reapply_after_a_remote_change_arrives_while
     cx.simulate_click(reapply.center(), Default::default());
 
     assert_eq!(model_value(&runtime), "claude-3.7-sonnet");
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
+    assert_eq!(runtime.snapshot().unwrap().revision(), mounted_revision + 2);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     draw(cx);
     assert!(
@@ -706,6 +748,7 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
         OpenGpuiSceneHost::new(host_view, native_registry(cx), viewport())
     });
     draw(cx);
+    let mounted_revision = runtime.snapshot().unwrap().revision();
 
     let condition = workflow_condition_node_id();
     let remote_snapshot = remote_view.graph_snapshot().unwrap();
@@ -742,7 +785,8 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
     cx.simulate_click(add.center(), Default::default());
 
     draw(cx);
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    let conflict_revision = runtime.snapshot().unwrap().revision();
+    assert!(conflict_revision > mounted_revision);
     draw(cx);
     let retry = cx
         .debug_bounds(&condition_retry_selector(condition))
@@ -754,13 +798,13 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
 
     draw(cx);
     draw(cx);
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), conflict_revision);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     cx.simulate_click(retry.center(), Default::default());
-    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     draw(cx);
+    assert!(runtime.snapshot().unwrap().revision() > conflict_revision);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     assert!(
         cx.debug_bounds(&condition_retry_selector(condition))
             .is_none()

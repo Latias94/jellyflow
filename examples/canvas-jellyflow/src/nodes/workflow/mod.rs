@@ -7,6 +7,7 @@ use jellyflow::core::{
     NodeId, NodeKindKey, PortDirection, PortId,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
 use jellyflow_open_gpui::{
     OPEN_GPUI_DIAGNOSTIC_ROLE, OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle,
 };
@@ -16,6 +17,8 @@ use open_gpui::{
 };
 
 use crate::model_options::WorkflowModelOptionsState;
+
+use super::native_graph_theme;
 
 pub use condition::{
     ConditionBranchAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
@@ -210,17 +213,21 @@ fn workflow_header_port_elements(ports: Vec<WorkflowPort>) -> Vec<AnyElement> {
                 direction,
                 handle,
             } = port;
-            let marker = handle.interactive(
-                div()
-                    .debug_selector(move || workflow_port_selector(id))
-                    .w(px(WORKFLOW_PORT_DIAMETER))
-                    .h(px(WORKFLOW_PORT_DIAMETER))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(0xc9d3df))
-                    .bg(rgb(0x4f8fc0)),
-                |_, _, _| {},
-            );
+            let chrome = OpenGpuiPortMarker::new(handle.presentation(), native_graph_theme());
+            let minimum_hit_diameter = chrome.minimum_hit_diameter();
+            let marker = handle
+                .with_minimum_hit_diameter(minimum_hit_diameter)
+                .interactive(
+                    div()
+                        .debug_selector(move || workflow_port_selector(id))
+                        .w(px(WORKFLOW_PORT_DIAMETER))
+                        .h(px(WORKFLOW_PORT_DIAMETER))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(chrome),
+                    |_, _, _| {},
+                );
             let top = px((WORKFLOW_HEADER_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0);
             let edge_offset = px(-WORKFLOW_PORT_DIAMETER / 2.0);
             let port = div().absolute().top(top).flex().items_center();

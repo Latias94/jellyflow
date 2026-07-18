@@ -8,9 +8,11 @@ use jellyflow::runtime::{
     GraphCommand, GraphCommandOutcome, GraphRevision, GraphSnapshot, IncidentEdgePolicy,
     TopologyEdit, TopologyPort,
 };
+use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeBinding,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
     OpenGpuiPortHandle,
 };
 use open_gpui::{
@@ -21,6 +23,7 @@ use open_gpui_ui_components::{Button, ButtonVariant};
 
 use super::WORKFLOW_PORT_DIAMETER;
 use super::{WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
+use crate::nodes::native_graph_theme;
 
 pub const WORKFLOW_CONDITION_KIND: &str = "workflow.condition";
 pub const WORKFLOW_CONDITION_RENDERER: &str = "jellyflow.open-gpui.workflow.condition";
@@ -33,6 +36,9 @@ const WORKFLOW_CONDITION_NODE_ID: u128 = 0xd1fa_0002;
 const CONDITION_BODY_HORIZONTAL_PADDING: f32 = 14.0;
 const CONDITION_BRANCH_HORIZONTAL_PADDING: f32 = 9.0;
 const CONDITION_BRANCH_ROW_HEIGHT: f32 = 37.0;
+const CONDITION_BRANCH_LIST_MAX_HEIGHT: f32 = 148.0;
+const CONDITION_MIN_HEIGHT: f32 = 180.0;
+const CONDITION_MAX_HEIGHT: f32 = 360.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkflowBranch {
@@ -328,15 +334,16 @@ impl WorkflowConditionNode {
             return;
         }
 
-        let (minimum_revision, diagnostic) = match result {
-            Ok(GraphCommandOutcome::Applied(receipt)) => (receipt.revision(), None),
-            Ok(GraphCommandOutcome::Noop(noop)) => (noop.revision(), None),
+        let (minimum_revision, mut diagnostic, content_changed) = match result {
+            Ok(GraphCommandOutcome::Applied(receipt)) => (receipt.revision(), None, true),
+            Ok(GraphCommandOutcome::Noop(noop)) => (noop.revision(), None, false),
             Ok(GraphCommandOutcome::Conflict(conflict)) => (
                 conflict.current().revision(),
                 Some(format!(
                     "condition branches changed at revision {}; refresh, then retry explicitly",
                     conflict.current().revision()
                 )),
+                false,
             ),
             Ok(GraphCommandOutcome::Rejected(rejection)) => (
                 expected_revision,
@@ -344,14 +351,25 @@ impl WorkflowConditionNode {
                     "condition command was rejected: {}",
                     rejection.message()
                 )),
+                false,
             ),
             Err(error) => (
                 expected_revision,
                 Some(format!(
                     "condition command result is uncertain: {error}; refresh before retry"
                 )),
+                false,
             ),
         };
+        if content_changed
+            && let Err(error) = self
+                .binding
+                .update(cx, |binding, cx| binding.invalidate_layout(cx))
+        {
+            diagnostic = Some(format!(
+                "condition content changed but native layout invalidation failed: {error}"
+            ));
+        }
         self.diagnostic = diagnostic.clone();
         self.command_state = ConditionCommandState::NeedsRefresh {
             intent,
@@ -442,17 +460,21 @@ impl Render for WorkflowConditionNode {
         for (index, (branch, handle)) in data.branches.into_iter().enumerate() {
             let port_id = branch.port_id();
             let row_selector = workflow_condition_branch_selector(node_id, port_id);
-            let marker = handle.interactive(
-                div()
-                    .debug_selector(move || row_selector.clone())
-                    .w(px(13.0))
-                    .h(px(13.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(0xd0d7e2))
-                    .bg(rgb(0xd5a84e)),
-                |_, _, _| {},
-            );
+            let chrome = OpenGpuiPortMarker::new(handle.presentation(), native_graph_theme());
+            let minimum_hit_diameter = chrome.minimum_hit_diameter();
+            let marker = handle
+                .with_minimum_hit_diameter(minimum_hit_diameter)
+                .interactive(
+                    div()
+                        .debug_selector(move || row_selector.clone())
+                        .w(px(WORKFLOW_PORT_DIAMETER))
+                        .h(px(WORKFLOW_PORT_DIAMETER))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(chrome),
+                    |_, _, _| {},
+                );
             let marker = div()
                 .absolute()
                 .top(px(
@@ -531,7 +553,7 @@ impl Render for WorkflowConditionNode {
         let rows = div()
             .id(format!("jellyflow-workflow-condition-scroll-{}", node_id.0))
             .debug_selector(move || scroll_selector.clone())
-            .h(px(148.0))
+            .max_h(px(CONDITION_BRANCH_LIST_MAX_HEIGHT))
             .overflow_y_scroll()
             .scrollbar_width(px(7.0))
             .child(rows);
@@ -576,9 +598,9 @@ impl Render for WorkflowConditionNode {
             .child(message)
         });
 
-        div()
+        let content = div()
             .relative()
-            .size_full()
+            .w_full()
             .rounded(px(6.0))
             .border_1()
             .border_color(rgb(0x66583c))
@@ -592,7 +614,8 @@ impl Render for WorkflowConditionNode {
                 data.inputs,
             )))
             .child(controls)
-            .children(diagnostic)
+            .children(diagnostic);
+        self.binding.read(cx).measure_content(content)
     }
 }
 
@@ -622,9 +645,17 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
 }
 
 pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
-    registry.register(WORKFLOW_CONDITION_RENDERER, |binding, _window, cx| {
-        cx.new(|_| WorkflowConditionNode::new(binding))
-    });
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(CONDITION_MIN_HEIGHT, CONDITION_MAX_HEIGHT)
+                .expect("workflow condition content-height bounds must be valid"),
+        ),
+    );
+    registry.register_with_policy(
+        WORKFLOW_CONDITION_RENDERER,
+        policy,
+        |binding, _window, cx| cx.new(|_| WorkflowConditionNode::new(binding)),
+    );
 }
 
 #[must_use]

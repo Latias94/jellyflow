@@ -3,10 +3,13 @@ mod multiply;
 
 use jellyflow::core::{NodeId, PortDirection, PortId, PortKey};
 use jellyflow::runtime::schema::NodeKindSpec;
+use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
 use jellyflow_open_gpui::{OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle};
 use open_gpui::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px, rgb,
 };
+
+use super::native_graph_theme;
 
 pub use blueprint_call::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
@@ -171,17 +174,22 @@ fn port_elements(
 
 fn port_element(port: ShaderPort, selector_for: fn(PortId) -> String) -> ShaderPortElement {
     let selector = selector_for(port.id);
-    let marker = port.handle.interactive(
-        div()
-            .debug_selector(move || selector.clone())
-            .w(px(12.0))
-            .h(px(12.0))
-            .rounded_full()
-            .border_1()
-            .border_color(rgb(0xc9d3df))
-            .bg(rgb(0x6f8fbb)),
-        |_, _, _| {},
-    );
+    let chrome = OpenGpuiPortMarker::new(port.handle.presentation(), native_graph_theme());
+    let minimum_hit_diameter = chrome.minimum_hit_diameter();
+    let marker = port
+        .handle
+        .with_minimum_hit_diameter(minimum_hit_diameter)
+        .interactive(
+            div()
+                .debug_selector(move || selector.clone())
+                .w(px(12.0))
+                .h(px(12.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(chrome),
+            |_, _, _| {},
+        );
     ShaderPortElement {
         key: port.key,
         label: port.label,

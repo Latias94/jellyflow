@@ -5,12 +5,18 @@ mod workflow;
 
 use jellyflow::runtime::schema::{NodeCatalog, NodeCatalogRegistrationError};
 use jellyflow_open_gpui::{
-    OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
+    OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiGraphTheme,
     OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryBuilder,
 };
 use open_gpui::{App, AppContext, Entity};
 
 use crate::model_options::WorkflowModelOptionsState;
+
+/// Returns the graph chrome theme shared by the flagship host and native node markers.
+#[must_use]
+pub fn native_graph_theme() -> OpenGpuiGraphTheme {
+    OpenGpuiGraphTheme::default()
+}
 
 pub use shader::{
     BLUEPRINT_ADD_INPUT_SELECTOR, BLUEPRINT_CALL_DEFAULT_SIZE, BLUEPRINT_CALL_KIND,
