@@ -2,25 +2,33 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeId, NodeKindKey, PortCapacity,
-    PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeViewDescriptor, GraphBuilder,
+    GraphId, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow::runtime::{
     GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome, TopologyEdit,
     TopologyPort, ViewSessionOptions,
 };
+use jellyflow_open_gpui::chrome::{
+    OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
+    OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
+};
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
-    OpenGpuiSceneHost,
+    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeBinding,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy,
+    OpenGpuiPortHandle, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
 };
 use open_gpui::{
-    AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
-    Task, Window, div, px,
+    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Styled, Task, Window, div, px, rgb,
 };
 
 const KIND: &str = "external.dynamic-workflow";
 const RENDERER: &str = "external.native.dynamic-workflow";
+const SINK_KIND: &str = "external.sink";
+const SINK_RENDERER: &str = "external.native.missing-sink";
+const EDGE_RENDERER: &str = "external.edge.data";
 const NODE_SELECTOR: &str = "external-product-node";
 const CONTROL_SELECTOR: &str = "external-product-control";
 const BASE_PORT_SELECTOR: &str = "external-product-base-port";
@@ -32,6 +40,7 @@ struct ProductNodeState {
     render_count: Cell<u64>,
     click_count: Cell<u64>,
     command_count: Cell<u64>,
+    connected_state_seen: Cell<bool>,
 }
 
 struct ProductNode {
@@ -54,6 +63,10 @@ impl Render for ProductNode {
             .port_handle(base_port_id())
             .expect("catalog-created real port belongs to the retained node");
         let dynamic = binding.port_handle(dynamic_port_id());
+        if base.presentation().connected() {
+            self.state.connected_state_seen.set(true);
+        }
+        let content_height = if dynamic.is_some() { 144.0 } else { 108.0 };
         let command_binding = self.binding.clone();
         let product_node = cx.weak_entity();
         let clicks = Rc::clone(&self.state);
@@ -69,7 +82,8 @@ impl Render for ProductNode {
         let mut root = div()
             .debug_selector(|| NODE_SELECTOR.to_owned())
             .relative()
-            .size_full()
+            .w_full()
+            .h(px(content_height))
             .child(drag_header)
             .child(
                 div().absolute().left(px(16.0)).top(px(16.0)).child(
@@ -107,10 +121,15 @@ impl Render for ProductNode {
                                 .expect("native command enters the host feedback journal");
                             let command_state = Rc::clone(&clicks);
                             let completion_node = product_node.clone();
+                            let invalidate_binding = command_binding.clone();
                             let task = cx.spawn(async move |cx| {
                                 let applied = ticket
                                     .await
                                     .is_ok_and(|outcome| outcome.applied().is_some());
+                                if applied {
+                                    let _ = invalidate_binding
+                                        .update(cx, |binding, cx| binding.invalidate_layout(cx));
+                                }
                                 let _ = completion_node.update(cx, |node, cx| {
                                     node.command_task = None;
                                     if applied {
@@ -129,29 +148,80 @@ impl Render for ProductNode {
                 ),
             )
             .child(
-                div().absolute().right(px(0.0)).top(px(72.0)).child(
-                    base.measure(
-                        div()
-                            .debug_selector(|| BASE_PORT_SELECTOR.to_owned())
-                            .w(px(14.0))
-                            .h(px(14.0)),
-                    ),
-                ),
+                div()
+                    .absolute()
+                    .right(px(0.0))
+                    .top(px(72.0))
+                    .child(custom_port_marker(base, BASE_PORT_SELECTOR)),
             );
         if let Some(dynamic) = dynamic {
             root = root.child(
-                div().absolute().right(px(0.0)).top(px(108.0)).child(
-                    dynamic.measure(
-                        div()
-                            .debug_selector(|| DYNAMIC_PORT_SELECTOR.to_owned())
-                            .w(px(14.0))
-                            .h(px(14.0)),
-                    ),
-                ),
+                div()
+                    .absolute()
+                    .right(px(0.0))
+                    .top(px(108.0))
+                    .child(custom_port_marker(dynamic, DYNAMIC_PORT_SELECTOR)),
             );
         }
-        root
+        binding.measure_content(root)
     }
+}
+
+fn custom_port_marker(handle: OpenGpuiPortHandle, selector: &'static str) -> AnyElement {
+    let presentation = handle.presentation();
+    let fill = if presentation.candidate().is_valid_target() {
+        rgb(0x4dd6a2)
+    } else if presentation.candidate().is_invalid_target() {
+        rgb(0xff716a)
+    } else if presentation.connected() {
+        rgb(0x67a6ff)
+    } else if presentation.hovered() {
+        rgb(0xe7edf6)
+    } else {
+        rgb(0x66717f)
+    };
+    handle
+        .with_minimum_hit_diameter(24.0)
+        .interactive(
+            div()
+                .debug_selector(move || selector.to_owned())
+                .w(px(14.0))
+                .h(px(14.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.0))
+                .border_2()
+                .border_color(fill)
+                .child(div().w(px(4.0)).h(px(4.0)).rounded_full().bg(fill)),
+            |_, _, _| {},
+        )
+        .into_any_element()
+}
+
+fn external_graph_theme() -> OpenGpuiGraphTheme {
+    let mut theme = OpenGpuiGraphTheme::default();
+    theme.palette.selection = rgb(0x8fc7ff).into();
+    theme.palette.edge_data = rgb(0x5ed0ae).into();
+    theme.metrics.port_hit_diameter = 24.0;
+    theme
+}
+
+fn external_edge_painters() -> OpenGpuiEdgePainterRegistry {
+    let mut painters = OpenGpuiEdgePainterRegistry::builder();
+    painters
+        .register(
+            EDGE_RENDERER,
+            OpenGpuiEdgePainterRecipe::new(
+                OpenGpuiEdgeStrokePattern::Dotted,
+                OpenGpuiEdgeTone::Data,
+                OpenGpuiEdgeMarkerShape::Circle,
+                OpenGpuiEdgeMarkerShape::Diamond,
+                OpenGpuiEdgeLabelAppearance::Badge,
+            ),
+        )
+        .expect("external edge renderer registration");
+    painters.build()
 }
 
 fn node_id() -> NodeId {
@@ -164,6 +234,18 @@ fn base_port_id() -> PortId {
 
 fn dynamic_port_id() -> PortId {
     PortId::from_u128(22)
+}
+
+fn sink_node_id() -> NodeId {
+    NodeId::from_u128(30)
+}
+
+fn sink_port_id() -> PortId {
+    PortId::from_u128(31)
+}
+
+fn edge_id() -> EdgeId {
+    EdgeId::from_u128(40)
 }
 
 #[open_gpui::test]
@@ -189,16 +271,52 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
                 .build(),
         )
         .expect("register external dynamic node kind");
+    let sink_kind = NodeKindKey::new(SINK_KIND);
+    catalog
+        .register(
+            NodeKindSpec::builder(sink_kind.clone(), "Sink", SINK_RENDERER)
+                .default_size(CanvasSize {
+                    width: 160.0,
+                    height: 96.0,
+                })
+                .port(NodePortSpec::new(
+                    "input",
+                    PortDirection::In,
+                    PortKind::Data,
+                    PortCapacity::Single,
+                ))
+                .build(),
+        )
+        .expect("register external sink kind");
 
     let creation = catalog
         .instantiate_node_with_ids(&kind, node, CanvasPoint { x: 40.0, y: 48.0 }, [base_port])
         .expect("instantiate external dynamic node");
     let (created_id, created_node, created_ports) = creation.into_parts();
+    let sink_creation = catalog
+        .instantiate_node_with_ids(
+            &sink_kind,
+            sink_node_id(),
+            CanvasPoint { x: 480.0, y: 48.0 },
+            [sink_port_id()],
+        )
+        .expect("instantiate external sink node");
     let mut graph = GraphBuilder::new(GraphId::from_u128(4));
     graph.insert_node(created_id, created_node);
     for (port_id, port) in created_ports {
         graph.insert_port(port_id, port);
     }
+    let (sink_id, sink_node, sink_ports) = sink_creation.into_parts();
+    graph.insert_node(sink_id, sink_node);
+    for (port_id, port) in sink_ports {
+        graph.insert_port(port_id, port);
+    }
+    let mut edge = Edge::new(EdgeKind::Data, base_port, sink_port_id());
+    edge.view = EdgeViewDescriptor::new()
+        .with_renderer_key(EDGE_RENDERER)
+        .with_label("payload")
+        .with_style_token("data.primary");
+    graph.insert_edge(edge_id(), edge);
     let runtime = GraphRuntime::builder(catalog)
         .build(graph.build().expect("external fixture graph must validate"))
         .expect("create external graph runtime");
@@ -213,10 +331,16 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         render_count: Cell::new(0),
         click_count: Cell::new(0),
         command_count: Cell::new(0),
+        connected_state_seen: Cell::new(false),
     });
     let factory_state = Rc::clone(&state);
     let mut registry = OpenGpuiNodeRegistry::builder();
-    registry.register(RENDERER, move |binding, _window, cx| {
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(108.0, 160.0).expect("external content-height policy"),
+        ),
+    );
+    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
         let state = Rc::clone(&factory_state);
         state
             .mount_count
@@ -235,6 +359,9 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         OpenGpuiRendererRegistrationStatus::Registered
     );
 
+    let graph_theme = external_graph_theme();
+    let expected_theme = graph_theme;
+    let edge_painters = external_edge_painters();
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
             view,
@@ -247,12 +374,15 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
                 },
             },
         )
+        .with_graph_theme(graph_theme)
+        .with_edge_painter_registry(edge_painters)
     });
     draw(cx);
     draw(cx);
 
     assert_eq!(state.mount_count.get(), 1);
     assert!(state.render_count.get() > 0);
+    assert!(state.connected_state_seen.get());
     assert!(cx.debug_bounds(NODE_SELECTOR).is_some());
     let control = cx
         .debug_bounds(CONTROL_SELECTOR)
@@ -270,6 +400,16 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         geometry.port_outcome(base_port),
         Some(PublishedPortOutcome::Rendered(_))
     ));
+    assert!(geometry.route(edge_id()).is_some());
+    let initial_size = runtime
+        .snapshot()
+        .expect("content-sized external graph")
+        .graph()
+        .node(&node)
+        .and_then(|node| node.size)
+        .expect("external node converged size");
+    assert_eq!(initial_size.height, 108.0);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
 
     cx.simulate_click(control.center(), Default::default());
     draw(cx);
@@ -293,12 +433,23 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         assert_eq!(layout.node(), node);
         assert!(layout.visual_bounds().size.is_positive_finite());
     }
+    let dynamic_size = runtime
+        .snapshot()
+        .expect("dynamic external graph")
+        .graph()
+        .node(&node)
+        .and_then(|node| node.size)
+        .expect("dynamic external node size");
+    assert_eq!(dynamic_size.height, 144.0);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().mounts(), 1);
-        assert_eq!(host.stats().active_nodes(), 1);
+        assert_eq!(host.stats().mounts(), 2);
+        assert_eq!(host.stats().active_nodes(), 2);
         assert!(host.stats().feedback_submissions() >= 1);
         assert_eq!(host.stats().feedback_failures(), 0);
+        assert_eq!(host.graph_theme(), expected_theme);
+        assert_eq!(host.edge_painter_registry().len(), 1);
     });
     assert_eq!(
         runtime

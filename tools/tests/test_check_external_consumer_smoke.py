@@ -271,8 +271,16 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         )
         self.assertIn("assert!(host.view_handle().is_open());", source)
         self.assertIn("assert!(!weak_open_gpui_view.is_open());", source)
-        self.assertIn("binding.drag_handle().wrap", source)
+        self.assertRegex(
+            source,
+            r"binding\s*\.\s*drag_handle\(\)\s*\.\s*wrap\(",
+        )
         self.assertNotIn("OpenGpuiNodeInteractionGuard", source)
+        self.assertIn("register_with_policy", source)
+        self.assertIn("binding.measure_content(content)", source)
+        self.assertIn("presentation.candidate().is_valid_target()", source)
+        self.assertIn(".with_graph_theme(graph_theme)", source)
+        self.assertIn(".with_edge_painter_registry(package_edge_painters())", source)
         self.assertIn(".on_mouse_up(MouseButton::Left", source)
         self.assertIn("clicks.click_count.set", "".join(source.split()))
         self.assertIn("binding.port_handle(PortId::from_u128(12))", source)
@@ -301,6 +309,12 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         self.assertIn("node_geometry.port_outcomes().len()", scenario.main_rs)
         self.assertIn("PublishedPortOutcome::Rendered", scenario.main_rs)
         self.assertIn("state.mount_count.get()", scenario.main_rs)
+        self.assertIn("registry.register_with_policy", scenario.main_rs)
+        self.assertIn("binding.measure_content(root)", scenario.main_rs)
+        self.assertIn("base.presentation().connected()", scenario.main_rs)
+        self.assertIn("custom_port_marker", scenario.main_rs)
+        self.assertIn(".with_graph_theme(graph_theme)", scenario.main_rs)
+        self.assertIn(".with_edge_painter_registry(edge_painters)", scenario.main_rs)
         self.assertNotIn(".execute(", scenario.main_rs)
         self.assertNotIn(".detach()", scenario.main_rs)
 

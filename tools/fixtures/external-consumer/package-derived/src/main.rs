@@ -9,9 +9,14 @@ use jellyflow_core::{
     PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, egui};
+use jellyflow_open_gpui::chrome::{
+    OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
+    OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
+};
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
-    OpenGpuiSceneHost,
+    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeBinding,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy,
+    OpenGpuiPortHandle, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
 };
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::schema::{
@@ -22,8 +27,8 @@ use jellyflow_runtime::{
     RendererStamp, TopologyEdit, TopologyPort, ViewPoint, ViewRect, ViewSize,
 };
 use open_gpui::{
-    AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
-    Window, div, px,
+    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Styled, Window, div, px, rgb,
 };
 
 struct ProductNodeState {
@@ -65,29 +70,108 @@ impl Render for ProductNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let _base = binding.port_handle(PortId::from_u128(11));
-        let _dynamic = binding.port_handle(PortId::from_u128(12));
+        let base = binding
+            .port_handle(PortId::from_u128(11))
+            .expect("package fixture base port");
+        let dynamic = binding.port_handle(PortId::from_u128(12));
         let drag_header = binding
             .drag_handle()
             .wrap(div().h(px(12.0)).child(self.state.title.clone()));
         let clicks = Rc::clone(&self.state);
-        div().size_full().child(drag_header).child(
-            div()
-                .left(px(16.0))
-                .top(px(16.0))
-                .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                    clicks
-                        .click_count
-                        .set(clicks.click_count.get().saturating_add(1));
-                })
-                .child("Run"),
-        )
+        let mut content = div()
+            .relative()
+            .w_full()
+            .h(px(if dynamic.is_some() { 144.0 } else { 108.0 }))
+            .child(drag_header)
+            .child(
+                div()
+                    .left(px(16.0))
+                    .top(px(16.0))
+                    .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                        clicks
+                            .click_count
+                            .set(clicks.click_count.get().saturating_add(1));
+                    })
+                    .child("Run"),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right(px(0.0))
+                    .top(px(72.0))
+                    .child(package_port_marker(base)),
+            );
+        if let Some(dynamic) = dynamic {
+            content = content.child(
+                div()
+                    .absolute()
+                    .right(px(0.0))
+                    .top(px(108.0))
+                    .child(package_port_marker(dynamic)),
+            );
+        }
+        binding.measure_content(content)
     }
+}
+
+fn package_port_marker(handle: OpenGpuiPortHandle) -> AnyElement {
+    let presentation = handle.presentation();
+    let color = if presentation.candidate().is_valid_target() {
+        rgb(0x4dd6a2)
+    } else if presentation.candidate().is_invalid_target() {
+        rgb(0xff716a)
+    } else if presentation.connected() {
+        rgb(0x67a6ff)
+    } else {
+        rgb(0x7f8a98)
+    };
+    handle
+        .with_minimum_hit_diameter(24.0)
+        .interactive(
+            div()
+                .w(px(14.0))
+                .h(px(14.0))
+                .rounded(px(3.0))
+                .border_2()
+                .border_color(color)
+                .bg(color),
+            |_, _, _| {},
+        )
+        .into_any_element()
+}
+
+fn package_graph_theme() -> OpenGpuiGraphTheme {
+    let mut theme = OpenGpuiGraphTheme::default();
+    theme.palette.selection = rgb(0x8fc7ff).into();
+    theme.metrics.port_hit_diameter = 24.0;
+    theme
+}
+
+fn package_edge_painters() -> OpenGpuiEdgePainterRegistry {
+    let mut painters = OpenGpuiEdgePainterRegistry::builder();
+    painters
+        .register(
+            "package.edge",
+            OpenGpuiEdgePainterRecipe::new(
+                OpenGpuiEdgeStrokePattern::Dashed,
+                OpenGpuiEdgeTone::Control,
+                OpenGpuiEdgeMarkerShape::Circle,
+                OpenGpuiEdgeMarkerShape::Arrow,
+                OpenGpuiEdgeLabelAppearance::Badge,
+            ),
+        )
+        .expect("package edge painter registration");
+    painters.build()
 }
 
 fn product_registry(state: Rc<ProductNodeState>) -> OpenGpuiNodeRegistry {
     let mut builder = OpenGpuiNodeRegistry::builder();
-    builder.register("package.native", move |binding, _window, cx| {
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(96.0, 180.0).expect("package content-height policy"),
+        ),
+    );
+    builder.register_with_policy("package.native", policy, move |binding, _window, cx| {
         state
             .mount_count
             .set(state.mount_count.get().saturating_add(1));
@@ -313,7 +397,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             height: 768.0,
         },
     };
-    let host = OpenGpuiSceneHost::new(open_gpui_view, product_registry, viewport);
+    let graph_theme = package_graph_theme();
+    let host = OpenGpuiSceneHost::new(open_gpui_view, product_registry, viewport)
+        .with_graph_theme(graph_theme)
+        .with_edge_painter_registry(package_edge_painters());
+    assert_eq!(host.graph_theme(), graph_theme);
+    assert_eq!(host.edge_painter_registry().len(), 1);
     assert!(host.view_handle().is_open());
     drop(host);
     assert!(!weak_open_gpui_view.is_open());
