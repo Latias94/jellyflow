@@ -31,6 +31,9 @@ use super::{
     OpenGpuiSceneLayer, layout_receipt_action,
 };
 
+#[path = "host/tests/interaction_characterization.rs"]
+mod interaction_characterization;
+
 const KIND: &str = "test.scene-layer-node";
 const RENDERER: &str = "test.native.scene-layer-node";
 
@@ -4329,6 +4332,44 @@ fn mount_gesture_scene_for_graph(
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
         cx.new(|_| RoutedNode { binding })
+    });
+    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let scene_host = captured_host.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                viewport(),
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    (runtime, host, cx)
+}
+
+fn mount_connection_scene_for_graph(
+    cx: &mut open_gpui::TestAppContext,
+    graph: jellyflow::core::Graph,
+) -> (
+    GraphRuntime,
+    Entity<OpenGpuiSceneHost>,
+    &mut open_gpui::VisualTestContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph)
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        cx.new(|_| InteractiveRoutedNode {
+            binding,
+            events: std::rc::Rc::new(std::cell::Cell::new(0)),
+        })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
     let scene_host = captured_host.clone();
