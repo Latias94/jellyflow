@@ -6,7 +6,7 @@ use jellyflow::runtime::{
     CanvasInteractionPhase, FrameNode, InteractionOwner, NodeInstanceKey, ViewCloseReason,
     ViewSessionError,
 };
-use open_gpui::{AnyView, AppContext, Context, Entity, Window};
+use open_gpui::{AnyView, AppContext, Context, Entity, FocusHandle, Window};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::{
@@ -27,9 +27,10 @@ use super::retained_mount_store::{EvictedMount, RetiredMount};
 pub(super) struct MountedNode {
     pub(super) view: AnyView,
     content_kind: MountedNodeContentKind,
-    binding: Option<Entity<OpenGpuiNodeBinding>>,
+    pub(super) binding: Option<Entity<OpenGpuiNodeBinding>>,
     pub(super) activity: OpenGpuiNodeActivityRegistry,
     pub(super) measurement: OpenGpuiMeasurementSink,
+    pub(super) focus: FocusHandle,
     pub(super) semantic_zoom: OpenGpuiSemanticZoomState,
     binding_revision: jellyflow::runtime::GraphRevision,
     pub(super) bounds: CanvasRect,
@@ -297,7 +298,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) {
         binding.update(cx, |binding, cx| {
-            binding.advance(revision);
+            binding.advance(revision, cx);
             cx.notify();
         });
         self.stats.binding_updates = self.stats.binding_updates.saturating_add(1);
@@ -374,12 +375,13 @@ impl OpenGpuiSceneHost {
                 self.stats.binding_snapshot_builds =
                     self.stats.binding_snapshot_builds.saturating_add(1);
                 let layout_invalidator = Self::layout_invalidator(cx);
-                let binding = cx.new(|_| {
+                let binding = cx.new(|cx| {
                     OpenGpuiNodeBinding::new(
                         snapshot,
                         activity.clone(),
                         measurement.clone(),
                         layout_invalidator,
+                        cx,
                     )
                 });
                 let (view, content_kind) =
@@ -404,6 +406,7 @@ impl OpenGpuiSceneHost {
             binding,
             activity,
             measurement,
+            focus: cx.focus_handle(),
             bounds: CanvasRect {
                 origin: semantic_zoom.canonical_origin(),
                 size: semantic_zoom.canonical_size(),

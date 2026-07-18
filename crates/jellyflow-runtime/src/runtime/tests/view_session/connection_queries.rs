@@ -68,6 +68,35 @@ fn strong_and_weak_views_expose_symmetric_connection_queries() {
     assert!(view.port_connection_facts(PortId::new()).unwrap().is_none());
     assert!(weak.port_connection_facts(PortId::new()).unwrap().is_none());
 
+    let strong_summary = view
+        .port_connection_summary(ids.target_port)
+        .unwrap()
+        .expect("target summary");
+    let weak_summary = weak
+        .port_connection_summary(ids.target_port)
+        .unwrap()
+        .expect("target summary");
+    assert_eq!(strong_summary, weak_summary);
+    assert_eq!(strong_summary.revision(), 0);
+    assert_eq!(strong_summary.port(), ids.target_port);
+    assert_eq!(strong_summary.node(), ids.target);
+    assert_eq!(strong_summary.direction(), PortDirection::In);
+    assert_eq!(strong_summary.capacity(), PortCapacity::Single);
+    assert!(strong_summary.can_begin_connection());
+    assert!(strong_summary.can_accept_connection());
+    assert!(strong_summary.is_connected());
+    assert_eq!(strong_summary.incident_count(), 1);
+    assert!(
+        view.port_connection_summary(PortId::new())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        weak.port_connection_summary(PortId::new())
+            .unwrap()
+            .is_none()
+    );
+
     let strong_drag_intent = view
         .port_connection_drag_intent(ids.target_port)
         .unwrap()
@@ -330,6 +359,30 @@ fn output_drag_intent_skips_a_high_fanout_incident_bucket() {
         .build(builder.build().unwrap())
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let summary_before = runtime.stats().unwrap();
+
+    let summary = view
+        .port_connection_summary(output)
+        .unwrap()
+        .expect("output summary");
+
+    assert!(summary.is_connected());
+    assert_eq!(summary.incident_count(), INCIDENT_EDGES);
+    let summary_after = runtime.stats().unwrap();
+    assert_eq!(
+        summary_after.connection_query_index_bucket_reads
+            - summary_before.connection_query_index_bucket_reads,
+        0
+    );
+    assert_eq!(
+        summary_after.connection_query_index_entries_read
+            - summary_before.connection_query_index_entries_read,
+        0
+    );
+    assert_eq!(
+        summary_after.connection_query_fact_reads - summary_before.connection_query_fact_reads,
+        2
+    );
     let before = runtime.stats().unwrap();
 
     let intent = view

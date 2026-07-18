@@ -1,16 +1,15 @@
 use std::rc::Rc;
 
 use jellyflow::core::CanvasPoint;
-#[cfg(test)]
 use jellyflow::runtime::CanvasInteractionPhase;
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportZoomRequest, pan_viewport, zoom_viewport,
 };
 use jellyflow::runtime::{
-    CanvasInteractionError, CanvasInteractionUpdate, CanvasPressTarget, InteractionOwner,
-    NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode,
+    CanvasInteractionError, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
+    InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode,
 };
-use open_gpui::{Context, PinchEvent, Pixels, ScrollWheelEvent, Window, px};
+use open_gpui::{Context, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px};
 
 use crate::interaction::{
     OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGestureEvent, OpenGpuiSceneGestureKind,
@@ -24,6 +23,55 @@ const SCENE_MAX_ZOOM: f32 = 8.0;
 const SCENE_WHEEL_LINE_HEIGHT: f32 = 16.0;
 
 impl OpenGpuiSceneHost {
+    pub(super) fn handle_scene_pointer_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.canvas_interaction.presentation().phase() != CanvasInteractionPhase::Idle {
+            return;
+        }
+        let Some(position) = self.interaction_position(event.position) else {
+            return;
+        };
+        let mut hovered_node = None;
+        for (instance, mounted) in self.mounts.active_in_order() {
+            let bounds = mounted.bounds;
+            let point = position.canvas();
+            if point.x >= bounds.origin.x
+                && point.y >= bounds.origin.y
+                && point.x <= bounds.origin.x + bounds.size.width
+                && point.y <= bounds.origin.y + bounds.size.height
+            {
+                hovered_node = Some(instance.node());
+            }
+        }
+        if self.hovered_node != hovered_node {
+            self.hovered_node = hovered_node;
+            cx.notify();
+        }
+        let result = if hovered_node.is_some() {
+            self.canvas_interaction.clear_edge_hover()
+        } else {
+            self.canvas_interaction.request_edge_pick(position)
+        };
+        self.apply_scene_interaction_result(result, window, cx);
+    }
+
+    pub(super) fn handle_scene_pointer_exit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.hovered_node.take().is_some() {
+            cx.notify();
+        }
+        if let Ok(update) = self.canvas_interaction.clear_edge_hover() {
+            self.apply_canvas_interaction_update(update, window, cx);
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn active_scene_gesture(&self) -> bool {
         matches!(
@@ -89,6 +137,9 @@ impl OpenGpuiSceneHost {
             return false;
         };
         let result = self.canvas_interaction.press(target, position);
+        if result.is_err() && matches!(event.kind(), OpenGpuiSceneGestureKind::EdgeReconnect(..)) {
+            self.connection_owner = None;
+        }
         self.apply_scene_interaction_result(result, window, cx)
     }
 
@@ -203,23 +254,29 @@ impl OpenGpuiSceneHost {
         }
     }
 
-    fn scene_press_target(&self, event: &OpenGpuiSceneGestureEvent) -> Option<CanvasPressTarget> {
+    fn scene_press_target(
+        &mut self,
+        event: &OpenGpuiSceneGestureEvent,
+    ) -> Option<CanvasPressTarget> {
         let selection_mode = scene_selection_mode(event);
         match event.kind() {
             OpenGpuiSceneGestureKind::Node(instance) => self
                 .node_drag_start(instance, selection_mode)
                 .map(CanvasPressTarget::NodeDrag),
+            OpenGpuiSceneGestureKind::EdgeReconnect(edge, endpoint) => {
+                self.edge_reconnect_press_target(*edge, *endpoint)
+            }
             OpenGpuiSceneGestureKind::Pan => Some(CanvasPressTarget::Pan),
             OpenGpuiSceneGestureKind::Selection => {
                 let selection = self.view.selection().ok()?;
-                Some(CanvasPressTarget::Marquee {
+                Some(CanvasPressTarget::Canvas(CanvasPressFallback::Marquee {
                     selection_mode,
                     baseline: SelectionBaseline::new(
                         selection.nodes().iter().copied(),
                         selection.edges().iter().copied(),
                         selection.groups().iter().copied(),
                     ),
-                })
+                }))
             }
         }
     }
@@ -261,6 +318,9 @@ impl OpenGpuiSceneHost {
     fn scene_event_owner_is_current(&self, kind: &OpenGpuiSceneGestureKind) -> bool {
         match kind {
             OpenGpuiSceneGestureKind::Node(instance) => self.scene_node_owner_is_current(instance),
+            OpenGpuiSceneGestureKind::EdgeReconnect(edge, endpoint) => {
+                self.edge_reconnect_is_current(*edge, *endpoint)
+            }
             OpenGpuiSceneGestureKind::Pan | OpenGpuiSceneGestureKind::Selection => true,
         }
     }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasPoint, EdgeId, GroupId, NodeId, PortId};
 
+use crate::runtime::adapter_protocol::PublishedEdgeRoute;
 use crate::runtime::commands::{GraphCommand, NodeGeometryEdit, TopologyEdit};
 use crate::runtime::graph_runtime::{GraphRevision, GraphSnapshot};
 
@@ -84,6 +85,7 @@ pub enum FreshGraphMutation {
         topology: ConnectionTopology,
     },
     MoveNodes(RelativeNodeMoveIntent),
+    DeleteEdge(EdgeDeletionIntent),
 }
 
 impl FreshGraphMutation {
@@ -113,6 +115,7 @@ impl FreshGraphMutation {
                 )))
             }
             Self::MoveNodes(intent) => Ok(intent.into_command(snapshot)),
+            Self::DeleteEdge(intent) => Ok(intent.into_command(snapshot)),
         }
     }
 }
@@ -126,6 +129,34 @@ pub enum FreshGraphMutationBindError {
         validated: GraphRevision,
         current: GraphRevision,
     },
+}
+
+/// An edge deletion admitted from one authoritative published route.
+///
+/// The constructor is intentionally interaction-internal. Native adapters submit the published
+/// route to `CanvasInteractionSession` instead of manufacturing deletion commands or policy facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeDeletionIntent {
+    edge: EdgeId,
+}
+
+impl EdgeDeletionIntent {
+    pub(super) fn from_route(route: &PublishedEdgeRoute) -> Option<Self> {
+        route
+            .facts()
+            .interaction
+            .deletable
+            .then_some(Self { edge: route.edge() })
+    }
+
+    pub fn edge(self) -> EdgeId {
+        self.edge
+    }
+
+    fn into_command(self, snapshot: &GraphSnapshot) -> Option<GraphCommand> {
+        snapshot.graph().edge(&self.edge)?;
+        Some(GraphCommand::disconnect(snapshot.revision(), self.edge).with_label("Delete edge"))
+    }
 }
 
 /// Relative node movement captured independently from any stale press-time graph snapshot.
@@ -226,6 +257,67 @@ mod tests {
             runtime.snapshot().unwrap().graph().node(&node).unwrap().pos,
             CanvasPoint { x: 25.0, y: 29.0 }
         );
+    }
+
+    #[test]
+    fn edge_deletion_binds_once_to_a_fresh_revision_and_noops_after_retirement() {
+        let source_node = NodeId::from_u128(1);
+        let source_port = PortId::from_u128(1);
+        let target_node = NodeId::from_u128(2);
+        let target_port = PortId::from_u128(2);
+        let edge = EdgeId::from_u128(3);
+        let mut source = test_node(CanvasPoint { x: 0.0, y: 0.0 });
+        source.ports = vec![source_port];
+        let mut target = test_node(CanvasPoint { x: 200.0, y: 0.0 });
+        target.ports = vec![target_port];
+        let graph = GraphBuilder::new(GraphId::from_u128(1))
+            .with_node(source_node, source)
+            .with_port(
+                source_port,
+                test_port(source_node, "out", PortDirection::Out),
+            )
+            .with_node(target_node, target)
+            .with_port(target_port, test_port(target_node, "in", PortDirection::In))
+            .with_edge(edge, Edge::new(EdgeKind::Data, source_port, target_port))
+            .build()
+            .unwrap();
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph)
+            .unwrap();
+        runtime
+            .execute(GraphCommand::set_node_data(
+                0,
+                source_node,
+                serde_json::json!({ "revision": 1 }),
+            ))
+            .unwrap();
+
+        let intent = EdgeDeletionIntent { edge };
+        let command = FreshGraphMutation::DeleteEdge(intent)
+            .into_command(&runtime.snapshot().unwrap())
+            .unwrap()
+            .expect("existing edge produces a delete command");
+        assert_eq!(command.expected_revision(), 1);
+        assert_eq!(command.label(), Some("Delete edge"));
+        runtime
+            .execute(command)
+            .unwrap()
+            .applied()
+            .expect("edge deletion applies");
+        assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_none());
+
+        assert!(
+            FreshGraphMutation::DeleteEdge(intent)
+                .into_command(&runtime.snapshot().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        runtime
+            .execute(GraphCommand::undo(2))
+            .unwrap()
+            .applied()
+            .expect("one undo restores the deleted edge");
+        assert!(runtime.snapshot().unwrap().graph().edge(&edge).is_some());
     }
 
     #[test]

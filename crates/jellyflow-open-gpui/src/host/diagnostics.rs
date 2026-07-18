@@ -22,6 +22,7 @@ pub enum OpenGpuiSceneHostDiagnosticKind {
     InvalidRendererRegistration,
     FactoryFailure,
     Feedback,
+    EdgePainter,
 }
 
 /// Recoverable failure retained by the adapter instead of panicking.
@@ -61,78 +62,52 @@ impl OpenGpuiSceneHostDiagnostic {
     }
 }
 
-/// Evidence from the most recent published edge-layer admission pass.
-///
-/// Viewport culling is expected work reduction. Scan truncation reports bounded uncertainty about
-/// the unexamined snapshot suffix; `budget_omitted` reports inspected visible routes that could not
-/// enter the native paint budget.
+/// Evidence from the most recent indexed visible-route and paint admission pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OpenGpuiEdgeLayerOverflow {
-    pub(super) selected_ids_examined: usize,
-    pub(super) selected_ids_unexamined: usize,
-    pub(super) published_route_entries_examined: usize,
-    pub(super) published_routes_examined: usize,
-    pub(super) published_routes_unexamined: usize,
-    pub(super) scan_truncated: bool,
-    pub(super) viewport_culled: usize,
+    pub(super) query_entries_examined: u64,
+    pub(super) query_candidates_matched: u64,
+    pub(super) geometry_overflows: usize,
+    pub(super) query_pending: bool,
+    pub(super) query_budget_exhausted: bool,
+    pub(super) reused_previous_plan: bool,
     pub(super) budget_omitted: usize,
 }
 
 impl OpenGpuiEdgeLayerOverflow {
-    /// Number of selected edge IDs inspected through direct route lookup.
+    /// Number of spatial-index entries examined by the latest query page.
     #[must_use]
-    pub const fn selected_ids_examined(self) -> usize {
-        self.selected_ids_examined
+    pub const fn query_entries_examined(self) -> u64 {
+        self.query_entries_examined
     }
 
-    /// Exact number of selected edge IDs not inspected after exhausting the shared scan limit.
+    /// Number of distinct viewport candidates matched by the latest query page.
     #[must_use]
-    pub const fn selected_ids_unexamined(self) -> usize {
-        self.selected_ids_unexamined
+    pub const fn query_candidates_matched(self) -> u64 {
+        self.query_candidates_matched
     }
 
-    /// Number of entries consumed from the deterministic published-route map prefix.
     #[must_use]
-    pub const fn published_route_entries_examined(self) -> usize {
-        self.published_route_entries_examined
+    pub const fn geometry_overflows(self) -> usize {
+        self.geometry_overflows
     }
 
-    /// Total selected IDs plus published route entries charged to the scan limit.
     #[must_use]
-    pub const fn scan_inputs_examined(self) -> usize {
-        self.selected_ids_examined
-            .saturating_add(self.published_route_entries_examined)
+    pub const fn query_pending(self) -> bool {
+        self.query_pending
     }
 
-    /// Number of unique published routes inspected through either bounded input stream.
     #[must_use]
-    pub const fn published_routes_examined(self) -> usize {
-        self.published_routes_examined
+    pub const fn query_budget_exhausted(self) -> bool {
+        self.query_budget_exhausted
     }
 
-    /// Exact number of published routes whose facts were not inspected by this pass.
     #[must_use]
-    pub const fn published_routes_unexamined(self) -> usize {
-        self.published_routes_unexamined
+    pub const fn reused_previous_plan(self) -> bool {
+        self.reused_previous_plan
     }
 
-    /// Whether selected IDs or published route facts remained after the scan limit was exhausted.
-    #[must_use]
-    pub const fn scan_truncated(self) -> bool {
-        self.scan_truncated
-    }
-
-    /// Number of inspected published routes conservatively rejected outside the canvas viewport.
-    ///
-    /// This is a lower bound for the complete snapshot when [`Self::scan_truncated`] is true.
-    #[must_use]
-    pub const fn viewport_culled(self) -> usize {
-        self.viewport_culled
-    }
-
-    /// Number of inspected viewport-intersecting routes omitted by the fixed paint budget.
-    ///
-    /// This is a lower bound for the complete snapshot when [`Self::scan_truncated`] is true.
+    /// Number of complete visible routes omitted by the independent paint budget.
     #[must_use]
     pub const fn budget_omitted(self) -> usize {
         self.budget_omitted
@@ -140,7 +115,10 @@ impl OpenGpuiEdgeLayerOverflow {
 
     #[must_use]
     pub const fn is_empty(self) -> bool {
-        !self.scan_truncated && self.budget_omitted == 0
+        !self.query_pending
+            && !self.query_budget_exhausted
+            && self.geometry_overflows == 0
+            && self.budget_omitted == 0
     }
 }
 
@@ -171,16 +149,33 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) strong_instance_high_water: usize,
     pub(super) frame_materialization_overflows: u64,
     pub(super) edge_layer_plans: u64,
-    pub(super) edge_route_scan_inputs_examined: u64,
-    pub(super) edge_selected_ids_examined: u64,
-    pub(super) edge_route_entries_examined: u64,
-    pub(super) edge_routes_examined: u64,
-    pub(super) edge_routes_unexamined: u64,
-    pub(super) edge_route_scan_truncations: u64,
-    pub(super) edge_routes_viewport_culled: u64,
+    pub(super) edge_route_list_reuses: u64,
+    pub(super) edge_route_query_entries_examined: u64,
+    pub(super) edge_route_query_candidates_matched: u64,
+    pub(super) edge_route_query_pending: u64,
+    pub(super) edge_route_query_budget_exhausted: u64,
+    pub(super) edge_route_geometry_overflows: u64,
+    pub(super) edge_route_previous_plan_reuses: u64,
     pub(super) edge_routes_planned: u64,
     pub(super) edge_routes_budget_omitted: u64,
     pub(super) edge_layer_overflows: u64,
+    pub(super) edge_path_cache_hits: u64,
+    pub(super) edge_path_cache_misses: u64,
+    pub(super) edge_path_cache_resident: usize,
+    pub(super) edge_painter_fallbacks: u64,
+    pub(super) edge_paint_preparations: u64,
+    pub(super) edge_paint_batches: u64,
+    pub(super) edge_paths_painted: u64,
+    pub(super) edge_paint_plan_reuses: u64,
+    pub(super) edge_paint_item_reuses: u64,
+    pub(super) edge_paint_item_builds: u64,
+    pub(super) edge_native_paint_calls: u64,
+    pub(super) edge_native_edges_painted: u64,
+    pub(super) edge_marker_preparations: u64,
+    pub(super) edge_marker_batches: u64,
+    pub(super) edge_marker_plan_reuses: u64,
+    pub(super) edge_native_marker_paint_calls: u64,
+    pub(super) edge_native_markers_painted: u64,
 }
 
 impl OpenGpuiSceneHostStats {
@@ -309,43 +304,41 @@ impl OpenGpuiSceneHostStats {
         self.edge_layer_plans
     }
 
-    /// Number of selected IDs plus published route entries charged to edge scan limits.
+    /// Number of route spatial-index entries examined by native visible-route queries.
     #[must_use]
-    pub fn edge_route_scan_inputs_examined(self) -> u64 {
-        self.edge_route_scan_inputs_examined
+    pub fn edge_route_query_entries_examined(self) -> u64 {
+        self.edge_route_query_entries_examined
+    }
+
+    /// Number of frames that reused the immutable prepared visible-edge list.
+    #[must_use]
+    pub fn edge_route_list_reuses(self) -> u64 {
+        self.edge_route_list_reuses
     }
 
     #[must_use]
-    pub fn edge_selected_ids_examined(self) -> u64 {
-        self.edge_selected_ids_examined
+    pub fn edge_route_query_candidates_matched(self) -> u64 {
+        self.edge_route_query_candidates_matched
     }
 
     #[must_use]
-    pub fn edge_route_entries_examined(self) -> u64 {
-        self.edge_route_entries_examined
-    }
-
-    /// Number of published routes examined by edge-layer viewport admission.
-    #[must_use]
-    pub fn edge_routes_examined(self) -> u64 {
-        self.edge_routes_examined
-    }
-
-    /// Sum of exact per-pass counts of published routes whose facts were not inspected.
-    #[must_use]
-    pub fn edge_routes_unexamined(self) -> u64 {
-        self.edge_routes_unexamined
+    pub fn edge_route_query_pending(self) -> u64 {
+        self.edge_route_query_pending
     }
 
     #[must_use]
-    pub fn edge_route_scan_truncations(self) -> u64 {
-        self.edge_route_scan_truncations
+    pub fn edge_route_query_budget_exhausted(self) -> u64 {
+        self.edge_route_query_budget_exhausted
     }
 
-    /// Number of published routes rejected outside the canvas viewport.
     #[must_use]
-    pub fn edge_routes_viewport_culled(self) -> u64 {
-        self.edge_routes_viewport_culled
+    pub fn edge_route_geometry_overflows(self) -> u64 {
+        self.edge_route_geometry_overflows
+    }
+
+    #[must_use]
+    pub fn edge_route_previous_plan_reuses(self) -> u64 {
+        self.edge_route_previous_plan_reuses
     }
 
     /// Number of published routes admitted for native path construction.
@@ -360,7 +353,106 @@ impl OpenGpuiSceneHostStats {
         self.edge_routes_budget_omitted
     }
 
-    /// Number of edge-layer passes that truncated scanning or omitted an inspected visible route.
+    /// Number of native edge paths reused without rebuilding view-space geometry.
+    #[must_use]
+    pub fn edge_path_cache_hits(self) -> u64 {
+        self.edge_path_cache_hits
+    }
+
+    /// Number of native edge paths built and inserted into the bounded cache.
+    #[must_use]
+    pub fn edge_path_cache_misses(self) -> u64 {
+        self.edge_path_cache_misses
+    }
+
+    /// Number of edge-local native paths currently retained by the host.
+    #[must_use]
+    pub fn edge_path_cache_resident(self) -> usize {
+        self.edge_path_cache_resident
+    }
+
+    #[must_use]
+    pub fn edge_painter_fallbacks(self) -> u64 {
+        self.edge_painter_fallbacks
+    }
+
+    #[must_use]
+    pub fn edge_paint_preparations(self) -> u64 {
+        self.edge_paint_preparations
+    }
+
+    #[must_use]
+    pub fn edge_paint_batches(self) -> u64 {
+        self.edge_paint_batches
+    }
+
+    #[must_use]
+    pub fn edge_paths_painted(self) -> u64 {
+        self.edge_paths_painted
+    }
+
+    /// Number of native edge batch plans reused without regrouping their route-local items.
+    #[must_use]
+    pub fn edge_paint_plan_reuses(self) -> u64 {
+        self.edge_paint_plan_reuses
+    }
+
+    /// Number of unchanged route-local native paint items reused while rebuilding a batch plan.
+    #[must_use]
+    pub fn edge_paint_item_reuses(self) -> u64 {
+        self.edge_paint_item_reuses
+    }
+
+    /// Number of route-local native paint items prepared after a cache miss.
+    #[must_use]
+    pub fn edge_paint_item_builds(self) -> u64 {
+        self.edge_paint_item_builds
+    }
+
+    /// Number of native Open GPUI path primitives submitted by edge batch paint closures.
+    #[must_use]
+    pub fn edge_native_paint_calls(self) -> u64 {
+        self.edge_native_paint_calls
+    }
+
+    /// Number of logical edge paths represented by native batch paint submissions.
+    #[must_use]
+    pub fn edge_native_edges_painted(self) -> u64 {
+        self.edge_native_edges_painted
+    }
+
+    #[must_use]
+    pub fn edge_marker_preparations(self) -> u64 {
+        self.edge_marker_preparations
+    }
+
+    #[must_use]
+    pub fn edge_marker_batches(self) -> u64 {
+        self.edge_marker_batches
+    }
+
+    #[must_use]
+    pub fn edge_marker_plan_reuses(self) -> u64 {
+        self.edge_marker_plan_reuses
+    }
+
+    #[must_use]
+    pub fn edge_native_marker_paint_calls(self) -> u64 {
+        self.edge_native_marker_paint_calls
+    }
+
+    #[must_use]
+    pub fn edge_native_markers_painted(self) -> u64 {
+        self.edge_native_markers_painted
+    }
+
+    /// Native edges are batch-painted and never own retained Open GPUI entities.
+    #[must_use]
+    pub const fn retained_edge_entities(self) -> usize {
+        0
+    }
+
+    /// Number of edge-layer passes with an incomplete query, geometry overflow, or paint omission.
     #[must_use]
     pub fn edge_layer_overflows(self) -> u64 {
         self.edge_layer_overflows
@@ -469,6 +561,16 @@ impl OpenGpuiSceneHost {
     pub fn stats(&self) -> OpenGpuiSceneHostStats {
         let activity = self.activity_coordinator.stats();
         let mounts = self.mounts.snapshot();
+        let path_cache = self
+            .edge_paths
+            .try_borrow()
+            .map(|cache| cache.usage())
+            .unwrap_or_default();
+        let paint_usage = self
+            .edge_paths
+            .try_borrow()
+            .map(|cache| cache.paint_usage())
+            .unwrap_or_default();
         OpenGpuiSceneHostStats {
             active_nodes: mounts.active_nodes,
             parked_nodes: mounts.parked_nodes,
@@ -483,6 +585,22 @@ impl OpenGpuiSceneHost {
             eligible_lru_entries: mounts.eligible_lru_entries,
             strong_instances: mounts.strong_instances,
             strong_instance_high_water: mounts.strong_instance_high_water,
+            edge_path_cache_hits: path_cache.0,
+            edge_path_cache_misses: path_cache.1,
+            edge_path_cache_resident: path_cache.2,
+            edge_paint_preparations: paint_usage.paint_preparations,
+            edge_paint_batches: paint_usage.paint_batches,
+            edge_paths_painted: paint_usage.painted_paths,
+            edge_paint_plan_reuses: paint_usage.paint_plan_reuses,
+            edge_paint_item_reuses: paint_usage.paint_item_reuses,
+            edge_paint_item_builds: paint_usage.paint_item_builds,
+            edge_native_paint_calls: paint_usage.native_paint_calls,
+            edge_native_edges_painted: paint_usage.native_edges_painted,
+            edge_marker_preparations: paint_usage.marker_preparations,
+            edge_marker_batches: paint_usage.marker_batches,
+            edge_marker_plan_reuses: paint_usage.marker_plan_reuses,
+            edge_native_marker_paint_calls: paint_usage.native_marker_paint_calls,
+            edge_native_markers_painted: paint_usage.native_markers_painted,
             ..self.stats
         }
     }
@@ -506,6 +624,53 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn record_command_diagnostic(&mut self, message: String) {
         self.record_feedback_diagnostic(None, message);
+    }
+
+    pub(super) fn record_edge_painter_diagnostics(
+        &mut self,
+        fallbacks: Vec<(Option<String>, String)>,
+        total: usize,
+    ) {
+        if total == 0 {
+            return;
+        }
+        let renderer_key = fallbacks
+            .first()
+            .and_then(|(renderer_key, _)| renderer_key.clone())
+            .filter(|first| {
+                fallbacks
+                    .iter()
+                    .all(|(renderer_key, _)| renderer_key.as_ref() == Some(first))
+            });
+        let mut messages = fallbacks
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect::<Vec<_>>();
+        if messages.len() < total {
+            messages.push(format!(
+                "{} additional edge painter fallbacks omitted",
+                total - messages.len()
+            ));
+        }
+        let message = messages.join("; ");
+        let duplicate = self.last_diagnostic.as_ref().is_some_and(|diagnostic| {
+            diagnostic.kind == OpenGpuiSceneHostDiagnosticKind::EdgePainter
+                && diagnostic.message == message
+        });
+        if duplicate {
+            return;
+        }
+        self.stats.edge_painter_fallbacks = self
+            .stats
+            .edge_painter_fallbacks
+            .saturating_add(total as u64);
+        self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
+            kind: OpenGpuiSceneHostDiagnosticKind::EdgePainter,
+            instance: None,
+            node: None,
+            renderer_key,
+            message,
+        });
     }
 
     pub(super) fn record_frame_materialization_overflow(
@@ -584,6 +749,7 @@ impl OpenGpuiSceneHost {
             }
             OpenGpuiSceneHostDiagnosticKind::FactoryFailure => "Renderer failed",
             OpenGpuiSceneHostDiagnosticKind::Feedback => "Layout feedback failed",
+            OpenGpuiSceneHostDiagnosticKind::EdgePainter => "Edge painter fallback",
         };
         let retry = diagnostic
             .instance

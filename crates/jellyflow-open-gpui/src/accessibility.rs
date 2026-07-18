@@ -1,4 +1,4 @@
-use jellyflow::core::PortId;
+use jellyflow::core::{EdgeId, PortId};
 use jellyflow::runtime::{NodeInstanceKey, ViewId};
 use open_gpui::{
     Div, ElementId, EntityId, Role, SharedString, Stateful, StatefulInteractiveElement,
@@ -12,6 +12,10 @@ pub const OPEN_GPUI_NODE_ROLE: Role = Role::Group;
 pub const OPEN_GPUI_STATIC_PORT_ROLE: Role = Role::Image;
 /// AccessKit role exposed by a real graph port that accepts native interaction.
 pub const OPEN_GPUI_INTERACTIVE_PORT_ROLE: Role = Role::Button;
+/// AccessKit role exposed by an interactive graph edge.
+pub const OPEN_GPUI_EDGE_ROLE: Role = Role::Button;
+/// AccessKit role exposed by an endpoint reconnect handle.
+pub const OPEN_GPUI_RECONNECT_HANDLE_ROLE: Role = Role::Button;
 /// AccessKit role exposed by a recoverable host or renderer failure.
 pub const OPEN_GPUI_DIAGNOSTIC_ROLE: Role = Role::Alert;
 
@@ -96,6 +100,26 @@ pub fn open_gpui_node_measurement_element_id(
 #[must_use]
 pub fn open_gpui_scene_measurement_element_id(host: EntityId, view: ViewId) -> ElementId {
     (view_root(host, view), "scene-measurement").into()
+}
+
+/// Returns the stable host-scoped identity for one rendered edge action.
+#[must_use]
+pub fn open_gpui_edge_element_id(host: EntityId, view: ViewId, edge: EdgeId) -> ElementId {
+    let edge_root: ElementId = (view_root(host, view), "edge").into();
+    (edge_root, edge.0.to_string()).into()
+}
+
+/// Returns the stable host-scoped identity for one endpoint reconnect action.
+#[must_use]
+pub fn open_gpui_reconnect_element_id(
+    host: EntityId,
+    view: ViewId,
+    edge: EdgeId,
+    endpoint: &'static str,
+) -> ElementId {
+    let reconnect_root: ElementId =
+        (open_gpui_edge_element_id(host, view, edge), "reconnect").into();
+    (reconnect_root, endpoint).into()
 }
 
 /// Returns the stable Open GPUI identity for one real port incarnation.

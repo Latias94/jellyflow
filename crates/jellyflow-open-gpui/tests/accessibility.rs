@@ -2,16 +2,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
+    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
 use jellyflow_open_gpui::{
-    OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE, OPEN_GPUI_NODE_ROLE,
-    OPEN_GPUI_SCENE_ROLE, OPEN_GPUI_STATIC_PORT_ROLE, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
-    OpenGpuiSceneHost, open_gpui_node_element_id, open_gpui_port_element_id,
-    open_gpui_scene_element_id,
+    OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_EDGE_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE,
+    OPEN_GPUI_NODE_ROLE, OPEN_GPUI_RECONNECT_HANDLE_ROLE, OPEN_GPUI_SCENE_ROLE,
+    OPEN_GPUI_STATIC_PORT_ROLE, OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+    open_gpui_edge_element_id, open_gpui_node_element_id, open_gpui_port_element_id,
+    open_gpui_reconnect_element_id, open_gpui_scene_element_id,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityId, ParentElement, Render, Role, Styled, Window, div,
@@ -38,6 +39,8 @@ fn semantic_roles_and_element_ids_are_stable_and_host_scoped() {
     assert_eq!(OPEN_GPUI_NODE_ROLE, Role::Group);
     assert_eq!(OPEN_GPUI_STATIC_PORT_ROLE, Role::Image);
     assert_eq!(OPEN_GPUI_INTERACTIVE_PORT_ROLE, Role::Button);
+    assert_eq!(OPEN_GPUI_EDGE_ROLE, Role::Button);
+    assert_eq!(OPEN_GPUI_RECONNECT_HANDLE_ROLE, Role::Button);
     assert_eq!(OPEN_GPUI_DIAGNOSTIC_ROLE, Role::Alert);
 
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
@@ -86,6 +89,32 @@ fn semantic_roles_and_element_ids_are_stable_and_host_scoped() {
     assert_ne!(
         port,
         open_gpui_port_element_id(second_host, first_instance, port_id())
+    );
+
+    let edge_id = EdgeId::from_u128(30);
+    let edge = open_gpui_edge_element_id(first_host, first_view.id(), edge_id);
+    assert_eq!(
+        edge,
+        open_gpui_edge_element_id(first_host, first_view.id(), edge_id)
+    );
+    assert_ne!(
+        edge,
+        open_gpui_edge_element_id(second_host, first_view.id(), edge_id)
+    );
+    assert_ne!(
+        edge,
+        open_gpui_edge_element_id(first_host, second_view.id(), edge_id)
+    );
+
+    let source_reconnect =
+        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "source");
+    assert_eq!(
+        source_reconnect,
+        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "source")
+    );
+    assert_ne!(
+        source_reconnect,
+        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "target")
     );
 }
 

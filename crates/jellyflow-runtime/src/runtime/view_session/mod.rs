@@ -30,7 +30,8 @@ use crate::runtime::commands::{
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, GraphRevision, GraphRuntimeError,
     GraphRuntimePolicy, GraphSnapshot, NodeIncarnation, PortConnectionDragIntent,
-    PortConnectionFacts, RuntimeFactKey, RuntimeId, RuntimePatch, RuntimePatchKind, RuntimeShared,
+    PortConnectionFacts, PortConnectionSummary, RuntimeFactKey, RuntimeId, RuntimePatch,
+    RuntimePatchKind, RuntimeShared,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
 use crate::runtime::viewport::ViewportTransform;
@@ -50,9 +51,9 @@ pub use self::port_geometry::{
 use self::protocol::PendingFrame;
 use self::route_geometry::RouteGeometryIndex;
 pub use self::route_geometry::{
-    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
-    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryWork,
-    VisibleRoutes,
+    RouteGeometryRevision, VisibleRoute, VisibleRouteCursor, VisibleRouteCursorStaleReason,
+    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
+    VisibleRouteQueryOutcome, VisibleRouteQueryRevision, VisibleRouteQueryWork, VisibleRoutes,
 };
 pub use self::subscriptions::ViewSubscriptionToken;
 use facts::ViewFacts;
@@ -439,6 +440,7 @@ struct ViewState {
     layout_revision: u64,
     transform_revision: u64,
     interaction_order_revision: u128,
+    route_facts_revision: u128,
     environment: AdapterEnvironment,
     layout_generations: BTreeMap<NodeId, u64>,
     binding_revisions: BTreeMap<NodeId, GraphRevision>,
@@ -643,6 +645,7 @@ impl ViewState {
             .route_flatten_cache_invalidations
             .saturating_add(index.cache_invalidations);
         self.routes.insert_mut(edge, Arc::new(route));
+        self.route_facts_revision = self.route_facts_revision.saturating_add(1);
         self.record_geometry_snapshot_updates(1);
         true
     }
@@ -671,6 +674,7 @@ impl ViewState {
             .stats
             .route_flatten_cache_invalidations
             .saturating_add(index.cache_invalidations);
+        self.route_facts_revision = self.route_facts_revision.saturating_add(1);
         self.record_geometry_snapshot_updates(1);
         true
     }
@@ -690,6 +694,7 @@ impl ViewState {
             .stats
             .route_flatten_cache_invalidations
             .saturating_add(index.cache_invalidations);
+        self.route_facts_revision = self.route_facts_revision.saturating_add(1);
         self.record_geometry_snapshot_updates(removed);
     }
 
@@ -949,6 +954,15 @@ impl ViewSession {
     ) -> Result<Option<PortConnectionFacts>, ViewSessionError> {
         self.runtime()?
             .port_connection_facts(port)
+            .map_err(Into::into)
+    }
+
+    pub fn port_connection_summary(
+        &self,
+        port: PortId,
+    ) -> Result<Option<PortConnectionSummary>, ViewSessionError> {
+        self.runtime()?
+            .port_connection_summary(port)
             .map_err(Into::into)
     }
 
@@ -1212,6 +1226,14 @@ impl WeakViewSession {
         runtime.port_connection_facts(port).map_err(Into::into)
     }
 
+    pub fn port_connection_summary(
+        &self,
+        port: PortId,
+    ) -> Result<Option<PortConnectionSummary>, ViewSessionError> {
+        let (_, runtime) = self.open_capability()?;
+        runtime.port_connection_summary(port).map_err(Into::into)
+    }
+
     pub fn port_connection_drag_intent(
         &self,
         port: PortId,
@@ -1321,6 +1343,7 @@ impl ViewShared {
                 layout_revision: 0,
                 transform_revision: 0,
                 interaction_order_revision: 0,
+                route_facts_revision: 0,
                 environment: AdapterEnvironment::default(),
                 layout_generations: BTreeMap::new(),
                 binding_revisions: BTreeMap::new(),

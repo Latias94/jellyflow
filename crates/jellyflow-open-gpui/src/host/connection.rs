@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasPoint, EdgeId, NodeGraphConnectionMode, NodeId, PortDirection};
+use jellyflow::core::{CanvasPoint, EdgeId, NodeId, PortDirection};
 use jellyflow::runtime::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointPosition, EdgePath, EdgePosition, HandlePosition,
     bezier_edge_path, handle_anchor_position, resolve_edge_route_path,
@@ -20,11 +20,12 @@ use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
 use crate::binding::OpenGpuiMountCapability;
 use crate::interaction::{
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
-    OpenGpuiPortFocusExit,
+    OpenGpuiPortFocusExit, OpenGpuiSceneGestureCancelReason,
 };
 use crate::port_handle::OpenGpuiHostPortListener;
 
 use super::OpenGpuiSceneHost;
+use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::lifecycle::NodeChanges;
 
 pub(super) struct OpenGpuiConnectionPreviewPlan {
@@ -83,6 +84,14 @@ pub(super) struct MountedConnectionOwner {
 }
 
 impl MountedConnectionOwner {
+    pub(super) fn new(owner: OpenGpuiPortDragOwner, mount: OpenGpuiMountCapability) -> Self {
+        Self {
+            owner,
+            mount,
+            continuation_lease: None,
+        }
+    }
+
     fn matches(&self, owner: &OpenGpuiPortDragOwner, mount: &OpenGpuiMountCapability) -> bool {
         self.owner == *owner && self.mount.is_same_mount(mount)
     }
@@ -455,11 +464,12 @@ impl OpenGpuiSceneHost {
         else {
             return;
         };
-        self.connection_owner = Some(MountedConnectionOwner {
-            owner: owner.clone(),
-            mount: mount.clone(),
-            continuation_lease: None,
-        });
+        self.connection_owner = Some(MountedConnectionOwner::new(owner.clone(), mount.clone()));
+        self.graph_focus
+            .remember_return_target(OpenGpuiGraphFocusTarget::Port {
+                node: owner.instance().node(),
+                port: owner.port(),
+            });
         self.apply_canvas_interaction_update(update, window, cx);
     }
 
@@ -495,11 +505,7 @@ impl OpenGpuiSceneHost {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };
-        self.connection_owner = Some(MountedConnectionOwner {
-            owner: owner.clone(),
-            mount: mount.clone(),
-            continuation_lease: None,
-        });
+        self.connection_owner = Some(MountedConnectionOwner::new(owner.clone(), mount.clone()));
         self.apply_canvas_interaction_update(update, window, cx);
     }
 
@@ -587,33 +593,26 @@ impl OpenGpuiSceneHost {
         drag_intent: PortConnectionDragIntent,
     ) -> Option<ConnectionInteractionStart> {
         let source = owner.port();
-        if drag_intent.port() != source || !drag_intent.can_begin_connection() {
+        if drag_intent.port() != source
+            || drag_intent.node() != owner.instance().node()
+            || !drag_intent.can_begin_connection()
+        {
             return None;
         }
-        let mode = NodeGraphConnectionMode::default();
-        let intent = match drag_intent {
-            PortConnectionDragIntent::Connect { .. } => {
-                ConnectionGestureIntent::connect(EdgeId::new(), source, mode)
-            }
-            PortConnectionDragIntent::Reconnect { candidate, .. } => {
-                ConnectionGestureIntent::reconnect(
-                    candidate.edge(),
-                    candidate.endpoint(),
-                    source,
-                    candidate.opposite_port(),
-                    mode,
-                )
-            }
-            PortConnectionDragIntent::BlockedOccupied { .. } => return None,
-        };
+        let options = self.connection_options;
+        let mode = options.mode;
+        let new_edge = EdgeId::new();
+        let intent =
+            ConnectionInteractionStart::intent_from_port_drag(drag_intent, new_edge, mode)?;
         let geometry = self.view.geometry_snapshot().ok()?;
         let fixed = self.fixed_connection_endpoint(&geometry, intent)?;
-        ConnectionInteractionStart::new(
-            owner.instance().node(),
-            intent,
+        ConnectionInteractionStart::from_port_drag_intent(
+            drag_intent,
+            new_edge,
+            mode,
             fixed.point,
             fixed.position,
-            true,
+            options.allow_create_from_wire,
         )
     }
 
@@ -720,6 +719,20 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(owner) = self.stale_connection_owner() {
+            self.scene_interactions
+                .cancel_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
+            if let Some(current) = self.connection_owner.as_ref() {
+                self.interactions.cancel_owner_deferred(
+                    &current.owner,
+                    &current.mount,
+                    OpenGpuiPortDragCancelReason::OwnerRetired,
+                );
+            }
+            self.retire_canvas_interaction_owner(owner);
+            cx.notify();
+        }
+
         let presentation = self.canvas_interaction.presentation();
         let native_armed = presentation.phase() == CanvasInteractionPhase::Armed
             && self.connection_owner.as_ref().is_some_and(|current| {
@@ -814,6 +827,41 @@ impl OpenGpuiSceneHost {
             let update = self.canvas_interaction.cancel();
             self.discard_pending_interaction_submission();
             self.apply_canvas_interaction_update(update, window, cx);
+        }
+    }
+
+    fn stale_connection_owner(&self) -> Option<InteractionOwner> {
+        let intent = self
+            .canvas_interaction
+            .presentation()
+            .connection()?
+            .intent();
+        let snapshot = self.view.graph_snapshot().ok()?;
+        let graph = snapshot.graph();
+        match intent {
+            ConnectionGestureIntent::Connect { source, .. } => graph
+                .port(&source)
+                .is_none()
+                .then_some(InteractionOwner::Port(source)),
+            ConnectionGestureIntent::Reconnect {
+                edge,
+                endpoint,
+                detached_port,
+                fixed_port,
+                ..
+            } => {
+                let Some(current) = graph.edge(&edge) else {
+                    return Some(InteractionOwner::Edge(edge));
+                };
+                let endpoints_match = match endpoint {
+                    EdgeEndpoint::From => current.from == detached_port && current.to == fixed_port,
+                    EdgeEndpoint::To => current.to == detached_port && current.from == fixed_port,
+                };
+                (!endpoints_match
+                    || graph.port(&detached_port).is_none()
+                    || graph.port(&fixed_port).is_none())
+                .then_some(InteractionOwner::Edge(edge))
+            }
         }
     }
 

@@ -50,20 +50,20 @@ pub use runtime::graph_runtime::{
     GeometryImpact, GraphRevision, GraphRuntime, GraphRuntimeBuilder, GraphRuntimeError,
     GraphRuntimeEvent, GraphRuntimePolicy, GraphRuntimeStats, GraphRuntimeSubscriptionToken,
     GraphSnapshot, HistoryState, NodeIncarnation, PortConnectionDragFacts,
-    PortConnectionDragIntent, PortConnectionFacts, PortIncidentConnectionFacts, RuntimeFactDelta,
-    RuntimeFactKey, RuntimePatch, RuntimePatchKind,
+    PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary,
+    PortIncidentConnectionFacts, RuntimeFactDelta, RuntimeFactKey, RuntimePatch, RuntimePatchKind,
 };
 pub use runtime::interaction::{
     AlignmentGuide, CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,
-    ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation, ConnectionProbe,
-    ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
-    ConnectionSearchStatus, ConnectionTopology, FreshGraphMutation, FreshGraphMutationBindError,
-    InteractionDamage, InteractionGeneration, InteractionOwner, InteractionPosition,
-    InteractionQueryId, InteractionTerminalReason, InteractionTickDemand, InteractionTicketId,
-    NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent, SelectionBaseline, SelectionMode,
-    SelectionMutation, ViewportMutation,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
+    CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation,
+    ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
+    ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation,
+    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
+    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
+    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
+    SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation,
 };
 pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 pub use runtime::view_session::{
@@ -71,12 +71,13 @@ pub use runtime::view_session::{
     ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeWork, EdgePick,
     EdgePickCursor, EdgePickCursorStaleReason, EdgePickGeometryFailure, EdgePickQuery,
     EdgePickQueryError, EdgePickQueryOutcome, EdgePickWork, NodeBindingEvent, NodeBindingKey,
-    SelectedEdgeIds, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt, ViewCloseRequest,
-    ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession, ViewSessionError,
-    ViewSessionEvent, ViewSessionOptions, ViewSessionStats, ViewSubscriptionToken,
-    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
-    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryWork,
-    VisibleRoutes, WeakViewSession,
+    RouteGeometryRevision, SelectedEdgeIds, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt,
+    ViewCloseRequest, ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession,
+    ViewSessionError, ViewSessionEvent, ViewSessionOptions, ViewSessionStats,
+    ViewSubscriptionToken, VisibleRoute, VisibleRouteCursor, VisibleRouteCursorStaleReason,
+    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
+    VisibleRouteQueryOutcome, VisibleRouteQueryRevision, VisibleRouteQueryWork, VisibleRoutes,
+    WeakViewSession,
 };
 
 #[cfg(test)]

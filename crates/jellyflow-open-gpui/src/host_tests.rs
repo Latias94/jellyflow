@@ -1,23 +1,25 @@
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
-    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
+    EdgeReconnectableEndpoint, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
     AdapterEnvironment, ApplyPipelineError, CanvasInteractionPhase, ConnectionGestureIntent,
-    FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRuntime, GraphRuntimeMiddleware,
-    GraphRuntimeMiddlewareSnapshot, HandlePosition, IncidentEdgePolicy, LayoutNodeStatus,
-    PublishedPortOutcome, RendererStamp, RuntimePatch, StaleFrameReason, TopologyEdit,
-    TopologyPort, ViewCloseReason, ViewPoint, ViewRect, ViewSession, ViewSessionError,
-    ViewSessionEvent, ViewSessionOptions, ViewSize,
+    EdgeEndpoint, FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRuntime,
+    GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot, HandlePosition, IncidentEdgePolicy,
+    InteractionTerminalReason, LayoutNodeStatus, PublishedPortOutcome, RendererStamp, RuntimePatch,
+    StaleFrameReason, TopologyEdit, TopologyPort, ViewCloseReason, ViewPoint, ViewRect,
+    ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions, ViewSize,
 };
 use open_gpui::{
-    AppContext, Context, Entity, HitboxId, InteractiveElement, Modifiers, MouseButton,
-    ParentElement, Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase, VisualContext,
-    Window, div, point, px,
+    AppContext, Context, Entity, HitboxId, InteractiveElement, KeyUpEvent, Keystroke, Modifiers,
+    MouseButton, ParentElement, Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase,
+    VisualContext, Window, div, point, px,
 };
 
+use crate::chrome::OpenGpuiEdgeVisualState;
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
 use crate::interaction::{
     OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortEvent, port_drag_owner,
@@ -644,13 +646,168 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
             .iter()
             .position(|layer| *layer == OpenGpuiSceneLayer::Node)
             .expect("node layer");
+        let edge_interaction = OPEN_GPUI_SCENE_LAYER_ORDER
+            .iter()
+            .position(|layer| *layer == OpenGpuiSceneLayer::EdgeInteraction)
+            .expect("edge interaction layer");
         assert!(edge < node, "retained nodes must paint above graph wires");
+        assert!(
+            edge_interaction < node,
+            "node controls must paint and receive pointer hits above edge focus controls",
+        );
         assert_eq!(
             host.stats().mounts(),
             2,
             "fresh frames retain node identity"
         );
     });
+
+    let before = cx.read_entity(&host, |host, _| host.stats());
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw_once(cx);
+    let after = cx.read_entity(&host, |host, _| host.stats());
+    assert_eq!(
+        after.edge_route_query_entries_examined(),
+        before.edge_route_query_entries_examined(),
+        "an unchanged native redraw must reuse the complete visible-route plan",
+    );
+    assert_eq!(
+        after.edge_path_cache_misses(),
+        before.edge_path_cache_misses(),
+        "an unchanged native redraw must not rebuild route paths",
+    );
+    assert_eq!(
+        after.edge_paint_preparations(),
+        before.edge_paint_preparations(),
+        "an unchanged native redraw must not regroup the edge batch plan",
+    );
+    assert_eq!(
+        after.edge_paint_item_builds(),
+        before.edge_paint_item_builds(),
+    );
+    assert!(after.edge_paint_plan_reuses() > before.edge_paint_plan_reuses());
+    assert_eq!(after.retained_edge_entities(), 0);
+
+    let pointer = cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("edge geometry");
+        let sample = geometry
+            .route(EdgeId::from_u128(30))
+            .expect("published edge")
+            .facts()
+            .path
+            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .expect("edge center");
+        let position = host
+            .view
+            .viewport_transform()
+            .expect("viewport transform")
+            .screen_point_for_canvas(sample.point)
+            .expect("project edge center");
+        let origin = host.scene_origin.expect("scene origin");
+        point(origin.x + px(position.x), origin.y + px(position.y))
+    });
+    cx.simulate_mouse_move(pointer, None, Default::default());
+    cx.run_until_parked();
+    let hovered = cx.read_entity(&host, |host, _| host.stats());
+    assert_eq!(
+        hovered.edge_route_query_entries_examined(),
+        after.edge_route_query_entries_examined(),
+        "hover must not restart the visible-route query",
+    );
+    assert_eq!(
+        hovered.edge_layer_plans(),
+        after.edge_layer_plans(),
+        "hover must reuse the immutable prepared route list",
+    );
+    assert!(hovered.edge_route_list_reuses() > after.edge_route_list_reuses());
+    assert_eq!(
+        hovered.edge_path_cache_misses() - after.edge_path_cache_misses(),
+        1,
+        "only the changed edge builds its wider hover tessellation",
+    );
+    assert!(hovered.edge_paint_plan_reuses() > after.edge_paint_plan_reuses());
+    assert_eq!(
+        hovered.edge_native_paint_calls() - after.edge_native_paint_calls(),
+        2,
+        "one base batch and one changed-edge overlay are submitted",
+    );
+    assert_eq!(hovered.retained_edge_entities(), 0);
+}
+
+#[open_gpui::test]
+fn same_style_edges_merge_into_fewer_native_paint_submissions(cx: &mut open_gpui::TestAppContext) {
+    const EDGE_COUNT: usize = 4;
+    let (graph, _) = bounded_edge_graph(EDGE_COUNT, 0);
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
+
+    draw(cx);
+    draw(cx);
+
+    let stats = cx.read_entity(&host, |host, _| host.stats());
+    assert!(stats.edge_native_paint_calls() > 0);
+    assert!(stats.edge_native_edges_painted() >= EDGE_COUNT as u64);
+    assert!(
+        stats.edge_native_paint_calls() < stats.edge_native_edges_painted(),
+        "same-style route meshes must share native paint submissions",
+    );
+    assert_eq!(stats.retained_edge_entities(), 0);
+}
+
+#[open_gpui::test]
+fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    const EDGE_COUNT: usize = 4;
+    let (graph, _) = bounded_edge_graph_with(EDGE_COUNT, 0, |output, input| {
+        let mut edge = Edge::new(EdgeKind::Data, output, input);
+        edge.view.target_marker_key = Some("arrow".to_owned());
+        edge
+    });
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
+
+    draw(cx);
+    draw(cx);
+
+    let before = cx.read_entity(&host, |host, _| host.stats());
+    assert!(before.edge_native_markers_painted() >= EDGE_COUNT as u64);
+    assert!(
+        before.edge_native_marker_paint_calls() < before.edge_native_markers_painted(),
+        "equal marker colors must share one native path submission",
+    );
+
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw_once(cx);
+    let after = cx.read_entity(&host, |host, _| host.stats());
+    assert_eq!(
+        after.edge_marker_preparations(),
+        before.edge_marker_preparations(),
+        "an unchanged frame must not regroup marker paths",
+    );
+    assert!(after.edge_marker_plan_reuses() > before.edge_marker_plan_reuses());
+    assert_eq!(after.retained_edge_entities(), 0);
+}
+
+#[test]
+fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal()
+            .expect("valid empty registry"),
+        viewport(),
+    )
+    .with_edge_layer_budget(usize::MAX);
+
+    assert_eq!(
+        host.edge_layer_budget(),
+        super::OPEN_GPUI_MAX_EDGE_LAYER_BUDGET,
+    );
 }
 
 #[open_gpui::test]
@@ -702,7 +859,6 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
     const VISIBLE_EDGES: usize = 4;
     const OFFSCREEN_EDGES: usize = 12;
     const EDGE_BUDGET: usize = 2;
-    const ROUTE_SCAN_LIMIT: usize = 10;
 
     let (graph, visible_edges) = bounded_edge_graph(VISIBLE_EDGES, OFFSCREEN_EDGES);
     let selected = *visible_edges.last().expect("visible selected edge");
@@ -721,8 +877,7 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
             .expect("valid empty test registry"),
         viewport(),
     )
-    .with_edge_layer_budget(EDGE_BUDGET)
-    .with_edge_route_scan_limit(ROUTE_SCAN_LIMIT);
+    .with_edge_layer_budget(EDGE_BUDGET);
     let wires = host.scene_wires().expect("bounded edge plan");
 
     assert_eq!(
@@ -731,43 +886,90 @@ fn edge_layer_culls_offscreen_routes_and_prioritizes_selection_within_its_own_bu
             .iter()
             .map(|wire| wire.edge)
             .collect::<Vec<_>>(),
-        vec![selected, visible_edges[0]],
-        "selected routes win admission before stable EdgeId order",
+        vec![visible_edges[2], selected],
+        "the topmost ordinary route is admitted before the selected route paints above it",
     );
-    assert!(wires.published[0].selected);
-    assert!(!wires.published[1].selected);
+    assert_eq!(
+        wires.published[0].visual_state,
+        OpenGpuiEdgeVisualState::Ordinary
+    );
+    assert_eq!(
+        wires.published[1].visual_state,
+        OpenGpuiEdgeVisualState::Selected
+    );
 
     let overflow = host.last_edge_layer_overflow();
-    assert_eq!(overflow.selected_ids_examined(), 1);
-    assert_eq!(overflow.selected_ids_unexamined(), 0);
-    assert_eq!(overflow.published_route_entries_examined(), 9);
-    assert_eq!(overflow.scan_inputs_examined(), ROUTE_SCAN_LIMIT);
-    assert_eq!(overflow.published_routes_examined(), 9);
-    assert_eq!(overflow.published_routes_unexamined(), 7);
-    assert!(overflow.scan_truncated());
-    assert_eq!(overflow.viewport_culled(), 5);
+    assert!(!overflow.query_pending());
+    assert!(!overflow.query_budget_exhausted());
+    assert!(!overflow.reused_previous_plan());
+    assert_eq!(overflow.query_candidates_matched(), VISIBLE_EDGES as u64);
     assert_eq!(overflow.budget_omitted(), VISIBLE_EDGES - EDGE_BUDGET);
     assert!(!overflow.is_empty());
 
     let stats = host.stats();
     assert_eq!(stats.edge_layer_plans(), 1);
-    assert_eq!(stats.edge_routes_examined(), 9,);
-    assert_eq!(stats.edge_route_scan_inputs_examined(), 10);
-    assert_eq!(stats.edge_selected_ids_examined(), 1);
-    assert_eq!(stats.edge_route_entries_examined(), 9);
-    assert_eq!(stats.edge_routes_unexamined(), 7);
-    assert_eq!(stats.edge_route_scan_truncations(), 1);
-    assert_eq!(stats.edge_routes_viewport_culled(), 5);
+    assert_eq!(
+        stats.edge_route_query_candidates_matched(),
+        VISIBLE_EDGES as u64
+    );
+    assert_eq!(stats.edge_route_query_pending(), 0);
     assert_eq!(stats.edge_routes_planned(), EDGE_BUDGET as u64);
     assert_eq!(
         stats.edge_routes_budget_omitted(),
         (VISIBLE_EDGES - EDGE_BUDGET) as u64,
     );
     assert_eq!(stats.edge_layer_overflows(), 1);
+
+    let candidates_before_reuse = stats.edge_route_query_candidates_matched();
+    let entries_before_reuse = stats.edge_route_query_entries_examined();
+    let cached = host
+        .scene_wires()
+        .expect("unchanged complete route plan is reusable");
+    assert_eq!(
+        cached
+            .published
+            .iter()
+            .map(|wire| wire.edge)
+            .collect::<Vec<_>>(),
+        vec![visible_edges[2], selected],
+    );
+    let overflow = host.last_edge_layer_overflow();
+    assert!(overflow.reused_previous_plan());
+    assert_eq!(overflow.query_entries_examined(), 0);
+    assert_eq!(overflow.query_candidates_matched(), 0);
+    let reused_stats = host.stats();
+    assert_eq!(
+        reused_stats.edge_route_query_candidates_matched(),
+        candidates_before_reuse,
+    );
+    assert_eq!(
+        reused_stats.edge_route_query_entries_examined(),
+        entries_before_reuse,
+    );
+    assert_eq!(reused_stats.edge_route_previous_plan_reuses(), 1);
+
+    let reselected = visible_edges[0];
+    host.view
+        .set_selection(Vec::new(), vec![reselected], Vec::new())
+        .expect("change paint order before a bounded refresh");
+    host.visible_route_query_budget = 1;
+    let resumed = host
+        .scene_wires()
+        .expect("incomplete query retains the complete paint plan");
+    assert_eq!(resumed.published.len(), EDGE_BUDGET);
+    assert_eq!(
+        resumed.published.last().map(|wire| wire.edge),
+        Some(reselected),
+        "the current selection remains emphasized while the spatial refresh is incomplete",
+    );
+    let overflow = host.last_edge_layer_overflow();
+    assert!(overflow.query_pending());
+    assert!(overflow.reused_previous_plan());
+    assert!(overflow.query_entries_examined() <= 1);
 }
 
 #[test]
-fn ten_thousand_routes_keep_scan_and_native_path_candidates_hard_bounded() {
+fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
     const EDGE_COUNT: usize = 10_000;
     const ROUTE_SCAN_LIMIT: usize = 64;
     const EDGE_BUDGET: usize = 4;
@@ -789,57 +991,333 @@ fn ten_thousand_routes_keep_scan_and_native_path_candidates_hard_bounded() {
         viewport(),
     );
     assert_eq!(
-        host.edge_route_scan_limit(),
-        super::OPEN_GPUI_DEFAULT_EDGE_ROUTE_SCAN_LIMIT,
+        host.visible_route_query_budget(),
+        super::OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET,
     );
     let mut host = host
         .with_edge_layer_budget(EDGE_BUDGET)
-        .with_edge_route_scan_limit(ROUTE_SCAN_LIMIT);
+        .with_visible_route_query_budget(ROUTE_SCAN_LIMIT);
 
-    let selected_prefix = host
-        .view
-        .selected_edge_ids(ROUTE_SCAN_LIMIT)
-        .expect("bounded selected-edge snapshot");
-    assert_eq!(selected_prefix.edges(), &selected[..ROUTE_SCAN_LIMIT]);
-    assert_eq!(selected_prefix.total_count(), EDGE_COUNT);
-    assert!(selected_prefix.is_truncated());
-
-    let expected = selected[..EDGE_BUDGET].to_vec();
-    for _ in 0..2 {
+    let mut pending_pages = 0_u64;
+    loop {
         let wires = host.scene_wires().expect("bounded dense edge plan");
-        assert_eq!(
-            wires
-                .published
-                .iter()
-                .map(|wire| wire.edge)
-                .collect::<Vec<_>>(),
-            expected,
-        );
-        assert!(wires.published.len() <= EDGE_BUDGET);
+        assert!(wires.published.is_empty());
         let overflow = host.last_edge_layer_overflow();
-        assert_eq!(overflow.scan_inputs_examined(), ROUTE_SCAN_LIMIT);
-        assert_eq!(overflow.selected_ids_examined(), ROUTE_SCAN_LIMIT);
-        assert_eq!(
-            overflow.selected_ids_unexamined(),
-            EDGE_COUNT - ROUTE_SCAN_LIMIT,
-        );
-        assert_eq!(overflow.published_route_entries_examined(), 0);
-        assert_eq!(overflow.published_routes_examined(), ROUTE_SCAN_LIMIT);
-        assert_eq!(
-            overflow.published_routes_unexamined(),
-            EDGE_COUNT - ROUTE_SCAN_LIMIT,
-        );
-        assert!(overflow.scan_truncated());
+        assert!(overflow.query_entries_examined() <= ROUTE_SCAN_LIMIT as u64);
+        assert!(overflow.query_candidates_matched() <= ROUTE_SCAN_LIMIT as u64);
+        assert!(!overflow.reused_previous_plan());
+        if overflow.query_pending() {
+            pending_pages = pending_pages.saturating_add(1);
+            assert!(
+                pending_pages < 300,
+                "the bounded query must reach a terminal state"
+            );
+            continue;
+        }
+        assert!(overflow.query_budget_exhausted());
+        break;
     }
 
     let stats = host.stats();
-    assert_eq!(stats.edge_layer_plans(), 2);
+    assert_eq!(stats.edge_layer_plans(), 1);
+    assert!(stats.edge_route_list_reuses() >= pending_pages);
     assert_eq!(
-        stats.edge_route_scan_inputs_examined(),
-        (ROUTE_SCAN_LIMIT * 2) as u64,
+        stats.edge_route_query_entries_examined(),
+        super::OPEN_GPUI_MAX_EDGE_LAYER_BUDGET as u64,
     );
-    assert_eq!(stats.edge_routes_planned(), (EDGE_BUDGET * 2) as u64);
-    assert_eq!(stats.edge_route_scan_truncations(), 2);
+    assert_eq!(stats.edge_route_query_pending(), pending_pages);
+    assert_eq!(stats.edge_route_query_budget_exhausted(), 1);
+    assert_eq!(stats.edge_routes_planned(), 0);
+
+    let terminal = host
+        .scene_wires()
+        .expect("hard exhaustion is terminal for an unchanged query key");
+    assert!(terminal.published.is_empty());
+    let overflow = host.last_edge_layer_overflow();
+    assert!(overflow.query_budget_exhausted());
+    assert_eq!(overflow.query_entries_examined(), 0);
+    assert_eq!(overflow.query_candidates_matched(), 0);
+    let terminal_stats = host.stats();
+    assert_eq!(
+        terminal_stats.edge_route_query_entries_examined(),
+        stats.edge_route_query_entries_examined(),
+        "terminal exhaustion must not restart the 10k scan every frame",
+    );
+}
+
+#[open_gpui::test]
+fn edge_delete_action_commits_one_undoable_disconnect(cx: &mut open_gpui::TestAppContext) {
+    let edge = EdgeId::from_u128(30);
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 0);
+    cx.update(|window, cx| {
+        assert!(host.update(cx, |host, cx| { host.delete_edge_action(edge, window, cx) }));
+    });
+    draw(cx);
+
+    let deleted = runtime.snapshot().expect("deleted graph");
+    assert!(deleted.graph().edge(&edge).is_none());
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 1);
+    runtime
+        .execute(GraphCommand::undo(deleted.revision()))
+        .expect("undo edge deletion")
+        .applied()
+        .expect("undo applies");
+    assert!(
+        runtime
+            .snapshot()
+            .expect("restored graph")
+            .graph()
+            .edge(&edge)
+            .is_some()
+    );
+}
+
+#[open_gpui::test]
+fn pointer_selects_the_painted_edge_through_the_renderer_neutral_path_picker(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let edge = EdgeId::from_u128(30);
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+    let pointer = cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("edge geometry");
+        let sample = geometry
+            .route(edge)
+            .expect("published edge")
+            .facts()
+            .path
+            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .expect("edge center");
+        let transform = host.view.viewport_transform().expect("viewport transform");
+        let position = transform
+            .screen_point_for_canvas(sample.point)
+            .expect("projected edge center");
+        let origin = host.scene_origin.expect("measured scene origin");
+        point(origin.x + px(position.x), origin.y + px(position.y))
+    });
+
+    cx.simulate_click(pointer, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.view
+                .selection()
+                .expect("pointer edge selection")
+                .edges(),
+            [edge]
+        );
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+    });
+}
+
+#[open_gpui::test]
+fn forbidden_edge_delete_and_endpoint_reconnect_have_zero_side_effects(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let edge = EdgeId::from_u128(30);
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, restricted_edge_action_graph());
+    draw(cx);
+    draw(cx);
+
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            assert!(!host.delete_edge_action(edge, window, cx));
+            assert!(
+                host.edge_reconnect_press_target(edge, EdgeEndpoint::From)
+                    .is_none()
+            );
+            assert!(
+                host.edge_reconnect_press_target(edge, EdgeEndpoint::To)
+                    .is_some()
+            );
+            host.connection_owner = None;
+        });
+    });
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("unchanged graph");
+    assert_eq!(snapshot.revision(), 0);
+    assert!(snapshot.graph().edge(&edge).is_some());
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 0);
+}
+
+#[open_gpui::test]
+fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_frame(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let edge = EdgeId::from_u128(30);
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+
+    cx.update_window_entity(&host, |host, window, cx| {
+        assert!(host.activate_edge_reconnect_action(edge, EdgeEndpoint::To, window, cx));
+    });
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
+        let preview = host
+            .scene_evidence
+            .last_connection_preview
+            .get()
+            .expect("active reconnect preview");
+        assert_eq!(preview.suppressed_edge, Some(edge));
+        assert_eq!(
+            host.scene_evidence
+                .last_painted_connection_preview_count
+                .get(),
+            1
+        );
+    });
+
+    let revision = runtime
+        .snapshot()
+        .expect("snapshot before disconnect")
+        .revision();
+    runtime
+        .execute(GraphCommand::disconnect(revision, edge))
+        .expect("external edge removal")
+        .applied()
+        .expect("disconnect applies");
+    cx.run_until_parked();
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            presentation.terminal(),
+            Some(InteractionTerminalReason::OwnerRetired)
+        );
+        assert!(presentation.connection().is_none());
+        assert!(host.connection_owner.is_none());
+        assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
+        assert_eq!(
+            host.scene_evidence
+                .last_painted_connection_preview_count
+                .get(),
+            0
+        );
+    });
+}
+
+#[open_gpui::test]
+fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+    let (root_focus, binding) = cx.read_entity(&host, |host, _| {
+        let binding = host
+            .mounts
+            .active_in_order()
+            .next()
+            .and_then(|(_, mounted)| mounted.binding.clone())
+            .expect("first mounted node binding");
+        (
+            host.interaction_focus.clone().expect("canvas focus"),
+            binding,
+        )
+    });
+    cx.update(|window, _| window.blur());
+
+    cx.update(|window, cx| {
+        window.focus_next(cx);
+        assert_eq!(window.focused(cx), Some(root_focus.clone()));
+    });
+
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    cx.read_entity(&binding, |binding, _| {
+        assert!(binding.presentation().node().focused());
+        assert!(
+            !binding
+                .presentation()
+                .port(PortId::from_u128(20))
+                .expect("output presentation")
+                .focused()
+        );
+    });
+
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    cx.read_entity(&binding, |binding, _| {
+        assert!(
+            binding
+                .presentation()
+                .port(PortId::from_u128(20))
+                .expect("output presentation")
+                .focused()
+        );
+        assert!(
+            binding.presentation().node().focused(),
+            "a focused descendant keeps its node focus state observable"
+        );
+    });
+}
+
+#[open_gpui::test]
+fn focused_edge_delete_uses_native_key_semantics_and_falls_back_in_graph_order(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let edge = EdgeId::from_u128(30);
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+    let root_focus = cx.read_entity(&host, |host, _| {
+        host.interaction_focus.clone().expect("canvas focus")
+    });
+    cx.update(|window, cx| window.focus(&root_focus, cx));
+
+    for _ in 0..4 {
+        cx.simulate_keystrokes("tab");
+    }
+    let previous_focus = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("target port focus before the edge");
+    cx.simulate_keystrokes("tab");
+    let edge_focus = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("edge focus after nodes and ports");
+    assert_ne!(edge_focus, previous_focus);
+
+    simulate_key_up(cx, "enter");
+    cx.run_until_parked();
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.view.selection().expect("edge selection").edges(),
+            [edge]
+        );
+    });
+    cx.update(|window, cx| assert_eq!(window.focused(cx), Some(edge_focus)));
+
+    simulate_key_up(cx, "delete");
+    cx.run_until_parked();
+    draw(cx);
+
+    assert!(
+        runtime
+            .snapshot()
+            .expect("graph after native delete")
+            .graph()
+            .edge(&edge)
+            .is_none()
+    );
+    assert_eq!(runtime.history_state().expect("history").undo_len(), 1);
+    cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
 }
 
 #[open_gpui::test]
@@ -1002,9 +1480,9 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         host.scene_wires()
             .expect("dragged scene wires")
             .published
-            .into_iter()
+            .iter()
             .find(|wire| wire.edge == EdgeId::from_u128(30))
-            .and_then(|wire| wire.drag_path)
+            .and_then(|wire| wire.drag_path.clone())
             .expect("incident edge has an optimistic drag path")
     });
     let (dragged_source, dragged_target) =
@@ -4131,6 +4609,12 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
+fn simulate_key_up(cx: &mut open_gpui::VisualTestContext, key: &str) {
+    cx.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse(key).expect("valid test keystroke"),
+    });
+}
+
 fn draw_once(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
@@ -4429,6 +4913,16 @@ fn bounded_edge_graph(
     visible_edges: usize,
     offscreen_edges: usize,
 ) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+    bounded_edge_graph_with(visible_edges, offscreen_edges, |output, input| {
+        Edge::new(EdgeKind::Data, output, input)
+    })
+}
+
+fn bounded_edge_graph_with(
+    visible_edges: usize,
+    offscreen_edges: usize,
+    mut make_edge: impl FnMut(PortId, PortId) -> Edge,
+) -> (jellyflow::core::Graph, Vec<EdgeId>) {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let mut visible = Vec::with_capacity(visible_edges);
     for index in 0..visible_edges + offscreen_edges {
@@ -4465,7 +4959,7 @@ fn bounded_edge_graph(
         );
         graph.insert_port(output, port(source, "output", PortDirection::Out));
         graph.insert_port(input, port(target, "input", PortDirection::In));
-        graph.insert_edge(edge, Edge::new(EdgeKind::Data, output, input));
+        graph.insert_edge(edge, make_edge(output, input));
         if index < visible_edges {
             visible.push(edge);
         }
@@ -4580,6 +5074,26 @@ fn routed_graph() -> jellyflow::core::Graph {
         Edge::new(EdgeKind::Data, output, input),
     );
     graph.build().expect("valid graph")
+}
+
+fn restricted_edge_action_graph() -> jellyflow::core::Graph {
+    let source = NodeId::from_u128(10);
+    let target = NodeId::from_u128(11);
+    let output = PortId::from_u128(20);
+    let input = PortId::from_u128(21);
+    let edge_id = EdgeId::from_u128(30);
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(source, node(CanvasPoint { x: 40.0, y: 80.0 }, output));
+    graph.insert_node(target, node(CanvasPoint { x: 360.0, y: 80.0 }, input));
+    graph.insert_port(output, port(source, "output", PortDirection::Out));
+    graph.insert_port(input, port(target, "input", PortDirection::In));
+    let mut edge = Edge::new(EdgeKind::Data, output, input);
+    edge.deletable = Some(false);
+    edge.reconnectable = Some(EdgeReconnectable::Endpoint(
+        EdgeReconnectableEndpoint::Target,
+    ));
+    graph.insert_edge(edge_id, edge);
+    graph.build().expect("valid restricted edge graph")
 }
 
 fn unconnected_graph() -> jellyflow::core::Graph {

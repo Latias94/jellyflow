@@ -1,9 +1,13 @@
 mod connection;
 mod diagnostics;
+mod edge_actions;
+mod edge_layer;
+mod focus_navigation;
 mod frame_feedback;
 mod interaction_session;
 mod lifecycle;
 mod node_lifecycle;
+mod presentation;
 mod retained_mount_store;
 mod scene_gesture;
 mod scene_render;
@@ -16,6 +20,8 @@ pub use self::diagnostics::{
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 
 use self::connection::MountedConnectionOwner;
+use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
+use self::focus_navigation::OpenGpuiGraphFocusCoordinator;
 use self::frame_feedback::DeferredFrameFeedback;
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
@@ -28,11 +34,12 @@ use self::scene_render::{
     OpenGpuiConnectionPreviewEvidence, OpenGpuiSceneEvidence, OpenGpuiSceneLayer,
 };
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
@@ -45,8 +52,10 @@ use open_gpui::{Context, FocusHandle, IntoElement, Pixels, Render, Window};
 
 use self::lifecycle::HostLifecycleBridge;
 use self::retained_mount_store::RetainedMountStore;
+use self::scene_render::OpenGpuiPreparedEdgeCache;
 
 use crate::activity::OpenGpuiActivityCoordinator;
+use crate::chrome::OpenGpuiEdgePainterRegistry;
 use crate::command_journal::{
     OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, OpenGpuiCommandTicketError,
     resolve_command_tickets,
@@ -54,6 +63,7 @@ use crate::command_journal::{
 use crate::interaction::{OpenGpuiInteractionCoordinator, OpenGpuiSceneInteractionCoordinator};
 use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
+use crate::theme::OpenGpuiGraphTheme;
 
 #[cfg(test)]
 use crate::binding::OpenGpuiNodeBinding;
@@ -68,8 +78,28 @@ pub const OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY: usize = 256;
 pub const OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY: usize = 64;
 /// Maximum number of published edge paths materialized by one native paint pass.
 pub const OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET: usize = 4_096;
-/// Maximum selected IDs plus published route entries inspected by one edge-layer pass.
-pub const OPEN_GPUI_DEFAULT_EDGE_ROUTE_SCAN_LIMIT: usize = 16_384;
+/// Defensive maximum number of published edge paths admitted to one native frame.
+pub const OPEN_GPUI_MAX_EDGE_LAYER_BUDGET: usize = 16_384;
+/// Maximum indexed route entries examined by one visible-route query page.
+pub const OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET: usize = 4_096;
+
+/// Adapter-local policy for native connection and reconnect gestures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGpuiConnectionOptions {
+    /// Renderer-neutral validation mode used by every connection gesture.
+    pub mode: NodeGraphConnectionMode,
+    /// Whether releasing on empty canvas may enter application-provided create-from-wire search.
+    pub allow_create_from_wire: bool,
+}
+
+impl Default for OpenGpuiConnectionOptions {
+    fn default() -> Self {
+        Self {
+            mode: NodeGraphConnectionMode::default(),
+            allow_create_from_wire: true,
+        }
+    }
+}
 
 const DIAGNOSTIC_RENDERER_KEY: &str = "jellyflow.open-gpui.diagnostic";
 const RENDERER_INCARNATION: u64 = 1;
@@ -86,7 +116,13 @@ pub struct OpenGpuiSceneHost {
     tracks_surface_viewport: bool,
     frame_materialization_budget: FrameMaterializationBudget,
     edge_layer_budget: usize,
-    edge_route_scan_limit: usize,
+    visible_route_query_budget: usize,
+    visible_routes: OpenGpuiVisibleRouteCache,
+    prepared_edges: OpenGpuiPreparedEdgeCache,
+    edge_paths: Rc<RefCell<OpenGpuiEdgePathCache>>,
+    connection_options: OpenGpuiConnectionOptions,
+    graph_theme: OpenGpuiGraphTheme,
+    edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
     mounts: RetainedMountStore<MountedNode>,
     activity_coordinator: OpenGpuiActivityCoordinator,
     interactions: OpenGpuiInteractionCoordinator,
@@ -103,6 +139,8 @@ pub struct OpenGpuiSceneHost {
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
     interaction_focus: Option<FocusHandle>,
+    graph_focus: OpenGpuiGraphFocusCoordinator,
+    hovered_node: Option<jellyflow::core::NodeId>,
     document_epoch: Option<jellyflow::runtime::DocumentEpoch>,
     terminal_reason: Option<ViewCloseReason>,
     terminal_window_cleanup_pending: bool,
@@ -169,7 +207,13 @@ impl OpenGpuiSceneHost {
             tracks_surface_viewport: false,
             frame_materialization_budget: FrameMaterializationBudget::default(),
             edge_layer_budget: OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET,
-            edge_route_scan_limit: OPEN_GPUI_DEFAULT_EDGE_ROUTE_SCAN_LIMIT,
+            visible_route_query_budget: OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET,
+            visible_routes: OpenGpuiVisibleRouteCache::default(),
+            prepared_edges: OpenGpuiPreparedEdgeCache::default(),
+            edge_paths: Rc::new(RefCell::new(OpenGpuiEdgePathCache::default())),
+            connection_options: OpenGpuiConnectionOptions::default(),
+            graph_theme: OpenGpuiGraphTheme::default(),
+            edge_painters: Arc::new(OpenGpuiEdgePainterRegistry::default()),
             mounts: RetainedMountStore::new(OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY),
             activity_coordinator: OpenGpuiActivityCoordinator::new(
                 OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
@@ -185,6 +229,8 @@ impl OpenGpuiSceneHost {
             scene_origin: None,
             scene_transform: None,
             interaction_focus: None,
+            graph_focus: OpenGpuiGraphFocusCoordinator::default(),
+            hovered_node: None,
             document_epoch: None,
             terminal_reason: None,
             terminal_window_cleanup_pending: false,
@@ -253,16 +299,18 @@ impl OpenGpuiSceneHost {
     /// Overrides the independent published edge-path limit before the host is mounted.
     #[must_use]
     pub fn with_edge_layer_budget(mut self, budget: usize) -> Self {
-        self.edge_layer_budget = budget;
+        self.edge_layer_budget = budget.min(OPEN_GPUI_MAX_EDGE_LAYER_BUDGET);
         self
     }
 
     /// Replaces the published edge-path limit and schedules a fresh native paint pass.
     pub fn set_edge_layer_budget(&mut self, budget: usize, cx: &mut Context<Self>) -> bool {
+        let budget = budget.min(OPEN_GPUI_MAX_EDGE_LAYER_BUDGET);
         if self.edge_layer_budget == budget {
             return false;
         }
         self.edge_layer_budget = budget;
+        self.prepared_edges.clear();
         cx.notify();
         true
     }
@@ -272,26 +320,104 @@ impl OpenGpuiSceneHost {
         self.edge_layer_budget
     }
 
-    /// Overrides the selected-ID plus published-route scan limit before the host is mounted.
+    /// Overrides the indexed visible-route query budget before the host is mounted.
     #[must_use]
-    pub fn with_edge_route_scan_limit(mut self, limit: usize) -> Self {
-        self.edge_route_scan_limit = limit;
+    pub fn with_visible_route_query_budget(mut self, budget: usize) -> Self {
+        self.visible_route_query_budget = budget.max(1);
         self
     }
 
-    /// Replaces the route scan limit and schedules a fresh native paint pass.
-    pub fn set_edge_route_scan_limit(&mut self, limit: usize, cx: &mut Context<Self>) -> bool {
-        if self.edge_route_scan_limit == limit {
+    /// Replaces the visible-route query budget and schedules a fresh native paint pass.
+    pub fn set_visible_route_query_budget(
+        &mut self,
+        budget: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let budget = budget.max(1);
+        if self.visible_route_query_budget == budget {
             return false;
         }
-        self.edge_route_scan_limit = limit;
+        self.visible_route_query_budget = budget;
+        self.visible_routes.clear();
+        self.prepared_edges.clear();
         cx.notify();
         true
     }
 
     #[must_use]
-    pub const fn edge_route_scan_limit(&self) -> usize {
-        self.edge_route_scan_limit
+    pub const fn visible_route_query_budget(&self) -> usize {
+        self.visible_route_query_budget
+    }
+
+    /// Overrides native connection policy before the host is mounted.
+    #[must_use]
+    pub fn with_connection_options(mut self, options: OpenGpuiConnectionOptions) -> Self {
+        self.connection_options = options;
+        self
+    }
+
+    /// Replaces the policy used by subsequently armed connection gestures.
+    pub fn set_connection_options(&mut self, options: OpenGpuiConnectionOptions) -> bool {
+        if self.connection_options == options {
+            return false;
+        }
+        self.connection_options = options;
+        true
+    }
+
+    #[must_use]
+    pub const fn connection_options(&self) -> OpenGpuiConnectionOptions {
+        self.connection_options
+    }
+
+    /// Overrides adapter-local graph chrome colors and metrics before mounting the host.
+    #[must_use]
+    pub fn with_graph_theme(mut self, theme: OpenGpuiGraphTheme) -> Self {
+        self.graph_theme = theme.sanitized();
+        self
+    }
+
+    /// Replaces adapter-local graph chrome colors and metrics.
+    pub fn set_graph_theme(&mut self, theme: OpenGpuiGraphTheme, cx: &mut Context<Self>) -> bool {
+        let theme = theme.sanitized();
+        if self.graph_theme == theme {
+            return false;
+        }
+        self.graph_theme = theme;
+        self.prepared_edges.clear();
+        self.edge_paths.borrow_mut().clear();
+        cx.notify();
+        true
+    }
+
+    /// Installs a sealed, bounded native edge-painter registry before mounting the host.
+    #[must_use]
+    pub fn with_edge_painter_registry(mut self, registry: OpenGpuiEdgePainterRegistry) -> Self {
+        self.edge_painters = Arc::new(registry);
+        self
+    }
+
+    /// Replaces native edge painter recipes and schedules a fresh chrome pass.
+    pub fn set_edge_painter_registry(
+        &mut self,
+        registry: OpenGpuiEdgePainterRegistry,
+        cx: &mut Context<Self>,
+    ) {
+        self.edge_painters = Arc::new(registry);
+        self.prepared_edges.clear();
+        self.edge_paths.borrow_mut().clear();
+        cx.notify();
+    }
+
+    /// Returns the immutable painter recipes used by this host.
+    #[must_use]
+    pub fn edge_painter_registry(&self) -> &OpenGpuiEdgePainterRegistry {
+        &self.edge_painters
+    }
+
+    #[must_use]
+    pub const fn graph_theme(&self) -> OpenGpuiGraphTheme {
+        self.graph_theme
     }
 
     /// Returns a non-owning capability for controls that operate on this exact view session.
@@ -400,7 +526,7 @@ impl Render for OpenGpuiSceneHost {
         let host_id = cx.entity_id();
         let focus_handle = self
             .interaction_focus
-            .get_or_insert_with(|| cx.focus_handle())
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         self.interactions.set_focus_handle(focus_handle.clone());
         self.scene_interactions
@@ -447,6 +573,9 @@ impl Render for OpenGpuiSceneHost {
             window,
             cx,
         );
+        if let Err(error) = self.sync_binding_presentations(frame.transform().zoom, window, cx) {
+            self.record_feedback_failure(None, error.to_string());
+        }
         self.interactions.schedule_pending_drain(window, cx);
         let wires = match self.scene_wires_with_offsets(measurements.presentation_offsets()) {
             Ok(wires) => wires,
@@ -477,6 +606,11 @@ impl Render for OpenGpuiSceneHost {
                 return self.frame_failure(message, cx);
             }
         };
+        if self.last_edge_layer_overflow.query_pending() {
+            let host_id = cx.entity_id();
+            window.on_next_frame(move |_, cx| cx.notify(host_id));
+            window.refresh();
+        }
         self.render_scene(
             Rc::new(DeferredFrameFeedback::new(
                 collector,
@@ -487,6 +621,7 @@ impl Render for OpenGpuiSceneHost {
             frame.transform(),
             focus_handle,
             wires,
+            window,
             cx,
         )
     }

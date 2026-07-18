@@ -1,4 +1,4 @@
-use jellyflow_core::core::{Edge, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
+use jellyflow_core::core::{Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -58,6 +58,8 @@ impl EdgeInteractionFacts {
 /// Renderer-neutral route and interaction facts for one edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeRouteFacts {
+    /// Semantic graph edge kind used by adapter painter fallbacks.
+    pub edge_kind: EdgeKind,
     pub kind: ResolvedEdgeRouteKind,
     pub endpoints: EdgePosition,
     pub path: EdgePath,
@@ -123,6 +125,7 @@ pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<E
     }?;
 
     Some(EdgeRouteFacts {
+        edge_kind: edge.kind,
         kind,
         endpoints,
         path,

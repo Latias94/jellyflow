@@ -23,7 +23,7 @@ pub use hit_test::{
     flatten_edge_path,
 };
 pub use paths::{
-    BezierEdgeOptions, EdgePath, EdgePathLabel, OrthogonalEdgeOptions, PathCommand,
-    SmoothStepEdgeOptions, bezier_edge_path, orthogonal_edge_path, smoothstep_edge_path,
-    straight_edge_path,
+    BezierEdgeOptions, EdgePath, EdgePathAnchor, EdgePathLabel, EdgePathSample,
+    EdgePathSampleError, OrthogonalEdgeOptions, PathCommand, SmoothStepEdgeOptions,
+    bezier_edge_path, orthogonal_edge_path, smoothstep_edge_path, straight_edge_path,
 };

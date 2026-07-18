@@ -645,10 +645,13 @@ fn semantic_zoom_uses_overview_below_one_and_native_pixels_at_or_above_one(
         let output = geometry.port(output_id()).expect("real output geometry");
         assert_hit_contains_visual(input.hit_bounds(), input.visual_bounds());
         assert_hit_contains_visual(output.hit_bounds(), output.visual_bounds());
-        assert_close(input.route_anchor().x, node.bounds().origin.x);
+        assert_close(
+            input.route_anchor().x,
+            input.visual_bounds().origin.x + input.visual_bounds().size.width / 2.0,
+        );
         assert_close(
             output.route_anchor().x,
-            node.bounds().origin.x + node.bounds().size.width,
+            output.visual_bounds().origin.x + output.visual_bounds().size.width / 2.0,
         );
 
         let input_screen = transform

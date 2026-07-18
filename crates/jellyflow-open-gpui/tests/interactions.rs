@@ -71,7 +71,7 @@ impl Render for InteractiveNode {
             .map(|handle| {
                 handle
                     .with_interaction_enabled(self.port.enabled.get())
-                    .with_hit_slop(10.0)
+                    .with_minimum_hit_diameter(22.0)
             });
         let port = self.port.clone();
         let down_events = self.node_events.clone();
@@ -304,10 +304,11 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
         .expect("mounted control focus");
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus.clone())));
     cx.simulate_keystrokes("tab");
-    cx.update(|window, cx| {
-        assert_eq!(window.focused(cx), Some(control_focus.clone()));
-        assert_ne!(window.focused(cx), Some(enabled_port_focus.clone()));
-    });
+    let next_focus = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("node focus after disabled port is skipped");
+    assert_ne!(next_focus, control_focus);
+    assert_ne!(next_focus, enabled_port_focus);
 
     control_events.borrow_mut().clear();
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");

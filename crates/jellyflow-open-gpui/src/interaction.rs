@@ -3,13 +3,14 @@ use std::collections::VecDeque;
 use std::mem;
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::PortId;
-use jellyflow::runtime::NodeInstanceKey;
+use jellyflow::core::{EdgeId, PortId};
+use jellyflow::runtime::{EdgeEndpoint, NodeInstanceKey};
 use open_gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
-    Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, KeyDownEvent, LayoutId,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
-    Point, ScrollWheelEvent, WeakFocusHandle, Window,
+    Hitbox, HitboxBehavior, HitboxId, InspectorElementId, InteractiveElement, IntoElement,
+    KeyDownEvent, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, PinchEvent, Pixels, Point, ScrollWheelEvent, Styled, WeakFocusHandle, Window,
+    div,
 };
 
 use crate::activity::{
@@ -848,6 +849,7 @@ pub(crate) enum OpenGpuiSceneGestureCancelReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OpenGpuiSceneGestureKind {
     Node(NodeInstanceKey),
+    EdgeReconnect(EdgeId, EdgeEndpoint),
     Pan,
     Selection,
 }
@@ -1401,22 +1403,33 @@ pub(crate) fn interaction_root(
     coordinator: OpenGpuiInteractionCoordinator,
     scene_coordinator: OpenGpuiSceneInteractionCoordinator,
     focus_handle: FocusHandle,
+    graph_key_listener: Option<OpenGpuiGraphKeyListener>,
     child: impl IntoElement,
 ) -> impl IntoElement {
+    let child = div()
+        .size_full()
+        .track_focus(&focus_handle)
+        .tab_stop(true)
+        .child(child);
     OpenGpuiInteractionRoot {
         id: id.into(),
         coordinator,
         scene_coordinator,
         focus_handle,
+        graph_key_listener,
         child: Some(child.into_any_element()),
     }
 }
+
+pub(crate) type OpenGpuiGraphKeyListener =
+    Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool + 'static>;
 
 struct OpenGpuiInteractionRoot {
     id: ElementId,
     coordinator: OpenGpuiInteractionCoordinator,
     scene_coordinator: OpenGpuiSceneInteractionCoordinator,
     focus_handle: FocusHandle,
+    graph_key_listener: Option<OpenGpuiGraphKeyListener>,
     child: Option<AnyElement>,
 }
 
@@ -1559,6 +1572,17 @@ impl Element for OpenGpuiInteractionRoot {
                 cx.stop_propagation();
             }
         });
+        if let Some(listener) = self.graph_key_listener.clone() {
+            window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble
+                    && !window.default_prevented()
+                    && listener(event, window, cx)
+                {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            });
+        }
         child.paint(window, cx);
     }
 }

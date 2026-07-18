@@ -9,7 +9,7 @@ mod subscriptions;
 
 pub use create_from_wire::{CreateFromWireCandidates, CreateFromWireQueryError};
 pub use port_connection_facts::{
-    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts,
+    PortConnectionDragFacts, PortConnectionDragIntent, PortConnectionFacts, PortConnectionSummary,
     PortIncidentConnectionFacts,
 };
 

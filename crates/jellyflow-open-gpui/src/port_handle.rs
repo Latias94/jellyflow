@@ -10,10 +10,10 @@ use jellyflow::runtime::{
     side_anchor,
 };
 use open_gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Div, Element, ElementId, EntityId, GlobalElementId,
-    Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement, KeyUpEvent,
-    LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Pixels, Role, Stateful,
-    StatefulInteractiveElement, Window, div, point, px, size,
+    AnyElement, App, Bounds, DispatchPhase, Div, Element, ElementId, EntityId, FocusHandle,
+    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
+    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Pixels, Role,
+    Stateful, StatefulInteractiveElement, Window, div, point, px, size,
 };
 
 use crate::accessibility::{
@@ -27,6 +27,8 @@ use crate::interaction::{
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
     OpenGpuiPortListener, port_drag_owner,
 };
+use crate::presentation::OpenGpuiPortInteractionState;
+use crate::theme::OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER;
 
 pub(crate) type OpenGpuiHostPortListener =
     Rc<dyn Fn(&OpenGpuiPortEvent, &mut Window, &mut App) + 'static>;
@@ -38,6 +40,21 @@ pub enum OpenGpuiPortSide {
     Right,
     Bottom,
     Left,
+}
+
+/// Route-anchor policy for a native port marker.
+///
+/// Anchors are resolved from the measured visual bounds. `Offset` is relative to the visual
+/// center and uses Open GPUI logical pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum OpenGpuiPortAnchor {
+    /// Routes edges through the center of the measured marker.
+    #[default]
+    Center,
+    /// Routes edges through the midpoint of the marker side selected by [`OpenGpuiPortSide`].
+    Boundary,
+    /// Routes edges through a logical-pixel offset from the measured marker center.
+    Offset(ViewPoint),
 }
 
 impl OpenGpuiPortSide {
@@ -69,7 +86,10 @@ pub struct OpenGpuiPortHandle {
     side: OpenGpuiPortSide,
     accessible_name: String,
     interaction_enabled: bool,
-    hit_slop: f32,
+    presentation: OpenGpuiPortInteractionState,
+    focus_handle: Option<FocusHandle>,
+    anchor: OpenGpuiPortAnchor,
+    minimum_hit_diameter: f32,
     sink: OpenGpuiMeasurementSink,
 }
 
@@ -81,7 +101,10 @@ impl std::fmt::Debug for OpenGpuiPortHandle {
             .field("side", &self.side)
             .field("accessible_name", &self.accessible_name)
             .field("interaction_enabled", &self.interaction_enabled)
-            .field("hit_slop", &self.hit_slop)
+            .field("presentation", &self.presentation)
+            .field("has_focus_handle", &self.focus_handle.is_some())
+            .field("anchor", &self.anchor)
+            .field("minimum_hit_diameter", &self.minimum_hit_diameter)
             .finish_non_exhaustive()
     }
 }
@@ -104,7 +127,10 @@ impl OpenGpuiPortHandle {
             side: OpenGpuiPortSide::for_direction(direction),
             accessible_name: format!("{name} {direction_name} port"),
             interaction_enabled: true,
-            hit_slop: 0.0,
+            presentation: OpenGpuiPortInteractionState::idle(),
+            focus_handle: None,
+            anchor: OpenGpuiPortAnchor::default(),
+            minimum_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
             sink,
         }
     }
@@ -153,17 +179,58 @@ impl OpenGpuiPortHandle {
         self
     }
 
+    /// Returns the latest immutable adapter-local interaction state for this real port.
+    #[must_use]
+    pub fn presentation(&self) -> &OpenGpuiPortInteractionState {
+        &self.presentation
+    }
+
+    pub(crate) fn with_presentation_state(
+        mut self,
+        presentation: OpenGpuiPortInteractionState,
+    ) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
+    pub(crate) fn with_focus_handle(mut self, focus_handle: Option<FocusHandle>) -> Self {
+        self.focus_handle = focus_handle;
+        self
+    }
+
     #[must_use]
     pub fn with_side(mut self, side: OpenGpuiPortSide) -> Self {
         self.side = side;
         self
     }
 
-    /// Expands pointer targeting around the measured visual element in logical pixels.
+    /// Returns the route-anchor policy resolved from the measured visual bounds.
     #[must_use]
-    pub fn with_hit_slop(mut self, hit_slop: f32) -> Self {
-        if hit_slop.is_finite() && hit_slop > 0.0 {
-            self.hit_slop = hit_slop;
+    pub fn anchor(&self) -> OpenGpuiPortAnchor {
+        self.anchor
+    }
+
+    /// Selects how the route anchor is resolved from the measured visual bounds.
+    #[must_use]
+    pub fn with_anchor(mut self, anchor: OpenGpuiPortAnchor) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Returns the minimum pointer target diameter in logical pixels.
+    #[must_use]
+    pub fn minimum_hit_diameter(&self) -> f32 {
+        self.minimum_hit_diameter
+    }
+
+    /// Sets the minimum pointer target diameter around the measured visual element.
+    ///
+    /// Non-finite and non-positive values are ignored. A marker larger than this diameter keeps
+    /// its measured dimensions.
+    #[must_use]
+    pub fn with_minimum_hit_diameter(mut self, diameter: f32) -> Self {
+        if diameter.is_finite() && diameter > 0.0 {
+            self.minimum_hit_diameter = diameter;
         }
         self
     }
@@ -175,13 +242,14 @@ impl OpenGpuiPortHandle {
             child: Some(child.into_any_element()),
             port: self.port,
             side: self.side,
-            hit_slop: self.hit_slop,
-            accessible_name: self.accessible_name.clone(),
+            anchor: self.anchor,
+            minimum_hit_diameter: self.minimum_hit_diameter,
+            accessible_name: self.semantic_accessible_name(),
             sink: self.sink.clone(),
         }
     }
 
-    /// Wraps a native port marker with measurement, hit slop, pointer capture, and typed drag events.
+    /// Wraps a native port marker with measurement, pointer targeting, capture, and typed events.
     ///
     /// The returned element remains a thin graph-semantic boundary. Its child is still an ordinary
     /// Open GPUI element, while the callback receives start, move, release, and cancellation facts.
@@ -190,7 +258,8 @@ impl OpenGpuiPortHandle {
         child: impl IntoElement,
         listener: impl Fn(OpenGpuiPortEvent, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
-        let interaction_enabled = self.interaction_enabled && self.sink.mount.is_live();
+        let interaction_enabled =
+            self.interaction_enabled && !self.presentation.disabled() && self.sink.mount.is_live();
         let semantic_id = open_gpui_port_element_id(self.sink.host, &self.instance, self.port);
         let measurement_id =
             open_gpui_port_measurement_element_id(self.sink.host, &self.instance, self.port);
@@ -209,10 +278,15 @@ impl OpenGpuiPortHandle {
         let keyboard_owner = owner.clone();
         let accessibility_listener = listener.clone();
         let accessibility_owner = owner.clone();
+        let focus_handle = self
+            .focus_handle
+            .as_ref()
+            .map(|focus_handle| focus_handle.clone().tab_stop(interaction_enabled));
         let child = interactive_port_semantic_element(
             semantic_id,
-            self.accessible_name.clone(),
+            self.semantic_accessible_name(),
             interaction_enabled,
+            focus_handle.as_ref(),
             child,
             move |event: &KeyUpEvent, window, cx| {
                 let keystroke = &event.keystroke;
@@ -248,13 +322,22 @@ impl OpenGpuiPortHandle {
             child: Some(child.into_any_element()),
             owner,
             side: self.side,
+            anchor: self.anchor,
             interaction_enabled,
-            hit_slop: self.hit_slop,
+            minimum_hit_diameter: self.minimum_hit_diameter,
             sink: self.sink.clone(),
             activity: self.sink.activity.clone(),
             coordinator: self.sink.interactions.clone(),
             listener,
         }
+    }
+
+    fn semantic_accessible_name(&self) -> String {
+        format!(
+            "{}, {}",
+            self.accessible_name,
+            self.presentation.accessible_state_text()
+        )
     }
 }
 
@@ -276,19 +359,23 @@ fn interactive_port_semantic_element(
     id: ElementId,
     accessible_name: String,
     enabled: bool,
+    focus_handle: Option<&FocusHandle>,
     child: impl IntoElement,
     on_key_up: impl Fn(&KeyUpEvent, &mut Window, &mut App) + 'static,
     on_a11y_click: impl FnMut(Option<&open_gpui::accesskit::ActionData>, &mut Window, &mut App)
     + 'static,
 ) -> Stateful<Div> {
-    let mut element = div()
+    let element = div()
         .id(id)
         .role(OPEN_GPUI_INTERACTIVE_PORT_ROLE)
         .aria_label(accessible_name)
         .aria_disabled(!enabled)
-        .focusable()
-        .tab_stop(enabled)
         .child(child);
+    let mut element = match focus_handle {
+        Some(focus_handle) => element.track_focus(focus_handle),
+        None => element.focusable(),
+    }
+    .tab_stop(enabled);
     if enabled {
         element = element
             .on_key_up(on_key_up)
@@ -306,7 +393,8 @@ struct OpenGpuiPortMeasurementElement {
     child: Option<AnyElement>,
     port: PortId,
     side: OpenGpuiPortSide,
-    hit_slop: f32,
+    anchor: OpenGpuiPortAnchor,
+    minimum_hit_diameter: f32,
     accessible_name: String,
     sink: OpenGpuiMeasurementSink,
 }
@@ -345,9 +433,13 @@ impl Element for OpenGpuiPortMeasurementElement {
         cx: &mut App,
     ) {
         child.prepaint(window, cx);
-        let _ = self
-            .sink
-            .record_port(self.port, bounds, self.side, self.hit_slop);
+        let _ = self.sink.record_port(
+            self.port,
+            bounds,
+            self.side,
+            self.anchor,
+            self.minimum_hit_diameter,
+        );
     }
 
     fn paint(
@@ -385,8 +477,9 @@ struct OpenGpuiPortInteractionElement {
     child: Option<AnyElement>,
     owner: OpenGpuiPortDragOwner,
     side: OpenGpuiPortSide,
+    anchor: OpenGpuiPortAnchor,
     interaction_enabled: bool,
-    hit_slop: f32,
+    minimum_hit_diameter: f32,
     sink: OpenGpuiMeasurementSink,
     activity: OpenGpuiNodeActivityRegistry,
     coordinator: OpenGpuiInteractionCoordinator,
@@ -427,11 +520,15 @@ impl Element for OpenGpuiPortInteractionElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         child.prepaint(window, cx);
-        let _ = self
-            .sink
-            .record_port(self.owner.port(), bounds, self.side, self.hit_slop);
+        let _ = self.sink.record_port(
+            self.owner.port(),
+            bounds,
+            self.side,
+            self.anchor,
+            self.minimum_hit_diameter,
+        );
         let hitbox = window.insert_hitbox(
-            expand_pixel_bounds(bounds, self.hit_slop),
+            minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter),
             HitboxBehavior::BlockMouse,
         );
         if self.sink.mount.is_live() {
@@ -512,17 +609,17 @@ impl IntoElement for OpenGpuiPortInteractionElement {
     }
 }
 
-fn expand_pixel_bounds(bounds: Bounds<Pixels>, amount: f32) -> Bounds<Pixels> {
-    if !amount.is_finite() || amount <= 0.0 {
+fn minimum_hit_pixel_bounds(bounds: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
+    if !diameter.is_finite() || diameter <= 0.0 {
         return bounds;
     }
-    let amount = px(amount);
+    let width = bounds.size.width.as_f32().max(diameter);
+    let height = bounds.size.height.as_f32().max(diameter);
+    let x = bounds.origin.x.as_f32() - (width - bounds.size.width.as_f32()) * 0.5;
+    let y = bounds.origin.y.as_f32() - (height - bounds.size.height.as_f32()) * 0.5;
     Bounds {
-        origin: point(bounds.origin.x - amount, bounds.origin.y - amount),
-        size: size(
-            bounds.size.width + amount + amount,
-            bounds.size.height + amount + amount,
-        ),
+        origin: point(px(x), px(y)),
+        size: size(px(width), px(height)),
     }
 }
 
@@ -593,7 +690,8 @@ impl OpenGpuiMeasurementSink {
         port: PortId,
         bounds: Bounds<Pixels>,
         side: OpenGpuiPortSide,
-        hit_slop: f32,
+        anchor: OpenGpuiPortAnchor,
+        minimum_hit_diameter: f32,
     ) -> Result<(), OpenGpuiMeasurementError> {
         if !self.mount.is_live() {
             return Err(OpenGpuiMeasurementError::Inactive {
@@ -614,7 +712,7 @@ impl OpenGpuiMeasurementSink {
                 })?;
             let visual_bounds = view_rect(bounds);
             let outward = side.handle_position();
-            let route_anchor = side_anchor(visual_bounds, outward).ok_or(
+            let route_anchor = resolve_route_anchor(visual_bounds, outward, anchor).ok_or(
                 OpenGpuiMeasurementError::InvalidPortBounds {
                     node: self.instance.node(),
                     port,
@@ -625,7 +723,7 @@ impl OpenGpuiMeasurementSink {
                 RawPortMeasurement {
                     port,
                     visual_bounds,
-                    hit_bounds: expand_rect(visual_bounds, hit_slop),
+                    hit_bounds: minimum_hit_bounds(visual_bounds, minimum_hit_diameter),
                     route_anchor,
                     outward,
                 },
@@ -955,17 +1053,42 @@ fn view_rect(bounds: Bounds<Pixels>) -> ViewRect {
     )
 }
 
-fn expand_rect(bounds: ViewRect, amount: f32) -> ViewRect {
-    if !amount.is_finite() || amount <= 0.0 {
+fn minimum_hit_bounds(bounds: ViewRect, diameter: f32) -> ViewRect {
+    if !diameter.is_finite() || diameter <= 0.0 {
         return bounds;
     }
+    let width = bounds.size.width.max(diameter);
+    let height = bounds.size.height.max(diameter);
     ViewRect::new(
-        ViewPoint::new(bounds.origin.x - amount, bounds.origin.y - amount),
-        ViewSize::new(
-            bounds.size.width + amount * 2.0,
-            bounds.size.height + amount * 2.0,
+        ViewPoint::new(
+            bounds.origin.x - (width - bounds.size.width) * 0.5,
+            bounds.origin.y - (height - bounds.size.height) * 0.5,
         ),
+        ViewSize::new(width, height),
     )
+}
+
+fn resolve_route_anchor(
+    bounds: ViewRect,
+    outward: HandlePosition,
+    anchor: OpenGpuiPortAnchor,
+) -> Option<ViewPoint> {
+    if !bounds.is_positive_finite() {
+        return None;
+    }
+    let center = ViewPoint::new(
+        bounds.origin.x + bounds.size.width * 0.5,
+        bounds.origin.y + bounds.size.height * 0.5,
+    );
+    match anchor {
+        OpenGpuiPortAnchor::Center => center.is_finite().then_some(center),
+        OpenGpuiPortAnchor::Boundary => side_anchor(bounds, outward),
+        OpenGpuiPortAnchor::Offset(offset) if offset.is_finite() => {
+            let point = ViewPoint::new(center.x + offset.x, center.y + offset.y);
+            point.is_finite().then_some(point)
+        }
+        OpenGpuiPortAnchor::Offset(_) => None,
+    }
 }
 
 fn relative_rect(bounds: ViewRect, origin: ViewPoint) -> ViewRect {
@@ -989,6 +1112,101 @@ mod tests {
     use open_gpui::accesskit::{Action, Node};
 
     use super::*;
+
+    #[test]
+    fn default_port_geometry_uses_center_anchor_and_minimum_hit_target() {
+        let visual = ViewRect::new(ViewPoint::new(10.0, 20.0), ViewSize::new(10.0, 12.0));
+
+        let hit = minimum_hit_bounds(visual, OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER);
+        let anchor =
+            resolve_route_anchor(visual, HandlePosition::Right, OpenGpuiPortAnchor::default())
+                .expect("valid center anchor");
+
+        assert_eq!(visual.origin, ViewPoint::new(10.0, 20.0));
+        assert_eq!(visual.size, ViewSize::new(10.0, 12.0));
+        assert_eq!(hit.origin, ViewPoint::new(4.0, 15.0));
+        assert_eq!(hit.size, ViewSize::new(22.0, 22.0));
+        assert_eq!(anchor, ViewPoint::new(15.0, 26.0));
+
+        let pixel_hit = minimum_hit_pixel_bounds(
+            Bounds {
+                origin: point(px(10.0), px(20.0)),
+                size: size(px(10.0), px(12.0)),
+            },
+            OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
+        );
+        assert_eq!(pixel_hit.origin, point(px(4.0), px(15.0)));
+        assert_eq!(pixel_hit.size, size(px(22.0), px(22.0)));
+    }
+
+    #[test]
+    fn boundary_anchor_uses_outward_side_without_changing_visual_bounds() {
+        let visual = ViewRect::new(ViewPoint::new(10.0, 20.0), ViewSize::new(10.0, 12.0));
+
+        let anchor =
+            resolve_route_anchor(visual, HandlePosition::Right, OpenGpuiPortAnchor::Boundary)
+                .expect("valid boundary anchor");
+
+        assert_eq!(anchor, ViewPoint::new(20.0, 26.0));
+        assert_eq!(visual.origin, ViewPoint::new(10.0, 20.0));
+        assert_eq!(visual.size, ViewSize::new(10.0, 12.0));
+    }
+
+    #[test]
+    fn offset_anchor_is_relative_to_visual_center() {
+        let visual = ViewRect::new(ViewPoint::new(10.0, 20.0), ViewSize::new(10.0, 12.0));
+
+        let anchor = resolve_route_anchor(
+            visual,
+            HandlePosition::Left,
+            OpenGpuiPortAnchor::Offset(ViewPoint::new(3.0, -2.0)),
+        )
+        .expect("valid offset anchor");
+
+        assert_eq!(anchor, ViewPoint::new(18.0, 24.0));
+    }
+
+    #[test]
+    fn visual_hit_anchor_and_outward_geometry_are_independent() {
+        let visual = ViewRect::new(ViewPoint::new(4.0, 6.0), ViewSize::new(30.0, 8.0));
+        let compact_hit = minimum_hit_bounds(visual, 16.0);
+        let large_hit = minimum_hit_bounds(visual, 40.0);
+        let left_center =
+            resolve_route_anchor(visual, HandlePosition::Left, OpenGpuiPortAnchor::Center)
+                .expect("valid left center anchor");
+        let right_center =
+            resolve_route_anchor(visual, HandlePosition::Right, OpenGpuiPortAnchor::Center)
+                .expect("valid right center anchor");
+
+        assert_eq!(
+            visual,
+            ViewRect::new(ViewPoint::new(4.0, 6.0), ViewSize::new(30.0, 8.0))
+        );
+        assert_eq!(compact_hit.origin, ViewPoint::new(4.0, 2.0));
+        assert_eq!(compact_hit.size, ViewSize::new(30.0, 16.0));
+        assert_eq!(large_hit.origin, ViewPoint::new(-1.0, -10.0));
+        assert_eq!(large_hit.size, ViewSize::new(40.0, 40.0));
+        assert_eq!(left_center, ViewPoint::new(19.0, 10.0));
+        assert_eq!(right_center, left_center);
+    }
+
+    #[test]
+    fn minimum_hit_target_stays_22_screen_pixels_at_every_zoom() {
+        let visual = ViewRect::new(ViewPoint::new(30.0, 40.0), ViewSize::new(8.0, 10.0));
+        let hit = minimum_hit_bounds(visual, OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER);
+
+        for zoom in [0.5, 1.0, 2.0] {
+            let transform = ViewportTransform::new(CanvasPoint::default(), zoom)
+                .expect("valid viewport transform");
+            let canvas_hit = hit
+                .to_canvas_rect(transform)
+                .expect("valid canvas hit bounds");
+            let projected =
+                projected_view_rect(canvas_hit, transform).expect("valid projected hit bounds");
+
+            assert_eq!(projected.size, ViewSize::new(22.0, 22.0));
+        }
+    }
 
     #[test]
     fn static_and_interactive_ports_expose_distinct_accesskit_contracts() {
@@ -1152,6 +1370,7 @@ mod tests {
             "test-semantic-port".into(),
             "Interactive value output".to_owned(),
             enabled,
+            None,
             div(),
             |_, _, _| {},
             |_, _, _| {},

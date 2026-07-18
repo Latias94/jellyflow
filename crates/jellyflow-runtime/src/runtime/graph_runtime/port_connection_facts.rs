@@ -59,6 +59,68 @@ impl PortConnectionFacts {
     }
 }
 
+/// Revision-bound port policy and connection-count summary.
+///
+/// This is the constant-work query for presentation and capability checks. It deliberately does
+/// not materialize incident edge identities; callers that need per-edge policy facts must request
+/// [`PortConnectionFacts`] explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortConnectionSummary {
+    revision: GraphRevision,
+    port: PortId,
+    node: NodeId,
+    direction: PortDirection,
+    capacity: PortCapacity,
+    can_start_connection: bool,
+    can_accept_connection: bool,
+    incident_count: usize,
+}
+
+impl PortConnectionSummary {
+    pub fn revision(self) -> GraphRevision {
+        self.revision
+    }
+
+    pub fn port(self) -> PortId {
+        self.port
+    }
+
+    pub fn node(self) -> NodeId {
+        self.node
+    }
+
+    pub fn direction(self) -> PortDirection {
+        self.direction
+    }
+
+    pub fn capacity(self) -> PortCapacity {
+        self.capacity
+    }
+
+    pub fn can_begin_connection(self) -> bool {
+        match self.direction {
+            PortDirection::Out => self.can_start_connection,
+            PortDirection::In => self.can_accept_connection,
+        }
+    }
+
+    pub fn can_start_connection(self) -> bool {
+        self.can_start_connection
+    }
+
+    pub fn can_accept_connection(self) -> bool {
+        self.can_accept_connection
+    }
+
+    pub fn incident_count(self) -> usize {
+        self.incident_count
+    }
+
+    pub fn is_connected(self) -> bool {
+        self.incident_count > 0
+    }
+}
+
 /// Revision-bound port and policy facts needed to start a connection drag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortConnectionDragFacts {
@@ -218,6 +280,41 @@ fn resolve_incident_connection_facts(
 }
 
 impl RuntimeShared {
+    pub(crate) fn port_connection_summary(
+        &self,
+        port: PortId,
+    ) -> Result<Option<PortConnectionSummary>, GraphRuntimeError> {
+        let mut state = self
+            .state
+            .try_borrow_mut()
+            .map_err(|_| GraphRuntimeError::Busy)?;
+        let Some(current_port) = state.graph.port(&port) else {
+            state.stats.connection_query_fact_reads =
+                state.stats.connection_query_fact_reads.saturating_add(1);
+            return Ok(None);
+        };
+        let node = current_port.node;
+        let Some(owner) = state.graph.node(&node) else {
+            state.stats.connection_query_fact_reads =
+                state.stats.connection_query_fact_reads.saturating_add(2);
+            return Ok(None);
+        };
+        let port_policy = resolve_port_policy(owner, current_port, &state.policy);
+        let summary = PortConnectionSummary {
+            revision: state.revision,
+            port,
+            node,
+            direction: current_port.dir,
+            capacity: current_port.capacity,
+            can_start_connection: port_policy.can_start_connection(),
+            can_accept_connection: port_policy.can_accept_connection(),
+            incident_count: state.index.incident_edge_count(port),
+        };
+        state.stats.connection_query_fact_reads =
+            state.stats.connection_query_fact_reads.saturating_add(2);
+        Ok(Some(summary))
+    }
+
     pub(crate) fn port_connection_facts(
         &self,
         port: PortId,

@@ -7,8 +7,8 @@ mod session;
 
 pub use connection::{ConnectionGestureIntent, ConnectionProbe, ConnectionProbeTarget};
 pub use intent::{
-    ConnectionTopology, FreshGraphMutation, FreshGraphMutationBindError, RelativeNodeMoveIntent,
-    SelectionBaseline,
+    ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, FreshGraphMutationBindError,
+    RelativeNodeMoveIntent, SelectionBaseline,
 };
 pub use presentation::{
     AlignmentGuide, CanvasInteractionPhase, CanvasInteractionPresentation, ConnectionPresentation,
@@ -16,8 +16,8 @@ pub use presentation::{
 };
 pub use session::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
-    CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
+    CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback,
+    CanvasPressTarget, CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
     ConnectionSearchSelection, InteractionDamage, InteractionGeneration, InteractionOwner,
     InteractionQueryId, InteractionTickDemand, InteractionTicketId, NodeDragStart, SelectionMode,
     SelectionMutation, ViewportMutation,

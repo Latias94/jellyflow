@@ -8,21 +8,25 @@
 pub mod accessibility;
 pub mod activity;
 pub mod binding;
+pub mod chrome;
 mod command_journal;
 pub mod draft;
 mod draft_store;
 pub mod host;
 pub mod interaction;
 mod port_handle;
+pub mod presentation;
 pub mod registry;
 mod semantic_zoom;
+pub mod theme;
 
 pub use accessibility::{
-    OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE, OPEN_GPUI_NODE_ROLE,
-    OPEN_GPUI_SCENE_ROLE, OPEN_GPUI_STATIC_PORT_ROLE, open_gpui_interaction_element_id,
+    OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_EDGE_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE,
+    OPEN_GPUI_NODE_ROLE, OPEN_GPUI_RECONNECT_HANDLE_ROLE, OPEN_GPUI_SCENE_ROLE,
+    OPEN_GPUI_STATIC_PORT_ROLE, open_gpui_edge_element_id, open_gpui_interaction_element_id,
     open_gpui_node_element_id, open_gpui_node_measurement_element_id, open_gpui_port_element_id,
-    open_gpui_port_measurement_element_id, open_gpui_scene_element_id,
-    open_gpui_scene_measurement_element_id,
+    open_gpui_port_measurement_element_id, open_gpui_reconnect_element_id,
+    open_gpui_scene_element_id, open_gpui_scene_measurement_element_id,
 };
 pub use activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
@@ -45,20 +49,35 @@ pub use draft::{
 };
 pub use draft_store::ExternalizedDraftStore;
 pub use host::{
-    OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET, OPEN_GPUI_DEFAULT_EDGE_ROUTE_SCAN_LIMIT,
-    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission, OpenGpuiEdgeLayerOverflow,
-    OpenGpuiSceneHost, OpenGpuiSceneHostCloseError, OpenGpuiSceneHostDiagnostic,
-    OpenGpuiSceneHostDiagnosticKind, OpenGpuiSceneHostStats,
+    OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET, OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
+    OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET,
+    OPEN_GPUI_MAX_EDGE_LAYER_BUDGET, OpenGpuiConnectionOptions, OpenGpuiConnectionSearchError,
+    OpenGpuiConnectionSearchSubmission, OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHost,
+    OpenGpuiSceneHostCloseError, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
+    OpenGpuiSceneHostStats,
 };
 pub use interaction::{
     OpenGpuiNodeInteractionGuard, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragEvent, OpenGpuiPortDragOwner,
     OpenGpuiPortDragPhase, OpenGpuiPortEvent,
 };
-pub use port_handle::{OpenGpuiPortHandle, OpenGpuiPortSide};
+pub use port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
+pub use presentation::{
+    OpenGpuiNodeInteractionState, OpenGpuiNodeLod, OpenGpuiNodePresentationSnapshot,
+    OpenGpuiPortCandidateState, OpenGpuiPortInteractionState, OpenGpuiSettlementState,
+};
 pub use registry::{
     OpenGpuiNodeMountError, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryBuilder,
     OpenGpuiNodeRegistryConfigError, OpenGpuiNodeRegistryIssue, OpenGpuiNodeRegistryIssueKind,
     OpenGpuiRendererRegistrationStatus,
+};
+pub use theme::{
+    OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH, OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,
+    OPEN_GPUI_DEFAULT_EDGE_LABEL_CORNER_RADIUS, OPEN_GPUI_DEFAULT_EDGE_LABEL_FONT_SIZE,
+    OPEN_GPUI_DEFAULT_EDGE_LABEL_HORIZONTAL_PADDING, OPEN_GPUI_DEFAULT_EDGE_LABEL_MAX_WIDTH,
+    OPEN_GPUI_DEFAULT_EDGE_LABEL_VERTICAL_PADDING, OPEN_GPUI_DEFAULT_EDGE_MARKER_DIAMETER,
+    OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH, OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
+    OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER, OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER,
+    OPEN_GPUI_DEFAULT_RECONNECT_HANDLE_DIAMETER, OPEN_GPUI_DEFAULT_RECONNECT_HIT_DIAMETER,
+    OpenGpuiGraphMetrics, OpenGpuiGraphPalette, OpenGpuiGraphTheme,
 };

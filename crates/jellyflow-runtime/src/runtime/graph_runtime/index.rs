@@ -71,6 +71,10 @@ impl GraphIndex {
             .flat_map(|edges| edges.iter().copied())
     }
 
+    pub(crate) fn incident_edge_count(&self, port: PortId) -> usize {
+        self.incident_edges.get(&port).map_or(0, BTreeSet::len)
+    }
+
     pub(crate) fn bindings_for_target(
         &self,
         target: GraphLocalBindingTarget,

@@ -435,6 +435,7 @@ impl OpenGpuiSceneHost {
             || (self.terminal_reason.is_none() && self.owns_window_resources());
         if needs_window_cleanup {
             self.interactions.settle_port_focus_for_host_close(window);
+            self.graph_focus.close(window);
             window.release_pointer();
         }
         let completed = self.commands.terminate(reason);
@@ -522,7 +523,8 @@ impl OpenGpuiSceneHost {
         if self.terminal_reason.is_some() {
             return Vec::new();
         }
-        self.terminal_window_cleanup_pending = self.owns_window_resources();
+        self.terminal_window_cleanup_pending =
+            self.owns_window_resources() || self.graph_focus.has_entries();
         self.interactions
             .cancel_deferred(OpenGpuiPortDragCancelReason::HostClosed);
         self.scene_interactions

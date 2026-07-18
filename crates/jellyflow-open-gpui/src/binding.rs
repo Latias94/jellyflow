@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use jellyflow::core::{Node, NodeId, Port, PortDirection, PortId};
@@ -7,13 +8,14 @@ use jellyflow::runtime::{
     FrameNode, GraphCommand, GraphRevision, NodeInstanceKey, PortConnectionFacts, ViewSessionError,
     WeakViewSession,
 };
-use open_gpui::{App, Context};
+use open_gpui::{App, Context, FocusHandle};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::command_journal::{
     OpenGpuiCommandEnqueueError, OpenGpuiCommandSink, OpenGpuiCommandTicket,
 };
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
+use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteractionState};
 
 /// Revocable identity for one adapter-owned native mount.
 ///
@@ -301,6 +303,8 @@ impl OpenGpuiNodeBindingRead {
 /// Retained, adapter-owned semantic binding passed to native Open GPUI node entities.
 pub struct OpenGpuiNodeBinding {
     snapshot: OpenGpuiNodeBindingSnapshot,
+    presentation: OpenGpuiNodePresentationSnapshot,
+    port_focus: BTreeMap<PortId, FocusHandle>,
     activity: OpenGpuiNodeActivityRegistry,
     measurement: OpenGpuiMeasurementSink,
     layout_invalidator: OpenGpuiLayoutInvalidator,
@@ -310,6 +314,7 @@ impl std::fmt::Debug for OpenGpuiNodeBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenGpuiNodeBinding")
             .field("snapshot", &self.snapshot)
+            .field("presentation", &self.presentation)
             .field("activity", &self.activity)
             .field("measurement", &self.measurement)
             .finish_non_exhaustive()
@@ -319,6 +324,11 @@ impl std::fmt::Debug for OpenGpuiNodeBinding {
 impl OpenGpuiNodeBinding {
     pub fn snapshot(&self) -> &OpenGpuiNodeBindingSnapshot {
         &self.snapshot
+    }
+
+    /// Returns the latest immutable adapter-local node and port interaction state.
+    pub fn presentation(&self) -> &OpenGpuiNodePresentationSnapshot {
+        &self.presentation
     }
 
     pub fn activity(&self) -> &OpenGpuiNodeActivityRegistry {
@@ -348,13 +358,42 @@ impl OpenGpuiNodeBinding {
                 .map(|(direction, name)| (direction, name.to_owned())),
             Err(_) => None,
         }?;
-        Some(OpenGpuiPortHandle::new(
-            self.snapshot.instance.clone(),
-            port,
-            direction,
-            name,
-            self.measurement.clone(),
-        ))
+        Some(
+            OpenGpuiPortHandle::new(
+                self.snapshot.instance.clone(),
+                port,
+                direction,
+                name,
+                self.measurement.clone(),
+            )
+            .with_focus_handle(self.port_focus.get(&port).cloned())
+            .with_presentation_state(
+                self.presentation
+                    .port(port)
+                    .cloned()
+                    .unwrap_or_else(OpenGpuiPortInteractionState::idle),
+            ),
+        )
+    }
+
+    pub(crate) fn cached_port_handle(&self, port: PortId) -> Option<OpenGpuiPortHandle> {
+        let (direction, name) = self.snapshot.cached_port_facts(port)?;
+        Some(
+            OpenGpuiPortHandle::new(
+                self.snapshot.instance.clone(),
+                port,
+                direction,
+                name.to_owned(),
+                self.measurement.clone(),
+            )
+            .with_focus_handle(self.port_focus.get(&port).cloned())
+            .with_presentation_state(
+                self.presentation
+                    .port(port)
+                    .cloned()
+                    .unwrap_or_else(OpenGpuiPortInteractionState::idle),
+            ),
+        )
     }
 
     /// Builds semantic measurement handles for every real port in one validated binding read.
@@ -383,6 +422,13 @@ impl OpenGpuiNodeBinding {
                     port.port().key.0.clone(),
                     self.measurement.clone(),
                 )
+                .with_focus_handle(self.port_focus.get(&port.id()).cloned())
+                .with_presentation_state(
+                    self.presentation
+                        .port(port.id())
+                        .cloned()
+                        .unwrap_or_else(OpenGpuiPortInteractionState::idle),
+                )
             })
             .collect())
     }
@@ -392,17 +438,47 @@ impl OpenGpuiNodeBinding {
         activity: OpenGpuiNodeActivityRegistry,
         measurement: OpenGpuiMeasurementSink,
         layout_invalidator: OpenGpuiLayoutInvalidator,
+        cx: &mut Context<Self>,
     ) -> Self {
+        let port_focus = snapshot
+            .port_facts
+            .iter()
+            .map(|(port, _, _)| (*port, cx.focus_handle()))
+            .collect();
         Self {
             snapshot,
+            presentation: OpenGpuiNodePresentationSnapshot::default(),
+            port_focus,
             activity,
             measurement,
             layout_invalidator,
         }
     }
 
-    pub(crate) fn advance(&mut self, facts_revision: GraphRevision) {
+    pub(crate) fn advance(&mut self, facts_revision: GraphRevision, cx: &mut Context<Self>) {
         self.snapshot.advance(facts_revision);
+        self.port_focus
+            .retain(|port, _| self.snapshot.cached_port_facts(*port).is_some());
+        for (port, _, _) in &self.snapshot.port_facts {
+            self.port_focus
+                .entry(*port)
+                .or_insert_with(|| cx.focus_handle());
+        }
+    }
+
+    pub(crate) fn port_focus_handle(&self, port: PortId) -> Option<&FocusHandle> {
+        self.port_focus.get(&port)
+    }
+
+    pub(crate) fn set_presentation(
+        &mut self,
+        presentation: OpenGpuiNodePresentationSnapshot,
+    ) -> bool {
+        if self.presentation == presentation {
+            return false;
+        }
+        self.presentation = presentation;
+        true
     }
 }
 

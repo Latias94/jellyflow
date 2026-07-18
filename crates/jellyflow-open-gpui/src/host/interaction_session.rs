@@ -36,7 +36,7 @@ enum PendingInteractionSubmissionStage {
 }
 
 enum PendingInteractionMutation {
-    NodeDrag(FreshGraphMutation),
+    Direct(FreshGraphMutation),
     Connection(PendingConnectionMutation),
 }
 
@@ -211,14 +211,16 @@ impl OpenGpuiSceneHost {
         }
 
         let pending = match mutation {
-            mutation @ FreshGraphMutation::MoveNodes(_) => PendingInteractionSubmission {
-                ticket,
-                stage: PendingInteractionSubmissionStage::WaitingForPrefix(
-                    PendingInteractionMutation::NodeDrag(mutation),
-                ),
-                prefix_task: None,
-                prefix_cancellation: None,
-            },
+            mutation @ (FreshGraphMutation::MoveNodes(_) | FreshGraphMutation::DeleteEdge(_)) => {
+                PendingInteractionSubmission {
+                    ticket,
+                    stage: PendingInteractionSubmissionStage::WaitingForPrefix(
+                        PendingInteractionMutation::Direct(mutation),
+                    ),
+                    prefix_task: None,
+                    prefix_cancellation: None,
+                }
+            }
             FreshGraphMutation::Connection { topology, .. } => PendingInteractionSubmission {
                 ticket,
                 stage: PendingInteractionSubmissionStage::WaitingForPrefix(
@@ -339,7 +341,7 @@ impl OpenGpuiSceneHost {
         };
 
         match mutation {
-            PendingInteractionMutation::NodeDrag(mutation) => {
+            PendingInteractionMutation::Direct(mutation) => {
                 match self.bind_and_enqueue_interaction(ticket, mutation, permit) {
                     Ok(true) => {
                         pending.stage = PendingInteractionSubmissionStage::Enqueued;

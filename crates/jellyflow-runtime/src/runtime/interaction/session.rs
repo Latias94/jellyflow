@@ -1,17 +1,19 @@
-use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, NodeId, PortId};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, NodeId, PortId};
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 
-use crate::runtime::adapter_protocol::{ViewPoint, ViewSize};
+use crate::rules::EdgeEndpoint;
+use crate::runtime::adapter_protocol::{PublishedEdgeRoute, ViewPoint, ViewSize};
 use crate::runtime::commands::TopologyEdit;
 use crate::runtime::geometry::HandlePosition;
-use crate::runtime::graph_runtime::GraphRevision;
+use crate::runtime::graph_runtime::{GraphRevision, PortConnectionDragIntent};
 use crate::runtime::view_session::{
     ConnectionProbeQuery, ConnectionProbeQueryOutcome, EdgePickQuery, EdgePickQueryOutcome,
     ViewGeneration, ViewId,
 };
 
 use super::intent::{
-    ConnectionTopology, FreshGraphMutation, RelativeNodeMoveIntent, SelectionBaseline,
+    ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, RelativeNodeMoveIntent,
+    SelectionBaseline,
 };
 use super::presentation::{
     AlignmentGuide, CanvasInteractionPhase, CanvasInteractionPresentation, ConnectionPresentation,
@@ -157,7 +159,7 @@ pub struct ConnectionInteractionStart {
 }
 
 impl ConnectionInteractionStart {
-    pub fn new(
+    pub(crate) fn new(
         owner_node: NodeId,
         intent: ConnectionGestureIntent,
         fixed_anchor: CanvasPoint,
@@ -171,6 +173,95 @@ impl ConnectionInteractionStart {
             fixed_outward,
             allow_create_from_wire,
         })
+    }
+
+    /// Resolves a connection start from revision-bound runtime port policy facts.
+    pub fn from_port_drag_intent(
+        drag_intent: PortConnectionDragIntent,
+        new_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+        fixed_anchor: CanvasPoint,
+        fixed_outward: HandlePosition,
+        allow_create_from_wire: bool,
+    ) -> Option<Self> {
+        let intent = Self::intent_from_port_drag(drag_intent, new_edge, mode)?;
+        Self::new(
+            drag_intent.node(),
+            intent,
+            fixed_anchor,
+            fixed_outward,
+            allow_create_from_wire,
+        )
+    }
+
+    /// Resolves the renderer-neutral gesture intent carried by runtime-issued port drag facts.
+    pub fn intent_from_port_drag(
+        drag_intent: PortConnectionDragIntent,
+        new_edge: EdgeId,
+        mode: NodeGraphConnectionMode,
+    ) -> Option<ConnectionGestureIntent> {
+        if !drag_intent.can_begin_connection() {
+            return None;
+        }
+        match drag_intent {
+            PortConnectionDragIntent::Connect { facts } => Some(ConnectionGestureIntent::connect(
+                new_edge,
+                facts.port(),
+                mode,
+            )),
+            PortConnectionDragIntent::Reconnect { facts, candidate } => {
+                Some(ConnectionGestureIntent::reconnect(
+                    candidate.edge(),
+                    candidate.endpoint(),
+                    facts.port(),
+                    candidate.opposite_port(),
+                    mode,
+                ))
+            }
+            PortConnectionDragIntent::BlockedOccupied { .. } => None,
+        }
+    }
+
+    /// Resolves an endpoint reconnect from authoritative graph topology and published route facts.
+    pub fn reconnect_from_graph_route(
+        graph: &Graph,
+        route: &PublishedEdgeRoute,
+        endpoint: EdgeEndpoint,
+        mode: NodeGraphConnectionMode,
+        allow_create_from_wire: bool,
+    ) -> Option<Self> {
+        let edge = route.edge();
+        let interaction = route.facts().interaction;
+        let endpoint_allowed = match endpoint {
+            EdgeEndpoint::From => interaction.reconnect_source,
+            EdgeEndpoint::To => interaction.reconnect_target,
+        };
+        if !endpoint_allowed {
+            return None;
+        }
+        let graph_edge = graph.edge(&edge)?;
+        let (detached_port, fixed_port, fixed_endpoint) = match endpoint {
+            EdgeEndpoint::From => (
+                graph_edge.from,
+                graph_edge.to,
+                route.facts().endpoints.target,
+            ),
+            EdgeEndpoint::To => (
+                graph_edge.to,
+                graph_edge.from,
+                route.facts().endpoints.source,
+            ),
+        };
+        let owner_node = graph.port(&detached_port)?.node;
+        let intent =
+            ConnectionGestureIntent::reconnect(edge, endpoint, detached_port, fixed_port, mode);
+        Self::new(
+            owner_node,
+            intent,
+            fixed_endpoint.point,
+            fixed_endpoint.position,
+            allow_create_from_wire,
+        )
     }
 
     pub fn owner_node(self) -> NodeId {
@@ -196,6 +287,45 @@ pub enum CanvasPressTarget {
         edge: EdgeId,
         selection_mode: SelectionMode,
     },
+    /// Resolves an exact edge at the press position before activating the canvas fallback.
+    ///
+    /// Pointer adapters should use this target for blank-scene input instead of reusing a prior
+    /// hover result. Keyboard and accessibility adapters may continue to use [`Self::Edge`] when
+    /// they already own an authoritative edge identity.
+    Canvas(CanvasPressFallback),
+}
+
+/// Owned canvas behavior retained while an exact press-position edge pick is pending.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CanvasPressFallback {
+    Pan {
+        selection_mode: SelectionMode,
+    },
+    Marquee {
+        selection_mode: SelectionMode,
+        baseline: SelectionBaseline,
+    },
+}
+
+impl CanvasPressFallback {
+    fn selection_mode(&self) -> SelectionMode {
+        match self {
+            Self::Pan { selection_mode } | Self::Marquee { selection_mode, .. } => *selection_mode,
+        }
+    }
+
+    fn into_armed_target(self) -> ArmedTarget {
+        match self {
+            Self::Pan { .. } => ArmedTarget::Pan,
+            Self::Marquee {
+                selection_mode,
+                baseline,
+            } => ArmedTarget::Marquee {
+                selection_mode,
+                baseline,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,7 +589,7 @@ pub struct CanvasInteractionSession {
     next_query: Option<u64>,
     next_ticket: Option<u64>,
     state: InteractionState,
-    pending_edge_pick: Option<PendingEdgePick>,
+    pending_edge_pick: Option<PendingHoverEdgePick>,
     hovered_edge: Option<EdgeId>,
     terminal: Option<InteractionTerminalReason>,
     closed: bool,
@@ -476,6 +606,7 @@ enum InteractionState {
     Connection(ConnectionInteraction),
     Committing(CommitInteraction),
     EdgeActive(EdgeInteraction),
+    EdgePickPending(CanvasEdgePickInteraction),
 }
 
 #[derive(Debug)]
@@ -551,6 +682,7 @@ struct ConnectionSearchInteraction {
 enum CommitInteraction {
     Connection(ConnectionCommitInteraction),
     NodeDrag(NodeCommitInteraction),
+    EdgeDelete(EdgeDeleteCommitInteraction),
 }
 
 #[derive(Debug)]
@@ -584,15 +716,40 @@ struct NodeCommitInteraction {
 }
 
 #[derive(Debug)]
+struct EdgeDeleteCommitInteraction {
+    generation: InteractionGeneration,
+    edge: EdgeId,
+    ticket: InteractionTicketId,
+}
+
+#[derive(Debug)]
 struct EdgeInteraction {
     generation: InteractionGeneration,
     edge: EdgeId,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PendingEdgePick {
+struct PendingHoverEdgePick {
     id: InteractionQueryId,
     position: InteractionPosition,
+}
+
+#[derive(Debug)]
+struct CanvasEdgePickInteraction {
+    generation: InteractionGeneration,
+    query: InteractionQueryId,
+    press: InteractionPosition,
+    pointer: InteractionPosition,
+    fallback: CanvasPressFallback,
+    release_pending: bool,
+}
+
+#[derive(Debug)]
+enum CanvasEdgePickResolution {
+    Continue(EdgePickQuery),
+    Complete(Option<EdgeId>),
+    BudgetExhausted,
+    GeometryIndeterminate,
 }
 
 impl CanvasInteractionSession {
@@ -684,10 +841,17 @@ impl CanvasInteractionSession {
                             Some(node.ticket),
                         ))
                 }
+                CommitInteraction::EdgeDelete(edge) => {
+                    CanvasInteractionPresentation::new(CanvasInteractionPhase::Committing)
+                        .with_active_edge(edge.edge)
+                }
             },
             InteractionState::EdgeActive(edge) => {
                 CanvasInteractionPresentation::new(CanvasInteractionPhase::EdgeActive)
                     .with_active_edge(edge.edge)
+            }
+            InteractionState::EdgePickPending(_) => {
+                CanvasInteractionPresentation::new(CanvasInteractionPhase::Armed)
             }
         };
         presentation = presentation
@@ -749,6 +913,33 @@ impl CanvasInteractionSession {
                     ..InteractionDamage::default()
                 };
             }
+            CanvasPressTarget::Canvas(fallback) => {
+                let generation = self.allocate_generation()?;
+                let Some(query) = self.allocate_query() else {
+                    self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+                    return Ok(update.with_damage(InteractionDamage::presentation()));
+                };
+                if self.hovered_edge.take().is_some() {
+                    update.damage.edges = true;
+                }
+                update.queries.push(CanvasInteractionQuery::EdgePick {
+                    id: query,
+                    query: EdgePickQuery::new(
+                        position.view(),
+                        self.config.edge_pick_radius_in_view,
+                        self.config.query_entry_budget,
+                    ),
+                });
+                update.damage.presentation = true;
+                self.state = InteractionState::EdgePickPending(CanvasEdgePickInteraction {
+                    generation,
+                    query,
+                    press: position,
+                    pointer: position,
+                    fallback,
+                    release_pending: false,
+                });
+            }
             CanvasPressTarget::NodeDrag(start) => {
                 let generation = self.allocate_generation()?;
                 update.effects.push(CanvasInteractionEffect::Selection(
@@ -790,6 +981,37 @@ impl CanvasInteractionSession {
         Ok(update.active())
     }
 
+    /// Selects one actionable node without synthesizing a pointer drag or arming movement.
+    ///
+    /// Keyboard and accessibility adapters use this path so a selectable but non-draggable node
+    /// remains activatable and native child controls do not inherit drag semantics.
+    pub fn activate_node(
+        &mut self,
+        node: NodeId,
+        selection_mode: SelectionMode,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_available()?;
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        self.terminal = None;
+        self.pending_edge_pick = None;
+        Ok(CanvasInteractionUpdate {
+            effects: vec![CanvasInteractionEffect::Selection(
+                SelectionMutation::Node {
+                    node,
+                    mode: selection_mode,
+                },
+            )],
+            damage: InteractionDamage {
+                presentation: true,
+                selection: true,
+                ..InteractionDamage::default()
+            },
+            ..CanvasInteractionUpdate::default()
+        })
+    }
+
     /// Activates create-from-wire search without synthesizing a pointer drag.
     ///
     /// Keyboard and accessibility adapters use this path after resolving a real graph port. The
@@ -826,6 +1048,47 @@ impl CanvasInteractionSession {
         Ok(update.active())
     }
 
+    /// Requests deletion through the authoritative interaction and command-settlement pipeline.
+    ///
+    /// A route whose effective policy denies deletion is a no-op and allocates no ticket. Once
+    /// admitted, the mutation binds to a fresh graph snapshot before enqueueing; a retired edge
+    /// therefore settles as a no-op instead of producing a stale disconnect command.
+    pub fn delete_edge(
+        &mut self,
+        route: &PublishedEdgeRoute,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_available()?;
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        let Some(intent) = EdgeDeletionIntent::from_route(route) else {
+            return Ok(CanvasInteractionUpdate::default());
+        };
+        self.terminal = None;
+        self.pending_edge_pick = None;
+        let generation = self.allocate_generation()?;
+        let Some(ticket) = self.allocate_ticket() else {
+            self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+            return Ok(CanvasInteractionUpdate::default().with_damage(edge_action_damage()));
+        };
+        if self.hovered_edge == Some(intent.edge()) {
+            self.hovered_edge = None;
+        }
+        let mut update = CanvasInteractionUpdate::default().with_damage(edge_action_damage());
+        update.effects.push(CanvasInteractionEffect::SubmitGraph {
+            ticket,
+            mutation: FreshGraphMutation::DeleteEdge(intent),
+        });
+        self.state = InteractionState::Committing(CommitInteraction::EdgeDelete(
+            EdgeDeleteCommitInteraction {
+                generation,
+                edge: intent.edge(),
+                ticket,
+            },
+        ));
+        Ok(update.active())
+    }
+
     pub fn request_edge_pick(
         &mut self,
         position: InteractionPosition,
@@ -838,7 +1101,7 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return Ok(CanvasInteractionUpdate::default());
         };
-        self.pending_edge_pick = Some(PendingEdgePick { id, position });
+        self.pending_edge_pick = Some(PendingHoverEdgePick { id, position });
         let mut update = CanvasInteractionUpdate::default();
         update.queries.push(CanvasInteractionQuery::EdgePick {
             id,
@@ -851,12 +1114,35 @@ impl CanvasInteractionSession {
         Ok(update)
     }
 
+    /// Clears adapter-local edge hover when the pointer leaves the graph-interactive surface.
+    pub fn clear_edge_hover(&mut self) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        self.ensure_open()?;
+        self.pending_edge_pick = None;
+        if self.hovered_edge.take().is_none() {
+            return Ok(CanvasInteractionUpdate::default());
+        }
+        Ok(
+            CanvasInteractionUpdate::default().with_damage(InteractionDamage {
+                presentation: true,
+                edges: true,
+                ..InteractionDamage::default()
+            }),
+        )
+    }
+
     pub fn resolve_edge_pick(
         &mut self,
         id: InteractionQueryId,
         outcome: EdgePickQueryOutcome,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
+        if matches!(
+            &self.state,
+            InteractionState::EdgePickPending(pending) if pending.query == id
+        ) {
+            return self.resolve_canvas_press_edge_pick(id, outcome);
+        }
+
         let mut update = CanvasInteractionUpdate::default();
         if !self
             .pending_edge_pick
@@ -907,6 +1193,135 @@ impl CanvasInteractionSession {
         Ok(update)
     }
 
+    fn resolve_canvas_press_edge_pick(
+        &mut self,
+        id: InteractionQueryId,
+        outcome: EdgePickQueryOutcome,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let resolution = match outcome {
+            EdgePickQueryOutcome::Incomplete { cursor, .. } => CanvasEdgePickResolution::Continue(
+                EdgePickQuery::resume(cursor, self.config.query_entry_budget),
+            ),
+            EdgePickQueryOutcome::Complete { pick, .. } => {
+                CanvasEdgePickResolution::Complete(pick.map(|pick| pick.edge()))
+            }
+            EdgePickQueryOutcome::BudgetExhausted { .. } => {
+                CanvasEdgePickResolution::BudgetExhausted
+            }
+            EdgePickQueryOutcome::GeometryIndeterminate { .. } => {
+                CanvasEdgePickResolution::GeometryIndeterminate
+            }
+        };
+        self.resolve_canvas_press_edge_resolution(id, resolution)
+    }
+
+    fn resolve_canvas_press_edge_resolution(
+        &mut self,
+        id: InteractionQueryId,
+        resolution: CanvasEdgePickResolution,
+    ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
+        let state = std::mem::take(&mut self.state);
+        let InteractionState::EdgePickPending(pending) = state else {
+            self.state = state;
+            return Ok(CanvasInteractionUpdate::default());
+        };
+        if pending.query != id {
+            self.state = InteractionState::EdgePickPending(pending);
+            return Ok(CanvasInteractionUpdate::default());
+        }
+
+        let mut update = CanvasInteractionUpdate::default();
+        self.state = match resolution {
+            CanvasEdgePickResolution::Continue(query) => {
+                update
+                    .queries
+                    .push(CanvasInteractionQuery::EdgePick { id, query });
+                InteractionState::EdgePickPending(pending)
+            }
+            CanvasEdgePickResolution::Complete(edge) => {
+                self.finish_canvas_press_edge_pick(pending, edge, &mut update)?
+            }
+            CanvasEdgePickResolution::BudgetExhausted => {
+                self.hovered_edge = None;
+                self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
+                update.damage = edge_pick_terminal_damage();
+                InteractionState::Idle
+            }
+            CanvasEdgePickResolution::GeometryIndeterminate => {
+                self.hovered_edge = None;
+                self.terminal = Some(InteractionTerminalReason::GeometryIndeterminate);
+                update.damage = edge_pick_terminal_damage();
+                InteractionState::Idle
+            }
+        };
+        if is_tick_active(&self.state) {
+            update = update.active();
+        }
+        Ok(update)
+    }
+
+    fn finish_canvas_press_edge_pick(
+        &mut self,
+        pending: CanvasEdgePickInteraction,
+        edge: Option<EdgeId>,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<InteractionState, CanvasInteractionError> {
+        self.hovered_edge = edge;
+        let Some(edge) = edge else {
+            return self.activate_canvas_press_fallback(pending, update);
+        };
+
+        update.effects.push(CanvasInteractionEffect::Selection(
+            SelectionMutation::Edge {
+                edge,
+                mode: pending.fallback.selection_mode(),
+            },
+        ));
+        update.damage = InteractionDamage {
+            presentation: true,
+            edges: true,
+            selection: true,
+            ..InteractionDamage::default()
+        };
+        Ok(if pending.release_pending {
+            InteractionState::Idle
+        } else {
+            InteractionState::EdgeActive(EdgeInteraction {
+                generation: pending.generation,
+                edge,
+            })
+        })
+    }
+
+    fn activate_canvas_press_fallback(
+        &mut self,
+        pending: CanvasEdgePickInteraction,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<InteractionState, CanvasInteractionError> {
+        let armed = ArmedInteraction {
+            generation: pending.generation,
+            target: pending.fallback.into_armed_target(),
+            start: pending.press,
+        };
+        let crossed = threshold_crossed(
+            pending.press.view(),
+            pending.pointer.view(),
+            self.config.drag_threshold_in_view,
+        );
+        if pending.release_pending {
+            if crossed {
+                let _ = self.activate_armed(armed, pending.pointer, update)?;
+            }
+            update.damage.merge(InteractionDamage::presentation());
+            return Ok(InteractionState::Idle);
+        }
+        if crossed {
+            self.activate_armed(armed, pending.pointer, update)
+        } else {
+            Ok(InteractionState::Armed(armed))
+        }
+    }
+
     /// Restarts one still-current paged query after its opaque view cursor becomes stale.
     ///
     /// The session retains the normalized request facts and allocates a new query identity before
@@ -918,6 +1333,35 @@ impl CanvasInteractionSession {
         id: InteractionQueryId,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
+        if matches!(
+            &self.state,
+            InteractionState::EdgePickPending(pending) if pending.query == id
+        ) {
+            let state = std::mem::take(&mut self.state);
+            let InteractionState::EdgePickPending(mut pending) = state else {
+                unreachable!("the exact edge-pick state was matched immediately before mutation");
+            };
+            let Some(next) = self.allocate_query() else {
+                self.hovered_edge = None;
+                self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
+                return Ok(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
+                );
+            };
+            pending.query = next;
+            let mut update = CanvasInteractionUpdate::default();
+            update.queries.push(CanvasInteractionQuery::EdgePick {
+                id: next,
+                query: EdgePickQuery::new(
+                    pending.press.view(),
+                    self.config.edge_pick_radius_in_view,
+                    self.config.query_entry_budget,
+                ),
+            });
+            self.state = InteractionState::EdgePickPending(pending);
+            return Ok(update.active());
+        }
+
         if self
             .pending_edge_pick
             .is_some_and(|pending| pending.id == id)
@@ -937,7 +1381,7 @@ impl CanvasInteractionSession {
                     }),
                 );
             };
-            self.pending_edge_pick = Some(PendingEdgePick {
+            self.pending_edge_pick = Some(PendingHoverEdgePick {
                 id: next,
                 position: pending.position,
             });
@@ -1065,6 +1509,10 @@ impl CanvasInteractionSession {
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
+            InteractionState::EdgePickPending(mut pending) => {
+                pending.pointer = position;
+                InteractionState::EdgePickPending(pending)
+            }
             other => other,
         };
         if is_tick_active(&self.state) {
@@ -1116,6 +1564,11 @@ impl CanvasInteractionSession {
                 self.start_connection_probe(&mut drag, &mut update)?;
                 update.damage.merge(InteractionDamage::connection());
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+            }
+            InteractionState::EdgePickPending(mut pending) => {
+                pending.pointer = position;
+                pending.release_pending = true;
+                InteractionState::EdgePickPending(pending)
             }
             InteractionState::Pan(_)
             | InteractionState::Marquee(_)
@@ -1341,6 +1794,13 @@ impl CanvasInteractionSession {
             {
                 self.terminal = Some(settlement_terminal(settlement));
                 update.damage.merge(InteractionDamage::node_drag());
+                InteractionState::Idle
+            }
+            InteractionState::Committing(CommitInteraction::EdgeDelete(commit))
+                if commit.ticket == ticket =>
+            {
+                self.terminal = Some(settlement_terminal(settlement));
+                update.damage.merge(edge_action_damage());
                 InteractionState::Idle
             }
             other => other,
@@ -2008,6 +2468,7 @@ fn active_pointer(state: &InteractionState) -> Option<InteractionPosition> {
         InteractionState::NodeDrag(drag) => Some(drag.pointer),
         InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => Some(drag.pointer),
         InteractionState::Armed(_)
+        | InteractionState::EdgePickPending(_)
         | InteractionState::Idle
         | InteractionState::Pan(_)
         | InteractionState::Marquee(_)
@@ -2036,7 +2497,11 @@ fn state_generation(state: &InteractionState) -> Option<InteractionGeneration> {
         InteractionState::Committing(CommitInteraction::NodeDrag(commit)) => {
             Some(commit.generation)
         }
+        InteractionState::Committing(CommitInteraction::EdgeDelete(commit)) => {
+            Some(commit.generation)
+        }
         InteractionState::EdgeActive(edge) => Some(edge.generation),
+        InteractionState::EdgePickPending(pending) => Some(pending.generation),
     }
 }
 
@@ -2050,7 +2515,24 @@ fn is_tick_active(state: &InteractionState) -> bool {
             | InteractionState::Connection(_)
             | InteractionState::Committing(_)
             | InteractionState::EdgeActive(_)
+            | InteractionState::EdgePickPending(_)
     )
+}
+
+fn edge_pick_terminal_damage() -> InteractionDamage {
+    InteractionDamage {
+        presentation: true,
+        edges: true,
+        ..InteractionDamage::default()
+    }
+}
+
+fn edge_action_damage() -> InteractionDamage {
+    InteractionDamage {
+        presentation: true,
+        edges: true,
+        ..InteractionDamage::default()
+    }
 }
 
 fn damage_for_state(state: &InteractionState) -> InteractionDamage {
@@ -2063,11 +2545,13 @@ fn damage_for_state(state: &InteractionState) -> InteractionDamage {
         | InteractionState::Committing(CommitInteraction::Connection(_)) => {
             InteractionDamage::connection()
         }
+        InteractionState::Committing(CommitInteraction::EdgeDelete(_)) => edge_action_damage(),
         InteractionState::Idle
         | InteractionState::Armed(_)
         | InteractionState::Pan(_)
         | InteractionState::Marquee(_)
         | InteractionState::EdgeActive(_) => InteractionDamage::presentation(),
+        InteractionState::EdgePickPending(_) => edge_pick_terminal_damage(),
     }
 }
 
@@ -2095,8 +2579,12 @@ fn state_uses_owner(state: &InteractionState, owner: InteractionOwner) -> bool {
             InteractionOwner::Node(node) => commit.nodes.contains(&node),
             InteractionOwner::Port(_) | InteractionOwner::Edge(_) => false,
         },
+        InteractionState::Committing(CommitInteraction::EdgeDelete(_)) => false,
         InteractionState::EdgeActive(edge) => owner == InteractionOwner::Edge(edge.edge),
-        InteractionState::Idle | InteractionState::Pan(_) | InteractionState::Marquee(_) => false,
+        InteractionState::Idle
+        | InteractionState::Pan(_)
+        | InteractionState::Marquee(_)
+        | InteractionState::EdgePickPending(_) => false,
     }
 }
 
@@ -2112,14 +2600,52 @@ fn connection_uses_owner(start: ConnectionInteractionStart, owner: InteractionOw
 
 #[cfg(test)]
 mod tests {
-    use jellyflow_core::core::{EdgeId, NodeId, PortId};
+    use jellyflow_core::core::{
+        CanvasPoint, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
+        EdgeReconnectableEndpoint, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
+        PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    };
     use jellyflow_core::interaction::NodeGraphConnectionMode;
 
     use super::*;
     use crate::rules::EdgeEndpoint;
-    use crate::runtime::geometry::HandlePosition;
+    use crate::runtime::geometry::{
+        EdgeEndpointPosition, EdgePosition, HandlePosition, resolve_edge_route_path,
+    };
     use crate::runtime::interaction::ConnectionProbeTarget;
     use crate::runtime::view_session::{ConnectionProbeWork, EdgePickQueryOutcome, EdgePickWork};
+
+    #[test]
+    fn native_node_activation_selects_without_arming_drag_or_allocating_generation() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let node = NodeId::from_u128(10);
+
+        let update = session
+            .activate_node(node, SelectionMode::Replace)
+            .expect("idle native activation");
+        let [
+            CanvasInteractionEffect::Selection(SelectionMutation::Node {
+                node: selected,
+                mode,
+            }),
+        ] = update.effects()
+        else {
+            panic!("native node activation must emit one node selection");
+        };
+        assert_eq!(*selected, node);
+        assert_eq!(*mode, SelectionMode::Replace);
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(session.presentation().generation(), None);
+        assert!(session.presentation().node_drag().is_none());
+
+        session
+            .press(CanvasPressTarget::Pan, position(0.0, 0.0))
+            .expect("arm another interaction");
+        assert!(matches!(
+            session.activate_node(node, SelectionMode::Add),
+            Err(CanvasInteractionError::AlreadyActive)
+        ));
+    }
 
     #[test]
     fn connection_stays_armed_below_threshold_and_release_is_a_noop() {
@@ -2341,6 +2867,379 @@ mod tests {
             session.presentation().terminal(),
             Some(InteractionTerminalReason::BudgetExhausted)
         );
+    }
+
+    #[test]
+    fn exact_canvas_press_selects_its_resolved_edge_instead_of_a_previous_hover() {
+        let stale_hover = EdgeId::from_u128(40);
+        let pressed_edge = EdgeId::from_u128(41);
+        let mut session = test_session(CanvasInteractionConfig::default());
+        session.hovered_edge = Some(stale_hover);
+
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Toggle),
+                position(20.0, 10.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        assert_eq!(session.presentation().hovered_edge(), None);
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::Armed
+        );
+
+        let resolved = session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Complete(Some(pressed_edge)),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Edge {
+                edge,
+                mode: SelectionMode::Toggle,
+            })] if *edge == pressed_edge
+        ));
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::EdgeActive
+        );
+        assert_eq!(session.presentation().active_edge(), Some(pressed_edge));
+        assert_eq!(session.presentation().hovered_edge(), Some(pressed_edge));
+    }
+
+    #[test]
+    fn empty_exact_pick_activates_marquee_from_press_to_latest_pointer() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Add),
+                position(2.0, 3.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        let moved = session.move_to(position(14.0, 11.0)).unwrap();
+        assert!(moved.effects().is_empty());
+
+        let resolved = session
+            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
+            .unwrap();
+
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Marquee {
+                bounds,
+                mode: SelectionMode::Add,
+                ..
+            })] if *bounds == CanvasRect {
+                origin: CanvasPoint { x: 2.0, y: 3.0 },
+                size: CanvasSize { width: 12.0, height: 8.0 },
+            }
+        ));
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::Marquee
+        );
+        assert_eq!(
+            session.presentation().marquee(),
+            Some(CanvasRect {
+                origin: CanvasPoint { x: 2.0, y: 3.0 },
+                size: CanvasSize {
+                    width: 12.0,
+                    height: 8.0,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn release_before_exact_pick_completion_finishes_edge_and_fallback_immediately() {
+        let edge = EdgeId::from_u128(50);
+        let mut edge_session = test_session(CanvasInteractionConfig::default());
+        let pressed = edge_session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(0.0, 0.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        let released = edge_session.release(position(12.0, 0.0)).unwrap();
+        assert!(released.effects().is_empty());
+        let resolved = edge_session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Edge {
+                edge: selected,
+                ..
+            })] if *selected == edge
+        ));
+        assert_eq!(
+            edge_session.presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+
+        let mut empty_session = test_session(CanvasInteractionConfig::default());
+        let pressed = empty_session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(0.0, 0.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        empty_session.release(position(12.0, 8.0)).unwrap();
+        let resolved = empty_session
+            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
+            .unwrap();
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(
+                SelectionMutation::Marquee { .. }
+            )]
+        ));
+        assert_eq!(
+            empty_session.presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+    }
+
+    #[test]
+    fn exact_press_pagination_keeps_press_point_and_latest_pointer_until_completion() {
+        let edge = EdgeId::from_u128(60);
+        let mut session = test_session(CanvasInteractionConfig {
+            query_entry_budget: 1,
+            ..CanvasInteractionConfig::default()
+        });
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(4.0, 5.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        session.move_to(position(40.0, 50.0)).unwrap();
+        let continued = session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Continue(EdgePickQuery::new(
+                    ViewPoint::new(4.0, 5.0),
+                    10.0,
+                    1,
+                )),
+            )
+            .unwrap();
+        assert_eq!(edge_query_id(&continued), query);
+        assert!(continued.effects().is_empty());
+        let InteractionState::EdgePickPending(pending) = &session.state else {
+            panic!("exact press must remain pending between query pages");
+        };
+        assert_eq!(pending.press, position(4.0, 5.0));
+        assert_eq!(pending.pointer, position(40.0, 50.0));
+
+        session.release(position(44.0, 55.0)).unwrap();
+        let resolved = session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Edge {
+                edge: selected,
+                ..
+            })] if *selected == edge
+        ));
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    }
+
+    #[test]
+    fn stale_exact_press_restart_requeries_the_press_point_and_ignores_the_old_identity() {
+        let edge = EdgeId::from_u128(61);
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(4.0, 5.0),
+            )
+            .unwrap();
+        let stale = edge_query_id(&pressed);
+        session.move_to(position(40.0, 50.0)).unwrap();
+
+        let restarted = session.restart_stale_query(stale).unwrap();
+        let fresh = edge_query_id(&restarted);
+        assert_ne!(fresh, stale);
+        let InteractionState::EdgePickPending(pending) = &session.state else {
+            panic!("exact press restart must remain pending");
+        };
+        assert_eq!(pending.press, position(4.0, 5.0));
+        assert_eq!(pending.pointer, position(40.0, 50.0));
+
+        let late = session
+            .resolve_canvas_press_edge_resolution(
+                stale,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(late.effects().is_empty());
+        assert_eq!(session.presentation().active_edge(), None);
+
+        let resolved = session
+            .resolve_canvas_press_edge_resolution(
+                fresh,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Edge {
+                edge: selected,
+                ..
+            })] if *selected == edge
+        ));
+    }
+
+    #[test]
+    fn exact_press_supersedes_fast_hover_without_accepting_its_late_result() {
+        let pressed_edge = EdgeId::from_u128(63);
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let hover = session.request_edge_pick(position(2.0, 3.0)).unwrap();
+        let hover_query = edge_query_id(&hover);
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(8.0, 9.0),
+            )
+            .unwrap();
+        let press_query = edge_query_id(&pressed);
+        assert_ne!(press_query, hover_query);
+
+        let late_hover = session
+            .resolve_edge_pick(
+                hover_query,
+                EdgePickQueryOutcome::BudgetExhausted {
+                    work: EdgePickWork::default(),
+                },
+            )
+            .unwrap();
+        assert!(late_hover.effects().is_empty());
+        assert_eq!(session.presentation().hovered_edge(), None);
+        assert_eq!(session.presentation().terminal(), None);
+
+        session
+            .resolve_canvas_press_edge_resolution(
+                press_query,
+                CanvasEdgePickResolution::Complete(Some(pressed_edge)),
+            )
+            .unwrap();
+        assert_eq!(session.presentation().active_edge(), Some(pressed_edge));
+        assert_eq!(session.presentation().hovered_edge(), Some(pressed_edge));
+    }
+
+    #[test]
+    fn exact_press_budget_geometry_cancel_and_late_results_never_select() {
+        for (resolution, terminal) in [
+            (
+                CanvasEdgePickResolution::BudgetExhausted,
+                InteractionTerminalReason::BudgetExhausted,
+            ),
+            (
+                CanvasEdgePickResolution::GeometryIndeterminate,
+                InteractionTerminalReason::GeometryIndeterminate,
+            ),
+        ] {
+            let mut session = test_session(CanvasInteractionConfig::default());
+            let pressed = session
+                .press(
+                    canvas_marquee_target(SelectionMode::Replace),
+                    position(0.0, 0.0),
+                )
+                .unwrap();
+            let resolved = session
+                .resolve_canvas_press_edge_resolution(edge_query_id(&pressed), resolution)
+                .unwrap();
+            assert!(resolved.effects().is_empty());
+            assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+            assert_eq!(session.presentation().terminal(), Some(terminal));
+        }
+
+        let edge = EdgeId::from_u128(70);
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let pressed = session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(0.0, 0.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        let cancelled = session.cancel();
+        assert!(cancelled.effects().is_empty());
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::Cancelled)
+        );
+        let late = session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(late.effects().is_empty());
+        assert_eq!(session.presentation().active_edge(), None);
+
+        let mut closed_session = test_session(CanvasInteractionConfig::default());
+        let pressed = closed_session
+            .press(
+                canvas_marquee_target(SelectionMode::Replace),
+                position(0.0, 0.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        let closed = closed_session.close();
+        assert!(closed.effects().is_empty());
+        assert_eq!(
+            closed_session.presentation().terminal(),
+            Some(InteractionTerminalReason::ViewClosed)
+        );
+        let late = closed_session
+            .resolve_canvas_press_edge_resolution(
+                query,
+                CanvasEdgePickResolution::Complete(Some(edge)),
+            )
+            .unwrap();
+        assert!(late.effects().is_empty());
+        assert_eq!(closed_session.presentation().active_edge(), None);
+    }
+
+    #[test]
+    fn empty_exact_pick_can_activate_pan_without_a_second_press() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let pressed = session
+            .press(
+                CanvasPressTarget::Canvas(CanvasPressFallback::Pan {
+                    selection_mode: SelectionMode::Replace,
+                }),
+                position(1.0, 2.0),
+            )
+            .unwrap();
+        let query = edge_query_id(&pressed);
+        session.move_to(position(11.0, 14.0)).unwrap();
+        let resolved = session
+            .resolve_canvas_press_edge_resolution(query, CanvasEdgePickResolution::Complete(None))
+            .unwrap();
+        assert!(matches!(
+            resolved.effects(),
+            [CanvasInteractionEffect::Viewport(ViewportMutation::PanByView(delta))]
+                if *delta == CanvasPoint { x: 10.0, y: 12.0 }
+        ));
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Pan);
     }
 
     #[test]
@@ -3043,6 +3942,135 @@ mod tests {
     }
 
     #[test]
+    fn edge_delete_requires_authoritative_permission_and_owns_one_ticket_until_settlement() {
+        let edge = EdgeId::from_u128(21);
+        let denied = published_edge_route(edge, false, EdgeReconnectable::Bool(true));
+        let allowed = published_edge_route(edge, true, EdgeReconnectable::Bool(true));
+        let mut session = test_session(CanvasInteractionConfig::default());
+        session
+            .press(CanvasPressTarget::Pan, position(0.0, 0.0))
+            .unwrap();
+        session.cancel();
+
+        let ignored = session.delete_edge(&denied).unwrap();
+        assert!(ignored.effects().is_empty());
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(session.presentation().generation(), None);
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::Cancelled)
+        );
+
+        let submitted = session.delete_edge(&allowed).unwrap();
+        let [CanvasInteractionEffect::SubmitGraph { ticket, mutation }] = submitted.effects()
+        else {
+            panic!("one permitted edge delete must submit exactly one mutation");
+        };
+        let FreshGraphMutation::DeleteEdge(intent) = mutation else {
+            panic!("edge delete emitted the wrong graph mutation");
+        };
+        assert_eq!(ticket.get(), 1);
+        assert_eq!(intent.edge(), edge);
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::Committing
+        );
+        assert_eq!(session.presentation().active_edge(), Some(edge));
+        assert!(submitted.damage().edges);
+        assert!(matches!(
+            session.delete_edge(&allowed),
+            Err(CanvasInteractionError::AlreadyActive)
+        ));
+
+        let settled = session
+            .settle(*ticket, CommandSettlement::Rejected)
+            .unwrap();
+        assert!(settled.effects().is_empty());
+        assert!(settled.damage().edges);
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::Rejected)
+        );
+        let late = session.settle(*ticket, CommandSettlement::Applied).unwrap();
+        assert!(late.effects().is_empty());
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::Rejected)
+        );
+    }
+
+    #[test]
+    fn reconnect_start_resolves_graph_topology_and_endpoint_specific_route_facts() {
+        let edge = EdgeId::from_u128(22);
+        let graph = reconnect_graph(edge);
+        let route = published_edge_route(
+            edge,
+            true,
+            EdgeReconnectable::Endpoint(EdgeReconnectableEndpoint::Source),
+        );
+        let source = ConnectionInteractionStart::reconnect_from_graph_route(
+            &graph,
+            &route,
+            EdgeEndpoint::From,
+            NodeGraphConnectionMode::Loose,
+            false,
+        )
+        .expect("source reconnect is permitted");
+        assert_eq!(source.owner_node(), source_node());
+        assert_eq!(source.intent().fixed_port(), target_port());
+        assert_eq!(source.intent().detached_port(), Some(source_port()));
+        assert_eq!(source.intent().mode(), NodeGraphConnectionMode::Loose);
+
+        assert!(
+            ConnectionInteractionStart::reconnect_from_graph_route(
+                &graph,
+                &route,
+                EdgeEndpoint::To,
+                NodeGraphConnectionMode::Strict,
+                false,
+            )
+            .is_none()
+        );
+        let missing =
+            published_edge_route(EdgeId::from_u128(23), true, EdgeReconnectable::Bool(true));
+        assert!(
+            ConnectionInteractionStart::reconnect_from_graph_route(
+                &graph,
+                &missing,
+                EdgeEndpoint::From,
+                NodeGraphConnectionMode::Strict,
+                false,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn retiring_an_edge_during_delete_preserves_the_ticket_for_fresh_bind_noop() {
+        let edge = EdgeId::from_u128(24);
+        let route = published_edge_route(edge, true, EdgeReconnectable::Bool(true));
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let submitted = session.delete_edge(&route).unwrap();
+        let ticket = submit_ticket(&submitted);
+
+        let retired = session.owner_retired(InteractionOwner::Edge(edge));
+        assert!(retired.effects().is_empty());
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::Committing
+        );
+        assert_eq!(session.presentation().active_edge(), Some(edge));
+
+        session.settle(ticket, CommandSettlement::Noop).unwrap();
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::Noop)
+        );
+    }
+
+    #[test]
     fn active_drag_requests_bounded_auto_pan_and_retirement_cancels_late_receipts() {
         let mut session = test_session(CanvasInteractionConfig::default());
         let node = NodeId::from_u128(10);
@@ -3083,6 +4111,91 @@ mod tests {
         .unwrap()
     }
 
+    fn published_edge_route(
+        edge: EdgeId,
+        deletable: bool,
+        reconnectable: EdgeReconnectable,
+    ) -> PublishedEdgeRoute {
+        let mut model = Edge::new(EdgeKind::Data, source_port(), target_port());
+        model.deletable = Some(deletable);
+        model.reconnectable = Some(reconnectable);
+        let endpoints = EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint { x: 0.0, y: 0.0 },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint { x: 100.0, y: 0.0 },
+                position: HandlePosition::Left,
+            },
+        };
+        let facts = resolve_edge_route_path(&model, endpoints).expect("test edge route");
+        PublishedEdgeRoute::new(edge, facts)
+    }
+
+    fn reconnect_graph(edge: EdgeId) -> Graph {
+        let mut source = test_node(CanvasPoint { x: 0.0, y: 0.0 });
+        source.ports.push(source_port());
+        let mut target = test_node(CanvasPoint { x: 100.0, y: 0.0 });
+        target.ports.push(target_port());
+        GraphBuilder::new(GraphId::from_u128(1))
+            .with_node(source_node(), source)
+            .with_port(
+                source_port(),
+                test_port(source_node(), "out", PortDirection::Out),
+            )
+            .with_node(NodeId::from_u128(2), target)
+            .with_port(
+                target_port(),
+                test_port(NodeId::from_u128(2), "in", PortDirection::In),
+            )
+            .with_edge(
+                edge,
+                Edge::new(EdgeKind::Data, source_port(), target_port()),
+            )
+            .build()
+            .expect("valid reconnect graph")
+    }
+
+    fn test_node(pos: CanvasPoint) -> Node {
+        Node {
+            kind: NodeKindKey::new("test.node"),
+            kind_version: 1,
+            pos,
+            origin: None,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(CanvasSize {
+                width: 160.0,
+                height: 96.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::Value::Null,
+        }
+    }
+
+    fn test_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
+        Port {
+            node,
+            key: PortKey::new(key),
+            dir,
+            kind: PortKind::Data,
+            capacity: PortCapacity::Multi,
+            connectable: None,
+            connectable_start: None,
+            connectable_end: None,
+            ty: None,
+            data: serde_json::Value::Null,
+        }
+    }
+
     fn connection_target(allow_search: bool) -> CanvasPressTarget {
         CanvasPressTarget::Connection(
             ConnectionInteractionStart::new(
@@ -3098,6 +4211,13 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn canvas_marquee_target(selection_mode: SelectionMode) -> CanvasPressTarget {
+        CanvasPressTarget::Canvas(CanvasPressFallback::Marquee {
+            selection_mode,
+            baseline: SelectionBaseline::default(),
+        })
     }
 
     fn position(x: f32, y: f32) -> InteractionPosition {

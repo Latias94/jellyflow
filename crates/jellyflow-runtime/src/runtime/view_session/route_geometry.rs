@@ -136,7 +136,61 @@ impl VisibleRouteGeometryOverflow {
 pub struct VisibleRoutes {
     snapshot: GeometrySnapshot,
     edges: Vec<EdgeId>,
+    geometry_revisions: BTreeMap<EdgeId, RouteGeometryRevision>,
     geometry_overflows: Vec<VisibleRouteGeometryOverflow>,
+}
+
+/// Stable identity for one edge's resolved path geometry inside a view session.
+///
+/// Selection, hover, and adapter theme changes do not change this revision. Adapters can use it
+/// to reuse native path resources until the authoritative route itself changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RouteGeometryRevision(u128);
+
+impl RouteGeometryRevision {
+    pub fn get(self) -> u128 {
+        self.0
+    }
+}
+
+/// Stable invalidation stamp for one view's visible-route query result.
+///
+/// Adapters can retain a complete query result while this value and their query bounds remain
+/// unchanged. The stamp advances for viewport, route-fact, selection, or draw-order changes even
+/// when the resolved path geometry itself remains identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VisibleRouteQueryRevision {
+    view: ViewId,
+    generation: ViewGeneration,
+    transform_revision: u64,
+    route_facts_revision: u128,
+    interaction_order_revision: u128,
+}
+
+/// One visible edge route paired with its geometry-only revision.
+#[derive(Debug, Clone, Copy)]
+pub struct VisibleRoute<'a> {
+    edge: EdgeId,
+    route: &'a PublishedEdgeRoute,
+    geometry_revision: RouteGeometryRevision,
+}
+
+impl<'a> VisibleRoute<'a> {
+    pub fn edge(self) -> EdgeId {
+        self.edge
+    }
+
+    pub fn route(self) -> &'a PublishedEdgeRoute {
+        self.route
+    }
+
+    pub fn facts(self) -> &'a crate::runtime::geometry::EdgeRouteFacts {
+        self.route.facts()
+    }
+
+    pub fn geometry_revision(self) -> RouteGeometryRevision {
+        self.geometry_revision
+    }
 }
 
 impl VisibleRoutes {
@@ -144,10 +198,14 @@ impl VisibleRoutes {
         &self.edges
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &PublishedEdgeRoute> {
-        self.edges
-            .iter()
-            .filter_map(|edge| self.snapshot.route(*edge))
+    pub fn iter(&self) -> impl Iterator<Item = VisibleRoute<'_>> {
+        self.edges.iter().filter_map(|edge| {
+            Some(VisibleRoute {
+                edge: *edge,
+                route: self.snapshot.route(*edge)?,
+                geometry_revision: *self.geometry_revisions.get(edge)?,
+            })
+        })
     }
 
     pub fn snapshot(&self) -> &GeometrySnapshot {
@@ -184,6 +242,13 @@ pub enum VisibleRouteCursorStaleReason {
     ViewportTransform,
     #[error("indexed route geometry changed")]
     RouteGeometry,
+}
+
+impl VisibleRouteCursorStaleReason {
+    /// Returns whether ordinary mutable view state can invalidate this cursor between pages.
+    pub const fn is_restartable(self) -> bool {
+        matches!(self, Self::ViewportTransform | Self::RouteGeometry)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -332,6 +397,12 @@ impl RouteSpatialIndex {
 }
 
 impl RouteGeometryIndex {
+    fn geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
+        self.indexed
+            .get(&edge)
+            .map(|route| RouteGeometryRevision(route.path_revision))
+    }
+
     pub(super) fn upsert(
         &mut self,
         edge: EdgeId,
@@ -739,6 +810,26 @@ fn record_route_query_stats(
 }
 
 impl ViewSession {
+    /// Returns the current invalidation stamp for complete visible-route query results.
+    pub fn visible_route_query_revision(
+        &self,
+    ) -> Result<VisibleRouteQueryRevision, ViewSessionError> {
+        self.runtime()?;
+        let state = self
+            .shared
+            .state
+            .try_borrow()
+            .map_err(|_| ViewSessionError::Busy)?;
+        ensure_open(state.status)?;
+        Ok(VisibleRouteQueryRevision {
+            view: state.id,
+            generation: state.generation,
+            transform_revision: state.transform_revision,
+            route_facts_revision: state.route_facts_revision,
+            interaction_order_revision: state.interaction_order_revision,
+        })
+    }
+
     pub fn visible_routes(
         &self,
         query: VisibleRouteQuery,
@@ -785,7 +876,7 @@ impl ViewSession {
                 work,
             } => {
                 let mut edges = edges.into_iter().collect::<Vec<_>>();
-                {
+                let geometry_revisions = {
                     let state = self
                         .shared
                         .state
@@ -798,7 +889,16 @@ impl ViewSession {
                         |edge| state.selected_edge_membership.contains(edge),
                         &state.edge_draw_order_ranks,
                     );
-                }
+                    edges
+                        .iter()
+                        .filter_map(|edge| {
+                            state
+                                .route_geometry
+                                .geometry_revision(*edge)
+                                .map(|revision| (*edge, revision))
+                        })
+                        .collect()
+                };
                 let snapshot = self.shared.geometry_snapshot()?;
                 let geometry_overflows = overflows
                     .into_iter()
@@ -808,6 +908,7 @@ impl ViewSession {
                     routes: VisibleRoutes {
                         snapshot,
                         edges,
+                        geometry_revisions,
                         geometry_overflows,
                     },
                     work,

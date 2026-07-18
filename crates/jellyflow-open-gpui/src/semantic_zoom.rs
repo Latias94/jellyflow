@@ -1,16 +1,16 @@
 use jellyflow::core::{CanvasPoint, CanvasSize, PortDirection, PortId};
+use jellyflow::runtime::FrameNode;
 use jellyflow::runtime::schema::NodeCatalog;
-use jellyflow::runtime::{FrameNode, NodeInstanceKey};
-use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px, rgb};
+use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px};
 
-use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
+use crate::binding::OpenGpuiNodeBinding;
+use crate::theme::OpenGpuiGraphTheme;
 
 pub(crate) const OPEN_GPUI_OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
 const NATIVE_DETAIL_ZOOM_THRESHOLD: f32 = 1.0;
 const MAX_OVERVIEW_MARKER_DIAMETER: f32 = 6.0;
-const MAX_OVERVIEW_HIT_DIAMETER: f32 = 10.0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum OpenGpuiNodePresentation {
     Native,
     Overview,
@@ -34,7 +34,6 @@ impl OpenGpuiNodePresentation {
 struct OpenGpuiOverviewPort {
     id: PortId,
     direction: PortDirection,
-    accessible_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -88,11 +87,11 @@ impl OpenGpuiSemanticZoomState {
 
     pub(crate) fn overview_element(
         &self,
-        instance: &NodeInstanceKey,
+        binding: Option<&OpenGpuiNodeBinding>,
         accessible_name: &str,
         selected: bool,
         screen_size: CanvasSize,
-        measurement: &OpenGpuiMeasurementSink,
+        theme: OpenGpuiGraphTheme,
     ) -> AnyElement {
         let background = div()
             .absolute()
@@ -103,11 +102,11 @@ impl OpenGpuiSemanticZoomState {
             ))
             .border_1()
             .border_color(if selected {
-                rgb(0x78a9ff)
+                theme.palette.selection
             } else {
-                rgb(0x64748b)
+                theme.palette.node_border
             })
-            .bg(rgb(0x20252d));
+            .bg(theme.palette.node_surface);
         let mut overview = div()
             .debug_selector(|| OPEN_GPUI_OVERVIEW_NODE_SELECTOR.to_owned())
             .relative()
@@ -123,7 +122,7 @@ impl OpenGpuiSemanticZoomState {
                     .top(px(3.0))
                     .truncate()
                     .text_size(px(10.0))
-                    .text_color(rgb(0xd7dde8))
+                    .text_color(theme.palette.label_text)
                     .child(accessible_name.to_owned()),
             );
         }
@@ -151,17 +150,14 @@ impl OpenGpuiSemanticZoomState {
                 }
             };
             let placement = overview_port_placement(port.direction, index, count, screen_size);
-            let handle = OpenGpuiPortHandle::new(
-                instance.clone(),
-                port.id,
-                port.direction,
-                port.accessible_name.clone(),
-                measurement.clone(),
-            )
-            .with_hit_slop(placement.hit_slop);
+            let Some(handle) = binding.and_then(|binding| binding.cached_port_handle(port.id))
+            else {
+                continue;
+            };
+            let handle = handle.with_minimum_hit_diameter(theme.metrics.port_hit_diameter);
             let marker_color = match port.direction {
-                PortDirection::In => rgb(0x59c2a6),
-                PortDirection::Out => rgb(0x78a9ff),
+                PortDirection::In => theme.palette.edge_data,
+                PortDirection::Out => theme.palette.edge_control,
             };
             let marker = div()
                 .w(px(placement.diameter))
@@ -187,7 +183,6 @@ struct OverviewPortPlacement {
     left: f32,
     top: f32,
     diameter: f32,
-    hit_slop: f32,
 }
 
 fn overview_port_placement(
@@ -202,7 +197,6 @@ fn overview_port_placement(
         .min(screen_size.width / 4.0)
         .min(slot_height / 2.0);
     let center_y = slot_height * (index as f32 + 1.0);
-    let hit_diameter = MAX_OVERVIEW_HIT_DIAMETER.min(slot_height).max(diameter);
     OverviewPortPlacement {
         left: match direction {
             PortDirection::In => 0.0,
@@ -210,7 +204,6 @@ fn overview_port_placement(
         },
         top: center_y - diameter / 2.0,
         diameter,
-        hit_slop: (hit_diameter - diameter) / 2.0,
     }
 }
 
@@ -239,7 +232,6 @@ fn overview_ports(frame: &FrameNode) -> Vec<OpenGpuiOverviewPort> {
             Some(OpenGpuiOverviewPort {
                 id: frame_port.id(),
                 direction: port.dir,
-                accessible_name: port.key.0.clone(),
             })
         })
         .collect()

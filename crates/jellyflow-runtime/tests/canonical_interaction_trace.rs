@@ -216,14 +216,15 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
         config,
     )
     .unwrap();
-    let intent = ConnectionGestureIntent::connect(
+    let drag_intent = harness
+        .view
+        .port_connection_drag_intent(harness.ids.source_port)
+        .unwrap()
+        .expect("source port drag facts");
+    let start = ConnectionInteractionStart::from_port_drag_intent(
+        drag_intent,
         EdgeId::from_u128(0xA11),
-        harness.ids.source_port,
         NodeGraphConnectionMode::Strict,
-    );
-    let start = ConnectionInteractionStart::new(
-        harness.ids.source_node,
-        intent,
         CanvasPoint {
             x: harness.anchors.source.x,
             y: harness.anchors.source.y,
@@ -232,6 +233,7 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
         false,
     )
     .unwrap();
+    let intent = start.intent();
     let source = normalized_position(&harness.view, harness.anchors.source);
     let target = normalized_position(&harness.view, harness.anchors.valid);
     session
@@ -332,14 +334,15 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
         config,
     )
     .unwrap();
-    let intent = ConnectionGestureIntent::connect(
+    let drag_intent = harness
+        .view
+        .port_connection_drag_intent(harness.ids.source_port)
+        .unwrap()
+        .expect("source port drag facts");
+    let start = ConnectionInteractionStart::from_port_drag_intent(
+        drag_intent,
         EdgeId::from_u128(0xA12),
-        harness.ids.source_port,
         NodeGraphConnectionMode::Strict,
-    );
-    let start = ConnectionInteractionStart::new(
-        harness.ids.source_node,
-        intent,
         canvas_anchor(&harness.view, harness.anchors.source),
         HandlePosition::Right,
         false,
@@ -706,13 +709,15 @@ impl TraceHarness {
                 TraceEffect::None
             }
             TraceTarget::Port(_) => {
-                let start = ConnectionInteractionStart::new(
-                    self.ids.source_node,
-                    ConnectionGestureIntent::connect(
-                        EdgeId::from_u128(100),
-                        self.ids.source_port,
-                        NodeGraphConnectionMode::Strict,
-                    ),
+                let drag_intent = self
+                    .view
+                    .port_connection_drag_intent(self.ids.source_port)
+                    .unwrap()
+                    .expect("source port drag facts");
+                let start = ConnectionInteractionStart::from_port_drag_intent(
+                    drag_intent,
+                    EdgeId::from_u128(100),
+                    NodeGraphConnectionMode::Strict,
                     canvas_anchor(&self.view, self.anchors.source),
                     HandlePosition::Right,
                     true,
@@ -724,39 +729,27 @@ impl TraceHarness {
                 TraceEffect::None
             }
             TraceTarget::ReconnectHandle { endpoint, .. } => {
-                let (runtime_endpoint, detached, fixed, fixed_node, fixed_anchor, outward) =
-                    match endpoint {
-                        TraceReconnectEndpoint::Source => (
-                            EdgeEndpoint::From,
-                            self.ids.reconnect_source_port,
-                            self.ids.reconnect_target_port,
-                            self.ids.reconnect_target_node,
-                            self.anchors.reconnect_target,
-                            HandlePosition::Left,
-                        ),
-                        TraceReconnectEndpoint::Target => (
-                            EdgeEndpoint::To,
-                            self.ids.reconnect_target_port,
-                            self.ids.reconnect_source_port,
-                            self.ids.reconnect_source_node,
-                            self.anchors.reconnect_source,
-                            HandlePosition::Right,
-                        ),
-                    };
-                let start = ConnectionInteractionStart::new(
-                    fixed_node,
-                    ConnectionGestureIntent::reconnect(
-                        self.ids.reconnect_edge,
-                        runtime_endpoint,
-                        detached,
-                        fixed,
-                        NodeGraphConnectionMode::Strict,
-                    ),
-                    canvas_anchor(&self.view, fixed_anchor),
-                    outward,
+                let (runtime_endpoint, fixed_anchor) = match endpoint {
+                    TraceReconnectEndpoint::Source => {
+                        (EdgeEndpoint::From, self.anchors.reconnect_target)
+                    }
+                    TraceReconnectEndpoint::Target => {
+                        (EdgeEndpoint::To, self.anchors.reconnect_source)
+                    }
+                };
+                let graph = self.view.graph_snapshot().unwrap();
+                let geometry = self.view.geometry_snapshot().unwrap();
+                let route = geometry
+                    .route(self.ids.reconnect_edge)
+                    .expect("published reconnect route");
+                let start = ConnectionInteractionStart::reconnect_from_graph_route(
+                    graph.graph(),
+                    route,
+                    runtime_endpoint,
+                    NodeGraphConnectionMode::Strict,
                     false,
                 )
-                .unwrap();
+                .expect("authoritative reconnect start");
                 self.pointer = normalized_position(&self.view, fixed_anchor);
                 self.session
                     .press(CanvasPressTarget::Connection(start), self.pointer)
@@ -884,6 +877,9 @@ impl TraceHarness {
                     }
                     jellyflow_runtime::FreshGraphMutation::MoveNodes(_) => {
                         TraceEffect::SubmitNodeMove
+                    }
+                    jellyflow_runtime::FreshGraphMutation::DeleteEdge(_) => {
+                        panic!("canonical connection traces must not submit edge deletion")
                     }
                 };
             }
