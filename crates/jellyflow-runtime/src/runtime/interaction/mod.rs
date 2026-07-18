@@ -2,6 +2,7 @@
 
 mod connection;
 mod intent;
+mod navigation;
 mod presentation;
 mod session;
 
@@ -10,6 +11,7 @@ pub use intent::{
     ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, FreshGraphMutationBindError,
     RelativeNodeMoveIntent, SelectionBaseline,
 };
+pub use navigation::{AlignmentSnapResult, fit_viewport, resolve_alignment_snap};
 pub use presentation::{
     AlignmentGuide, CanvasInteractionPhase, CanvasInteractionPresentation, ConnectionPresentation,
     ConnectionSearchStatus, InteractionPosition, InteractionTerminalReason, NodeDragPresentation,

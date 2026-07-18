@@ -43,10 +43,10 @@ use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMo
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
-    AdapterEnvironment, CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
-    FrameMaterializationBudget, FrameMaterializationError, FrameMaterializationOverflow,
-    FrameRequest, RendererStamp, ViewCloseReason, ViewPoint, ViewRect, ViewSession,
-    ViewSessionError, ViewSize, WeakViewSession,
+    AdapterEnvironment, CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionQuery,
+    CanvasInteractionSession, FrameMaterializationBudget, FrameMaterializationError,
+    FrameMaterializationOverflow, FrameRequest, RendererStamp, ViewCloseReason, ViewPoint,
+    ViewRect, ViewSession, ViewSessionError, ViewSize, WeakViewSession, fit_viewport,
 };
 use open_gpui::{Context, FocusHandle, IntoElement, Pixels, Render, Window};
 
@@ -61,6 +61,7 @@ use crate::command_journal::{
     resolve_command_tickets,
 };
 use crate::interaction::{OpenGpuiInteractionCoordinator, OpenGpuiSceneInteractionCoordinator};
+use crate::navigation::OpenGpuiNavigationConfig;
 use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
 use crate::theme::OpenGpuiGraphTheme;
@@ -121,6 +122,7 @@ pub struct OpenGpuiSceneHost {
     prepared_edges: OpenGpuiPreparedEdgeCache,
     edge_paths: Rc<RefCell<OpenGpuiEdgePathCache>>,
     connection_options: OpenGpuiConnectionOptions,
+    navigation: OpenGpuiNavigationConfig,
     graph_theme: OpenGpuiGraphTheme,
     edge_painters: Arc<OpenGpuiEdgePainterRegistry>,
     mounts: RetainedMountStore<MountedNode>,
@@ -189,11 +191,12 @@ impl OpenGpuiSceneHost {
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, viewport: CanvasRect) -> Self {
         let catalog = view.catalog_owned();
         let frame_request_template = catalog_frame_request(&catalog, viewport);
+        let navigation = OpenGpuiNavigationConfig::default();
         let canvas_interaction = CanvasInteractionSession::new(
             view.id(),
             view.generation()
                 .expect("a newly constructed native host owns an open view"),
-            CanvasInteractionConfig::default(),
+            navigation.runtime_config(),
         )
         .expect("the built-in canvas interaction configuration is valid");
         Self {
@@ -212,6 +215,7 @@ impl OpenGpuiSceneHost {
             prepared_edges: OpenGpuiPreparedEdgeCache::default(),
             edge_paths: Rc::new(RefCell::new(OpenGpuiEdgePathCache::default())),
             connection_options: OpenGpuiConnectionOptions::default(),
+            navigation,
             graph_theme: OpenGpuiGraphTheme::default(),
             edge_painters: Arc::new(OpenGpuiEdgePainterRegistry::default()),
             mounts: RetainedMountStore::new(OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY),
@@ -370,6 +374,92 @@ impl OpenGpuiSceneHost {
         self.connection_options
     }
 
+    /// Overrides adapter-local navigation before mounting the host.
+    #[must_use]
+    pub fn with_navigation_config(mut self, config: OpenGpuiNavigationConfig) -> Self {
+        let config = config.sanitized();
+        self.canvas_interaction
+            .set_config(config.runtime_config())
+            .expect("a newly constructed native host has an idle interaction session");
+        self.navigation = config;
+        self
+    }
+
+    /// Replaces navigation policy while no graph interaction is active.
+    pub fn set_navigation_config(
+        &mut self,
+        config: OpenGpuiNavigationConfig,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, CanvasInteractionError> {
+        let config = config.sanitized();
+        let runtime_changed = self
+            .canvas_interaction
+            .set_config(config.runtime_config())?;
+        let navigation_changed = self.navigation != config;
+        if navigation_changed {
+            self.navigation = config;
+        }
+        if runtime_changed || navigation_changed {
+            cx.notify();
+        }
+        Ok(runtime_changed || navigation_changed)
+    }
+
+    #[must_use]
+    pub const fn navigation_config(&self) -> OpenGpuiNavigationConfig {
+        self.navigation
+    }
+
+    /// Fits every visible node with canonical size into the measured native surface.
+    ///
+    /// Hidden nodes and nodes without either a document size or catalog default are ignored. An
+    /// empty fit set, an unmeasured surface, or an active graph gesture is a deterministic no-op.
+    pub fn fit_view(&mut self, cx: &mut Context<Self>) -> Result<bool, ViewSessionError> {
+        if self.canvas_interaction.presentation().phase() != CanvasInteractionPhase::Idle {
+            return Ok(false);
+        }
+        let Some(surface) = self.surface_size else {
+            return Ok(false);
+        };
+        let snapshot = self.view.graph_snapshot()?;
+        let bounds = snapshot
+            .graph()
+            .nodes()
+            .into_iter()
+            .filter_map(|(_, node)| {
+                if node.hidden {
+                    return None;
+                }
+                let size = node.size.or_else(|| {
+                    self.catalog
+                        .get(&node.kind)
+                        .and_then(|spec| spec.default_size())
+                })?;
+                node.bounds_for_size(size)
+            })
+            .reduce(union_canvas_rects);
+        let Some(bounds) = bounds else {
+            return Ok(false);
+        };
+        let Some(transform) = fit_viewport(
+            bounds,
+            surface,
+            self.navigation.fit_view_padding_in_view(),
+            self.navigation.min_zoom(),
+            self.navigation.max_zoom(),
+        ) else {
+            return Ok(false);
+        };
+        if self.view.viewport_transform()? == transform {
+            return Ok(false);
+        }
+        self.view.set_viewport(transform.pan, transform.zoom)?;
+        self.scene_transform = Some(transform);
+        self.update_surface_viewport(surface, transform);
+        cx.notify();
+        Ok(true)
+    }
+
     /// Overrides adapter-local graph chrome colors and metrics before mounting the host.
     #[must_use]
     pub fn with_graph_theme(mut self, theme: OpenGpuiGraphTheme) -> Self {
@@ -511,6 +601,20 @@ impl OpenGpuiSceneHost {
             return changed;
         }
         false
+    }
+}
+
+fn union_canvas_rects(left: CanvasRect, right: CanvasRect) -> CanvasRect {
+    let min_x = left.origin.x.min(right.origin.x);
+    let min_y = left.origin.y.min(right.origin.y);
+    let max_x = (left.origin.x + left.size.width).max(right.origin.x + right.size.width);
+    let max_y = (left.origin.y + left.size.height).max(right.origin.y + right.size.height);
+    CanvasRect {
+        origin: CanvasPoint { x: min_x, y: min_y },
+        size: CanvasSize {
+            width: max_x - min_x,
+            height: max_y - min_y,
+        },
     }
 }
 

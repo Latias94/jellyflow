@@ -109,7 +109,7 @@ fn take_candidate_budget(
         explicit_ranks,
     );
     let overflow = candidates.len() - limit;
-    candidates.truncate(limit);
+    candidates.drain(..overflow);
     (candidates, overflow)
 }
 
@@ -1048,5 +1048,54 @@ impl ViewSession {
                 layout_revision,
                 nodes,
             })
+    }
+}
+
+#[cfg(test)]
+mod candidate_budget_tests {
+    use jellyflow_core::core::{CanvasPoint, CanvasSize};
+
+    use super::*;
+
+    #[test]
+    fn overflow_preserves_frontmost_and_selected_candidates() {
+        let back = NodeId::from_u128(1);
+        let front = NodeId::from_u128(2);
+        let selected = NodeId::from_u128(3);
+        let candidates = [
+            candidate(back, false),
+            candidate(front, false),
+            candidate(selected, true),
+        ];
+        let ranks = BTreeMap::from([(back, 0), (front, 1), (selected, 2)]);
+
+        let (retained, overflow) = take_candidate_budget(candidates.into(), 2, &ranks);
+
+        assert_eq!(overflow, 1);
+        assert_eq!(
+            retained
+                .into_iter()
+                .map(|candidate| candidate.node)
+                .collect::<Vec<_>>(),
+            vec![front, selected],
+        );
+    }
+
+    fn candidate(node: NodeId, selected: bool) -> FrameCandidate {
+        FrameCandidate {
+            node,
+            selected,
+            renderer: RendererStamp::new("test.renderer", 1),
+            layout_generation: 0,
+            binding_revision: 0,
+            bounds: CanvasRect {
+                origin: CanvasPoint::default(),
+                size: CanvasSize {
+                    width: 10.0,
+                    height: 10.0,
+                },
+            },
+            bounds_source: FrameBoundsSource::Persisted,
+        }
     }
 }

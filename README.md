@@ -89,10 +89,12 @@ describe controls, forms, slots, menus, inspectors, or widget layout.
 
 Open GPUI authors register retained `Entity<V: Render>` factories with
 `OpenGpuiNodeRegistryBuilder`. Their node internals are normal Open GPUI controls. The shared
-adapter adds only graph-semantic wrappers such as `OpenGpuiPortHandle` and
-`OpenGpuiNodeInteractionGuard`. A native control builds a command from an owned binding read,
-enqueues it into the host's ordered feedback journal, and observes the eventual receipt through a
-one-shot ticket; it does not synchronously mutate the runtime during render.
+adapter adds only graph-semantic capabilities: `OpenGpuiPortHandle` publishes real ports,
+`OpenGpuiNodeDragHandle` marks an explicit header or grip, and
+`OpenGpuiOverlayInteractionBoundary` owns popup hit testing outside node bounds. Ordinary controls
+and scroll areas need no Jellyflow wrapper. A native control builds a command from an owned binding
+read, enqueues it into the host's ordered feedback journal, and observes the eventual receipt
+through a one-shot ticket; it does not synchronously mutate the runtime during render.
 
 See:
 

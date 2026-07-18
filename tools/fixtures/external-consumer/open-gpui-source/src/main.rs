@@ -11,8 +11,8 @@ use jellyflow::runtime::{
     TopologyPort, ViewSessionOptions,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
-    OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
+    OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
@@ -57,68 +57,75 @@ impl Render for ProductNode {
         let command_binding = self.binding.clone();
         let product_node = cx.weak_entity();
         let clicks = Rc::clone(&self.state);
+        let drag_header = binding.drag_handle().wrap(
+            div()
+                .absolute()
+                .left(px(16.0))
+                .top(px(4.0))
+                .w(px(156.0))
+                .h(px(8.0)),
+        );
 
         let mut root = div()
             .debug_selector(|| NODE_SELECTOR.to_owned())
             .relative()
             .size_full()
+            .child(drag_header)
             .child(
                 div().absolute().left(px(16.0)).top(px(16.0)).child(
-                    OpenGpuiNodeInteractionGuard::control(
-                        div()
-                            .debug_selector(|| CONTROL_SELECTOR.to_owned())
-                            .w(px(156.0))
-                            .h(px(28.0))
-                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                clicks
-                                    .click_count
-                                    .set(clicks.click_count.get().saturating_add(1));
-                                let snapshot = command_binding.read(cx).snapshot().clone();
-                                let read = snapshot.read().expect("command binding stays live");
-                                let ticket = read
-                                    .enqueue_command(cx, |read| {
-                                        let base = read
-                                            .port(base_port_id())
-                                            .expect("base port remains in the binding snapshot")
-                                            .clone();
-                                        let mut dynamic = base.clone();
-                                        dynamic.key = PortKey::new("dynamic-result");
-                                        GraphCommand::topology(
-                                            read.graph_revision(),
-                                            TopologyEdit::new().replace_node_ports(
-                                                node_id(),
-                                                [
-                                                    TopologyPort::new(base_port_id(), base),
-                                                    TopologyPort::new(dynamic_port_id(), dynamic),
-                                                ],
-                                                IncidentEdgePolicy::Reject,
-                                            ),
-                                        )
-                                        .with_label("add external dynamic port")
-                                    })
-                                    .expect("native command enters the host feedback journal");
-                                let command_state = Rc::clone(&clicks);
-                                let completion_node = product_node.clone();
-                                let task = cx.spawn(async move |cx| {
-                                    let applied = ticket
-                                        .await
-                                        .is_ok_and(|outcome| outcome.applied().is_some());
-                                    let _ = completion_node.update(cx, |node, cx| {
-                                        node.command_task = None;
-                                        if applied {
-                                            command_state.command_count.set(
-                                                command_state.command_count.get().saturating_add(1),
-                                            );
-                                        }
-                                        cx.notify();
-                                    });
+                    div()
+                        .debug_selector(|| CONTROL_SELECTOR.to_owned())
+                        .w(px(156.0))
+                        .h(px(28.0))
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            clicks
+                                .click_count
+                                .set(clicks.click_count.get().saturating_add(1));
+                            let snapshot = command_binding.read(cx).snapshot().clone();
+                            let read = snapshot.read().expect("command binding stays live");
+                            let ticket = read
+                                .enqueue_command(cx, |read| {
+                                    let base = read
+                                        .port(base_port_id())
+                                        .expect("base port remains in the binding snapshot")
+                                        .clone();
+                                    let mut dynamic = base.clone();
+                                    dynamic.key = PortKey::new("dynamic-result");
+                                    GraphCommand::topology(
+                                        read.graph_revision(),
+                                        TopologyEdit::new().replace_node_ports(
+                                            node_id(),
+                                            [
+                                                TopologyPort::new(base_port_id(), base),
+                                                TopologyPort::new(dynamic_port_id(), dynamic),
+                                            ],
+                                            IncidentEdgePolicy::Reject,
+                                        ),
+                                    )
+                                    .with_label("add external dynamic port")
+                                })
+                                .expect("native command enters the host feedback journal");
+                            let command_state = Rc::clone(&clicks);
+                            let completion_node = product_node.clone();
+                            let task = cx.spawn(async move |cx| {
+                                let applied = ticket
+                                    .await
+                                    .is_ok_and(|outcome| outcome.applied().is_some());
+                                let _ = completion_node.update(cx, |node, cx| {
+                                    node.command_task = None;
+                                    if applied {
+                                        command_state.command_count.set(
+                                            command_state.command_count.get().saturating_add(1),
+                                        );
+                                    }
+                                    cx.notify();
                                 });
-                                let _ = product_node.update(cx, |node, _| {
-                                    node.command_task = Some(task);
-                                });
-                            })
-                            .child(self.state.title.clone()),
-                    ),
+                            });
+                            let _ = product_node.update(cx, |node, _| {
+                                node.command_task = Some(task);
+                            });
+                        })
+                        .child(self.state.title.clone()),
                 ),
             )
             .child(

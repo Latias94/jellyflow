@@ -16,9 +16,9 @@ use jellyflow::runtime::{
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard,
-    OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
-    OpenGpuiSceneHost,
+    OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
+    OpenGpuiOverlayInteractionBoundary, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase,
+    OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -169,7 +169,7 @@ impl Render for CycleResourceNode {
                     ),
                 )
             }))
-            .child(deferred(OpenGpuiNodeInteractionGuard::overlay(
+            .child(deferred(OpenGpuiOverlayInteractionBoundary::wrap(
                 self.overlay.clone(),
             )))
     }

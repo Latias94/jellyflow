@@ -87,8 +87,20 @@ impl OpenGpuiSceneHost {
                 .interaction_focus
                 .as_ref()
                 .is_some_and(|focus| focus.is_focused(window))
-            || (!event.keystroke.key.eq_ignore_ascii_case("delete")
-                && !event.keystroke.key.eq_ignore_ascii_case("backspace"))
+        {
+            return false;
+        }
+        if event.keystroke.key.eq_ignore_ascii_case("f") {
+            return match self.fit_view(cx) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    self.record_command_diagnostic(error.to_string());
+                    false
+                }
+            };
+        }
+        if !event.keystroke.key.eq_ignore_ascii_case("delete")
+            && !event.keystroke.key.eq_ignore_ascii_case("backspace")
         {
             return false;
         }

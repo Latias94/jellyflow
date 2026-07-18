@@ -528,7 +528,7 @@ fn topology_changes_version_only_affected_incident_snapshots() {
 
 #[test]
 fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separately() {
-    let (graph, nodes) = graph_with_nodes(20);
+    let (graph, nodes) = graph_with_nodes(30);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
         .unwrap();
@@ -556,7 +556,7 @@ fn frame_budget_reports_visible_required_and_explicit_routing_overflow_separatel
     assert_eq!(FrameMaterializationBudget::default().required_nodes(), 64);
     assert_eq!(DEFAULT_FRAME_REQUIRED_NODE_BUDGET, 64);
     assert_eq!(frame.nodes().len(), 7);
-    assert_eq!(overflow.visible_nodes(), 17);
+    assert_eq!(overflow.visible_nodes(), 27);
     assert_eq!(overflow.required_nodes(), 3);
     assert_eq!(overflow.routing_dependency_nodes(), 3);
     assert!(!overflow.visible_scan_truncated());

@@ -10,6 +10,7 @@ use crate::runtime::view_session::{
     ConnectionProbeQuery, ConnectionProbeQueryOutcome, EdgePickQuery, EdgePickQueryOutcome,
     ViewGeneration, ViewId,
 };
+use crate::runtime::viewport::{ViewportPanRequest, ViewportTransform, pan_viewport};
 
 use super::intent::{
     ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, RelativeNodeMoveIntent,
@@ -21,9 +22,13 @@ use super::presentation::{
 };
 use super::{ConnectionGestureIntent, ConnectionProbe};
 
+const MAX_AUTO_PAN_ELAPSED_SECONDS: f32 = 0.05;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CanvasInteractionConfig {
-    pub drag_threshold_in_view: f32,
+    pub node_drag_threshold_in_view: f32,
+    pub connection_drag_threshold_in_view: f32,
+    pub canvas_drag_threshold_in_view: f32,
     pub connection_radius_in_view: f32,
     pub edge_pick_radius_in_view: f32,
     pub grid_size_in_canvas: Option<CanvasSize>,
@@ -35,7 +40,9 @@ pub struct CanvasInteractionConfig {
 impl Default for CanvasInteractionConfig {
     fn default() -> Self {
         Self {
-            drag_threshold_in_view: 4.0,
+            node_drag_threshold_in_view: 4.0,
+            connection_drag_threshold_in_view: 3.0,
+            canvas_drag_threshold_in_view: 3.0,
             connection_radius_in_view: 12.0,
             edge_pick_radius_in_view: 10.0,
             grid_size_in_canvas: None,
@@ -48,8 +55,12 @@ impl Default for CanvasInteractionConfig {
 
 impl CanvasInteractionConfig {
     pub fn is_valid(self) -> bool {
-        self.drag_threshold_in_view.is_finite()
-            && self.drag_threshold_in_view >= 0.0
+        self.node_drag_threshold_in_view.is_finite()
+            && self.node_drag_threshold_in_view >= 0.0
+            && self.connection_drag_threshold_in_view.is_finite()
+            && self.connection_drag_threshold_in_view >= 0.0
+            && self.canvas_drag_threshold_in_view.is_finite()
+            && self.canvas_drag_threshold_in_view >= 0.0
             && self.connection_radius_in_view.is_finite()
             && self.connection_radius_in_view > 0.0
             && self.edge_pick_radius_in_view.is_finite()
@@ -350,6 +361,7 @@ pub enum SelectionMutation {
         mode: SelectionMode,
         baseline: SelectionBaseline,
     },
+    Restore(SelectionBaseline),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -479,6 +491,8 @@ impl InteractionDamage {
         Self {
             presentation: true,
             nodes: true,
+            ports: true,
+            edges: true,
             ..Self::default()
         }
     }
@@ -788,6 +802,25 @@ impl CanvasInteractionSession {
         self.config
     }
 
+    /// Replaces interaction thresholds and renderer-neutral navigation policy while idle.
+    pub fn set_config(
+        &mut self,
+        config: CanvasInteractionConfig,
+    ) -> Result<bool, CanvasInteractionError> {
+        self.ensure_open()?;
+        if !config.is_valid() {
+            return Err(CanvasInteractionError::InvalidConfiguration);
+        }
+        if !matches!(self.state, InteractionState::Idle) {
+            return Err(CanvasInteractionError::AlreadyActive);
+        }
+        if self.config == config {
+            return Ok(false);
+        }
+        self.config = config;
+        Ok(true)
+    }
+
     pub fn presentation(&self) -> CanvasInteractionPresentation {
         let mut presentation = match &self.state {
             InteractionState::Idle => CanvasInteractionPresentation::new(if self.closed {
@@ -978,7 +1011,7 @@ impl CanvasInteractionSession {
                 update.damage = InteractionDamage::connection();
             }
         }
-        Ok(update.active())
+        Ok(update)
     }
 
     /// Selects one actionable node without synthesizing a pointer drag or arming movement.
@@ -1045,7 +1078,7 @@ impl CanvasInteractionSession {
             .push(CanvasInteractionEffect::Search(search_request(&search)));
         update.damage.merge(InteractionDamage::connection());
         self.state = InteractionState::Connection(ConnectionInteraction::Searching(search));
-        Ok(update.active())
+        Ok(update)
     }
 
     /// Requests deletion through the authoritative interaction and command-settlement pipeline.
@@ -1086,7 +1119,7 @@ impl CanvasInteractionSession {
                 ticket,
             },
         ));
-        Ok(update.active())
+        Ok(update)
     }
 
     pub fn request_edge_pick(
@@ -1254,7 +1287,7 @@ impl CanvasInteractionSession {
                 InteractionState::Idle
             }
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1306,7 +1339,7 @@ impl CanvasInteractionSession {
         let crossed = threshold_crossed(
             pending.press.view(),
             pending.pointer.view(),
-            self.config.drag_threshold_in_view,
+            self.config.canvas_drag_threshold_in_view,
         );
         if pending.release_pending {
             if crossed {
@@ -1359,7 +1392,7 @@ impl CanvasInteractionSession {
                 ),
             });
             self.state = InteractionState::EdgePickPending(pending);
-            return Ok(update.active());
+            return Ok(update);
         }
 
         if self
@@ -1438,7 +1471,7 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1456,7 +1489,7 @@ impl CanvasInteractionSession {
                 if !threshold_crossed(
                     armed.start.view(),
                     position.view(),
-                    self.config.drag_threshold_in_view,
+                    self.threshold_for(&armed.target),
                 ) {
                     InteractionState::Armed(armed)
                 } else {
@@ -1515,7 +1548,7 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1578,7 +1611,7 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1608,7 +1641,6 @@ impl CanvasInteractionSession {
                                     self.config.query_entry_budget,
                                 ),
                             });
-                        update = update.active();
                         InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                     }
                     ConnectionProbeQueryOutcome::BudgetExhausted { .. } => {
@@ -1681,7 +1713,7 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1731,7 +1763,6 @@ impl CanvasInteractionSession {
             .effects
             .push(CanvasInteractionEffect::Search(search_request(search)));
         update.damage.merge(InteractionDamage::connection());
-        update = update.active();
         Ok(update)
     }
 
@@ -1768,7 +1799,7 @@ impl CanvasInteractionSession {
                 return Err(CanvasInteractionError::ConnectionSearchInactive);
             }
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1805,7 +1836,7 @@ impl CanvasInteractionSession {
             }
             other => other,
         };
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1861,7 +1892,7 @@ impl CanvasInteractionSession {
         if let Some(error) = error {
             return Err(error);
         }
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1907,7 +1938,7 @@ impl CanvasInteractionSession {
         if let Some(error) = error {
             return Err(error);
         }
-        if is_tick_active(&self.state) {
+        if state_needs_tick(&self.state) {
             update = update.active();
         }
         Ok(update)
@@ -1939,6 +1970,7 @@ impl CanvasInteractionSession {
         &mut self,
         elapsed_seconds: f32,
         viewport: ViewSize,
+        transform: ViewportTransform,
     ) -> Result<CanvasInteractionUpdate, CanvasInteractionError> {
         self.ensure_open()?;
         if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 || !viewport.is_positive_finite()
@@ -1948,6 +1980,7 @@ impl CanvasInteractionSession {
         let pointer = active_pointer(&self.state);
         let mut update = CanvasInteractionUpdate::default();
         if let Some(pointer) = pointer {
+            let elapsed_seconds = elapsed_seconds.min(MAX_AUTO_PAN_ELAPSED_SECONDS);
             let delta = auto_pan_delta(
                 pointer.view(),
                 viewport,
@@ -1960,10 +1993,59 @@ impl CanvasInteractionSession {
                     ViewportMutation::PanByView(delta),
                 ));
                 update.damage.viewport = true;
+                if let Some(next_transform) =
+                    pan_viewport(transform, ViewportPanRequest::new(delta))
+                {
+                    self.reproject_active_pointer(next_transform, &mut update)?;
+                }
             }
             update = update.active();
         }
         Ok(update)
+    }
+
+    fn reproject_active_pointer(
+        &mut self,
+        transform: ViewportTransform,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<(), CanvasInteractionError> {
+        let state = std::mem::take(&mut self.state);
+        self.state = match state {
+            InteractionState::NodeDrag(mut drag) => {
+                let view = drag.pointer.view();
+                let canvas = transform.canvas_point_at_screen(CanvasPoint {
+                    x: view.x,
+                    y: view.y,
+                });
+                drag.pointer = InteractionPosition::new(view, canvas)
+                    .ok_or(CanvasInteractionError::InvalidPosition)?;
+                drag.delta = snapped_delta(
+                    drag.start.canvas(),
+                    drag.pointer.canvas(),
+                    drag.snap_origin,
+                    self.config.grid_size_in_canvas,
+                );
+                drag.guides = Box::default();
+                update.damage.merge(InteractionDamage::node_drag());
+                InteractionState::NodeDrag(drag)
+            }
+            InteractionState::Connection(ConnectionInteraction::Dragging(mut drag))
+                if !drag.release_pending =>
+            {
+                let view = drag.pointer.view();
+                let canvas = transform.canvas_point_at_screen(CanvasPoint {
+                    x: view.x,
+                    y: view.y,
+                });
+                drag.pointer = InteractionPosition::new(view, canvas)
+                    .ok_or(CanvasInteractionError::InvalidPosition)?;
+                self.start_connection_probe(&mut drag, update)?;
+                update.damage.merge(InteractionDamage::connection());
+                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+            }
+            other => other,
+        };
+        Ok(())
     }
 
     pub fn cancel(&mut self) -> CanvasInteractionUpdate {
@@ -1971,10 +2053,21 @@ impl CanvasInteractionSession {
         if matches!(self.state, InteractionState::Idle) {
             return CanvasInteractionUpdate::default();
         }
-        let damage = damage_for_state(&self.state);
+        let baseline = match &self.state {
+            InteractionState::Marquee(marquee) => Some(marquee.baseline.clone()),
+            _ => None,
+        };
+        let mut damage = damage_for_state(&self.state);
         self.state = InteractionState::Idle;
         self.terminal = Some(InteractionTerminalReason::Cancelled);
-        CanvasInteractionUpdate::default().with_damage(damage)
+        let mut update = CanvasInteractionUpdate::default();
+        if let Some(baseline) = baseline {
+            update.effects.push(CanvasInteractionEffect::Selection(
+                SelectionMutation::Restore(baseline),
+            ));
+            damage.selection = true;
+        }
+        update.with_damage(damage)
     }
 
     pub fn owner_retired(&mut self, owner: InteractionOwner) -> CanvasInteractionUpdate {
@@ -2133,6 +2226,16 @@ impl CanvasInteractionSession {
                 InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
         })
+    }
+
+    fn threshold_for(&self, target: &ArmedTarget) -> f32 {
+        match target {
+            ArmedTarget::NodeDrag(_) => self.config.node_drag_threshold_in_view,
+            ArmedTarget::Connection(_) => self.config.connection_drag_threshold_in_view,
+            ArmedTarget::Pan | ArmedTarget::Marquee { .. } => {
+                self.config.canvas_drag_threshold_in_view
+            }
+        }
     }
 
     fn start_connection_probe(
@@ -2301,7 +2404,6 @@ impl CanvasInteractionSession {
         let mut update = CanvasInteractionUpdate::default();
         search.status = status;
         update.damage.merge(InteractionDamage::connection());
-        update = update.active();
         Ok(update)
     }
 }
@@ -2399,7 +2501,7 @@ fn settlement_terminal(settlement: CommandSettlement) -> InteractionTerminalReas
 fn threshold_crossed(start: ViewPoint, current: ViewPoint, threshold: f32) -> bool {
     let x = current.x - start.x;
     let y = current.y - start.y;
-    x.mul_add(x, y * y) >= threshold * threshold
+    x.mul_add(x, y * y) > threshold * threshold
 }
 
 fn view_delta(start: ViewPoint, current: ViewPoint) -> CanvasPoint {
@@ -2454,6 +2556,10 @@ fn auto_pan_delta(
 }
 
 fn auto_pan_axis(position: f32, extent: f32, band: f32) -> f32 {
+    let band = band.min(extent * 0.5);
+    if band <= 0.0 {
+        return 0.0;
+    }
     if position < band {
         ((band - position) / band).clamp(0.0, 1.0)
     } else if position > extent - band {
@@ -2466,12 +2572,17 @@ fn auto_pan_axis(position: f32, extent: f32, band: f32) -> f32 {
 fn active_pointer(state: &InteractionState) -> Option<InteractionPosition> {
     match state {
         InteractionState::NodeDrag(drag) => Some(drag.pointer),
-        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => Some(drag.pointer),
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag))
+            if !drag.release_pending =>
+        {
+            Some(drag.pointer)
+        }
         InteractionState::Armed(_)
         | InteractionState::EdgePickPending(_)
         | InteractionState::Idle
         | InteractionState::Pan(_)
         | InteractionState::Marquee(_)
+        | InteractionState::Connection(ConnectionInteraction::Dragging(_))
         | InteractionState::Connection(ConnectionInteraction::Searching(_))
         | InteractionState::Committing(_)
         | InteractionState::EdgeActive(_) => None,
@@ -2505,18 +2616,21 @@ fn state_generation(state: &InteractionState) -> Option<InteractionGeneration> {
     }
 }
 
-fn is_tick_active(state: &InteractionState) -> bool {
-    matches!(
-        state,
-        InteractionState::Armed(_)
-            | InteractionState::NodeDrag(_)
-            | InteractionState::Pan(_)
-            | InteractionState::Marquee(_)
-            | InteractionState::Connection(_)
-            | InteractionState::Committing(_)
-            | InteractionState::EdgeActive(_)
-            | InteractionState::EdgePickPending(_)
-    )
+fn state_needs_tick(state: &InteractionState) -> bool {
+    match state {
+        InteractionState::NodeDrag(_) => true,
+        InteractionState::Connection(ConnectionInteraction::Dragging(drag)) => {
+            !drag.release_pending
+        }
+        InteractionState::Idle
+        | InteractionState::Armed(_)
+        | InteractionState::Pan(_)
+        | InteractionState::Marquee(_)
+        | InteractionState::Connection(ConnectionInteraction::Searching(_))
+        | InteractionState::Committing(_)
+        | InteractionState::EdgeActive(_)
+        | InteractionState::EdgePickPending(_) => false,
+    }
 }
 
 fn edge_pick_terminal_damage() -> InteractionDamage {
@@ -2650,9 +2764,10 @@ mod tests {
     #[test]
     fn connection_stays_armed_below_threshold_and_release_is_a_noop() {
         let mut session = test_session(CanvasInteractionConfig::default());
-        session
+        let pressed = session
             .press(connection_target(false), position(0.0, 0.0))
             .unwrap();
+        assert_eq!(pressed.tick_demand(), InteractionTickDemand::None);
 
         let moved = session.move_to(position(3.0, 0.0)).unwrap();
         assert_eq!(
@@ -2660,10 +2775,76 @@ mod tests {
             CanvasInteractionPhase::Armed
         );
         assert!(moved.queries().is_empty());
+        assert_eq!(moved.tick_demand(), InteractionTickDemand::None);
 
         let released = session.release(position(3.0, 0.0)).unwrap();
         assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
         assert!(released.effects().is_empty());
+    }
+
+    #[test]
+    fn independent_drag_thresholds_cross_only_beyond_the_exact_view_distance() {
+        assert!(!threshold_crossed(
+            ViewPoint::new(0.0, 0.0),
+            ViewPoint::new(4.0, 0.0),
+            4.0,
+        ));
+        assert!(threshold_crossed(
+            ViewPoint::new(0.0, 0.0),
+            ViewPoint::new(4.01, 0.0),
+            4.0,
+        ));
+
+        let node = NodeId::from_u128(10);
+        let start = NodeDragStart::new(
+            node,
+            [node],
+            CanvasPoint { x: 0.0, y: 0.0 },
+            SelectionMode::Replace,
+        )
+        .unwrap();
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let pressed = session
+            .press(CanvasPressTarget::NodeDrag(start), position(0.0, 0.0))
+            .unwrap();
+        assert_eq!(pressed.tick_demand(), InteractionTickDemand::None);
+        let boundary = session.move_to(position(4.0, 0.0)).unwrap();
+        assert_eq!(boundary.tick_demand(), InteractionTickDemand::None);
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::Armed
+        );
+        let dragged = session.move_to(position(4.01, 0.0)).unwrap();
+        assert_eq!(dragged.tick_demand(), InteractionTickDemand::WhileActive);
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::NodeDrag
+        );
+    }
+
+    #[test]
+    fn asynchronous_search_and_commit_states_do_not_request_animation_ticks() {
+        let mut search = test_session(CanvasInteractionConfig::default());
+        let activated = search
+            .activate_connection_search(connection_start(true), position(20.0, 10.0))
+            .unwrap();
+        assert_eq!(activated.tick_demand(), InteractionTickDemand::None);
+        let ready = search
+            .search_ready(
+                search
+                    .presentation()
+                    .generation()
+                    .expect("search generation"),
+                1,
+            )
+            .unwrap();
+        assert_eq!(ready.tick_demand(), InteractionTickDemand::None);
+
+        let route =
+            published_edge_route(EdgeId::from_u128(24), true, EdgeReconnectable::Bool(true));
+        let mut deletion = test_session(CanvasInteractionConfig::default());
+        let submitted = deletion.delete_edge(&route).unwrap();
+        assert_eq!(submitted.tick_demand(), InteractionTickDemand::None);
     }
 
     #[test]
@@ -2709,6 +2890,46 @@ mod tests {
         let late = session.settle(ticket, CommandSettlement::Applied).unwrap();
         assert!(late.effects().is_empty());
         assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+    }
+
+    #[test]
+    fn released_connection_at_auto_pan_edge_preserves_its_final_probe() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        session
+            .press(connection_target(false), position(100.0, 40.0))
+            .unwrap();
+        let moved = session.move_to(position(190.0, 40.0)).unwrap();
+        session
+            .resolve_connection_probe(
+                connection_query_id(&moved),
+                complete(valid_probe(target_port())),
+            )
+            .unwrap();
+
+        let released = session.release(position(195.0, 40.0)).unwrap();
+        let release_query = connection_query_id(&released);
+        let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+        let tick = session
+            .tick(0.1, ViewSize::new(200.0, 120.0), transform)
+            .unwrap();
+
+        assert!(tick.effects().is_empty());
+        assert!(tick.queries().is_empty());
+        assert!(
+            session
+                .presentation()
+                .connection()
+                .expect("released connection preview")
+                .is_release_pending()
+        );
+
+        let committing = session
+            .resolve_connection_probe(release_query, complete(valid_probe(target_port())))
+            .unwrap();
+        assert!(matches!(
+            committing.effects(),
+            [CanvasInteractionEffect::SubmitGraph { .. }]
+        ));
     }
 
     #[test]
@@ -3890,6 +4111,15 @@ mod tests {
         };
         assert_eq!(*mode, SelectionMode::Toggle);
         assert_eq!(emitted_baseline, &baseline);
+
+        let cancelled = session.cancel();
+        assert!(matches!(
+            cancelled.effects(),
+            [CanvasInteractionEffect::Selection(SelectionMutation::Restore(restored))]
+                if restored == &baseline
+        ));
+        assert!(cancelled.damage().selection);
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
     }
 
     #[test]
@@ -4085,14 +4315,17 @@ mod tests {
             .press(CanvasPressTarget::NodeDrag(start), position(10.0, 10.0))
             .unwrap();
         session.move_to(position(5.0, 5.0)).unwrap();
-        let tick = session.tick(0.1, ViewSize::new(200.0, 120.0)).unwrap();
+        let transform = ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
+        let tick = session
+            .tick(0.1, ViewSize::new(200.0, 120.0), transform)
+            .unwrap();
         let [CanvasInteractionEffect::Viewport(ViewportMutation::PanByView(delta))] =
             tick.effects()
         else {
             panic!("edge-band drag must request auto-pan");
         };
         assert!(delta.x > 0.0 && delta.y > 0.0);
-        assert!(delta.x <= 72.0 && delta.y <= 72.0);
+        assert!(delta.x <= 36.0 && delta.y <= 36.0);
 
         session.owner_retired(InteractionOwner::Node(node));
         assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
@@ -4100,6 +4333,21 @@ mod tests {
             session.presentation().terminal(),
             Some(InteractionTerminalReason::OwnerRetired)
         );
+    }
+
+    #[test]
+    fn auto_pan_caps_long_frames_and_does_not_pan_from_a_narrow_viewport_center() {
+        let long_frame = auto_pan_delta(
+            ViewPoint::new(0.0, 0.0),
+            ViewSize::new(200.0, 120.0),
+            36.0,
+            720.0,
+            MAX_AUTO_PAN_ELAPSED_SECONDS,
+        );
+        assert_eq!(long_frame, CanvasPoint { x: 36.0, y: 36.0 });
+        assert_eq!(auto_pan_axis(10.0, 20.0, 36.0), 0.0);
+        assert_eq!(auto_pan_axis(0.0, 20.0, 36.0), 1.0);
+        assert_eq!(auto_pan_axis(20.0, 20.0, 36.0), -1.0);
     }
 
     fn test_session(config: CanvasInteractionConfig) -> CanvasInteractionSession {
@@ -4197,20 +4445,22 @@ mod tests {
     }
 
     fn connection_target(allow_search: bool) -> CanvasPressTarget {
-        CanvasPressTarget::Connection(
-            ConnectionInteractionStart::new(
-                source_node(),
-                ConnectionGestureIntent::connect(
-                    EdgeId::from_u128(9),
-                    source_port(),
-                    NodeGraphConnectionMode::Strict,
-                ),
-                CanvasPoint { x: 0.0, y: 8.0 },
-                HandlePosition::Right,
-                allow_search,
-            )
-            .unwrap(),
+        CanvasPressTarget::Connection(connection_start(allow_search))
+    }
+
+    fn connection_start(allow_search: bool) -> ConnectionInteractionStart {
+        ConnectionInteractionStart::new(
+            source_node(),
+            ConnectionGestureIntent::connect(
+                EdgeId::from_u128(9),
+                source_port(),
+                NodeGraphConnectionMode::Strict,
+            ),
+            CanvasPoint { x: 0.0, y: 8.0 },
+            HandlePosition::Right,
+            allow_search,
         )
+        .unwrap()
     }
 
     fn canvas_marquee_target(selection_mode: SelectionMode) -> CanvasPressTarget {

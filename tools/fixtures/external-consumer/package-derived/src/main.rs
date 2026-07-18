@@ -10,8 +10,8 @@ use jellyflow_core::{
 };
 use jellyflow_egui::{EguiNativeFrameHost, egui};
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
-    OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
+    OpenGpuiSceneHost,
 };
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::schema::{
@@ -67,20 +67,21 @@ impl Render for ProductNode {
         let binding = self.binding.read(cx);
         let _base = binding.port_handle(PortId::from_u128(11));
         let _dynamic = binding.port_handle(PortId::from_u128(12));
+        let drag_header = binding
+            .drag_handle()
+            .wrap(div().h(px(12.0)).child(self.state.title.clone()));
         let clicks = Rc::clone(&self.state);
-        div()
-            .size_full()
-            .child(OpenGpuiNodeInteractionGuard::control(
-                div()
-                    .left(px(16.0))
-                    .top(px(16.0))
-                    .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                        clicks
-                            .click_count
-                            .set(clicks.click_count.get().saturating_add(1));
-                    })
-                    .child(self.state.title.clone()),
-            ))
+        div().size_full().child(drag_header).child(
+            div()
+                .left(px(16.0))
+                .top(px(16.0))
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    clicks
+                        .click_count
+                        .set(clicks.click_count.get().saturating_add(1));
+                })
+                .child("Run"),
+        )
     }
 }
 

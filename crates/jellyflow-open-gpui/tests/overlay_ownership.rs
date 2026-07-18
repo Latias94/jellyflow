@@ -8,7 +8,7 @@ use jellyflow::core::{
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
+    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiOverlayInteractionBoundary,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
@@ -106,7 +106,7 @@ impl Render for OverlayScene {
             let control_down = self.events.clone();
             let control_up = self.events.clone();
 
-            deferred(OpenGpuiNodeInteractionGuard::overlay(
+            deferred(OpenGpuiOverlayInteractionBoundary::wrap(
                 div()
                     .debug_selector(|| OVERLAY_SELECTOR.to_owned())
                     .absolute()

@@ -15,8 +15,9 @@ portable widget tree or a cross-framework node UI DSL.
   `port_handle` creates a semantic wrapper only for a real graph `PortId`.
 - `OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
   accessibility activation while leaving the child as an ordinary Open GPUI element.
-- `OpenGpuiNodeInteractionGuard` shields controls, menus, scroll areas, and overlays from canvas
-  gestures. Focus, IME, popup state, and application services remain in the node component.
+- Ordinary Open GPUI controls and scroll areas are safe inside nodes without wrappers.
+  `OpenGpuiOverlayInteractionBoundary` owns popup hit-testing outside node bounds. Focus, IME,
+  popup state, and application services remain in the node component.
 - The scene host's internal connection coordinator manages generation-bound drag, search,
   reconnect, cancellation, freshness checks, and revisioned command creation. The host performs
   the graph query and dispatches the returned command.

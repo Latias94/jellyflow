@@ -6,7 +6,9 @@ use jellyflow::runtime::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
     CreateFromWireCandidates, InteractionTerminalReason, ViewSession, ViewSize,
 };
-use jellyflow_open_gpui::{OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::{
+    OpenGpuiNodeRegistry, OpenGpuiOverlayInteractionBoundary, OpenGpuiSceneHost,
+};
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
     MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
@@ -436,9 +438,7 @@ impl NativeGraphSurface {
             ViewSize::new(fallback.width, fallback.height)
         });
         let anchor = search.request.position().view();
-        let left = anchor
-            .x
-            .clamp(12.0, (surface_size.width - 332.0).max(12.0));
+        let left = anchor.x.clamp(12.0, (surface_size.width - 332.0).max(12.0));
         let top = anchor
             .y
             .clamp(12.0, (surface_size.height - 360.0).max(12.0));
@@ -566,7 +566,7 @@ impl NativeGraphSurface {
                         .absolute()
                         .left(px(left))
                         .top(px(top))
-                        .child(OpenGpuiNodeInteractionGuard::overlay(panel)),
+                        .child(OpenGpuiOverlayInteractionBoundary::wrap(panel)),
                 ),
         )
     }

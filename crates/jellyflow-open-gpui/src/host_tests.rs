@@ -52,6 +52,10 @@ struct RoutedNode {
 
 struct RootOnlyNode;
 
+struct WholeDragNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+}
+
 struct StickyPortNode {
     binding: Entity<OpenGpuiNodeBinding>,
     handle: Option<OpenGpuiPortHandle>,
@@ -81,6 +85,7 @@ impl Render for RoutedNode {
         let handle = binding
             .port_handle(port.id())
             .expect("routed port belongs to node");
+        let drag_handle = binding.drag_handle();
 
         let selector = test_port_selector(port.id(), direction);
         let port = div()
@@ -94,7 +99,7 @@ impl Render for RoutedNode {
             PortDirection::Out => port.right(px(0.0)),
         };
 
-        div().relative().size_full().child(handle.measure(port))
+        drag_handle.wrap(div().relative().size_full().child(handle.measure(port)))
     }
 }
 
@@ -161,6 +166,7 @@ impl Render for InteractiveRoutedNode {
             .expect("one routed port for this fixture node");
         let direction = port.port().dir;
         let handle = binding.port_handle(port.id()).expect("real port");
+        let drag_handle = binding.drag_handle();
         let selector = test_port_selector(port.id(), direction);
         let marker = div()
             .debug_selector(move || selector.clone())
@@ -174,10 +180,12 @@ impl Render for InteractiveRoutedNode {
             let events = self.events.clone();
             move |_, _, _| events.set(events.get() + 1)
         });
-        div()
-            .relative()
-            .size_full()
-            .child(positioned.child(interactive))
+        drag_handle.wrap(
+            div()
+                .relative()
+                .size_full()
+                .child(positioned.child(interactive)),
+        )
     }
 }
 
@@ -188,6 +196,16 @@ impl Render for RootOnlyNode {
         _cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         div().size_full()
+    }
+}
+
+impl Render for WholeDragNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        self.binding.read(cx).drag_handle().wrap(div().size_full())
     }
 }
 
@@ -616,6 +634,11 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
     let geometry = weak_view.geometry_snapshot().expect("published geometry");
     assert_eq!(geometry.routes().len(), 1);
     assert!(geometry.nodes().values().all(|node| node.is_fresh()));
+    assert!(
+        cx.debug_bounds(super::scene_render::OPEN_GPUI_GRID_SELECTOR)
+            .is_some(),
+        "the default visible grid must share the edge layer behind nodes",
+    );
 
     cx.read_entity(&host, |host, _| {
         let evidence = &host.scene_evidence;
@@ -1321,7 +1344,7 @@ fn focused_edge_delete_uses_native_key_semantics_and_falls_back_in_graph_order(
 }
 
 #[open_gpui::test]
-fn node_chrome_drag_commits_one_geometry_command_and_canvas_pan_zoom_stay_view_local(
+fn explicit_node_drag_handle_commits_one_geometry_command_and_canvas_pan_zoom_stay_view_local(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog())
@@ -1417,6 +1440,100 @@ fn node_chrome_drag_commits_one_geometry_command_and_canvas_pan_zoom_stay_view_l
     cx.read_entity(&host, |host, _| {
         assert!(!host.active_scene_gesture());
     });
+}
+
+#[open_gpui::test]
+fn host_overview_drag_surface_moves_node_while_public_native_handle_is_inert(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(unconnected_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    view.set_viewport(CanvasPoint::default(), 0.5)
+        .expect("overview zoom");
+    let binding_capture = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let captured_binding = binding_capture.clone();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        if binding.read(cx).snapshot().node_id() == NodeId::from_u128(10) {
+            *captured_binding.borrow_mut() = Some(binding.clone());
+        }
+        cx.new(|_| RoutedNode { binding })
+    });
+    let (_scene, cx) = cx.add_window_view(move |_, cx| InteractiveScene {
+        host: cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                viewport(),
+            )
+        }),
+    });
+    draw(cx);
+    draw(cx);
+
+    let binding = binding_capture
+        .borrow()
+        .clone()
+        .expect("captured source binding");
+    cx.read_entity(&binding, |binding, _| {
+        assert!(!binding.drag_handle().interaction_enabled());
+    });
+    let before = runtime
+        .snapshot()
+        .expect("snapshot before overview drag")
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("source before overview drag")
+        .pos;
+    let start = point(px(60.0), px(60.0));
+    let end = point(px(90.0), px(80.0));
+    cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    let after = runtime
+        .snapshot()
+        .expect("snapshot after overview drag")
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("source after overview drag")
+        .pos;
+    assert_ne!(after, before);
+}
+
+#[open_gpui::test]
+fn explicit_drag_handle_snaps_against_active_nodes_and_paints_alignment_guides(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+    draw(cx);
+
+    let start = point(px(100.0), px(100.0));
+    let near_alignment = point(px(236.0), px(100.0));
+    cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(near_alignment, Some(MouseButton::Left), Default::default());
+    draw(cx);
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_node_drag_delta(NodeId::from_u128(10)),
+            Some(CanvasPoint { x: 140.0, y: 0.0 }),
+        );
+    });
+    assert!(
+        cx.debug_bounds(super::scene_render::OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR)
+            .is_some(),
+        "a snapped drag must expose native guide chrome",
+    );
+
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(near_alignment, MouseButton::Left, Default::default());
 }
 
 #[open_gpui::test]
@@ -1603,7 +1720,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
             let lease = activity.acquire(OpenGpuiActivityKind::Focus).unwrap();
             factory_leases.borrow_mut().insert(node, lease);
         }
-        cx.new(|_| RootOnlyNode)
+        cx.new(|_| WholeDragNode { binding })
     });
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
     let scene_host = captured_host.clone();
@@ -1703,7 +1820,7 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
 }
 
 #[open_gpui::test]
-fn node_chrome_and_box_selection_respect_disabled_node_overrides(
+fn explicit_node_drag_handle_and_box_selection_respect_disabled_node_overrides(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, locked_source_graph());
@@ -1767,7 +1884,7 @@ fn node_chrome_and_box_selection_respect_disabled_node_overrides(
 }
 
 #[open_gpui::test]
-fn node_chrome_additive_modifiers_preserve_selection_and_release_capture(
+fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_capture(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (runtime, host, cx) = mount_gesture_scene(cx);
@@ -5353,6 +5470,52 @@ fn viewport() -> CanvasRect {
             height: 600.0,
         },
     }
+}
+
+#[open_gpui::test]
+fn fit_view_uses_canonical_graph_bounds_and_is_a_noop_before_surface_measurement(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let weak_view = view.downgrade();
+    let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let captured_host = captured.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                OpenGpuiNodeRegistry::builder()
+                    .seal()
+                    .expect("valid empty registry"),
+                viewport(),
+            )
+        });
+        *captured_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured.borrow().clone().expect("captured host");
+
+    cx.update_entity(&host, |host, cx| {
+        host.surface_size = None;
+        assert!(!host.fit_view(cx).expect("unmeasured fit is a no-op"));
+        host.surface_size = Some(ViewSize::new(800.0, 600.0));
+        assert!(host.fit_view(cx).expect("fit routed nodes"));
+    });
+    let transform = weak_view.viewport_transform().expect("fit transform");
+    let top_left = transform
+        .screen_point_for_canvas(CanvasPoint { x: 40.0, y: 80.0 })
+        .expect("project fit origin");
+    let bottom_right = transform
+        .screen_point_for_canvas(CanvasPoint { x: 540.0, y: 180.0 })
+        .expect("project fit extent");
+    assert!((top_left.x - 48.0).abs() < 0.001);
+    assert!((bottom_right.x - 752.0).abs() < 0.001);
+    assert!(((top_left.y + bottom_right.y) * 0.5 - 300.0).abs() < 0.001);
 }
 
 #[test]

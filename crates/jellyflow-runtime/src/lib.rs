@@ -54,16 +54,17 @@ pub use runtime::graph_runtime::{
     PortIncidentConnectionFacts, RuntimeFactDelta, RuntimeFactKey, RuntimePatch, RuntimePatchKind,
 };
 pub use runtime::interaction::{
-    AlignmentGuide, CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
-    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation,
-    ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
-    ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation,
-    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
-    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
-    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
-    SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation,
+    AlignmentGuide, AlignmentSnapResult, CanvasInteractionConfig, CanvasInteractionEffect,
+    CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionPresentation,
+    CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback,
+    CanvasPressTarget, CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart,
+    ConnectionPresentation, ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest,
+    ConnectionSearchSelection, ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent,
+    FreshGraphMutation, FreshGraphMutationBindError, InteractionDamage, InteractionGeneration,
+    InteractionOwner, InteractionPosition, InteractionQueryId, InteractionTerminalReason,
+    InteractionTickDemand, InteractionTicketId, NodeDragPresentation, NodeDragStart,
+    RelativeNodeMoveIntent, SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation,
+    fit_viewport, resolve_alignment_snap,
 };
 pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 pub use runtime::view_session::{

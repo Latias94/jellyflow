@@ -15,6 +15,7 @@ use crate::binding::{
 };
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::{OpenGpuiPortDragCancelReason, OpenGpuiSceneGestureCancelReason};
+use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPendingMeasurements};
 use crate::registry::OpenGpuiNodeMountOutcome;
 use crate::semantic_zoom::OpenGpuiSemanticZoomState;
@@ -361,6 +362,13 @@ impl OpenGpuiSceneHost {
             mount.clone(),
         );
         let command_sink = OpenGpuiCommandSink::new(Rc::downgrade(&self.commands), cx.entity_id());
+        let drag_handle = OpenGpuiNodeDragHandle::new(
+            frame.instance().clone(),
+            activity.clone(),
+            self.scene_interactions.clone(),
+            Self::host_scene_listener(cx),
+            mount.clone(),
+        );
         let snapshot = OpenGpuiNodeBindingSnapshot::from_frame(
             frame,
             self.view.downgrade(),
@@ -379,6 +387,7 @@ impl OpenGpuiSceneHost {
                     OpenGpuiNodeBinding::new(
                         snapshot,
                         activity.clone(),
+                        drag_handle,
                         measurement.clone(),
                         layout_invalidator,
                         cx,

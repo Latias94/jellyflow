@@ -11,9 +11,9 @@ use jellyflow::runtime::{
     RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionOptions,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
-    OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase,
-    OpenGpuiPortEvent, OpenGpuiSceneHost, open_gpui_port_element_id,
+    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiPortActivationSource,
+    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+    open_gpui_port_element_id,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityId, KeyUpEvent, Keystroke, Modifiers, MouseButton,
@@ -88,40 +88,46 @@ impl Render for InteractiveNode {
             .relative()
             .size_full()
             .on_any_mouse_down(move |_, _, _| down_events.borrow_mut().push("down"))
-            .on_mouse_move(move |_, _, _| move_events.borrow_mut().push("move"))
+            .on_mouse_move(move |event, _, _| {
+                if event.pressed_button.is_some() {
+                    move_events.borrow_mut().push("move");
+                }
+            })
             .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                up_events.borrow_mut().push("up")
+                let mut events = up_events.borrow_mut();
+                let downs = events.iter().filter(|event| **event == "down").count();
+                let ups = events.iter().filter(|event| **event == "up").count();
+                if downs > ups {
+                    events.push("up");
+                }
             })
             .on_scroll_wheel(move |_, _, _| node_scroll_events.borrow_mut().push("scroll"))
             .child(
                 div().absolute().left(px(12.0)).top(px(12.0)).child(
-                    OpenGpuiNodeInteractionGuard::control(
-                        div()
-                            .debug_selector(|| CONTROL_SELECTOR.to_owned())
-                            .track_focus(&control_focus)
-                            .w(px(72.0))
-                            .h(px(24.0))
-                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                window.focus(&focus_on_mouse_down, cx);
-                                control_down_events.borrow_mut().push("down");
-                            })
-                            .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                                control_up_events.borrow_mut().push("up")
-                            }),
-                    ),
+                    div()
+                        .debug_selector(|| CONTROL_SELECTOR.to_owned())
+                        .track_focus(&control_focus)
+                        .w(px(72.0))
+                        .h(px(24.0))
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            window.focus(&focus_on_mouse_down, cx);
+                            control_down_events.borrow_mut().push("down");
+                        })
+                        .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                            control_up_events.borrow_mut().push("up")
+                        }),
                 ),
             )
             .child(
                 div().absolute().left(px(12.0)).top(px(52.0)).child(
-                    OpenGpuiNodeInteractionGuard::scroll(
-                        div()
-                            .debug_selector(|| SCROLL_SELECTOR.to_owned())
-                            .w(px(72.0))
-                            .h(px(24.0))
-                            .on_scroll_wheel(move |_, _, _| {
-                                scroll_events.borrow_mut().push("scroll")
-                            }),
-                    ),
+                    div()
+                        .debug_selector(|| SCROLL_SELECTOR.to_owned())
+                        .w(px(72.0))
+                        .h(px(24.0))
+                        .on_scroll_wheel(move |_, window, _| {
+                            scroll_events.borrow_mut().push("scroll");
+                            window.prevent_default();
+                        }),
                 ),
             )
             .children(handle.map(|handle| {
@@ -164,9 +170,18 @@ impl Render for InteractionScene {
         div()
             .size_full()
             .on_any_mouse_down(move |_, _, _| down_events.borrow_mut().push("down"))
-            .on_mouse_move(move |_, _, _| move_events.borrow_mut().push("move"))
+            .on_mouse_move(move |event, _, _| {
+                if event.pressed_button.is_some() {
+                    move_events.borrow_mut().push("move");
+                }
+            })
             .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                up_events.borrow_mut().push("up")
+                let mut events = up_events.borrow_mut();
+                let downs = events.iter().filter(|event| **event == "down").count();
+                let ups = events.iter().filter(|event| **event == "up").count();
+                if downs > ups {
+                    events.push("up");
+                }
             })
             .on_scroll_wheel(move |_, _, _| scroll_events.borrow_mut().push("scroll"))
             .child(self.host.clone())
@@ -183,6 +198,7 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let control_focus = control_focus
         .borrow()
         .as_ref()
@@ -213,7 +229,11 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
     );
     assert!(port.pointer.borrow().is_empty());
     assert!(node_events.borrow().is_empty());
-    assert!(canvas_events.borrow().is_empty());
+    assert!(
+        canvas_events.borrow().is_empty(),
+        "outer app events: {:?}",
+        canvas_events.borrow().as_slice(),
+    );
 }
 
 #[open_gpui::test]
@@ -283,6 +303,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     cx.simulate_keystrokes("tab");
     let enabled_port_focus = cx
         .update(|window, cx| window.focused(cx))
@@ -342,6 +363,7 @@ fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let control_focus = control_focus
         .borrow()
         .as_ref()
@@ -447,6 +469,7 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let control_focus = control_focus
         .borrow()
         .as_ref()
@@ -541,6 +564,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let control_focus = control_focus
         .borrow()
         .as_ref()
@@ -637,6 +661,7 @@ fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppC
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let control_focus = control_focus
         .borrow()
         .as_ref()
@@ -754,12 +779,12 @@ fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
 }
 
 #[open_gpui::test]
-fn native_control_and_scroll_guards_stop_node_and_canvas_gestures(
+fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let (
-        _runtime,
-        _host,
+        runtime,
+        host,
         cx,
         _port_events,
         node_events,
@@ -769,11 +794,20 @@ fn native_control_and_scroll_guards_stop_node_and_canvas_gestures(
         _,
     ) = mount_scene(cx);
     draw(cx);
+    let graph_before = runtime.snapshot().expect("graph before native controls");
+    let history_before = runtime
+        .history_state()
+        .expect("history before native controls");
+    let view = cx.read_entity(&host, |host, _| host.view_handle());
+    let viewport_before = view
+        .viewport_transform()
+        .expect("viewport before native controls");
+    let selection_before = view.selection().expect("selection before native controls");
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
     assert_eq!(control_events.borrow().as_slice(), ["down", "up"]);
-    assert!(node_events.borrow().is_empty());
+    assert_eq!(node_events.borrow().as_slice(), ["down", "up"]);
     assert!(canvas_events.borrow().is_empty());
 
     let scroll = cx.debug_bounds(SCROLL_SELECTOR).expect("scroll bounds");
@@ -784,8 +818,24 @@ fn native_control_and_scroll_guards_stop_node_and_canvas_gestures(
         touch_phase: TouchPhase::Moved,
     });
     assert_eq!(scroll_events.borrow().as_slice(), ["scroll"]);
-    assert!(node_events.borrow().is_empty());
+    assert_eq!(node_events.borrow().as_slice(), ["down", "up", "scroll"]);
     assert!(canvas_events.borrow().is_empty());
+    assert!(
+        graph_before.ptr_eq(&runtime.snapshot().expect("graph after native controls")),
+        "native controls must not create graph history or replace the graph root",
+    );
+    assert_eq!(runtime.history_state().unwrap(), history_before);
+    assert_eq!(view.viewport_transform().unwrap(), viewport_before);
+    assert_eq!(view.selection().unwrap(), selection_before);
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert!(host.active_port_drag().is_none());
+        assert_eq!(host.stats().protected_instances(), 0);
+    });
 }
 
 #[open_gpui::test]
@@ -890,6 +940,7 @@ fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::Test
     draw(cx);
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
 
@@ -1029,7 +1080,7 @@ fn escape_without_the_original_mouse_up_does_not_suppress_the_next_click(
         ],
     );
     assert_eq!(control_events.borrow().as_slice(), ["down", "up"]);
-    assert!(node_events.borrow().is_empty());
+    assert_eq!(node_events.borrow().as_slice(), ["down", "up"]);
     assert!(canvas_events.borrow().is_empty());
 }
 

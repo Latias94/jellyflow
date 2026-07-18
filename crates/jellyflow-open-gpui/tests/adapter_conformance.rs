@@ -13,7 +13,7 @@ use jellyflow::runtime::{
 };
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+    OpenGpuiNodeRegistry, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
@@ -173,19 +173,17 @@ impl Render for NativeTracerNode {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(OpenGpuiNodeInteractionGuard::control(
+            .child(
                 TextInput::new("adapter-tracer-prompt", "Prompt").controller(self.prompt.clone()),
-            ))
-            .child(OpenGpuiNodeInteractionGuard::control(
-                div().self_start().flex_none().child(mode),
-            ))
-            .child(OpenGpuiNodeInteractionGuard::control(
+            )
+            .child(div().self_start().flex_none().child(mode))
+            .child(
                 div()
                     .debug_selector(|| COMMAND_SELECTOR.to_owned())
                     .self_start()
                     .flex_none()
                     .child(command),
-            ));
+            );
 
         for (index, handle) in ports.into_iter().enumerate() {
             let top = 44.0 + index as f32 * 30.0;

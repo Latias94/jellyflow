@@ -9,6 +9,7 @@ use jellyflow::runtime::{
     EdgePickQueryError, FreshGraphMutation, InteractionOwner, InteractionPosition,
     InteractionTerminalReason, InteractionTickDemand, InteractionTicketId, SelectionBaseline,
     SelectionMode, SelectionMutation, ViewPoint, ViewRect, ViewportMutation,
+    resolve_alignment_snap,
 };
 use open_gpui::{Context, Pixels, Point, Task, Window};
 
@@ -68,10 +69,11 @@ impl OpenGpuiSceneHost {
         let (queries, effects, damage, tick_demand) = update.into_parts();
         let has_queries = !queries.is_empty();
         let has_effects = !effects.is_empty();
-        let has_damage = damage != Default::default();
-        self.queue_interaction_queries(queries);
+        let mut has_damage = damage != Default::default();
+        let mut effects_succeeded = true;
         for effect in effects {
             if let Err(error) = self.apply_canvas_interaction_effect(effect, cx) {
+                effects_succeeded = false;
                 self.record_command_diagnostic(error);
                 if matches!(
                     self.canvas_interaction.presentation().phase(),
@@ -86,7 +88,12 @@ impl OpenGpuiSceneHost {
                     self.discard_pending_interaction_submission();
                     self.queue_interaction_queries(cancelled.into_parts().0);
                 }
+                break;
             }
+        }
+        if effects_succeeded {
+            has_damage |= self.refresh_node_alignment_snap();
+            self.queue_interaction_queries(queries);
         }
         self.discard_orphaned_interaction_revalidation();
         self.sync_native_connection_state(window, cx);
@@ -98,6 +105,43 @@ impl OpenGpuiSceneHost {
         if has_damage || !self.pending_interaction_queries.is_empty() {
             cx.notify();
         }
+    }
+
+    fn refresh_node_alignment_snap(&mut self) -> bool {
+        let Some(tolerance_in_view) = self.navigation.alignment_snap_tolerance_in_view() else {
+            return false;
+        };
+        let presentation = self.canvas_interaction.presentation();
+        let Some(drag) = presentation
+            .node_drag()
+            .filter(|drag| drag.ticket().is_none())
+        else {
+            return false;
+        };
+        let generation = drag.generation();
+        let moving_nodes = drag.nodes().to_vec();
+        let delta = drag.delta();
+        let Ok(transform) = self.view.viewport_transform() else {
+            return false;
+        };
+        let Ok(geometry) = self.view.geometry_snapshot() else {
+            return false;
+        };
+        let candidate_nodes = self
+            .mounts
+            .active_in_order()
+            .map(|(instance, _)| instance.node())
+            .collect::<Vec<_>>();
+        let snap = resolve_alignment_snap(
+            &geometry,
+            &moving_nodes,
+            &candidate_nodes,
+            delta,
+            tolerance_in_view / transform.zoom,
+        );
+        self.canvas_interaction
+            .apply_alignment_snap(generation, snap.delta(), snap.guides().iter().copied())
+            .is_ok_and(|update| update.damage() != Default::default())
     }
 
     fn apply_canvas_interaction_effect(
@@ -544,6 +588,11 @@ impl OpenGpuiSceneHost {
                     marquee_selection_from_baseline(&baseline, intersecting, mode);
                 self.view.set_selection(nodes, edges, groups)
             }
+            SelectionMutation::Restore(baseline) => self.view.set_selection(
+                baseline.nodes().to_vec(),
+                baseline.edges().to_vec(),
+                baseline.groups().to_vec(),
+            ),
         }
     }
 
@@ -577,9 +626,12 @@ impl OpenGpuiSceneHost {
                 let Some(viewport) = host.surface_size else {
                     return;
                 };
-                if let Ok(update) = host
-                    .canvas_interaction
-                    .tick(INTERACTION_TICK_SECONDS, viewport)
+                let Ok(transform) = host.view.viewport_transform() else {
+                    return;
+                };
+                if let Ok(update) =
+                    host.canvas_interaction
+                        .tick(INTERACTION_TICK_SECONDS, viewport, transform)
                 {
                     host.apply_canvas_interaction_update(update, window, cx);
                 }

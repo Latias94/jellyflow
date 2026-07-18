@@ -14,6 +14,12 @@ pub const OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER: f32 = 22.0;
 /// Default ordinary edge stroke width in screen pixels.
 pub const OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH: f32 = 1.5;
 
+/// Default canvas-grid stroke width in screen pixels.
+pub const OPEN_GPUI_DEFAULT_GRID_LINE_WIDTH: f32 = 1.0;
+
+/// Default alignment-guide stroke width in screen pixels.
+pub const OPEN_GPUI_DEFAULT_GUIDE_WIDTH: f32 = 1.0;
+
 /// Default hovered edge stroke width in screen pixels.
 pub const OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH: f32 = 2.0;
 
@@ -152,6 +158,10 @@ impl Default for OpenGpuiGraphPalette {
 /// view space before applying them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenGpuiGraphMetrics {
+    /// Canvas-grid stroke width.
+    pub grid_line_width: f32,
+    /// Alignment-guide stroke width.
+    pub guide_width: f32,
     /// Idle port marker diameter.
     pub port_marker_diameter: f32,
     /// Hovered port marker diameter.
@@ -187,6 +197,8 @@ pub struct OpenGpuiGraphMetrics {
 impl Default for OpenGpuiGraphMetrics {
     fn default() -> Self {
         Self {
+            grid_line_width: OPEN_GPUI_DEFAULT_GRID_LINE_WIDTH,
+            guide_width: OPEN_GPUI_DEFAULT_GUIDE_WIDTH,
             port_marker_diameter: OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER,
             port_hover_marker_diameter: OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER,
             port_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
@@ -211,6 +223,8 @@ impl OpenGpuiGraphMetrics {
     #[must_use]
     pub fn is_valid(self) -> bool {
         let values = [
+            self.grid_line_width,
+            self.guide_width,
             self.port_marker_diameter,
             self.port_hover_marker_diameter,
             self.port_hit_diameter,
@@ -287,6 +301,8 @@ mod tests {
     fn default_metrics_match_the_native_chrome_contract() {
         let metrics = OpenGpuiGraphMetrics::default();
 
+        assert_eq!(metrics.grid_line_width, 1.0);
+        assert_eq!(metrics.guide_width, 1.0);
         assert_eq!(metrics.port_marker_diameter, 10.0);
         assert_eq!(metrics.port_hover_marker_diameter, 12.0);
         assert_eq!(metrics.port_hit_diameter, 22.0);

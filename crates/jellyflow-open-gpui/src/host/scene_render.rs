@@ -4,21 +4,23 @@ use std::rc::Rc;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, EdgeId, EdgeLabelAnchor, Graph, NodeId};
+use jellyflow::core::{
+    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId,
+};
 use jellyflow::runtime::runtime::geometry::{
     EdgePath, EdgePathAnchor, EdgePathSample, EdgeRouteFacts, PathCommand, resolve_edge_route_path,
 };
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
-    CanvasInteractionPhase, EdgeEndpoint, FeedbackSubmissionError, GeometrySnapshot,
-    RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
+    AlignmentGuide, CanvasInteractionPhase, EdgeEndpoint, FeedbackSubmissionError,
+    GeometrySnapshot, RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
     VisibleRouteQueryRevision,
 };
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
-    AnyElement, Context, EntityId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Path, PathBuilder, Pixels, StatefulInteractiveElement, Styled, Window, canvas,
-    div, measured_element, point, px,
+    AnyElement, Context, CursorStyle, EntityId, FocusHandle, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Path, PathBuilder, Pixels, StatefulInteractiveElement, Styled,
+    Window, canvas, div, measured_element, point, px,
 };
 
 use crate::accessibility::{
@@ -52,8 +54,15 @@ use super::frame_feedback::{
     DeferredFeedbackError, DeferredFeedbackSubmission, DeferredFrameFeedback,
 };
 use super::node_lifecycle::suppress_host_panic;
+use super::scene_gesture::selection_mode_for_modifiers;
 
 pub(super) const OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR: &str = "jellyflow-selection-rectangle";
+pub(super) const OPEN_GPUI_GRID_SELECTOR: &str = "jellyflow-grid";
+pub(super) const OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR: &str = "jellyflow-alignment-guide";
+
+const OPEN_GPUI_MIN_GRID_SPACING_IN_VIEW: f32 = 12.0;
+const OPEN_GPUI_MAX_GRID_LINES_PER_AXIS: usize = 512;
+const OPEN_GPUI_MAJOR_GRID_INTERVAL: i64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenGpuiSceneLayer {
@@ -583,6 +592,45 @@ impl OpenGpuiSceneHost {
             .into_any_element()
     }
 
+    fn render_grid_layer(&self, transform: ViewportTransform) -> AnyElement {
+        let Some(grid) = self.navigation.grid_size_in_canvas() else {
+            return div().absolute().size_full().into_any_element();
+        };
+        let line_width = self.graph_theme.metrics.grid_line_width;
+        let minor_color = self.graph_theme.palette.grid_minor;
+        let major_color = self.graph_theme.palette.grid_major;
+        div()
+            .debug_selector(|| OPEN_GPUI_GRID_SELECTOR.to_owned())
+            .absolute()
+            .size_full()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        build_grid_paths(
+                            CanvasSize {
+                                width: bounds.size.width.as_f32(),
+                                height: bounds.size.height.as_f32(),
+                            },
+                            grid,
+                            transform,
+                            line_width,
+                        )
+                    },
+                    move |_, (minor, major), window, _| {
+                        if let Some(path) = minor {
+                            window.paint_path(path.clone(), minor_color);
+                        }
+                        if let Some(path) = major {
+                            window.paint_path(path.clone(), major_color);
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
     fn render_edge_path_canvas(
         &self,
         geometry: GeometrySnapshot,
@@ -846,6 +894,7 @@ impl OpenGpuiSceneHost {
             );
             let keyboard_host = host.clone();
             let accessibility_host = host.clone();
+            let pointer_host = host.clone();
             let focus = self.graph_theme.palette.focus;
             let selected = interaction.selected;
             let deletable = interaction.deletable;
@@ -857,6 +906,7 @@ impl OpenGpuiSceneHost {
                 edge_focus.clone(),
             ));
             let keyboard_focus = edge_focus.clone();
+            let pointer_focus = edge_focus.clone();
             let control = div()
                 .id(open_gpui_edge_element_id(host_id, view_id, edge))
                 .role(OPEN_GPUI_EDGE_ROLE)
@@ -877,6 +927,26 @@ impl OpenGpuiSceneHost {
                 .border_1()
                 .border_color(focus.opacity(0.0))
                 .focus_visible(move |style| style.border_2().border_color(focus))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    if window.default_prevented() {
+                        return;
+                    }
+                    let Some(host) = pointer_host.upgrade() else {
+                        return;
+                    };
+                    window.focus(&pointer_focus, cx);
+                    if host.update(cx, |host, cx| {
+                        host.activate_edge_action(
+                            edge,
+                            jellyflow::runtime::SelectionMode::Replace,
+                            window,
+                            cx,
+                        )
+                    }) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                })
                 .on_key_up(move |event, window, cx| {
                     if event.keystroke.modifiers.modified() || !keyboard_focus.is_focused(window) {
                         return;
@@ -1064,8 +1134,6 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let host_id = cx.entity_id();
-        let scene_interactions = self.scene_interactions.clone();
-        let scene_listener = Self::host_scene_listener(cx);
         let mut nodes = div().absolute().size_full();
         for pass in [
             OpenGpuiNodePresentation::Overview,
@@ -1092,6 +1160,8 @@ impl OpenGpuiSceneHost {
                     .semantic_zoom
                     .screen_size(transform.zoom, presentation);
                 let overview_binding = mounted.binding.as_ref().map(|binding| binding.read(cx));
+                let overview_drag_handle =
+                    overview_binding.map(|binding| binding.drag_handle().for_host_presentation());
                 let node_enabled = overview_binding
                     .map(|binding| !binding.presentation().node().disabled())
                     .unwrap_or(true);
@@ -1124,23 +1194,28 @@ impl OpenGpuiSceneHost {
                 }
                 let content = match presentation {
                     OpenGpuiNodePresentation::Native => mounted.view.clone().into_any_element(),
-                    OpenGpuiNodePresentation::Overview => mounted.semantic_zoom.overview_element(
-                        overview_binding,
-                        &mounted.accessible_name,
-                        mounted.selected,
-                        screen_size,
-                        self.graph_theme,
-                    ),
+                    OpenGpuiNodePresentation::Overview => {
+                        let overview = mounted.semantic_zoom.overview_element(
+                            overview_binding,
+                            &mounted.accessible_name,
+                            mounted.selected,
+                            screen_size,
+                            self.graph_theme,
+                        );
+                        match overview_drag_handle {
+                            Some(handle) => handle.wrap(overview).into_any_element(),
+                            None => overview,
+                        }
+                    }
                 };
-                let instance_for_gesture = key.clone();
-                let activity = mounted.activity.clone();
-                let coordinator = scene_interactions.clone();
-                let listener = scene_listener.clone();
                 let keyboard_host = cx.weak_entity();
                 let accessibility_host = keyboard_host.clone();
+                let pointer_host = keyboard_host.clone();
                 let node_for_keyboard = key.node();
                 let node_for_accessibility = key.node();
+                let node_for_pointer = key.node();
                 let keyboard_focus = node_focus.clone();
+                let pointer_focus = node_focus.clone();
                 let focused = node_focus.contains_focused(window, cx);
                 let dragging = self
                     .canvas_interaction
@@ -1206,20 +1281,32 @@ impl OpenGpuiSceneHost {
                         cx.stop_propagation();
                     }
                 })
-                .when(node_enabled, |node| {
-                    node.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                        if coordinator.begin(
-                            OpenGpuiSceneGestureKind::Node(instance_for_gesture.clone()),
-                            MouseButton::Left,
-                            listener.clone(),
-                            Some(activity.clone()),
-                            event,
-                            window,
-                            cx,
-                        ) {
-                            cx.stop_propagation();
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    if node_enabled && !window.default_prevented() {
+                        window.focus(&pointer_focus, cx);
+                        let selection_mode = selection_mode_for_modifiers(event.modifiers);
+                        if let Some(host) = pointer_host.upgrade() {
+                            host.update(cx, |host, cx| {
+                                host.activate_node_action(
+                                    node_for_pointer,
+                                    selection_mode,
+                                    window,
+                                    cx,
+                                );
+                            });
                         }
-                    })
+                    }
+                    cx.stop_propagation();
+                })
+                .on_scroll_wheel(|_, window, cx| {
+                    if window.default_prevented() {
+                        cx.stop_propagation();
+                    }
+                })
+                .on_pinch(|_, window, cx| {
+                    if window.default_prevented() {
+                        cx.stop_propagation();
+                    }
                 })
                 .child(content)
                 .when(dragging || focused || mounted.selected, |node| {
@@ -1394,6 +1481,45 @@ impl OpenGpuiSceneHost {
 
     fn render_overlay_layer(&self, transform: ViewportTransform) -> AnyElement {
         let mut overlay = div().absolute().size_full();
+        if let Some(drag) = self.canvas_interaction.presentation().node_drag() {
+            let guide_width = self.graph_theme.metrics.guide_width;
+            for guide in drag.guides() {
+                let line = match *guide {
+                    AlignmentGuide::Vertical { canvas_x } => {
+                        let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
+                            x: canvas_x,
+                            y: 0.0,
+                        }) else {
+                            continue;
+                        };
+                        div()
+                            .absolute()
+                            .left(px(position.x - guide_width * 0.5))
+                            .top_0()
+                            .w(px(guide_width))
+                            .h_full()
+                    }
+                    AlignmentGuide::Horizontal { canvas_y } => {
+                        let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
+                            x: 0.0,
+                            y: canvas_y,
+                        }) else {
+                            continue;
+                        };
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(position.y - guide_width * 0.5))
+                            .w_full()
+                            .h(px(guide_width))
+                    }
+                };
+                overlay = overlay.child(
+                    line.debug_selector(|| OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR.to_owned())
+                        .bg(self.graph_theme.palette.guide),
+                );
+            }
+        }
         if let Some(bounds) = self.interaction_marquee_view_bounds(transform) {
             overlay = overlay.child(
                 div()
@@ -1424,7 +1550,12 @@ impl OpenGpuiSceneHost {
         #[cfg(test)]
         let wire_count = wires.published.len();
         let connection_preview = wires.connection_preview.take();
-        let edge_layer = self.render_edge_layer(&wires, transform);
+        let edge_layer = div()
+            .absolute()
+            .size_full()
+            .child(self.render_grid_layer(transform))
+            .child(self.render_edge_layer(&wires, transform))
+            .into_any_element();
         let preview_layer =
             self.render_preview_layer(connection_preview, wires.geometry.clone(), transform);
         let edge_chrome_layer = self.render_edge_chrome_layer(&wires, transform);
@@ -1479,6 +1610,16 @@ impl OpenGpuiSceneHost {
         let scene_interactions = self.scene_interactions.clone();
         let selection_listener = Self::host_scene_listener(cx);
         let pan_listener = selection_listener.clone();
+        let right_pan_listener = selection_listener.clone();
+        let right_button_pans = self.navigation.profile().right_button_pans();
+        let scene_cursor =
+            if self.canvas_interaction.presentation().phase() == CanvasInteractionPhase::Pan {
+                CursorStyle::ClosedHand
+            } else if right_button_pans {
+                CursorStyle::Crosshair
+            } else {
+                CursorStyle::Arrow
+            };
         let host = cx.weak_entity();
         let hover_host = host.clone();
         let hover_state_host = host.clone();
@@ -1501,6 +1642,7 @@ impl OpenGpuiSceneHost {
         )
         .relative()
         .size_full()
+        .cursor(scene_cursor)
         .bg(self.graph_theme.palette.canvas)
         .on_mouse_move(move |event, window, cx| {
             let Some(host) = hover_host.upgrade() else {
@@ -1524,6 +1666,10 @@ impl OpenGpuiSceneHost {
         .on_mouse_down(MouseButton::Left, {
             let coordinator = scene_interactions.clone();
             move |event, window, cx| {
+                if window.default_prevented() {
+                    cx.stop_propagation();
+                    return;
+                }
                 if coordinator.begin(
                     OpenGpuiSceneGestureKind::Selection,
                     MouseButton::Left,
@@ -1553,7 +1699,27 @@ impl OpenGpuiSceneHost {
                 }
             }
         })
+        .when(right_button_pans, |scene| {
+            let coordinator = scene_interactions.clone();
+            scene.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                if coordinator.begin(
+                    OpenGpuiSceneGestureKind::Pan,
+                    MouseButton::Right,
+                    right_pan_listener.clone(),
+                    None,
+                    event,
+                    window,
+                    cx,
+                ) {
+                    cx.stop_propagation();
+                }
+            })
+        })
         .on_scroll_wheel(move |event, window, cx| {
+            if window.default_prevented() {
+                cx.stop_propagation();
+                return;
+            }
             let Some(host) = scroll_host.upgrade() else {
                 return;
             };
@@ -1563,6 +1729,10 @@ impl OpenGpuiSceneHost {
             }
         })
         .on_pinch(move |event, window, cx| {
+            if window.default_prevented() {
+                cx.stop_propagation();
+                return;
+            }
             let Some(host) = pinch_host.upgrade() else {
                 return;
             };
@@ -2065,6 +2235,101 @@ fn edge_paint_item_key(
     ))
 }
 
+fn build_grid_paths(
+    viewport: CanvasSize,
+    grid: CanvasSize,
+    transform: ViewportTransform,
+    stroke_width: f32,
+) -> (Option<Path<Pixels>>, Option<Path<Pixels>>) {
+    if !viewport.is_positive_finite()
+        || !grid.is_positive_finite()
+        || !transform.is_valid()
+        || !stroke_width.is_finite()
+        || stroke_width <= 0.0
+    {
+        return (None, None);
+    }
+    let vertical = grid_axis_lines(transform.pan.x, grid.width, transform.zoom, viewport.width);
+    let horizontal = grid_axis_lines(
+        transform.pan.y,
+        grid.height,
+        transform.zoom,
+        viewport.height,
+    );
+    let mut minor = PathBuilder::stroke(px(stroke_width));
+    let mut major = PathBuilder::stroke(px(stroke_width));
+    let mut minor_segments = 0_usize;
+    let mut major_segments = 0_usize;
+    for (position, is_major) in vertical {
+        let (builder, count) = if is_major {
+            (&mut major, &mut major_segments)
+        } else {
+            (&mut minor, &mut minor_segments)
+        };
+        builder.move_to(point(px(position), px(0.0)));
+        builder.line_to(point(px(position), px(viewport.height)));
+        *count = count.saturating_add(1);
+    }
+    for (position, is_major) in horizontal {
+        let (builder, count) = if is_major {
+            (&mut major, &mut major_segments)
+        } else {
+            (&mut minor, &mut minor_segments)
+        };
+        builder.move_to(point(px(0.0), px(position)));
+        builder.line_to(point(px(viewport.width), px(position)));
+        *count = count.saturating_add(1);
+    }
+    (
+        (minor_segments > 0).then(|| minor.build().ok()).flatten(),
+        (major_segments > 0).then(|| major.build().ok()).flatten(),
+    )
+}
+
+fn grid_axis_lines(
+    pan_in_canvas: f32,
+    grid_in_canvas: f32,
+    zoom: f32,
+    extent_in_view: f32,
+) -> Vec<(f32, bool)> {
+    let spacing = grid_in_canvas * zoom;
+    if !spacing.is_finite() || spacing <= 0.0 || !extent_in_view.is_finite() {
+        return Vec::new();
+    }
+    let mut stride = 1_i64;
+    while spacing * (stride as f32) < OPEN_GPUI_MIN_GRID_SPACING_IN_VIEW {
+        let Some(next) = stride.checked_mul(OPEN_GPUI_MAJOR_GRID_INTERVAL) else {
+            return Vec::new();
+        };
+        stride = next;
+    }
+    let first_index = (-pan_in_canvas / grid_in_canvas).ceil() as i64;
+    let remainder = first_index.rem_euclid(stride);
+    let mut index = if remainder == 0 {
+        first_index
+    } else {
+        first_index.saturating_add(stride - remainder)
+    };
+    let mut lines = Vec::new();
+    while lines.len() < OPEN_GPUI_MAX_GRID_LINES_PER_AXIS {
+        let position = (index as f32 * grid_in_canvas + pan_in_canvas) * zoom;
+        if !position.is_finite() || position > extent_in_view {
+            break;
+        }
+        if position >= 0.0 {
+            lines.push((
+                position,
+                index.rem_euclid(OPEN_GPUI_MAJOR_GRID_INTERVAL) == 0,
+            ));
+        }
+        let Some(next) = index.checked_add(stride) else {
+            break;
+        };
+        index = next;
+    }
+    lines
+}
+
 fn build_scene_wire_path(
     path: &EdgePath,
     stroke_width: f32,
@@ -2126,4 +2391,38 @@ fn project_scene_point(
         scene_origin.x + px(screen.x),
         scene_origin.y + px(screen.y),
     ))
+}
+
+#[cfg(test)]
+mod navigation_render_tests {
+    use super::*;
+
+    #[test]
+    fn grid_lines_preserve_major_intervals_and_thin_at_low_zoom() {
+        let normal = grid_axis_lines(0.0, 20.0, 1.0, 100.0);
+        assert_eq!(
+            normal,
+            vec![
+                (0.0, true),
+                (20.0, false),
+                (40.0, false),
+                (60.0, false),
+                (80.0, true),
+                (100.0, false),
+            ]
+        );
+
+        let overview = grid_axis_lines(0.0, 20.0, 0.1, 100.0);
+        assert_eq!(
+            overview,
+            vec![(0.0, true), (32.0, true), (64.0, true), (96.0, true)]
+        );
+        assert!(overview.len() < normal.len());
+    }
+
+    #[test]
+    fn grid_line_generation_is_bounded_per_axis() {
+        let lines = grid_axis_lines(0.0, 20.0, 100.0, 2_000_000.0);
+        assert_eq!(lines.len(), OPEN_GPUI_MAX_GRID_LINES_PER_AXIS);
+    }
 }

@@ -110,29 +110,18 @@ pub enum OpenGpuiPortEvent {
     Activation(OpenGpuiPortActivationEvent),
 }
 
-/// Thin event boundary for ordinary native controls, scroll regions, and overlays inside a node.
+/// Native ownership boundary for a popup or overlay rendered outside its node bounds.
 ///
-/// The guard does not describe or render a widget. It lets the native child handle its event first,
-/// then stops unhandled pointer input before it can reach node chrome or the canvas. Overlay owners
-/// must separately hold an [`OpenGpuiActivityKind::Overlay`] lease for retained-lifecycle protection.
-pub struct OpenGpuiNodeInteractionGuard;
+/// Ordinary controls and scroll regions inside a node need no Jellyflow wrapper. Overlays are
+/// different: their hit area may no longer be beneath the node's semantic root, so this boundary
+/// occludes graph targets behind it. The retained overlay entity should also hold an
+/// [`OpenGpuiActivityKind::Overlay`] lease while it is open.
+pub struct OpenGpuiOverlayInteractionBoundary;
 
-impl OpenGpuiNodeInteractionGuard {
-    /// Prevents pointer input handled by a native control from falling through to graph gestures.
-    pub fn control(child: impl IntoElement) -> impl IntoElement {
-        OpenGpuiInteractionGuardElement::new(child, GuardMode::Embedded)
-    }
-
-    /// Prevents native scrolling and scrollbar gestures from reaching node chrome or canvas zoom.
-    pub fn scroll(child: impl IntoElement) -> impl IntoElement {
-        OpenGpuiInteractionGuardElement::new(child, GuardMode::Embedded)
-    }
-
+impl OpenGpuiOverlayInteractionBoundary {
     /// Occludes graph hit targets behind a native overlay and stops its unhandled pointer input.
-    ///
-    /// The retained overlay entity should hold an overlay activity lease for as long as it is open.
-    pub fn overlay(child: impl IntoElement) -> impl IntoElement {
-        OpenGpuiInteractionGuardElement::new(child, GuardMode::Overlay)
+    pub fn wrap(child: impl IntoElement) -> impl IntoElement {
+        OpenGpuiOverlayInteractionElement::new(child)
     }
 }
 
@@ -1604,27 +1593,19 @@ impl IntoElement for OpenGpuiInteractionRoot {
     }
 }
 
-#[derive(Clone, Copy)]
-enum GuardMode {
-    Embedded,
-    Overlay,
-}
-
-struct OpenGpuiInteractionGuardElement {
+struct OpenGpuiOverlayInteractionElement {
     child: Option<AnyElement>,
-    mode: GuardMode,
 }
 
-impl OpenGpuiInteractionGuardElement {
-    fn new(child: impl IntoElement, mode: GuardMode) -> Self {
+impl OpenGpuiOverlayInteractionElement {
+    fn new(child: impl IntoElement) -> Self {
         Self {
             child: Some(child.into_any_element()),
-            mode,
         }
     }
 }
 
-impl Element for OpenGpuiInteractionGuardElement {
+impl Element for OpenGpuiOverlayInteractionElement {
     type RequestLayoutState = AnyElement;
     type PrepaintState = Hitbox;
 
@@ -1657,11 +1638,7 @@ impl Element for OpenGpuiInteractionGuardElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let behavior = match self.mode {
-            GuardMode::Embedded => HitboxBehavior::Normal,
-            GuardMode::Overlay => HitboxBehavior::BlockMouse,
-        };
-        let hitbox = window.insert_hitbox(bounds, behavior);
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::BlockMouse);
         child.prepaint(window, cx);
         hitbox
     }
@@ -1710,7 +1687,7 @@ impl Element for OpenGpuiInteractionGuardElement {
     }
 }
 
-impl IntoElement for OpenGpuiInteractionGuardElement {
+impl IntoElement for OpenGpuiOverlayInteractionElement {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {

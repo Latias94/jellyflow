@@ -12,7 +12,7 @@ use jellyflow::runtime::{
 };
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiNodeRegistryBuilder,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Task,
@@ -341,6 +341,7 @@ impl Render for BlueprintCallNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let drag_handle = self.binding.read(cx).drag_handle();
         let (instance_scope, title, ports, observation) = {
             let binding = self.binding.read(cx);
             let instance_scope = format!("{:?}", binding.snapshot().instance());
@@ -421,11 +422,11 @@ impl Render for BlueprintCallNode {
                     .text_color(rgb(0xabc4dc))
                     .child("Executes a native function with typed dynamic inputs"),
             )
-            .child(OpenGpuiNodeInteractionGuard::control(
+            .child(
                 div()
                     .debug_selector(|| BLUEPRINT_ADD_INPUT_SELECTOR.to_owned())
                     .child(add_input),
-            ));
+            );
         if self.command.is_waiting() {
             body = body.child(
                 div()
@@ -479,16 +480,18 @@ impl Render for BlueprintCallNode {
             .bg(rgb(0x182633))
             .text_color(rgb(0xe8f1f7))
             .child(
-                div()
-                    .h(px(42.0))
-                    .px(px(14.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(rgb(0x35536b))
-                    .child(title)
-                    .child(div().text_xs().text_color(rgb(0x7ed2bd)).child("BLUEPRINT")),
+                drag_handle.wrap(
+                    div()
+                        .h(px(42.0))
+                        .px(px(14.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(rgb(0x35536b))
+                        .child(title)
+                        .child(div().text_xs().text_color(rgb(0x7ed2bd)).child("BLUEPRINT")),
+                ),
             )
             .child(body)
             .children(port_elements(

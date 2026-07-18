@@ -9,7 +9,9 @@ use jellyflow::runtime::{
     CanvasInteractionError, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
     InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode,
 };
-use open_gpui::{Context, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px};
+use open_gpui::{
+    Context, Modifiers, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
+};
 
 use crate::interaction::{
     OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGestureEvent, OpenGpuiSceneGestureKind,
@@ -18,8 +20,6 @@ use crate::interaction::{
 
 use super::OpenGpuiSceneHost;
 
-const SCENE_MIN_ZOOM: f32 = 0.05;
-const SCENE_MAX_ZOOM: f32 = 8.0;
 const SCENE_WHEEL_LINE_HEIGHT: f32 = 16.0;
 
 impl OpenGpuiSceneHost {
@@ -354,16 +354,19 @@ impl OpenGpuiSceneHost {
             x: delta.x.as_f32(),
             y: delta.y.as_f32(),
         };
-        let next = if event.modifiers.shift || delta.x.abs() > delta.y.abs() {
+        let next = if self.navigation.profile().wheel_pans()
+            || event.modifiers.shift
+            || delta.x.abs() > delta.y.abs()
+        {
             pan_viewport(transform, ViewportPanRequest::new(delta))
         } else {
             zoom_viewport(
                 transform,
                 ViewportZoomRequest::new(
                     anchor,
-                    transform.zoom * (delta.y * 0.005).exp(),
-                    SCENE_MIN_ZOOM,
-                    SCENE_MAX_ZOOM,
+                    transform.zoom * (delta.y * self.navigation.wheel_zoom_sensitivity()).exp(),
+                    self.navigation.min_zoom(),
+                    self.navigation.max_zoom(),
                 ),
             )
         };
@@ -393,8 +396,8 @@ impl OpenGpuiSceneHost {
             ViewportZoomRequest::new(
                 anchor,
                 transform.zoom * (1.0 + event.delta).max(0.1),
-                SCENE_MIN_ZOOM,
-                SCENE_MAX_ZOOM,
+                self.navigation.min_zoom(),
+                self.navigation.max_zoom(),
             ),
         ) else {
             return false;
@@ -420,7 +423,11 @@ impl OpenGpuiSceneHost {
 }
 
 fn scene_selection_mode(event: &OpenGpuiSceneGestureEvent) -> SelectionMode {
-    if event.modifiers().shift || event.modifiers().secondary() {
+    selection_mode_for_modifiers(event.modifiers())
+}
+
+pub(super) fn selection_mode_for_modifiers(modifiers: Modifiers) -> SelectionMode {
+    if modifiers.shift || modifiers.secondary() {
         SelectionMode::Add
     } else {
         SelectionMode::Replace

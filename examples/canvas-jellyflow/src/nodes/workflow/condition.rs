@@ -10,8 +10,8 @@ use jellyflow::runtime::{
 };
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard,
-    OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle,
+    OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeRegistryBuilder,
+    OpenGpuiPortHandle,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
@@ -395,7 +395,10 @@ impl Render for WorkflowConditionNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let node_id = self.binding.read(cx).snapshot().node_id();
+        let (node_id, drag_handle) = {
+            let binding = self.binding.read(cx);
+            (binding.snapshot().node_id(), binding.drag_handle())
+        };
         let data = match read_condition_binding(&self.binding, cx) {
             Ok(value) => {
                 let branches = value
@@ -525,15 +528,13 @@ impl Render for WorkflowConditionNode {
             );
         }
         let scroll_selector = workflow_condition_scroll_selector(node_id);
-        let rows = OpenGpuiNodeInteractionGuard::scroll(
-            div()
-                .id(format!("jellyflow-workflow-condition-scroll-{}", node_id.0))
-                .debug_selector(move || scroll_selector.clone())
-                .h(px(148.0))
-                .overflow_y_scroll()
-                .scrollbar_width(px(7.0))
-                .child(rows),
-        );
+        let rows = div()
+            .id(format!("jellyflow-workflow-condition-scroll-{}", node_id.0))
+            .debug_selector(move || scroll_selector.clone())
+            .h(px(148.0))
+            .overflow_y_scroll()
+            .scrollbar_width(px(7.0))
+            .child(rows);
         let retry = matches!(
             &self.command_state,
             ConditionCommandState::ReadyToRetry { .. }
@@ -555,16 +556,14 @@ impl Render for WorkflowConditionNode {
                 ),
             )
         });
-        let controls = OpenGpuiNodeInteractionGuard::control(
-            div()
-                .py(px(12.0))
-                .flex()
-                .flex_col()
-                .gap(px(9.0))
-                .child(rows)
-                .child(add_button)
-                .children(retry),
-        );
+        let controls = div()
+            .py(px(12.0))
+            .flex()
+            .flex_col()
+            .gap(px(9.0))
+            .child(rows)
+            .child(add_button)
+            .children(retry);
         let status = self.command_status();
         let diagnostic = self.diagnostic.clone().map(|message| {
             workflow_alert(
@@ -585,13 +584,13 @@ impl Render for WorkflowConditionNode {
             .border_color(rgb(0x66583c))
             .bg(rgb(0x24262c))
             .text_color(rgb(0xf0ece4))
-            .child(workflow_header(
+            .child(drag_handle.wrap(workflow_header(
                 node_id,
                 data.title,
                 "CONDITION",
                 status,
                 data.inputs,
-            ))
+            )))
             .child(controls)
             .children(diagnostic)
     }

@@ -10,8 +10,7 @@ use jellyflow_open_gpui::{
     DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
     OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingRead, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistryBuilder,
-    RevisionedDraft,
+    OpenGpuiNodeBindingRead, OpenGpuiNodeRegistryBuilder, RevisionedDraft,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render, Styled,
@@ -514,7 +513,10 @@ impl Render for WorkflowLlmNode {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let node_id = self.binding.read(cx).snapshot().node_id();
+        let (node_id, drag_handle) = {
+            let binding = self.binding.read(cx);
+            (binding.snapshot().node_id(), binding.drag_handle())
+        };
         let data = self.reconcile_graph(cx).unwrap_or_else(|| LlmData {
             value: serde_json::Value::Null,
             title: "Retired LLM".to_owned(),
@@ -794,7 +796,7 @@ impl Render for WorkflowLlmNode {
                 ),
             );
         }
-        let controls = OpenGpuiNodeInteractionGuard::control(control_body);
+        let controls = control_body;
         let diagnostic = self.diagnostic.clone().map(|message| {
             workflow_alert(
                 format!("jellyflow-workflow-llm-diagnostic-{}", node_id.0),
@@ -814,7 +816,7 @@ impl Render for WorkflowLlmNode {
             .border_color(rgb(0x3d556f))
             .bg(rgb(0x1d2733))
             .text_color(rgb(0xe8edf3))
-            .child(workflow_header(node_id, data.title, "LLM", status, ports))
+            .child(drag_handle.wrap(workflow_header(node_id, data.title, "LLM", status, ports)))
             .child(controls)
             .children(diagnostic)
     }

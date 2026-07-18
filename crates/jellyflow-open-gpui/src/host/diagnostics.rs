@@ -476,8 +476,10 @@ impl Render for DiagnosticFallback {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
+        let mut drag_handle = None;
         if let Some(binding) = &self.binding {
             let binding = binding.read(cx);
+            drag_handle = Some(binding.drag_handle());
             if let Ok(snapshot) = binding.snapshot().read() {
                 let handles = binding.port_handles(&snapshot).unwrap_or_default();
                 for (port, handle) in snapshot.ports().zip(handles) {
@@ -518,6 +520,15 @@ impl Render for DiagnosticFallback {
                 .py(px(4.0))
                 .child("Retry")
         });
+        let title = div()
+            .h(px(24.0))
+            .flex()
+            .items_center()
+            .child(self.title.clone());
+        let title = match drag_handle {
+            Some(handle) => handle.wrap(title).into_any_element(),
+            None => title.into_any_element(),
+        };
 
         diagnostic_semantic_element(
             div().id(("jellyflow-diagnostic-fallback", cx.entity_id())),
@@ -528,7 +539,7 @@ impl Render for DiagnosticFallback {
         .p(px(8.0))
         .flex()
         .flex_col()
-        .child(self.title.clone())
+        .child(title)
         .child(self.detail.clone())
         .children(retry)
         .child(

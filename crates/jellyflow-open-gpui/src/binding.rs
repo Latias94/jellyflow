@@ -14,6 +14,7 @@ use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::command_journal::{
     OpenGpuiCommandEnqueueError, OpenGpuiCommandSink, OpenGpuiCommandTicket,
 };
+use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
 use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteractionState};
 
@@ -85,6 +86,7 @@ impl OpenGpuiBoundPort<'_> {
 pub struct OpenGpuiNodeBindingSnapshot {
     instance: NodeInstanceKey,
     facts_revision: GraphRevision,
+    node_drag_enabled: bool,
     port_facts: Vec<(PortId, PortDirection, String)>,
     view: WeakViewSession,
     mount: OpenGpuiMountCapability,
@@ -96,6 +98,7 @@ impl std::fmt::Debug for OpenGpuiNodeBindingSnapshot {
         f.debug_struct("OpenGpuiNodeBindingSnapshot")
             .field("instance", &self.instance)
             .field("facts_revision", &self.facts_revision)
+            .field("node_drag_enabled", &self.node_drag_enabled)
             .field("port_count", &self.port_facts.len())
             .finish_non_exhaustive()
     }
@@ -172,6 +175,9 @@ impl OpenGpuiNodeBindingSnapshot {
         Ok(Self {
             instance: frame.instance().clone(),
             facts_revision: frame.binding_revision(),
+            node_drag_enabled: frame.node().is_some_and(|node| {
+                node.selectable.unwrap_or(true) && node.draggable.unwrap_or(true)
+            }),
             port_facts: frame
                 .ports()
                 .iter()
@@ -189,6 +195,8 @@ impl OpenGpuiNodeBindingSnapshot {
 
     pub(crate) fn advance(&mut self, facts_revision: GraphRevision) {
         if let Ok(read) = self.read() {
+            self.node_drag_enabled =
+                read.node().selectable.unwrap_or(true) && read.node().draggable.unwrap_or(true);
             self.port_facts = read
                 .ports()
                 .map(|port| (port.id(), port.port().dir, port.port().key.0.clone()))
@@ -306,6 +314,7 @@ pub struct OpenGpuiNodeBinding {
     presentation: OpenGpuiNodePresentationSnapshot,
     port_focus: BTreeMap<PortId, FocusHandle>,
     activity: OpenGpuiNodeActivityRegistry,
+    drag_handle: OpenGpuiNodeDragHandle,
     measurement: OpenGpuiMeasurementSink,
     layout_invalidator: OpenGpuiLayoutInvalidator,
 }
@@ -316,6 +325,7 @@ impl std::fmt::Debug for OpenGpuiNodeBinding {
             .field("snapshot", &self.snapshot)
             .field("presentation", &self.presentation)
             .field("activity", &self.activity)
+            .field("drag_handle", &self.drag_handle)
             .field("measurement", &self.measurement)
             .finish_non_exhaustive()
     }
@@ -333,6 +343,12 @@ impl OpenGpuiNodeBinding {
 
     pub fn activity(&self) -> &OpenGpuiNodeActivityRegistry {
         &self.activity
+    }
+
+    /// Returns the explicit native pointer surface capability for this retained node instance.
+    #[must_use]
+    pub fn drag_handle(&self) -> OpenGpuiNodeDragHandle {
+        self.drag_handle.clone()
     }
 
     /// Invalidates native geometry for this exact retained node instance.
@@ -436,6 +452,7 @@ impl OpenGpuiNodeBinding {
     pub(crate) fn new(
         snapshot: OpenGpuiNodeBindingSnapshot,
         activity: OpenGpuiNodeActivityRegistry,
+        drag_handle: OpenGpuiNodeDragHandle,
         measurement: OpenGpuiMeasurementSink,
         layout_invalidator: OpenGpuiLayoutInvalidator,
         cx: &mut Context<Self>,
@@ -445,11 +462,19 @@ impl OpenGpuiNodeBinding {
             .iter()
             .map(|(port, _, _)| (*port, cx.focus_handle()))
             .collect();
+        let presentation = OpenGpuiNodePresentationSnapshot::default();
+        drag_handle.set_graph_enabled(snapshot.node_drag_enabled);
+        drag_handle.set_presentation_enabled(
+            !presentation.node().disabled()
+                && presentation.node().lod().publishes_native_graph_geometry(),
+        );
+        drag_handle.set_dragging(presentation.node().dragging());
         Self {
             snapshot,
-            presentation: OpenGpuiNodePresentationSnapshot::default(),
+            presentation,
             port_focus,
             activity,
+            drag_handle,
             measurement,
             layout_invalidator,
         }
@@ -457,6 +482,8 @@ impl OpenGpuiNodeBinding {
 
     pub(crate) fn advance(&mut self, facts_revision: GraphRevision, cx: &mut Context<Self>) {
         self.snapshot.advance(facts_revision);
+        self.drag_handle
+            .set_graph_enabled(self.snapshot.node_drag_enabled);
         self.port_focus
             .retain(|port, _| self.snapshot.cached_port_facts(*port).is_some());
         for (port, _, _) in &self.snapshot.port_facts {
@@ -474,6 +501,12 @@ impl OpenGpuiNodeBinding {
         &mut self,
         presentation: OpenGpuiNodePresentationSnapshot,
     ) -> bool {
+        self.drag_handle.set_presentation_enabled(
+            !presentation.node().disabled()
+                && presentation.node().lod().publishes_native_graph_geometry(),
+        );
+        self.drag_handle
+            .set_dragging(presentation.node().dragging());
         if self.presentation == presentation {
             return false;
         }

@@ -10,8 +10,7 @@ use jellyflow_open_gpui::{
     DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicketError,
     OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingRead, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistryBuilder,
-    RevisionedDraft,
+    OpenGpuiNodeBindingRead, OpenGpuiNodeRegistryBuilder, RevisionedDraft,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
@@ -532,6 +531,7 @@ impl Render for ShaderMultiplyNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
+        let drag_handle = self.binding.read(cx).drag_handle();
         let (
             node_id,
             instance_scope,
@@ -650,11 +650,9 @@ impl Render for ShaderMultiplyNode {
                 cx.notify();
             });
         });
-        let preview_control = OpenGpuiNodeInteractionGuard::control(
-            div()
-                .debug_selector(|| SHADER_PREVIEW_CONTROL_SELECTOR.to_owned())
-                .child(preview_button),
-        );
+        let preview_control = div()
+            .debug_selector(|| SHADER_PREVIEW_CONTROL_SELECTOR.to_owned())
+            .child(preview_button);
 
         let input_a_label = if input_a_connected {
             let selector = shader_connected_input_selector(node_id, "a");
@@ -670,30 +668,28 @@ impl Render for ShaderMultiplyNode {
             let editor_selector = shader_inline_editor_selector(node_id, "a");
             let value_selector = shader_inline_value_selector(node_id, "a", inline_factor);
             let inline_node = cx.weak_entity();
-            OpenGpuiNodeInteractionGuard::control(
-                div()
-                    .debug_selector(move || editor_selector)
-                    .w(px(92.0))
-                    .child(
-                        div().debug_selector(move || value_selector).child(
-                            NumberInput::new(
-                                format!("jellyflow-shader-factor-{instance_scope}"),
-                                "Factor",
-                            )
-                            .value(inline_factor)
-                            .min(-16.0)
-                            .max(16.0)
-                            .step(0.05)
-                            .disabled(factor_input_disabled)
-                            .xsmall()
-                            .on_change(move |change, _, cx| {
-                                let _ = inline_node.update(cx, |node, cx| {
-                                    node.edit_factor(change.value(), cx);
-                                });
-                            }),
-                        ),
+            div()
+                .debug_selector(move || editor_selector)
+                .w(px(92.0))
+                .child(
+                    div().debug_selector(move || value_selector).child(
+                        NumberInput::new(
+                            format!("jellyflow-shader-factor-{instance_scope}"),
+                            "Factor",
+                        )
+                        .value(inline_factor)
+                        .min(-16.0)
+                        .max(16.0)
+                        .step(0.05)
+                        .disabled(factor_input_disabled)
+                        .xsmall()
+                        .on_change(move |change, _, cx| {
+                            let _ = inline_node.update(cx, |node, cx| {
+                                node.edit_factor(change.value(), cx);
+                            });
+                        }),
                     ),
-            )
+                )
         });
 
         let mut input_a_row = div()
@@ -921,33 +917,35 @@ impl Render for ShaderMultiplyNode {
             .bg(rgb(0x20262d))
             .text_color(rgb(0xf4f7fb))
             .child(
-                div()
-                    .h(px(40.0))
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(rgb(0x3b4450))
-                    .bg(rgb(0x252b33))
-                    .child(div().text_sm().child(title))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .px(px(6.0))
-                                    .py(px(3.0))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(0x303944))
-                                    .text_xs()
-                                    .text_color(rgb(0xaab4c0))
-                                    .child("FLOAT"),
-                            )
-                            .child(preview_control),
-                    ),
+                drag_handle.wrap(
+                    div()
+                        .h(px(40.0))
+                        .px(px(12.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(rgb(0x3b4450))
+                        .bg(rgb(0x252b33))
+                        .child(div().text_sm().child(title))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(3.0))
+                                        .rounded(px(3.0))
+                                        .bg(rgb(0x303944))
+                                        .text_xs()
+                                        .text_color(rgb(0xaab4c0))
+                                        .child("FLOAT"),
+                                )
+                                .child(preview_control),
+                        ),
+                ),
             )
             .child(body)
     }

@@ -14,6 +14,8 @@ pub mod draft;
 mod draft_store;
 pub mod host;
 pub mod interaction;
+mod navigation;
+mod node_drag_handle;
 mod port_handle;
 pub mod presentation;
 pub mod registry;
@@ -57,10 +59,12 @@ pub use host::{
     OpenGpuiSceneHostStats,
 };
 pub use interaction::{
-    OpenGpuiNodeInteractionGuard, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
+    OpenGpuiOverlayInteractionBoundary, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragEvent, OpenGpuiPortDragOwner,
     OpenGpuiPortDragPhase, OpenGpuiPortEvent,
 };
+pub use navigation::{OpenGpuiNavigationConfig, OpenGpuiNavigationProfile};
+pub use node_drag_handle::OpenGpuiNodeDragHandle;
 pub use port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
 pub use presentation::{
     OpenGpuiNodeInteractionState, OpenGpuiNodeLod, OpenGpuiNodePresentationSnapshot,
