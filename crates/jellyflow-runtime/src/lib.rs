@@ -58,7 +58,9 @@ pub use runtime::view_session::{
     AttachViewError, NodeBindingEvent, NodeBindingKey, SelectedEdgeIds, ViewCloseOutcome,
     ViewCloseReason, ViewCloseReceipt, ViewCloseRequest, ViewCreateFromWireQueryError,
     ViewGeneration, ViewId, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
-    ViewSessionStats, ViewSubscriptionToken, WeakViewSession,
+    ViewSessionStats, ViewSubscriptionToken, VisibleRouteCursor, VisibleRouteCursorStaleReason,
+    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
+    VisibleRouteQueryOutcome, VisibleRouteQueryWork, VisibleRoutes, WeakViewSession,
 };
 
 #[cfg(test)]

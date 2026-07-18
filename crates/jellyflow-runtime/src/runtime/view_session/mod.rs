@@ -3,6 +3,7 @@
 mod facts;
 mod geometry;
 mod protocol;
+mod route_geometry;
 mod subscriptions;
 
 use std::cell::RefCell;
@@ -33,8 +34,14 @@ use crate::runtime::viewport::ViewportTransform;
 use crate::schema::NodeCatalog;
 
 use self::geometry::{AdmissionIndex, ViewSpatialIndex, recompute_routes};
-use self::order::index_node_draw_order;
+use self::order::index_draw_order;
 use self::protocol::PendingFrame;
+use self::route_geometry::RouteGeometryIndex;
+pub use self::route_geometry::{
+    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
+    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryWork,
+    VisibleRoutes,
+};
 pub use self::subscriptions::ViewSubscriptionToken;
 use facts::ViewFacts;
 
@@ -337,6 +344,17 @@ pub struct ViewSessionStats {
     pub spatial_updates: u64,
     pub route_invalidations: u64,
     pub route_recomputations: u64,
+    pub route_index_updates: u64,
+    pub route_query_cells_examined: u64,
+    pub route_query_entries_examined: u64,
+    pub route_query_candidates_matched: u64,
+    pub route_query_incomplete: u64,
+    pub route_query_budget_exhausted: u64,
+    pub route_flatten_cache_hits: u64,
+    pub route_flatten_cache_misses: u64,
+    pub route_flatten_cache_invalidations: u64,
+    pub route_flatten_segments_built: u64,
+    pub route_flatten_overflows: u64,
     pub view_state_sanitizations: u64,
     pub frame_nodes_materialized: u64,
     /// Admitted node candidates ranked with one cached selection-membership lookup each.
@@ -378,6 +396,7 @@ struct ViewState {
     policy: GraphRuntimePolicy,
     facts: ViewFacts,
     node_draw_order_ranks: BTreeMap<NodeId, usize>,
+    edge_draw_order_ranks: BTreeMap<EdgeId, usize>,
     selected_node_membership: HashSet<NodeId>,
     selected_edge_membership: HashSet<EdgeId>,
     selected_group_membership: HashSet<GroupId>,
@@ -400,6 +419,7 @@ struct ViewState {
     admission: AdmissionIndex,
     active_frame_nodes: BTreeSet<NodeId>,
     routes: SharedGeometryMap<EdgeId, PublishedEdgeRoute>,
+    route_geometry: RouteGeometryIndex,
     unresolved_routes: BTreeSet<EdgeId>,
     geometry_snapshot_cache: Option<GeometrySnapshot>,
     pending_frame: Option<PendingFrame>,
@@ -567,6 +587,15 @@ impl ViewState {
         {
             return false;
         }
+        let index = self.route_geometry.upsert(edge, &route);
+        self.stats.route_index_updates = self
+            .stats
+            .route_index_updates
+            .saturating_add(u64::from(index.index_changed));
+        self.stats.route_flatten_cache_invalidations = self
+            .stats
+            .route_flatten_cache_invalidations
+            .saturating_add(index.cache_invalidations);
         self.routes.insert_mut(edge, Arc::new(route));
         self.record_geometry_snapshot_updates(1);
         true
@@ -583,19 +612,38 @@ impl ViewState {
     }
 
     fn remove_route(&mut self, edge: EdgeId) -> bool {
-        if !self.routes.remove_mut(&edge) {
+        let route_removed = self.routes.remove_mut(&edge);
+        let index = self.route_geometry.remove(edge);
+        if !route_removed && !index.index_changed {
             return false;
         }
+        self.stats.route_index_updates = self
+            .stats
+            .route_index_updates
+            .saturating_add(u64::from(index.index_changed));
+        self.stats.route_flatten_cache_invalidations = self
+            .stats
+            .route_flatten_cache_invalidations
+            .saturating_add(index.cache_invalidations);
         self.record_geometry_snapshot_updates(1);
         true
     }
 
     fn clear_routes(&mut self) {
-        if self.routes.is_empty() {
+        let index = self.route_geometry.clear();
+        if self.routes.is_empty() && !index.index_changed {
             return;
         }
         let removed = self.routes.size();
         self.routes = SharedGeometryMap::new_sync();
+        self.stats.route_index_updates = self
+            .stats
+            .route_index_updates
+            .saturating_add(u64::from(index.index_changed));
+        self.stats.route_flatten_cache_invalidations = self
+            .stats
+            .route_flatten_cache_invalidations
+            .saturating_add(index.cache_invalidations);
         self.record_geometry_snapshot_updates(removed);
     }
 
@@ -641,7 +689,8 @@ impl ViewState {
     }
 
     fn rebuild_explicit_draw_order_membership(&mut self) {
-        self.node_draw_order_ranks = index_node_draw_order(&self.facts.draw_order);
+        self.node_draw_order_ranks = index_draw_order(&self.facts.draw_order);
+        self.edge_draw_order_ranks = index_draw_order(&self.facts.edge_draw_order);
         self.explicit_draw_order_nodes = self.facts.draw_order.iter().copied().collect();
         self.explicit_draw_order_edges = self.facts.edge_draw_order.iter().copied().collect();
         self.explicit_draw_order_groups = self.facts.group_draw_order.iter().copied().collect();
@@ -1199,7 +1248,8 @@ impl ViewShared {
         let explicit_draw_order_nodes = facts.draw_order.iter().copied().collect();
         let explicit_draw_order_edges = facts.edge_draw_order.iter().copied().collect();
         let explicit_draw_order_groups = facts.group_draw_order.iter().copied().collect();
-        let node_draw_order_ranks = index_node_draw_order(&facts.draw_order);
+        let node_draw_order_ranks = index_draw_order(&facts.draw_order);
+        let edge_draw_order_ranks = index_draw_order(&facts.edge_draw_order);
         let selected_node_membership = facts.selected_nodes.iter().copied().collect();
         let selected_edge_membership = facts.selected_edges.iter().copied().collect();
         let selected_group_membership = facts.selected_groups.iter().copied().collect();
@@ -1212,6 +1262,7 @@ impl ViewShared {
                 policy,
                 facts,
                 node_draw_order_ranks,
+                edge_draw_order_ranks,
                 selected_node_membership,
                 selected_edge_membership,
                 selected_group_membership,
@@ -1234,6 +1285,7 @@ impl ViewShared {
                 admission: AdmissionIndex::default(),
                 active_frame_nodes: BTreeSet::new(),
                 routes: SharedGeometryMap::new_sync(),
+                route_geometry: RouteGeometryIndex::default(),
                 unresolved_routes: BTreeSet::new(),
                 geometry_snapshot_cache: None,
                 pending_frame: None,

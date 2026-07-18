@@ -21,7 +21,7 @@ use crate::runtime::unwind::{PanicCollector, PanicPayload, resume};
 use crate::runtime::viewport::ViewportTransform;
 
 use super::geometry::{admission_bounds, expanded_bounds, publish_layouts, recompute_routes};
-use super::order::sort_admitted_node_render_order;
+use super::order::sort_render_order;
 use super::{ViewSession, ViewSessionError, ViewSessionEvent, ensure_open};
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,7 @@ fn take_candidate_budget(
     if candidates.len() <= limit {
         return (candidates, 0);
     }
-    sort_admitted_node_render_order(
+    sort_render_order(
         &mut candidates,
         |candidate| candidate.node,
         |candidate| candidate.selected,
@@ -252,7 +252,7 @@ impl ViewSession {
                     visible_scan_truncated,
                     incident_scan_truncated,
                 );
-                sort_admitted_node_render_order(
+                sort_render_order(
                     &mut candidates,
                     |candidate| candidate.node,
                     |candidate| candidate.selected,

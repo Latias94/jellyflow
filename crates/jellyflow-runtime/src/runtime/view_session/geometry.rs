@@ -161,7 +161,7 @@ impl WeakViewSession {
 }
 
 impl ViewShared {
-    fn geometry_snapshot(&self) -> Result<GeometrySnapshot, ViewSessionError> {
+    pub(super) fn geometry_snapshot(&self) -> Result<GeometrySnapshot, ViewSessionError> {
         let mut state = self
             .state
             .try_borrow_mut()

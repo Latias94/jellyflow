@@ -1,13 +1,15 @@
 use jellyflow_core::core::CanvasPoint;
 
-use super::super::endpoints::{EdgeEndpointPosition, HandlePosition};
-use super::types::{EdgePath, EdgePathLabel, PathCommand};
+use super::super::endpoints::EdgeEndpointPosition;
+use super::orthogonal::{OrthogonalEdgeOptions, plan_orthogonal_route};
+use super::types::{EdgePath, PathCommand};
 
 /// Smoothstep-like edge options.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmoothStepEdgeOptions {
     pub offset: f32,
     pub step_position: f32,
+    pub border_radius: f32,
 }
 
 impl Default for SmoothStepEdgeOptions {
@@ -15,6 +17,7 @@ impl Default for SmoothStepEdgeOptions {
         Self {
             offset: 20.0,
             step_position: 0.5,
+            border_radius: 5.0,
         }
     }
 }
@@ -24,125 +27,88 @@ pub fn smoothstep_edge_path(
     target: EdgeEndpointPosition,
     options: SmoothStepEdgeOptions,
 ) -> Option<EdgePath> {
-    if !source.point.is_finite() || !target.point.is_finite() {
-        return None;
-    }
-
-    let options = normalized_smoothstep_options(options);
-    let source_dir = handle_direction(source.position);
-    let target_dir = handle_direction(target.position);
-    let source_gap = translate_point(source.point, source_dir, options.offset)?;
-    let target_gap = translate_point(target.point, target_dir, options.offset)?;
-
-    let mut points = Vec::with_capacity(6);
-    push_distinct_point(&mut points, source.point);
-    push_distinct_point(&mut points, source_gap);
-
-    let horizontal = matches!(
-        source.position,
-        HandlePosition::Left | HandlePosition::Right
-    );
-    let label_point = if horizontal {
-        let center_x = source_gap.x + (target_gap.x - source_gap.x) * options.step_position;
-        push_distinct_point(
-            &mut points,
-            CanvasPoint {
-                x: center_x,
-                y: source_gap.y,
-            },
-        );
-        push_distinct_point(
-            &mut points,
-            CanvasPoint {
-                x: center_x,
-                y: target_gap.y,
-            },
-        );
-        CanvasPoint {
-            x: center_x,
-            y: 0.5 * (source_gap.y + target_gap.y),
-        }
-    } else {
-        let center_y = source_gap.y + (target_gap.y - source_gap.y) * options.step_position;
-        push_distinct_point(
-            &mut points,
-            CanvasPoint {
-                x: source_gap.x,
-                y: center_y,
-            },
-        );
-        push_distinct_point(
-            &mut points,
-            CanvasPoint {
-                x: target_gap.x,
-                y: center_y,
-            },
-        );
-        CanvasPoint {
-            x: 0.5 * (source_gap.x + target_gap.x),
-            y: center_y,
-        }
-    };
-
-    push_distinct_point(&mut points, target_gap);
-    push_distinct_point(&mut points, target.point);
-
-    let mut commands = Vec::with_capacity(points.len());
-    let first = *points.first()?;
+    let border_radius = normalized_border_radius(options.border_radius);
+    let route = plan_orthogonal_route(
+        source,
+        target,
+        OrthogonalEdgeOptions {
+            offset: options.offset,
+            step_position: options.step_position,
+        },
+    )?;
+    let first = *route.points.first()?;
+    let mut commands = Vec::with_capacity(route.points.len() * 2);
     commands.push(PathCommand::MoveTo(first));
-    for point in points.into_iter().skip(1) {
-        commands.push(PathCommand::LineTo(point));
+    let mut current = first;
+    for points in route.points.windows(3) {
+        let [before, corner, after] = [points[0], points[1], points[2]];
+        let Some((bend_start, bend_end)) = rounded_corner(before, corner, after, border_radius)
+        else {
+            push_line(&mut commands, &mut current, corner);
+            continue;
+        };
+        push_line(&mut commands, &mut current, bend_start);
+        let control1 = interpolate(bend_start, corner, 2.0 / 3.0);
+        let control2 = interpolate(bend_end, corner, 2.0 / 3.0);
+        commands.push(PathCommand::CubicTo {
+            control1,
+            control2,
+            to: bend_end,
+        });
+        current = bend_end;
     }
+    push_line(&mut commands, &mut current, *route.points.last()?);
 
     Some(EdgePath {
         commands,
-        label: EdgePathLabel {
-            point: label_point,
-            offset_x: (label_point.x - source.point.x).abs(),
-            offset_y: (label_point.y - source.point.y).abs(),
-        },
+        label: route.label,
     })
 }
 
-fn normalized_smoothstep_options(options: SmoothStepEdgeOptions) -> SmoothStepEdgeOptions {
-    SmoothStepEdgeOptions {
-        offset: if options.offset.is_finite() && options.offset >= 0.0 {
-            options.offset
-        } else {
-            SmoothStepEdgeOptions::default().offset
-        },
-        step_position: if options.step_position.is_finite() {
-            options.step_position.clamp(0.0, 1.0)
-        } else {
-            SmoothStepEdgeOptions::default().step_position
-        },
+fn normalized_border_radius(border_radius: f32) -> f32 {
+    if border_radius.is_finite() && border_radius >= 0.0 {
+        border_radius
+    } else {
+        SmoothStepEdgeOptions::default().border_radius
     }
 }
 
-fn handle_direction(position: HandlePosition) -> (f32, f32) {
-    match position {
-        HandlePosition::Top => (0.0, -1.0),
-        HandlePosition::Right => (1.0, 0.0),
-        HandlePosition::Bottom => (0.0, 1.0),
-        HandlePosition::Left => (-1.0, 0.0),
+fn rounded_corner(
+    before: CanvasPoint,
+    corner: CanvasPoint,
+    after: CanvasPoint,
+    radius: f32,
+) -> Option<(CanvasPoint, CanvasPoint)> {
+    if (before.x == corner.x && corner.x == after.x)
+        || (before.y == corner.y && corner.y == after.y)
+    {
+        return None;
+    }
+    let incoming = distance(before, corner);
+    let outgoing = distance(corner, after);
+    let bend = radius.min(incoming * 0.5).min(outgoing * 0.5);
+    (bend > f32::EPSILON).then(|| {
+        (
+            interpolate(corner, before, bend / incoming),
+            interpolate(corner, after, bend / outgoing),
+        )
+    })
+}
+
+fn distance(a: CanvasPoint, b: CanvasPoint) -> f32 {
+    ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt()
+}
+
+fn interpolate(from: CanvasPoint, to: CanvasPoint, amount: f32) -> CanvasPoint {
+    CanvasPoint {
+        x: from.x + (to.x - from.x) * amount,
+        y: from.y + (to.y - from.y) * amount,
     }
 }
 
-fn translate_point(
-    point: CanvasPoint,
-    direction: (f32, f32),
-    distance: f32,
-) -> Option<CanvasPoint> {
-    let out = CanvasPoint {
-        x: point.x + direction.0 * distance,
-        y: point.y + direction.1 * distance,
-    };
-    out.is_finite().then_some(out)
-}
-
-fn push_distinct_point(points: &mut Vec<CanvasPoint>, point: CanvasPoint) {
-    if points.last().is_some_and(|last| *last == point) {
-        return;
+fn push_line(commands: &mut Vec<PathCommand>, current: &mut CanvasPoint, point: CanvasPoint) {
+    if *current != point {
+        commands.push(PathCommand::LineTo(point));
+        *current = point;
     }
-    points.push(point);
 }

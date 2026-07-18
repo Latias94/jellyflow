@@ -18,7 +18,10 @@ use crate::runtime::adapter_protocol::{
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::GraphRuntime;
-use crate::runtime::view_session::{ViewSession, ViewSessionEvent, ViewSessionOptions};
+use crate::runtime::view_session::{
+    ViewSession, ViewSessionEvent, ViewSessionOptions, VisibleRouteCursorStaleReason,
+    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome,
+};
 
 use super::fixtures::{RoutedGraphIds, graph_with_nodes, graph_with_routed_edge, node};
 
@@ -685,6 +688,56 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
             .interaction
             .selected
     );
+
+    let crossing_bounds = ViewRect::new(ViewPoint::new(440.0, 100.0), ViewSize::new(20.0, 40.0));
+    let cursor = match session
+        .visible_routes(VisibleRouteQuery::new(crossing_bounds, 0))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Incomplete { cursor, work } => {
+            assert_eq!(work.entries_examined, 0);
+            cursor
+        }
+        other => panic!("zero-budget route query must be resumable: {other:?}"),
+    };
+    session
+        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
+        .unwrap();
+    let routes = match session
+        .visible_routes(VisibleRouteQuery::resume(cursor, 64))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Complete { routes, work } => {
+            assert!(work.entries_examined > 0);
+            assert_eq!(work.flatten_cache_misses, 1);
+            routes
+        }
+        other => panic!("resumed route query must complete: {other:?}"),
+    };
+    assert_eq!(routes.edge_ids(), &[ids.edge]);
+    assert!(
+        routes
+            .iter()
+            .find(|route| route.edge() == ids.edge)
+            .unwrap()
+            .facts()
+            .interaction
+            .selected
+    );
+    session
+        .set_selection(Vec::new(), Vec::new(), Vec::new())
+        .unwrap();
+    match session
+        .visible_routes(VisibleRouteQuery::new(crossing_bounds, 64))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Complete { routes, work } => {
+            assert_eq!(routes.edge_ids(), &[ids.edge]);
+            assert_eq!(work.flatten_cache_hits, 1);
+            assert_eq!(work.flatten_cache_misses, 0);
+        }
+        other => panic!("cached route query must complete: {other:?}"),
+    }
     assert_eq!(
         session
             .nodes_intersecting(CanvasRect {
@@ -1639,6 +1692,14 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
     let initial = session.geometry_snapshot().unwrap();
     assert_eq!(initial.layout_revision(), 1);
     let initial_route = initial.route(ids.edge).unwrap().clone();
+    let route_view = ViewRect::new(ViewPoint::new(0.0, 0.0), ViewSize::new(800.0, 200.0));
+    let reconnect_cursor = match session
+        .visible_routes(VisibleRouteQuery::new(route_view, 0))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Incomplete { cursor, .. } => cursor,
+        other => panic!("live route query should pause at zero budget: {other:?}"),
+    };
 
     session
         .execute(GraphCommand::reconnect(
@@ -1651,23 +1712,60 @@ fn edge_only_reconnect_disconnect_and_restore_each_advance_geometry_revision_onc
         .unwrap()
         .applied()
         .expect("reconnect applies");
+    assert!(matches!(
+        session.visible_routes(VisibleRouteQuery::resume(reconnect_cursor, 64)),
+        Err(VisibleRouteQueryError::StaleCursor(
+            VisibleRouteCursorStaleReason::RouteGeometry
+        ))
+    ));
     let reconnected = session.geometry_snapshot().unwrap();
     assert_eq!(reconnected.layout_revision(), 2);
     assert_ne!(reconnected.route(ids.edge).unwrap(), &initial_route);
+    let disconnect_cursor = match session
+        .visible_routes(VisibleRouteQuery::new(route_view, 0))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Incomplete { cursor, .. } => cursor,
+        other => panic!("reconnected route query should pause at zero budget: {other:?}"),
+    };
 
     session
         .execute(GraphCommand::disconnect(1, ids.edge))
         .unwrap()
         .applied()
         .expect("disconnect applies");
+    assert!(matches!(
+        session.visible_routes(VisibleRouteQuery::resume(disconnect_cursor, 64)),
+        Err(VisibleRouteQueryError::StaleCursor(
+            VisibleRouteCursorStaleReason::RouteGeometry
+        ))
+    ));
     let disconnected = session.geometry_snapshot().unwrap();
     assert_eq!(disconnected.layout_revision(), 3);
     assert!(disconnected.route(ids.edge).is_none());
+    match session
+        .visible_routes(VisibleRouteQuery::new(route_view, 64))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Complete { routes, .. } => {
+            assert!(routes.edge_ids().is_empty());
+        }
+        other => panic!("removed route must leave no indexed entry: {other:?}"),
+    }
 
     session.execute(GraphCommand::undo(2)).unwrap();
     let restored = session.geometry_snapshot().unwrap();
     assert_eq!(restored.layout_revision(), 4);
     assert!(restored.route(ids.edge).is_some());
+    match session
+        .visible_routes(VisibleRouteQuery::new(route_view, 64))
+        .unwrap()
+    {
+        VisibleRouteQueryOutcome::Complete { routes, .. } => {
+            assert_eq!(routes.edge_ids(), &[ids.edge]);
+        }
+        other => panic!("restored route must be indexed again: {other:?}"),
+    }
 }
 
 #[test]

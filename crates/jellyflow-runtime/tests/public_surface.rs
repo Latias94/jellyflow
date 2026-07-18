@@ -18,7 +18,7 @@ use jellyflow_runtime::{
     AdapterEnvironment, ConnectionEdit, Diagnostic, DiagnosticTarget, FeedbackCollector,
     FrameRequest, GraphCommand, GraphProfile, GraphRuntime, GraphRuntimePolicy, HandlePosition,
     IncidentEdgePolicy, NodeLayoutTarget, RendererStamp, TopologyEdit, TopologyPort, ViewPoint,
-    ViewRect, ViewSessionOptions, ViewSize,
+    ViewRect, ViewSessionOptions, ViewSize, VisibleRouteQuery,
 };
 
 fn graph_with_one_port() -> (Graph, NodeId, PortId) {
@@ -177,6 +177,11 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
     assert_eq!(receipt.operations().len(), 1);
     assert!(receipt.publication().is_some());
     assert_eq!(view.geometry_snapshot().unwrap().layout_revision(), 1);
+    let _visible_routes = VisibleRouteQuery::new(
+        ViewRect::new(ViewPoint::new(0.0, 0.0), ViewSize::new(800.0, 600.0)),
+        64,
+    )
+    .with_margin(24.0);
 
     assert!(
         view.set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))
