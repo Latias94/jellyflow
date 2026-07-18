@@ -169,6 +169,22 @@ pub enum EdgePickCursorStaleReason {
     PaintOrder,
 }
 
+impl EdgePickCursorStaleReason {
+    /// Returns whether normal mutable view state can invalidate this cursor between pages.
+    ///
+    /// Foreign-view and generation mismatches are capability integrity failures and therefore are
+    /// not eligible for a first-page restart.
+    pub const fn is_restartable(self) -> bool {
+        matches!(
+            self,
+            Self::ViewportTransform
+                | Self::RouteGeometry
+                | Self::EdgeInteraction
+                | Self::PaintOrder
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EdgePickQueryError {
     #[error(transparent)]

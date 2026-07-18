@@ -69,6 +69,11 @@ impl ViewSelectionSeed {
     pub fn groups(&self) -> &[GroupId] {
         &self.groups
     }
+
+    /// Consumes this selection seed into its stable node, edge, and group lists.
+    pub fn into_parts(self) -> (Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>) {
+        (self.nodes, self.edges, self.groups)
+    }
 }
 
 /// Persisted stacking facts that may initialize a new view session.

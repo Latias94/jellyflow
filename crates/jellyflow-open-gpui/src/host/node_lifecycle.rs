@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use jellyflow::core::{CanvasRect, NodeId};
-use jellyflow::runtime::{FrameNode, NodeInstanceKey, ViewCloseReason, ViewSessionError};
+use jellyflow::runtime::{
+    CanvasInteractionPhase, FrameNode, InteractionOwner, NodeInstanceKey, ViewCloseReason,
+    ViewSessionError,
+};
 use open_gpui::{AnyView, AppContext, Context, Entity, Window};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
@@ -538,6 +541,7 @@ impl OpenGpuiSceneHost {
             &retired.instance,
             OpenGpuiSceneGestureCancelReason::OwnerRetired,
         );
+        self.retire_canvas_interaction_owner(InteractionOwner::Node(retired.instance.node()));
         self.retire_connection_owner(&retired.instance, &retired.value.mount);
         retired.value
     }
@@ -548,8 +552,35 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn detach_all_instances(&mut self) -> Vec<MountedNode> {
-        if self.connection_owner.is_some() {
-            self.cancel_connection_for_drag(OpenGpuiPortDragCancelReason::OwnerRetired);
+        let retired_nodes = self
+            .mounts
+            .iter()
+            .map(|(instance, _)| instance.node())
+            .collect::<Vec<_>>();
+        for node in retired_nodes {
+            self.retire_canvas_interaction_owner(InteractionOwner::Node(node));
+        }
+        if let Some(edge) = self.canvas_interaction.presentation().active_edge() {
+            self.retire_canvas_interaction_owner(InteractionOwner::Edge(edge));
+        }
+        if !matches!(
+            self.canvas_interaction.presentation().phase(),
+            CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed
+        ) {
+            let update = self.canvas_interaction.cancel();
+            self.discard_pending_interaction_submission();
+            self.queue_interaction_queries(update.into_parts().0);
+        }
+        if let Some((owner, mount)) = self
+            .connection_owner
+            .as_ref()
+            .map(|current| (current.owner.clone(), current.mount.clone()))
+        {
+            self.interactions.cancel_owner_deferred(
+                &owner,
+                &mount,
+                OpenGpuiPortDragCancelReason::OwnerRetired,
+            );
         }
         self.mounts.retire_all()
     }

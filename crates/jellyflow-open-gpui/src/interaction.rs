@@ -266,6 +266,7 @@ type PortCaptureBookkeeping = CaptureBookkeeping<ActivePortDrag, PendingCancella
 struct InteractionState {
     capture: PortCaptureBookkeeping,
     focus_handle: Option<FocusHandle>,
+    port_focus: Option<PortFocusOwnership>,
 }
 
 struct ActivePortDrag {
@@ -274,7 +275,6 @@ struct ActivePortDrag {
     mount: OpenGpuiMountCapability,
     listener: OpenGpuiPortListener,
     lease: OpenGpuiActivityLease,
-    previous_focus: Option<WeakFocusHandle>,
     hitbox: HitboxId,
     position: Point<Pixels>,
     modifiers: Modifiers,
@@ -283,7 +283,31 @@ struct ActivePortDrag {
 struct PendingCancellation {
     event: OpenGpuiPortDragEvent,
     listener: OpenGpuiPortListener,
+    focus_settlement: Option<PendingPortFocusSettlement>,
+}
+
+struct PendingPortFocusSettlement {
+    owner: OpenGpuiPortDragOwner,
+    mount: OpenGpuiMountCapability,
+    exit: OpenGpuiPortFocusExit,
+}
+
+struct PortFocusOwnership {
+    owner: OpenGpuiPortDragOwner,
+    mount: OpenGpuiMountCapability,
+    focus: NativeFocusOwnership,
+}
+
+struct NativeFocusOwnership {
     previous_focus: Option<WeakFocusHandle>,
+    interaction_focus: Option<WeakFocusHandle>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpenGpuiPortFocusExit {
+    Restore,
+    OwnerRetired,
+    HostClosed,
 }
 
 impl CaptureGeneration for ActivePortDrag {
@@ -298,6 +322,7 @@ impl OpenGpuiInteractionCoordinator {
             state: Rc::new(RefCell::new(InteractionState {
                 capture: CaptureBookkeeping::new(false),
                 focus_handle: None,
+                port_focus: None,
             })),
         }
     }
@@ -315,7 +340,35 @@ impl OpenGpuiInteractionCoordinator {
     }
 
     pub(crate) fn requires_window_cleanup(&self) -> bool {
-        self.state.borrow().capture.requires_cleanup()
+        let state = self.state.borrow();
+        state.capture.requires_cleanup() || state.port_focus.is_some()
+    }
+
+    pub(crate) fn settle_port_focus(
+        &self,
+        owner: &OpenGpuiPortDragOwner,
+        mount: &OpenGpuiMountCapability,
+        exit: OpenGpuiPortFocusExit,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let ownership = {
+            let mut state = self.state.borrow_mut();
+            state
+                .port_focus
+                .take_if(|current| current.owner == *owner && current.mount.is_same_mount(mount))
+        };
+        let Some(ownership) = ownership else {
+            return false;
+        };
+        settle_native_focus(ownership.focus, exit, window, cx);
+        true
+    }
+
+    pub(crate) fn settle_port_focus_for_host_close(&self, window: &mut Window) -> bool {
+        let had_ownership = self.state.borrow_mut().port_focus.take().is_some();
+        window.blur();
+        had_ownership
     }
 
     pub(crate) fn rebind_port(
@@ -330,13 +383,22 @@ impl OpenGpuiInteractionCoordinator {
         }
         let rebound = {
             let mut state = self.state.borrow_mut();
-            let Some(active) = state.capture.active_mut() else {
-                return;
+            let active_mount = {
+                let Some(active) = state.capture.active_mut() else {
+                    return;
+                };
+                if &active.owner != owner || !active.mount.is_same_mount(mount) {
+                    return;
+                }
+                active.hitbox = hitbox;
+                active.mount.clone()
             };
-            if &active.owner != owner || !active.mount.is_same_mount(mount) {
-                return;
+            if let Some(focus) = state.port_focus.as_mut()
+                && focus.owner == *owner
+                && focus.mount.is_same_mount(&active_mount)
+            {
+                focus.mount = mount.clone();
             }
-            active.hitbox = hitbox;
             true
         };
         if rebound {
@@ -358,7 +420,11 @@ impl OpenGpuiInteractionCoordinator {
         if event.button != MouseButton::Left || !mount.is_live() {
             return false;
         }
-        if self.state.borrow().capture.active().is_some() {
+        let interaction_busy = {
+            let state = self.state.borrow();
+            state.capture.active().is_some() || state.port_focus.is_some()
+        };
+        if interaction_busy {
             return true;
         }
 
@@ -408,17 +474,27 @@ impl OpenGpuiInteractionCoordinator {
             position: event.position,
             modifiers: event.modifiers,
         };
-        self.state.borrow_mut().capture.activate(ActivePortDrag {
-            generation,
-            owner,
-            mount,
-            listener: listener.clone(),
-            lease,
-            previous_focus,
-            hitbox,
-            position: event.position,
-            modifiers: event.modifiers,
-        });
+        {
+            let mut state = self.state.borrow_mut();
+            state.port_focus = Some(PortFocusOwnership {
+                owner: owner.clone(),
+                mount: mount.clone(),
+                focus: NativeFocusOwnership {
+                    previous_focus,
+                    interaction_focus: interaction_focus.map(|focus| focus.downgrade()),
+                },
+            });
+            state.capture.activate(ActivePortDrag {
+                generation,
+                owner,
+                mount,
+                listener: listener.clone(),
+                lease,
+                hitbox,
+                position: event.position,
+                modifiers: event.modifiers,
+            });
+        }
         listener(OpenGpuiPortEvent::Pointer(start), window, cx);
         window.refresh();
         true
@@ -608,6 +684,41 @@ impl OpenGpuiInteractionCoordinator {
         true
     }
 
+    pub(crate) fn reject_port_start(
+        &self,
+        owner: &OpenGpuiPortDragOwner,
+        mount: &OpenGpuiMountCapability,
+        reason: OpenGpuiPortDragCancelReason,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let active =
+            {
+                let mut state = self.state.borrow_mut();
+                if state.capture.active().is_some_and(|active| {
+                    &active.owner == owner && active.mount.is_same_mount(mount)
+                }) {
+                    state.capture.take_active()
+                } else {
+                    None
+                }
+            };
+        let Some(active) = active else {
+            return false;
+        };
+        self.queue_cancellation_with_focus(
+            active,
+            reason,
+            Some(PendingPortFocusSettlement {
+                owner: owner.clone(),
+                mount: mount.clone(),
+                exit: OpenGpuiPortFocusExit::Restore,
+            }),
+        );
+        self.schedule_pending_drain(window, cx);
+        true
+    }
+
     pub(crate) fn cancel_now(
         &self,
         reason: OpenGpuiPortDragCancelReason,
@@ -641,14 +752,15 @@ impl OpenGpuiInteractionCoordinator {
 
         window.release_pointer();
         for pending in pending {
-            settle_focus(
-                pending.event.phase,
-                pending.previous_focus.as_ref(),
-                self.state.borrow().focus_handle.as_ref(),
-                window,
-                cx,
-            );
-            (pending.listener)(OpenGpuiPortEvent::Pointer(pending.event), window, cx);
+            let PendingCancellation {
+                event,
+                listener,
+                focus_settlement,
+            } = pending;
+            listener(OpenGpuiPortEvent::Pointer(event), window, cx);
+            if let Some(focus) = focus_settlement {
+                self.settle_port_focus(&focus.owner, &focus.mount, focus.exit, window, cx);
+            }
         }
         window.refresh();
         true
@@ -687,21 +799,22 @@ impl OpenGpuiInteractionCoordinator {
             modifiers,
         };
         let listener = active.listener;
-        let previous_focus = active.previous_focus;
         drop(active.lease);
         window.release_pointer();
-        settle_focus(
-            phase,
-            previous_focus.as_ref(),
-            self.state.borrow().focus_handle.as_ref(),
-            window,
-            cx,
-        );
         listener(OpenGpuiPortEvent::Pointer(event), window, cx);
         window.refresh();
     }
 
     fn queue_cancellation(&self, active: ActivePortDrag, reason: OpenGpuiPortDragCancelReason) {
+        self.queue_cancellation_with_focus(active, reason, None);
+    }
+
+    fn queue_cancellation_with_focus(
+        &self,
+        active: ActivePortDrag,
+        reason: OpenGpuiPortDragCancelReason,
+        focus_settlement: Option<PendingPortFocusSettlement>,
+    ) {
         let event = OpenGpuiPortDragEvent {
             owner: active.owner,
             phase: OpenGpuiPortDragPhase::Cancel(reason),
@@ -713,7 +826,7 @@ impl OpenGpuiInteractionCoordinator {
             PendingCancellation {
                 event,
                 listener: active.listener,
-                previous_focus: active.previous_focus,
+                focus_settlement,
             },
             true,
         );
@@ -1603,43 +1716,62 @@ fn invalidate_generation(state: &Weak<RefCell<InteractionState>>, generation: u6
         PendingCancellation {
             event,
             listener: active.listener,
-            previous_focus: active.previous_focus,
+            focus_settlement: None,
         },
         true,
     );
 }
 
-fn settle_focus(
-    phase: OpenGpuiPortDragPhase,
-    previous_focus: Option<&WeakFocusHandle>,
-    interaction_focus: Option<&FocusHandle>,
+fn settle_native_focus(
+    ownership: NativeFocusOwnership,
+    exit: OpenGpuiPortFocusExit,
     window: &mut Window,
     cx: &mut App,
 ) {
-    match phase {
-        OpenGpuiPortDragPhase::Release
-        | OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::Escape) => {
-            restore_previous_focus(previous_focus, interaction_focus, window, cx);
-        }
-        OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::PortDisabled) => {
-            if interaction_focus.is_some_and(|focus| focus.is_focused(window)) {
+    let previous_focus = ownership
+        .previous_focus
+        .as_ref()
+        .and_then(WeakFocusHandle::upgrade);
+    let interaction_focus = ownership
+        .interaction_focus
+        .as_ref()
+        .and_then(WeakFocusHandle::upgrade);
+    let current_focus = window.focused(cx);
+
+    match exit {
+        OpenGpuiPortFocusExit::Restore => {
+            let current_is_previous = current_focus
+                .as_ref()
+                .zip(previous_focus.as_ref())
+                .is_some_and(|(current, previous)| current == previous);
+            if current_is_previous {
+                return;
+            }
+            let current_is_interaction = current_focus
+                .as_ref()
+                .zip(interaction_focus.as_ref())
+                .is_some_and(|(current, interaction)| current == interaction);
+            if current_focus.is_some() && !current_is_interaction {
+                return;
+            }
+            if let Some(previous_focus) = previous_focus {
+                window.focus(&previous_focus, cx);
+            } else if let Some(interaction_focus) = interaction_focus {
+                window.focus(&interaction_focus, cx);
+            } else {
                 window.blur();
             }
         }
-        OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::OwnerRetired) => {
-            if let Some(interaction_focus) =
-                interaction_focus.filter(|focus| focus.is_focused(window))
-            {
-                window.focus(interaction_focus, cx);
+        OpenGpuiPortFocusExit::OwnerRetired => {
+            let current_is_interaction = current_focus
+                .as_ref()
+                .zip(interaction_focus.as_ref())
+                .is_some_and(|(current, interaction)| current == interaction);
+            if current_is_interaction {
+                window.blur();
             }
         }
-        OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::HostClosed) => window.blur(),
-        OpenGpuiPortDragPhase::Start
-        | OpenGpuiPortDragPhase::Move
-        | OpenGpuiPortDragPhase::Cancel(
-            OpenGpuiPortDragCancelReason::ProtectedCapacityExceeded
-            | OpenGpuiPortDragCancelReason::InteractionUnavailable,
-        ) => {}
+        OpenGpuiPortFocusExit::HostClosed => window.blur(),
     }
 }
 
@@ -1662,22 +1794,6 @@ fn settle_scene_focus(
     }
     if let Some(previous_focus) = previous_focus.and_then(WeakFocusHandle::upgrade) {
         window.focus(&previous_focus, cx);
-    }
-}
-
-fn restore_previous_focus(
-    previous_focus: Option<&WeakFocusHandle>,
-    interaction_focus: Option<&FocusHandle>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if interaction_focus.is_some_and(|focus| !focus.is_focused(window)) {
-        return;
-    }
-    if let Some(previous_focus) = previous_focus.and_then(WeakFocusHandle::upgrade) {
-        window.focus(&previous_focus, cx);
-    } else {
-        window.blur();
     }
 }
 
@@ -1724,11 +1840,21 @@ pub(crate) fn port_drag_owner(instance: NodeInstanceKey, port: PortId) -> OpenGp
 mod capture_bookkeeping_tests {
     use std::fmt::Debug;
 
+    use open_gpui::{Context, Render};
+
     use super::*;
 
     #[derive(Debug, Eq, PartialEq)]
     struct TestActive {
         generation: u64,
+    }
+
+    struct FocusTestView;
+
+    impl Render for FocusTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            open_gpui::div()
+        }
     }
 
     impl CaptureGeneration for TestActive {
@@ -1810,5 +1936,104 @@ mod capture_bookkeeping_tests {
 
         assert_invariants(false, true);
         assert_invariants(None, Some(MouseButton::Middle));
+    }
+
+    #[open_gpui::test]
+    fn terminal_restore_returns_to_the_previous_focus(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let ownership = native_focus_ownership(&previous, &interaction);
+            window.focus(&interaction, cx);
+
+            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+
+            assert_eq!(window.focused(cx), Some(previous));
+        });
+    }
+
+    #[open_gpui::test]
+    fn terminal_restore_does_not_steal_a_new_live_focus(cx: &mut open_gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let unrelated = cx.focus_handle();
+            let ownership = native_focus_ownership(&previous, &interaction);
+            window.focus(&interaction, cx);
+            window.focus(&unrelated, cx);
+
+            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+
+            assert_eq!(window.focused(cx), Some(unrelated));
+        });
+    }
+
+    #[open_gpui::test]
+    fn terminal_restore_falls_back_to_the_canvas_when_previous_focus_is_gone(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let interaction = cx.focus_handle();
+            let previous = cx.focus_handle().downgrade();
+            let ownership = NativeFocusOwnership {
+                previous_focus: Some(previous),
+                interaction_focus: Some(interaction.downgrade()),
+            };
+            window.blur();
+
+            settle_native_focus(ownership, OpenGpuiPortFocusExit::Restore, window, cx);
+
+            assert_eq!(window.focused(cx), Some(interaction));
+        });
+    }
+
+    #[open_gpui::test]
+    fn retirement_only_blurs_interaction_focus_but_host_close_blurs_everything(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        cx.update(|window, cx| {
+            let previous = cx.focus_handle();
+            let interaction = cx.focus_handle();
+            let unrelated = cx.focus_handle();
+            window.focus(&interaction, cx);
+            settle_native_focus(
+                native_focus_ownership(&previous, &interaction),
+                OpenGpuiPortFocusExit::OwnerRetired,
+                window,
+                cx,
+            );
+            assert!(window.focused(cx).is_none());
+
+            window.focus(&unrelated, cx);
+            settle_native_focus(
+                native_focus_ownership(&previous, &interaction),
+                OpenGpuiPortFocusExit::OwnerRetired,
+                window,
+                cx,
+            );
+            assert_eq!(window.focused(cx), Some(unrelated.clone()));
+
+            settle_native_focus(
+                native_focus_ownership(&previous, &interaction),
+                OpenGpuiPortFocusExit::HostClosed,
+                window,
+                cx,
+            );
+            assert!(window.focused(cx).is_none());
+        });
+    }
+
+    fn native_focus_ownership(
+        previous: &FocusHandle,
+        interaction: &FocusHandle,
+    ) -> NativeFocusOwnership {
+        NativeFocusOwnership {
+            previous_focus: Some(previous.downgrade()),
+            interaction_focus: Some(interaction.downgrade()),
+        }
     }
 }

@@ -122,6 +122,19 @@ pub enum ConnectionProbeCursorStaleReason {
     PaintOrder,
 }
 
+impl ConnectionProbeCursorStaleReason {
+    /// Returns whether normal mutable view state can invalidate this cursor between pages.
+    ///
+    /// Foreign-view and generation mismatches are capability integrity failures. They must not be
+    /// retried against a session that never owned the cursor or no longer owns the view generation.
+    pub const fn is_restartable(self) -> bool {
+        matches!(
+            self,
+            Self::ViewportTransform | Self::GraphRevision | Self::PortGeometry | Self::PaintOrder
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionProbeQueryError {
     #[error(transparent)]

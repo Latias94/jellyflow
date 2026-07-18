@@ -2,17 +2,14 @@ use std::fmt;
 use std::rc::Rc;
 
 use jellyflow::runtime::schema::NodeCatalog;
-use jellyflow::runtime::{GraphCommandOutcome, ViewSession, ViewSize};
-use jellyflow_open_gpui::{
-    OpenGpuiCommandTicketResult, OpenGpuiConnectionCancelReason, OpenGpuiConnectionCommitEvent,
-    OpenGpuiConnectionCommitFailure, OpenGpuiConnectionCommitOutcome,
-    OpenGpuiConnectionCommitRejection, OpenGpuiConnectionCommitStage, OpenGpuiConnectionPoint,
-    OpenGpuiCreateFromWireCandidates, OpenGpuiCreateFromWireError, OpenGpuiCreateFromWireRequest,
-    OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+use jellyflow::runtime::{
+    CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
+    CreateFromWireCandidates, InteractionTerminalReason, ViewSession, ViewSize,
 };
+use jellyflow_open_gpui::{OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Task,
+    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
     WeakFocusHandle, Window, div, px, rgb,
 };
 use open_gpui_ui_components::gpui_adapter::TextInputController;
@@ -27,17 +24,20 @@ pub const NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR: &str =
 pub const NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR: &str =
     "jellyflow-native-connection-search-diagnostic";
 pub const NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR: &str = "jellyflow-native-search-retry";
-pub const NATIVE_CONNECTION_COMMIT_DIAGNOSTIC_SELECTOR: &str =
-    "jellyflow-native-connection-commit-diagnostic";
+pub const NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR: &str =
+    "jellyflow-native-connection-search-loading";
 const NATIVE_CONNECTION_SEARCH_INPUT_SELECTOR: &str = "jellyflow-native-connection-search-input";
 
 /// Application-owned source for one revision-bound create-from-wire query.
 pub trait NativeConnectionSearchSource {
     fn candidates(
         &self,
-        host: &OpenGpuiSceneHost,
-        request: OpenGpuiCreateFromWireRequest,
-    ) -> Result<OpenGpuiCreateFromWireCandidates, NativeConnectionSearchSourceError>;
+        request: ConnectionSearchRequest,
+        query: &mut dyn FnMut() -> Result<
+            CreateFromWireCandidates,
+            NativeConnectionSearchSourceError,
+        >,
+    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>;
 }
 
 /// Product-level candidate-source failure shown by the native search surface.
@@ -68,11 +68,13 @@ struct RuntimeConnectionSearchSource;
 impl NativeConnectionSearchSource for RuntimeConnectionSearchSource {
     fn candidates(
         &self,
-        host: &OpenGpuiSceneHost,
-        request: OpenGpuiCreateFromWireRequest,
-    ) -> Result<OpenGpuiCreateFromWireCandidates, NativeConnectionSearchSourceError> {
-        host.create_from_wire_candidates(request)
-            .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string()))
+        _request: ConnectionSearchRequest,
+        query: &mut dyn FnMut() -> Result<
+            CreateFromWireCandidates,
+            NativeConnectionSearchSourceError,
+        >,
+    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError> {
+        query()
     }
 }
 
@@ -86,9 +88,6 @@ pub struct NativeGraphSurface {
     search_source: Rc<dyn NativeConnectionSearchSource>,
     query_controller: Entity<TextInputController>,
     search: Option<NativeConnectionSearch>,
-    pending_commit_request: Option<OpenGpuiCreateFromWireRequest>,
-    pending_commit_task: Option<Task<()>>,
-    connection_commit_diagnostic: Option<NativeConnectionCommitDiagnostic>,
     focus_search_on_next_render: bool,
     cleanup_search_focus: bool,
     previous_focus: Option<WeakFocusHandle>,
@@ -97,9 +96,8 @@ pub struct NativeGraphSurface {
 }
 
 struct NativeConnectionSearch {
-    request: OpenGpuiCreateFromWireRequest,
-    anchor: OpenGpuiConnectionPoint,
-    candidates: Option<OpenGpuiCreateFromWireCandidates>,
+    request: ConnectionSearchRequest,
+    candidates: Option<CreateFromWireCandidates>,
     rows: Vec<NativeCandidateRow>,
     diagnostic: Option<String>,
 }
@@ -110,87 +108,6 @@ struct NativeCandidateRow {
     title: String,
     detail: String,
     searchable: String,
-}
-
-#[derive(PartialEq, Eq)]
-struct NativeConnectionCommitDiagnostic {
-    code: String,
-    message: String,
-}
-
-impl NativeConnectionCommitDiagnostic {
-    fn from_event(event: OpenGpuiConnectionCommitEvent) -> Option<Self> {
-        let OpenGpuiConnectionCommitOutcome::Failed(failure) = event.into_outcome() else {
-            return None;
-        };
-        let (code, message) = match failure {
-            OpenGpuiConnectionCommitFailure::Preparation(rejection) => {
-                let code = match &rejection {
-                    OpenGpuiConnectionCommitRejection::StaleGeneration { .. } => {
-                        "connection.stale_generation"
-                    }
-                    OpenGpuiConnectionCommitRejection::InvalidPhase { .. } => {
-                        "connection.invalid_phase"
-                    }
-                    OpenGpuiConnectionCommitRejection::RevisionUnavailable => {
-                        "connection.revision_unavailable"
-                    }
-                    OpenGpuiConnectionCommitRejection::GeometryUnavailable { .. } => {
-                        "connection.geometry_unavailable"
-                    }
-                };
-                (code.to_owned(), rejection.to_string())
-            }
-            OpenGpuiConnectionCommitFailure::PolicyRejected(evaluation) => {
-                evaluation.diagnostics().first().map_or_else(
-                    || {
-                        (
-                            "connection.policy_rejected".to_owned(),
-                            "Connection policy rejected this edit.".to_owned(),
-                        )
-                    },
-                    |diagnostic| (diagnostic.key.clone(), diagnostic.message.clone()),
-                )
-            }
-            OpenGpuiConnectionCommitFailure::Conflict(conflict) => (
-                "connection.revision_conflict".to_owned(),
-                format!(
-                    "Graph changed from revision {} to {}; retry the connection.",
-                    conflict.expected_revision(),
-                    conflict.current().revision()
-                ),
-            ),
-            OpenGpuiConnectionCommitFailure::Rejected(rejection) => {
-                rejection.diagnostics().first().map_or_else(
-                    || {
-                        (
-                            "connection.command_rejected".to_owned(),
-                            rejection.message().to_owned(),
-                        )
-                    },
-                    |diagnostic| (diagnostic.key.clone(), diagnostic.message.clone()),
-                )
-            }
-            OpenGpuiConnectionCommitFailure::Session { stage, error } => {
-                let code = match stage {
-                    OpenGpuiConnectionCommitStage::Evaluation => {
-                        "connection.evaluation_unavailable"
-                    }
-                    OpenGpuiConnectionCommitStage::Execution => "connection.execution_unavailable",
-                };
-                (code.to_owned(), error.to_string())
-            }
-            OpenGpuiConnectionCommitFailure::CommandEnqueue(error) => (
-                "connection.command_queue_unavailable".to_owned(),
-                error.to_string(),
-            ),
-            OpenGpuiConnectionCommitFailure::Command(error) => (
-                "connection.command_result_unavailable".to_owned(),
-                error.to_string(),
-            ),
-        };
-        Some(Self { code, message })
-    }
 }
 
 impl NativeGraphSurface {
@@ -221,9 +138,6 @@ impl NativeGraphSurface {
             search_source,
             query_controller,
             search: None,
-            pending_commit_request: None,
-            pending_commit_task: None,
-            connection_commit_diagnostic: None,
             focus_search_on_next_render: false,
             cleanup_search_focus: false,
             previous_focus: None,
@@ -238,30 +152,13 @@ impl NativeGraphSurface {
     }
 
     fn sync_host_state(&mut self, cx: &mut Context<Self>) -> bool {
-        let search_changed = self.sync_search(cx);
-        // Create-from-wire outcomes return directly to `commit_candidate`; only ordinary
-        // port-to-port and reconnect outcomes enter this host event slot.
-        let commit_changed = self.sync_connection_commit(cx);
-        search_changed || commit_changed
-    }
-
-    fn sync_connection_commit(&mut self, cx: &mut Context<Self>) -> bool {
-        let event = self
-            .host
-            .update(cx, |host, _| host.take_last_connection_commit());
-        let Some(event) = event else {
-            return false;
-        };
-        let diagnostic = NativeConnectionCommitDiagnostic::from_event(event);
-        if self.connection_commit_diagnostic == diagnostic {
-            return false;
-        }
-        self.connection_commit_diagnostic = diagnostic;
-        true
+        self.sync_search(cx)
     }
 
     fn sync_search(&mut self, cx: &mut Context<Self>) -> bool {
-        let request = self.host.read(cx).create_from_wire_request();
+        let host = self.host.read(cx);
+        let request = host.connection_search_request();
+        let presentation = host.interaction_presentation();
         match request {
             Some(request)
                 if self
@@ -271,16 +168,24 @@ impl NativeGraphSurface {
             {
                 self.query_controller
                     .update(cx, |controller, cx| controller.set_value("", cx));
-                self.search = Some(self.load_search(request, cx));
-                self.connection_commit_diagnostic = None;
+                self.search = Some(NativeConnectionSearch {
+                    request,
+                    candidates: None,
+                    rows: Vec::new(),
+                    diagnostic: None,
+                });
                 self.focus_search_on_next_render = true;
                 true
+            }
+            None if presentation.phase() == CanvasInteractionPhase::Committing
+                && self.search.is_some() =>
+            {
+                false
             }
             None => {
                 if self.search.take().is_some() {
                     self.focus_search_on_next_render = false;
                     self.cleanup_search_focus = true;
-                    self.pending_commit_request = None;
                     self.query_controller
                         .update(cx, |controller, cx| controller.set_value("", cx));
                     true
@@ -288,52 +193,91 @@ impl NativeGraphSurface {
                     false
                 }
             }
-            Some(_) => false,
+            Some(_) => {
+                let diagnostic = presentation
+                    .connection()
+                    .and_then(|connection| connection.search())
+                    .and_then(|status| match status {
+                        ConnectionSearchStatus::Error => {
+                            Some("Search failed; retry to query the current graph.".to_owned())
+                        }
+                        ConnectionSearchStatus::CommitRejected => Some(match presentation.terminal()
+                        {
+                            Some(InteractionTerminalReason::Conflict) => {
+                                "Graph changed before the connection was applied; retry with refreshed candidates."
+                                    .to_owned()
+                            }
+                            Some(InteractionTerminalReason::TransportFailure) => {
+                                "Connection result is unavailable; retry after the command queue recovers."
+                                    .to_owned()
+                            }
+                            _ => "Connection was rejected; retry with refreshed candidates."
+                                .to_owned(),
+                        }),
+                        ConnectionSearchStatus::Loading
+                        | ConnectionSearchStatus::Ready { .. }
+                        | ConnectionSearchStatus::Empty => None,
+                    });
+                let Some(search) = self.search.as_mut() else {
+                    return false;
+                };
+                if diagnostic.is_some() && search.diagnostic != diagnostic {
+                    search.diagnostic = diagnostic;
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
     fn load_search(
-        &self,
-        request: OpenGpuiCreateFromWireRequest,
+        &mut self,
+        request: ConnectionSearchRequest,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> NativeConnectionSearch {
-        let host = self.host.read(cx);
-        let anchor = host
-            .create_from_wire_local_position(request)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| request.position());
-        match self.search_source.candidates(host, request) {
+    ) {
+        let host = self.host.clone();
+        let source = Rc::clone(&self.search_source);
+        let mut query = || {
+            host.update(cx, |host, cx| {
+                host.connection_search_candidates(request, window, cx)
+            })
+            .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string()))
+        };
+        let result = source.candidates(request, &mut query);
+        let Some(search) = self
+            .search
+            .as_mut()
+            .filter(|search| search.request == request)
+        else {
+            return;
+        };
+        match result {
             Ok(candidates) => {
-                let rows = self.candidate_rows(&candidates);
-                NativeConnectionSearch {
-                    request,
-                    anchor,
-                    candidates: Some(candidates),
-                    rows,
-                    diagnostic: None,
-                }
+                search.rows = Self::candidate_rows(&self.catalog, &candidates);
+                search.candidates = Some(candidates);
+                search.diagnostic = None;
             }
-            Err(error) => NativeConnectionSearch {
-                request,
-                anchor,
-                candidates: None,
-                rows: Vec::new(),
-                diagnostic: Some(format!("Search failed: {error}")),
-            },
+            Err(error) => {
+                search.candidates = None;
+                search.rows.clear();
+                search.diagnostic = Some(format!("Search failed: {error}"));
+            }
         }
+        cx.notify();
     }
 
     fn candidate_rows(
-        &self,
-        candidates: &OpenGpuiCreateFromWireCandidates,
+        catalog: &NodeCatalog,
+        candidates: &CreateFromWireCandidates,
     ) -> Vec<NativeCandidateRow> {
         candidates
             .candidates()
             .iter()
             .enumerate()
             .filter_map(|(index, candidate)| {
-                let spec = self.catalog.get(candidate.node_kind())?;
+                let spec = catalog.get(candidate.node_kind())?;
                 Some(NativeCandidateRow {
                     index,
                     selector: native_connection_search_candidate_selector(
@@ -356,15 +300,26 @@ impl NativeGraphSurface {
             .collect()
     }
 
-    fn retry_search(&mut self, cx: &mut Context<Self>) {
-        if self.pending_commit_request.is_some() {
-            return;
-        }
+    fn retry_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(request) = self.search.as_ref().map(|search| search.request) else {
             return;
         };
-        self.search = Some(self.load_search(request, cx));
-        cx.notify();
+        let result = self.host.update(cx, |host, cx| {
+            host.retry_connection_search(request, window, cx)
+        });
+        if let Err(error) = result {
+            if let Some(search) = self.search.as_mut() {
+                search.diagnostic = Some(format!("Search retry failed: {error}"));
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.candidates = None;
+            search.rows.clear();
+            search.diagnostic = None;
+        }
+        self.load_search(request, window, cx);
     }
 
     fn commit_candidate(
@@ -373,42 +328,35 @@ impl NativeGraphSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_commit_request.is_some() {
+        if self.host.read(cx).interaction_presentation().phase()
+            != CanvasInteractionPhase::ConnectionSearch
+        {
             return;
         }
-        let Some(query) = self
-            .search
-            .as_ref()
-            .and_then(|search| search.candidates.clone())
-        else {
+        let Some((request, candidates)) = self.search.as_ref().and_then(|search| {
+            search
+                .candidates
+                .clone()
+                .map(|candidates| (search.request, candidates))
+        }) else {
             return;
         };
-        let request = query.request();
         let result = self.host.update(cx, |host, cx| {
-            let result = host.commit_create_from_wire(&query, candidate_index, cx);
+            let result = host.select_connection_search_candidate(
+                request,
+                &candidates,
+                candidate_index,
+                window,
+                cx,
+            );
             cx.notify();
             result
         });
         match result {
-            Ok(submission) => {
-                self.pending_commit_request = Some(request);
-                let ticket = submission.into_ticket();
-                self.pending_commit_task = Some(cx.spawn_in(window, async move |surface, cx| {
-                    let result = ticket.await;
-                    let _ = surface.update_in(cx, |surface, window, cx| {
-                        surface.finish_candidate(request, result, window, cx);
-                    });
-                }));
-                cx.notify();
-            }
-            Err(OpenGpuiCreateFromWireError::StaleQuery {
-                current_revision, ..
-            }) => {
-                let mut search = self.load_search(request, cx);
-                search.diagnostic = Some(format!(
-                    "Graph changed at revision {current_revision}; results were refreshed."
-                ));
-                self.search = Some(search);
+            Ok(_) => {
+                if let Some(search) = self.search.as_mut() {
+                    search.diagnostic = None;
+                }
                 cx.notify();
             }
             Err(error) => {
@@ -420,67 +368,24 @@ impl NativeGraphSurface {
         }
     }
 
-    fn finish_candidate(
-        &mut self,
-        request: OpenGpuiCreateFromWireRequest,
-        result: OpenGpuiCommandTicketResult,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.pending_commit_request != Some(request) {
-            return;
-        }
-        self.pending_commit_request = None;
-        match result {
-            Ok(GraphCommandOutcome::Applied(_) | GraphCommandOutcome::Noop(_)) => {
-                self.close_search(window, cx);
-            }
-            Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                let mut search = self.load_search(request, cx);
-                search.diagnostic = Some(format!(
-                    "Graph changed from revision {} to {}; retry after reviewing refreshed results.",
-                    conflict.expected_revision(),
-                    conflict.current().revision()
-                ));
-                self.search = Some(search);
-                cx.notify();
-            }
-            Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                if let Some(search) = self.search.as_mut() {
-                    search.diagnostic =
-                        Some(format!("Connection rejected: {}", rejection.message()));
-                }
-                cx.notify();
-            }
-            Err(error) => {
-                if let Some(search) = self.search.as_mut() {
-                    search.diagnostic = Some(format!(
-                        "Connection result is uncertain; refresh before retrying: {error}"
-                    ));
-                }
-                cx.notify();
-            }
-        }
-    }
-
-    fn cancel_search(
-        &mut self,
-        reason: OpenGpuiConnectionCancelReason,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn cancel_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(request) = self.search.as_ref().map(|search| search.request) else {
             return;
         };
-        if self.pending_commit_request == Some(request) {
-            if let Some(search) = self.search.as_mut() {
-                search.diagnostic = Some("Connection change is still being applied.".to_owned());
-            }
-            cx.notify();
+        if self.host.read(cx).interaction_presentation().phase()
+            == CanvasInteractionPhase::Committing
+        {
             return;
         }
+        if let Some(focus) = self
+            .previous_focus
+            .as_ref()
+            .and_then(WeakFocusHandle::upgrade)
+        {
+            window.focus(&focus, cx);
+        }
         let _ = self.host.update(cx, |host, cx| {
-            let result = host.cancel_create_from_wire(request, reason);
+            let result = host.cancel_connection_search(request, window, cx);
             cx.notify();
             result
         });
@@ -489,14 +394,12 @@ impl NativeGraphSurface {
 
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
-        self.pending_commit_request = None;
         self.focus_search_on_next_render = false;
         self.cleanup_search_focus = false;
         self.query_controller
             .update(cx, |controller, cx| controller.set_value("", cx));
-        if let Some(focus) = self.previous_focus.take().and_then(|focus| focus.upgrade()) {
-            window.focus(&focus, cx);
-        } else {
+        self.previous_focus = None;
+        if window.focused(cx).is_none() {
             window.focus(&self.surface_focus, cx);
         }
         window.refresh();
@@ -523,23 +426,27 @@ impl NativeGraphSurface {
         let row_indices = self.filtered_row_indices(cx);
         let rows_empty = row_indices.is_empty();
         let host = self.host.read(cx);
+        let presentation = host.interaction_presentation();
+        let search_status = presentation
+            .connection()
+            .and_then(|connection| connection.search());
+        let committing = presentation.phase() == CanvasInteractionPhase::Committing;
         let surface_size = host.surface_size().unwrap_or_else(|| {
             let fallback = host.frame_bounds().size;
             ViewSize::new(fallback.width, fallback.height)
         });
-        let left = search
-            .anchor
-            .x()
+        let anchor = search.request.position().view();
+        let left = anchor
+            .x
             .clamp(12.0, (surface_size.width - 332.0).max(12.0));
-        let top = search
-            .anchor
-            .y()
+        let top = anchor
+            .y
             .clamp(12.0, (surface_size.height - 360.0).max(12.0));
         let surface = cx.weak_entity();
         let backdrop_surface = surface.clone();
         let retry_surface = surface.clone();
         let diagnostic = search.diagnostic.clone();
-        let show_retry = diagnostic.is_some();
+        let show_retry = diagnostic.is_some() && !committing;
         let mut results = div().flex().flex_col().gap(px(6.0));
         for row_index in row_indices {
             let row = &search.rows[row_index];
@@ -563,6 +470,7 @@ impl NativeGraphSurface {
                             format!("{}  {}", row.title, row.detail),
                         )
                         .variant(ButtonVariant::Secondary)
+                        .disabled(committing)
                         .on_click(move |_, window, cx| {
                             let _ = candidate_surface.update(cx, |surface, cx| {
                                 surface.commit_candidate(index, window, cx)
@@ -571,7 +479,24 @@ impl NativeGraphSurface {
                     ),
             );
         }
-        if rows_empty {
+        if committing
+            || matches!(search_status, Some(ConnectionSearchStatus::Loading))
+                && search.candidates.is_none()
+                && search.diagnostic.is_none()
+        {
+            results = results.child(
+                div()
+                    .debug_selector(|| NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR.to_owned())
+                    .py(px(16.0))
+                    .text_sm()
+                    .text_color(rgb(0x9aa3af))
+                    .child(if committing {
+                        "Applying connection..."
+                    } else {
+                        "Loading compatible nodes..."
+                    }),
+            );
+        } else if rows_empty {
             results = results.child(
                 div()
                     .debug_selector(|| NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR.to_owned())
@@ -621,9 +546,9 @@ impl NativeGraphSurface {
                     .child(
                         Button::new(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR, "Retry")
                             .variant(ButtonVariant::Secondary)
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 let _ = retry_surface
-                                    .update(cx, |surface, cx| surface.retry_search(cx));
+                                    .update(cx, |surface, cx| surface.retry_search(window, cx));
                             }),
                     )
             }));
@@ -633,13 +558,8 @@ impl NativeGraphSurface {
                 .absolute()
                 .size_full()
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    let _ = backdrop_surface.update(cx, |surface, cx| {
-                        surface.cancel_search(
-                            OpenGpuiConnectionCancelReason::OutsideClick,
-                            window,
-                            cx,
-                        )
-                    });
+                    let _ = backdrop_surface
+                        .update(cx, |surface, cx| surface.cancel_search(window, cx));
                 })
                 .child(
                     div()
@@ -647,43 +567,6 @@ impl NativeGraphSurface {
                         .left(px(left))
                         .top(px(top))
                         .child(OpenGpuiNodeInteractionGuard::overlay(panel)),
-                ),
-        )
-    }
-
-    fn render_connection_commit_diagnostic(&self) -> Option<impl open_gpui::IntoElement> {
-        let diagnostic = self.connection_commit_diagnostic.as_ref()?;
-        let code = diagnostic.code.clone();
-        let code_selector = native_connection_commit_diagnostic_code_selector(&code);
-        Some(
-            div()
-                .debug_selector(|| NATIVE_CONNECTION_COMMIT_DIAGNOSTIC_SELECTOR.to_owned())
-                .absolute()
-                .top(px(12.0))
-                .right(px(12.0))
-                .w(px(360.0))
-                .p(px(10.0))
-                .flex()
-                .flex_col()
-                .gap(px(5.0))
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(rgb(0x70434a))
-                .bg(rgb(0x2d2024))
-                .text_color(rgb(0xffd6d2))
-                .child(div().text_sm().child("Connection rejected"))
-                .child(
-                    div()
-                        .debug_selector(move || code_selector.clone())
-                        .text_xs()
-                        .text_color(rgb(0xffa5ad))
-                        .child(code),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0xeab9b5))
-                        .child(diagnostic.message.clone()),
                 ),
         )
     }
@@ -696,6 +579,14 @@ impl Render for NativeGraphSurface {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         self.sync_host_state(cx);
+        if let Some(request) = self
+            .search
+            .as_ref()
+            .filter(|search| search.candidates.is_none() && search.diagnostic.is_none())
+            .map(|search| search.request)
+        {
+            self.load_search(request, window, cx);
+        }
         if self.cleanup_search_focus {
             self.cleanup_search_focus = false;
             if let Some(focus) = self.previous_focus.take().and_then(|focus| focus.upgrade()) {
@@ -718,11 +609,10 @@ impl Render for NativeGraphSurface {
                 if event.keystroke.key.eq_ignore_ascii_case("escape") && surface.search.is_some() {
                     window.prevent_default();
                     cx.stop_propagation();
-                    surface.cancel_search(OpenGpuiConnectionCancelReason::Escape, window, cx);
+                    surface.cancel_search(window, cx);
                 }
             }))
             .child(div().absolute().size_full().child(self.host.clone()))
-            .children(self.render_connection_commit_diagnostic())
             .children(self.render_search(cx))
     }
 }
@@ -735,9 +625,4 @@ pub const fn native_connection_search_input_selector() -> &'static str {
 #[must_use]
 pub fn native_connection_search_candidate_selector(kind: &str, port: &str) -> String {
     format!("jellyflow-native-connection-search-candidate-{kind}-{port}")
-}
-
-#[must_use]
-pub fn native_connection_commit_diagnostic_code_selector(code: &str) -> String {
-    format!("jellyflow-native-connection-commit-diagnostic-code-{code}")
 }

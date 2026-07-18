@@ -9,7 +9,6 @@ pub mod accessibility;
 pub mod activity;
 pub mod binding;
 mod command_journal;
-mod connection_controller;
 pub mod draft;
 mod draft_store;
 pub mod host;
@@ -37,11 +36,6 @@ pub use command_journal::{
     OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, OpenGpuiCommandEnqueueError, OpenGpuiCommandTicket,
     OpenGpuiCommandTicketError, OpenGpuiCommandTicketResult,
 };
-pub use connection_controller::{
-    OpenGpuiConnectionCancelReason, OpenGpuiConnectionCommitRejection,
-    OpenGpuiConnectionGeneration, OpenGpuiConnectionPhase, OpenGpuiConnectionPoint,
-    OpenGpuiCreateFromWireRequest,
-};
 pub use draft::{
     DraftAttempt, DraftCompositionDecision, DraftConflict, DraftConflictResolution,
     DraftEditDecision, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
@@ -53,12 +47,9 @@ pub use draft_store::ExternalizedDraftStore;
 pub use host::{
     OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET, OPEN_GPUI_DEFAULT_EDGE_ROUTE_SCAN_LIMIT,
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiConnectionCommitEvent, OpenGpuiConnectionCommitFailure,
-    OpenGpuiConnectionCommitOutcome, OpenGpuiConnectionCommitStage,
-    OpenGpuiCreateFromWireCandidates, OpenGpuiCreateFromWireError,
-    OpenGpuiCreateFromWireSubmission, OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHost,
-    OpenGpuiSceneHostCloseError, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
-    OpenGpuiSceneHostStats,
+    OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission, OpenGpuiEdgeLayerOverflow,
+    OpenGpuiSceneHost, OpenGpuiSceneHostCloseError, OpenGpuiSceneHostDiagnostic,
+    OpenGpuiSceneHostDiagnosticKind, OpenGpuiSceneHostStats,
 };
 pub use interaction::{
     OpenGpuiNodeInteractionGuard, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,

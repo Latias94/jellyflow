@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -147,15 +147,22 @@ impl OpenGpuiSceneHost {
         self.scene_wires_fault = Some(error);
     }
 
+    #[cfg(test)]
     pub(super) fn scene_wires(&mut self) -> Result<OpenGpuiSceneWires, ViewSessionError> {
+        let presentation_offsets = self.interaction_node_drag_offsets();
+        self.scene_wires_with_offsets(&presentation_offsets)
+    }
+
+    pub(super) fn scene_wires_with_offsets(
+        &mut self,
+        presentation_offsets: &BTreeMap<NodeId, CanvasPoint>,
+    ) -> Result<OpenGpuiSceneWires, ViewSessionError> {
         #[cfg(test)]
         if let Some(error) = self.scene_wires_fault.take() {
             return Err(error);
         }
         let geometry = self.view.geometry_snapshot()?;
-        let graph = self
-            .scene_gesture
-            .has_node_drag_visual()
+        let graph = (!presentation_offsets.is_empty())
             .then(|| self.view.graph_snapshot())
             .transpose()?;
         let connection_preview = self.connection_preview_plan(&geometry);
@@ -198,7 +205,7 @@ impl OpenGpuiSceneHost {
                 }
                 let drag_path = graph.as_ref().and_then(|graph| {
                     dragged_edge_path(graph.graph(), edge, route.facts(), |node| {
-                        self.scene_gesture.node_drag_delta(node)
+                        presentation_offsets.get(&node).copied()
                     })
                 });
                 let visible_path = drag_path.as_ref().unwrap_or(&route.facts().path);
@@ -367,7 +374,7 @@ impl OpenGpuiSceneHost {
                 }
 
                 let mut bounds = mounted.bounds;
-                if let Some(delta) = self.scene_gesture.node_drag_delta(key.node()) {
+                if let Some(delta) = feedback.measurements.presentation_offset(key.node()) {
                     bounds.origin.x += delta.x;
                     bounds.origin.y += delta.y;
                 }
@@ -461,7 +468,7 @@ impl OpenGpuiSceneHost {
             .size_full();
             overlay = overlay.child(preview);
         }
-        if let Some(bounds) = self.scene_gesture.selection_rectangle() {
+        if let Some(bounds) = self.interaction_marquee_view_bounds(transform) {
             overlay = overlay.child(
                 div()
                     .debug_selector(|| OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR.to_owned())

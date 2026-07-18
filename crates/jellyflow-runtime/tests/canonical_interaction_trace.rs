@@ -18,10 +18,11 @@ use jellyflow_runtime::{
     CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,
     CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionProbe,
     ConnectionProbeCursorStaleReason, ConnectionProbeQuery, ConnectionProbeQueryError,
-    ConnectionProbeQueryOutcome, EdgeEndpoint, EdgePickCursorStaleReason, EdgePickQuery,
-    EdgePickQueryError, EdgePickQueryOutcome, FrameRequest, GraphRuntime, HandlePosition,
-    InteractionOwner, InteractionPosition, InteractionTicketId, NodeDragStart, RendererStamp,
-    SelectionMode, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
+    ConnectionProbeQueryOutcome, ConnectionSearchSelection, EdgeEndpoint,
+    EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome,
+    FrameRequest, GraphCommand, GraphRuntime, HandlePosition, InteractionOwner,
+    InteractionPosition, InteractionTicketId, NodeDragStart, RendererStamp, SelectionBaseline,
+    SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
 
 #[test]
@@ -122,6 +123,36 @@ fn canonical_traces_drive_the_renderer_neutral_session_and_real_view_queries() {
 }
 
 #[test]
+fn repeated_toggle_marquee_trace_is_independent_of_move_event_count() {
+    let mut harness = TraceHarness::new();
+    let baseline =
+        SelectionBaseline::new([harness.ids.source_node], [harness.ids.reconnect_edge], []);
+    let start = normalized_position(&harness.view, ViewPoint::new(600.0, 180.0));
+    let end = normalized_position(&harness.view, ViewPoint::new(680.0, 260.0));
+    harness
+        .session
+        .press(
+            CanvasPressTarget::Marquee {
+                selection_mode: SelectionMode::Toggle,
+                baseline: baseline.clone(),
+            },
+            start,
+        )
+        .unwrap();
+
+    let first = harness.session.move_to(end).unwrap();
+    let second = harness.session.move_to(end).unwrap();
+    let [CanvasInteractionEffect::Selection(first)] = first.effects() else {
+        panic!("first marquee move must emit one selection effect");
+    };
+    let [CanvasInteractionEffect::Selection(second)] = second.effects() else {
+        panic!("second marquee move must emit one selection effect");
+    };
+
+    assert_eq!(first, second);
+}
+
+#[test]
 fn interaction_query_cursors_are_isolated_per_view() {
     let harness = TraceHarness::new();
     let other = harness
@@ -169,6 +200,285 @@ fn interaction_query_cursors_are_isolated_per_view() {
             EdgePickCursorStaleReason::ForeignView
         ))
     ));
+}
+
+#[test]
+fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() {
+    let harness = TraceHarness::new();
+    let config = CanvasInteractionConfig {
+        connection_radius_in_view: 1_000.0,
+        query_entry_budget: 1,
+        ..CanvasInteractionConfig::default()
+    };
+    let mut session = CanvasInteractionSession::new(
+        harness.view.id(),
+        harness.view.generation().unwrap(),
+        config,
+    )
+    .unwrap();
+    let intent = ConnectionGestureIntent::connect(
+        EdgeId::from_u128(0xA11),
+        harness.ids.source_port,
+        NodeGraphConnectionMode::Strict,
+    );
+    let start = ConnectionInteractionStart::new(
+        harness.ids.source_node,
+        intent,
+        CanvasPoint {
+            x: harness.anchors.source.x,
+            y: harness.anchors.source.y,
+        },
+        HandlePosition::Right,
+        false,
+    )
+    .unwrap();
+    let source = normalized_position(&harness.view, harness.anchors.source);
+    let target = normalized_position(&harness.view, harness.anchors.valid);
+    session
+        .press(CanvasPressTarget::Connection(start), source)
+        .unwrap();
+
+    let moved = session.move_to(target).unwrap();
+    let (move_id, _) = take_probe(moved).expect("threshold crossing requests a probe");
+    let initial_probe = harness
+        .view
+        .connection_probe(ConnectionProbeQuery::new(
+            intent,
+            harness.anchors.valid,
+            config.connection_radius_in_view,
+            256,
+        ))
+        .unwrap();
+    assert!(matches!(
+        &initial_probe,
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Valid { .. },
+            ..
+        }
+    ));
+    session
+        .resolve_connection_probe(move_id, initial_probe)
+        .unwrap();
+
+    let released = session.release(target).unwrap();
+    let (release_id, _) = take_probe(released).expect("release requests one fresh probe");
+    let release_probe = harness
+        .view
+        .connection_probe(ConnectionProbeQuery::new(
+            intent,
+            harness.anchors.valid,
+            config.connection_radius_in_view,
+            256,
+        ))
+        .unwrap();
+    let committing = session
+        .resolve_connection_probe(release_id, release_probe)
+        .unwrap();
+    let (_, effects, _, _) = committing.into_parts();
+    let [CanvasInteractionEffect::SubmitGraph { ticket, .. }] = effects.as_slice() else {
+        panic!("release must submit one connection mutation");
+    };
+    let ticket = *ticket;
+
+    let mut update = session
+        .request_connection_commit_revalidation(ticket)
+        .unwrap();
+    let mut incomplete_pages = 0;
+    let mut revalidation_id = None;
+    loop {
+        let (id, query) = take_probe(update).expect("pending revalidation owns one query page");
+        if let Some(expected) = revalidation_id {
+            assert_eq!(id, expected);
+        } else {
+            revalidation_id = Some(id);
+        }
+        let outcome = harness.view.connection_probe(query).unwrap();
+        if matches!(&outcome, ConnectionProbeQueryOutcome::Incomplete { .. }) {
+            incomplete_pages += 1;
+        }
+        update = session.resolve_connection_probe(id, outcome).unwrap();
+        if !update.effects().is_empty() {
+            let [
+                CanvasInteractionEffect::SubmitGraph {
+                    ticket: emitted_ticket,
+                    ..
+                },
+            ] = update.effects()
+            else {
+                panic!("completed revalidation emits one connection mutation");
+            };
+            assert_eq!(*emitted_ticket, ticket);
+            break;
+        }
+    }
+    assert!(incomplete_pages > 0);
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
+}
+
+#[test]
+fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
+    let harness = TraceHarness::new();
+    let config = CanvasInteractionConfig {
+        connection_radius_in_view: 1_000.0,
+        query_entry_budget: 1,
+        ..CanvasInteractionConfig::default()
+    };
+    let mut session = CanvasInteractionSession::new(
+        harness.view.id(),
+        harness.view.generation().unwrap(),
+        config,
+    )
+    .unwrap();
+    let intent = ConnectionGestureIntent::connect(
+        EdgeId::from_u128(0xA12),
+        harness.ids.source_port,
+        NodeGraphConnectionMode::Strict,
+    );
+    let start = ConnectionInteractionStart::new(
+        harness.ids.source_node,
+        intent,
+        canvas_anchor(&harness.view, harness.anchors.source),
+        HandlePosition::Right,
+        false,
+    )
+    .unwrap();
+    let source = normalized_position(&harness.view, harness.anchors.source);
+    let target = normalized_position(&harness.view, harness.anchors.valid);
+    session
+        .press(CanvasPressTarget::Connection(start), source)
+        .unwrap();
+
+    let moved = session.move_to(target).unwrap();
+    let (drag_id, drag_query) = take_probe(moved).expect("drag starts one bounded probe");
+    let drag_page = harness.view.connection_probe(drag_query).unwrap();
+    assert!(matches!(
+        drag_page,
+        ConnectionProbeQueryOutcome::Incomplete { .. }
+    ));
+    let drag_resume = session
+        .resolve_connection_probe(drag_id, drag_page)
+        .unwrap();
+    let (same_drag_id, drag_resume_query) =
+        take_probe(drag_resume).expect("incomplete drag probe resumes");
+    assert_eq!(same_drag_id, drag_id);
+    harness
+        .view
+        .set_viewport(CanvasPoint { x: 2.0, y: -1.0 }, 1.0)
+        .unwrap();
+    assert!(matches!(
+        harness.view.connection_probe(drag_resume_query),
+        Err(ConnectionProbeQueryError::StaleCursor(
+            ConnectionProbeCursorStaleReason::ViewportTransform
+        ))
+    ));
+    let restarted_drag = session.restart_stale_query(drag_id).unwrap();
+    let (fresh_drag_id, _) = restarted_drag
+        .queries()
+        .first()
+        .and_then(connection_probe_query_ref)
+        .expect("stale drag probe restarts from page one");
+    assert_ne!(fresh_drag_id, drag_id);
+    assert!(drive_connection_pages(&harness.view, &mut session, restarted_drag).is_empty());
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::ConnectionDrag
+    );
+
+    let release_position = normalized_position(&harness.view, harness.anchors.valid);
+    let released = session.release(release_position).unwrap();
+    let (release_id, release_query) =
+        take_probe(released).expect("release starts one bounded probe");
+    let release_page = harness.view.connection_probe(release_query).unwrap();
+    assert!(matches!(
+        release_page,
+        ConnectionProbeQueryOutcome::Incomplete { .. }
+    ));
+    let release_resume = session
+        .resolve_connection_probe(release_id, release_page)
+        .unwrap();
+    let (_, release_resume_query) =
+        take_probe(release_resume).expect("incomplete release probe resumes");
+    let changed_anchors = TraceAnchors {
+        valid: ViewPoint::new(harness.anchors.valid.x + 2.0, harness.anchors.valid.y),
+        ..harness.anchors
+    };
+    publish_trace_geometry(&harness.view, harness.ids, changed_anchors);
+    assert!(matches!(
+        harness.view.connection_probe(release_resume_query),
+        Err(ConnectionProbeQueryError::StaleCursor(
+            ConnectionProbeCursorStaleReason::PortGeometry
+        ))
+    ));
+    let restarted_release = session.restart_stale_query(release_id).unwrap();
+    let (fresh_release_id, _) = restarted_release
+        .queries()
+        .first()
+        .and_then(connection_probe_query_ref)
+        .expect("stale release probe restarts from page one");
+    assert_ne!(fresh_release_id, release_id);
+    let release_effects = drive_connection_pages(&harness.view, &mut session, restarted_release);
+    let [CanvasInteractionEffect::SubmitGraph { ticket, .. }] = release_effects.as_slice() else {
+        panic!("completed release probe submits one connection mutation");
+    };
+    let ticket = *ticket;
+
+    let revalidation = session
+        .request_connection_commit_revalidation(ticket)
+        .unwrap();
+    let (revalidation_id, revalidation_query) =
+        take_probe(revalidation).expect("commit starts one bounded revalidation");
+    let revalidation_page = harness.view.connection_probe(revalidation_query).unwrap();
+    assert!(matches!(
+        revalidation_page,
+        ConnectionProbeQueryOutcome::Incomplete { .. }
+    ));
+    let revalidation_resume = session
+        .resolve_connection_probe(revalidation_id, revalidation_page)
+        .unwrap();
+    let (_, revalidation_resume_query) =
+        take_probe(revalidation_resume).expect("incomplete revalidation resumes");
+    let revision = harness._runtime.snapshot().unwrap().revision();
+    harness
+        ._runtime
+        .execute(GraphCommand::set_node_data(
+            revision,
+            harness.ids.invalid_node,
+            serde_json::json!({ "query_epoch": 1 }),
+        ))
+        .unwrap();
+    publish_trace_geometry(&harness.view, harness.ids, changed_anchors);
+    assert!(matches!(
+        harness.view.connection_probe(revalidation_resume_query),
+        Err(ConnectionProbeQueryError::StaleCursor(
+            ConnectionProbeCursorStaleReason::GraphRevision
+        ))
+    ));
+    let restarted_revalidation = session.restart_stale_query(revalidation_id).unwrap();
+    let (fresh_revalidation_id, _) = restarted_revalidation
+        .queries()
+        .first()
+        .and_then(connection_probe_query_ref)
+        .expect("stale commit revalidation restarts from page one");
+    assert_ne!(fresh_revalidation_id, revalidation_id);
+    let revalidation_effects =
+        drive_connection_pages(&harness.view, &mut session, restarted_revalidation);
+    let [
+        CanvasInteractionEffect::SubmitGraph {
+            ticket: emitted_ticket,
+            ..
+        },
+    ] = revalidation_effects.as_slice()
+    else {
+        panic!("completed revalidation resubmits one connection mutation");
+    };
+    assert_eq!(*emitted_ticket, ticket);
+    assert_eq!(
+        session.presentation().phase(),
+        CanvasInteractionPhase::Committing
+    );
 }
 
 struct TraceHarness {
@@ -331,8 +641,15 @@ impl TraceHarness {
                     .session
                     .select_search_result(
                         generation,
-                        self.ids.valid_port,
-                        self.view.graph_snapshot().unwrap().revision(),
+                        ConnectionSearchSelection::new(
+                            self.ids.valid_port,
+                            self.view.graph_snapshot().unwrap().revision(),
+                            TopologyEdit::new().set_node_data(
+                                self.ids.valid_node,
+                                serde_json::json!({ "created_from_wire": true }),
+                            ),
+                        )
+                        .expect("create-from-wire trace carries topology"),
                     )
                     .unwrap();
                 self.capture_submit(update)
@@ -657,6 +974,41 @@ fn take_probe(
         CanvasInteractionQuery::ConnectionProbe { id, query, .. } => Some((id, query)),
         CanvasInteractionQuery::EdgePick { .. } => None,
     })
+}
+
+fn connection_probe_query_ref(
+    query: &CanvasInteractionQuery,
+) -> Option<(
+    jellyflow_runtime::InteractionQueryId,
+    &jellyflow_runtime::ConnectionProbeQuery,
+)> {
+    match query {
+        CanvasInteractionQuery::ConnectionProbe { id, query, .. } => Some((*id, query)),
+        CanvasInteractionQuery::EdgePick { .. } => None,
+    }
+}
+
+fn drive_connection_pages(
+    view: &ViewSession,
+    session: &mut CanvasInteractionSession,
+    mut update: CanvasInteractionUpdate,
+) -> Vec<CanvasInteractionEffect> {
+    let mut emitted = Vec::new();
+    loop {
+        let (queries, effects, _, _) = update.into_parts();
+        emitted.extend(effects);
+        let mut queries = queries.into_iter();
+        let Some(CanvasInteractionQuery::ConnectionProbe { id, query, .. }) = queries.next() else {
+            assert!(queries.next().is_none());
+            return emitted;
+        };
+        assert!(
+            queries.next().is_none(),
+            "one interaction owns one probe page"
+        );
+        let outcome = view.connection_probe(query).unwrap();
+        update = session.resolve_connection_probe(id, outcome).unwrap();
+    }
 }
 
 fn settlement(receipt: TraceReceipt) -> CommandSettlement {

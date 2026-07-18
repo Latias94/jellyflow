@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use jellyflow::runtime::{
-    FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt, FeedbackReceipt,
-    FeedbackSubmissionError, GraphCommandOutcome, LayoutNodeStatus, ViewSession,
+    CommandSettlement, FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt,
+    FeedbackReceipt, FeedbackSubmissionError, GraphCommandOutcome, LayoutNodeStatus, ViewSession,
 };
 
 use crate::command_journal::{
@@ -42,7 +42,6 @@ pub(super) struct DeferredFrameFeedback {
     pub(super) measurements: Rc<OpenGpuiPendingMeasurements>,
     commands: Rc<OpenGpuiCommandJournal>,
     command_batch: Option<OpenGpuiCommandBatch>,
-    publish_layouts: bool,
     scheduled: Cell<bool>,
 }
 
@@ -52,14 +51,12 @@ impl DeferredFrameFeedback {
         measurements: Rc<OpenGpuiPendingMeasurements>,
         commands: Rc<OpenGpuiCommandJournal>,
         command_batch: Option<OpenGpuiCommandBatch>,
-        publish_layouts: bool,
     ) -> Self {
         Self {
             collector,
             measurements,
             commands,
             command_batch,
-            publish_layouts,
             scheduled: Cell::new(false),
         }
     }
@@ -70,10 +67,8 @@ impl DeferredFrameFeedback {
 
     pub(super) fn submit(&self, view: &ViewSession) -> DeferredFeedbackSubmission {
         let feedback: Result<_, DeferredFeedbackError> = (|| {
-            if self.publish_layouts && self.command_batch.is_none() {
-                for layout in self.measurements.layouts()? {
-                    self.collector.layout(layout)?;
-                }
+            for layout in self.measurements.layouts()? {
+                self.collector.layout(layout)?;
             }
 
             let feedback = self.collector.finish()?;
@@ -163,7 +158,8 @@ impl OpenGpuiSceneHost {
         match result {
             Ok(completed) => self.handle_completed_commands(completed),
             Err(error) => {
-                self.scene_gesture.settle_node_drag();
+                self.canvas_interaction.cancel();
+                self.discard_pending_interaction_submission();
                 self.record_feedback_failure(
                     None,
                     format!("failed to settle native command batch: {error}"),
@@ -198,45 +194,33 @@ impl OpenGpuiSceneHost {
                         resolutions.push(resolution);
                     }
                 }
-                OpenGpuiCommandOrigin::CreateFromWire { generation } => {
-                    self.handle_create_from_wire_result(generation, &command.result);
-                    if let Some(resolution) = command.into_resolution() {
-                        resolutions.push(resolution);
-                    }
-                }
-                OpenGpuiCommandOrigin::NodeDrag => {
+                OpenGpuiCommandOrigin::Interaction { ticket } => {
                     if let Ok(result) = command.into_detached_result() {
-                        self.handle_node_drag_result(result);
-                    }
-                }
-                OpenGpuiCommandOrigin::Connection { generation, target } => {
-                    if let Ok(result) = command.into_detached_result() {
-                        self.handle_connection_result(generation, target, result);
+                        let settlement = match &result {
+                            Ok(GraphCommandOutcome::Applied(_)) => CommandSettlement::Applied,
+                            Ok(GraphCommandOutcome::Noop(_)) => CommandSettlement::Noop,
+                            Ok(GraphCommandOutcome::Rejected(rejection)) => {
+                                self.record_command_diagnostic(rejection.message().to_owned());
+                                CommandSettlement::Rejected
+                            }
+                            Ok(GraphCommandOutcome::Conflict(conflict)) => {
+                                self.record_command_diagnostic(format!(
+                                    "interaction expected graph revision {} but current revision is {}",
+                                    conflict.expected_revision(),
+                                    conflict.current().revision()
+                                ));
+                                CommandSettlement::Conflict
+                            }
+                            Err(error) => {
+                                self.record_command_diagnostic(error.to_string());
+                                CommandSettlement::TransportFailure
+                            }
+                        };
+                        self.settle_interaction_command(ticket, settlement);
                     }
                 }
             }
         }
         resolutions
-    }
-
-    fn handle_node_drag_result(
-        &mut self,
-        result: Result<GraphCommandOutcome, OpenGpuiCommandTicketError>,
-    ) {
-        self.scene_gesture.settle_node_drag();
-        match result {
-            Ok(GraphCommandOutcome::Applied(_) | GraphCommandOutcome::Noop(_)) => {}
-            Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                self.record_command_diagnostic(format!(
-                    "node drag expected graph revision {} but current revision is {}",
-                    conflict.expected_revision(),
-                    conflict.current().revision()
-                ));
-            }
-            Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                self.record_command_diagnostic(rejection.message().to_owned());
-            }
-            Err(error) => self.record_command_diagnostic(error.to_string()),
-        }
     }
 }

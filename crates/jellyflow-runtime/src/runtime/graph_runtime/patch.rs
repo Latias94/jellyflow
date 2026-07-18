@@ -88,6 +88,7 @@ pub struct GeometryImpact {
     nodes: BTreeSet<NodeId>,
     ports: BTreeSet<PortId>,
     incident_edges: BTreeSet<EdgeId>,
+    translation_only_nodes: BTreeSet<NodeId>,
 }
 
 impl GeometryImpact {
@@ -97,6 +98,7 @@ impl GeometryImpact {
             nodes: footprint.nodes.clone(),
             ports: footprint.ports.clone(),
             incident_edges: footprint.edges.clone(),
+            translation_only_nodes: BTreeSet::new(),
         }
     }
 
@@ -135,6 +137,20 @@ impl GeometryImpact {
                 .any(|edge| self.incident_edges.contains(&edge))
     }
 
+    pub(crate) fn preserves_translated_layout(
+        &self,
+        node: NodeId,
+        ports: impl IntoIterator<Item = PortId>,
+        incident_edges: impl IntoIterator<Item = EdgeId>,
+    ) -> bool {
+        !self.global
+            && self.translation_only_nodes.contains(&node)
+            && !ports.into_iter().any(|port| self.ports.contains(&port))
+            && !incident_edges
+                .into_iter()
+                .any(|edge| self.incident_edges.contains(&edge))
+    }
+
     pub(crate) fn merge(&mut self, other: &Self) {
         if self.global {
             return;
@@ -143,6 +159,16 @@ impl GeometryImpact {
             self.make_global();
             return;
         }
+        let non_translation_nodes = self
+            .nodes
+            .difference(&self.translation_only_nodes)
+            .chain(other.nodes.difference(&other.translation_only_nodes))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        self.translation_only_nodes
+            .extend(other.translation_only_nodes.iter().copied());
+        self.translation_only_nodes
+            .retain(|node| !non_translation_nodes.contains(node));
         self.nodes.extend(other.nodes.iter().copied());
         self.ports.extend(other.ports.iter().copied());
         self.incident_edges
@@ -154,6 +180,7 @@ impl GeometryImpact {
         self.nodes.clear();
         self.ports.clear();
         self.incident_edges.clear();
+        self.translation_only_nodes.clear();
     }
 }
 
@@ -688,6 +715,21 @@ fn build_impact(
     }
 
     geometry.nodes.extend(affected_nodes.iter().copied());
+    geometry.translation_only_nodes.extend(
+        translated_nodes
+            .keys()
+            .filter(|node| {
+                !retired_nodes.contains(node)
+                    && !geometry_withdrawals.contains(node)
+                    && !layout_dirty_nodes.contains(node)
+                    && facts.iter().any(|fact| {
+                        fact.key == RuntimeFactKey::Node(**node)
+                            && fact.change == FactChange::Updated
+                            && fact.change_mask.is_only(FactChangeMask::POSITION)
+                    })
+            })
+            .copied(),
+    );
     if geometry.global {
         geometry.make_global();
     }

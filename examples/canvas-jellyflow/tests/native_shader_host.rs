@@ -7,21 +7,21 @@ use jellyflow::core::{
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow::runtime::{
-    ConnectionEdit, Diagnostic, DiagnosticTarget, GraphCommand, GraphProfile, GraphRuntime,
-    GraphRuntimeError, IncidentEdgePolicy, TopologyEdit, ViewSessionOptions,
+    CanvasInteractionPhase, ConnectionEdit, ConnectionGestureIntent, ConnectionSearchRequest,
+    CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphCommand, GraphProfile,
+    GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, InteractionTerminalReason, TopologyEdit,
+    ViewSessionOptions,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiCreateFromWireCandidates, OpenGpuiCreateFromWireRequest, OpenGpuiNodeRegistry,
-    OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+    OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
 };
 use open_gpui::{AppContext, MouseButton, point, px};
 use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::connection_search::{
-    NATIVE_CONNECTION_COMMIT_DIAGNOSTIC_SELECTOR, NATIVE_CONNECTION_SEARCH_BACKDROP_SELECTOR,
-    NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR, NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR,
-    NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR, NATIVE_CONNECTION_SEARCH_SELECTOR,
-    NATIVE_GRAPH_SURFACE_SELECTOR, NativeConnectionSearchSource, NativeConnectionSearchSourceError,
-    NativeGraphSurface, native_connection_commit_diagnostic_code_selector,
+    NATIVE_CONNECTION_SEARCH_BACKDROP_SELECTOR, NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR,
+    NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR, NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR,
+    NATIVE_CONNECTION_SEARCH_SELECTOR, NATIVE_GRAPH_SURFACE_SELECTOR, NativeConnectionSearchSource,
+    NativeConnectionSearchSourceError, NativeGraphSurface,
     native_connection_search_candidate_selector, native_connection_search_input_selector,
 };
 use open_gpui_canvas_jellyflow::nodes::{
@@ -349,12 +349,18 @@ fn shader_wire_drop_filters_native_search_and_commits_one_atomic_topology_comman
     assert!(undone.graph().edges().is_empty());
 
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_none());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_none()
+        );
     });
 }
 
 #[open_gpui::test]
-fn ordinary_shader_wire_rejection_is_visible_and_clears_after_a_valid_commit(
+fn ordinary_shader_wire_rejection_is_owned_by_the_shared_interaction_session(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = native_runtime(two_catalog_shader_nodes(TypeDesc::String))
@@ -394,18 +400,13 @@ fn ordinary_shader_wire_rejection_is_visible_and_clears_after_a_valid_commit(
     assert_eq!(rejected.revision(), before.revision());
     assert!(rejected.graph().edges().is_empty());
     assert_eq!(runtime.history_state().unwrap(), history_before);
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_COMMIT_DIAGNOSTIC_SELECTOR)
-            .is_some()
-    );
-    assert!(
-        cx.debug_bounds(&native_connection_commit_diagnostic_code_selector(
-            "connect.type_mismatch",
-        ))
-        .is_some()
-    );
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).last_connection_commit().is_none());
+        let presentation = surface.host().read(cx).interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            presentation.terminal(),
+            Some(InteractionTerminalReason::Cancelled)
+        );
     });
 
     let valid_source = cx
@@ -427,12 +428,13 @@ fn ordinary_shader_wire_rejection_is_visible_and_clears_after_a_valid_commit(
             .len(),
         1
     );
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_COMMIT_DIAGNOSTIC_SELECTOR)
-            .is_none()
-    );
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).last_connection_commit().is_none());
+        let presentation = surface.host().read(cx).interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            presentation.terminal(),
+            Some(InteractionTerminalReason::Applied)
+        );
     });
 }
 
@@ -523,7 +525,13 @@ fn shader_native_search_outside_click_restores_focus_without_graph_mutation(
         assert_ne!(window.focused(cx), Some(previous_focus.clone()));
     });
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_some());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_some()
+        );
     });
 
     let backdrop = cx
@@ -546,7 +554,13 @@ fn shader_native_search_outside_click_restores_focus_without_graph_mutation(
     assert_eq!(after.graph().edges().len(), before.graph().edges().len());
     assert_eq!(runtime.history_state().unwrap(), history_before);
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_none());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_none()
+        );
     });
 }
 
@@ -581,10 +595,13 @@ fn terminal_host_cleanup_moves_focus_off_the_removed_search_input(
         .update(|window, cx| window.focused(cx))
         .expect("search input focus");
 
-    cx.update_entity(&surface, |surface, cx| {
-        surface.host().update(cx, |host, cx| {
-            host.close().expect("close native graph host");
-            cx.notify();
+    cx.update(|window, cx| {
+        surface.update(cx, |surface, cx| {
+            surface.host().update(cx, |host, cx| {
+                host.close_in_window(window, cx)
+                    .expect("close native graph host");
+                cx.notify();
+            });
         });
     });
     cx.run_until_parked();
@@ -601,7 +618,7 @@ fn terminal_host_cleanup_moves_focus_off_the_removed_search_input(
 }
 
 #[open_gpui::test]
-fn shader_native_search_refreshes_stale_candidate_with_structured_diagnostic(
+fn shader_native_search_rebinds_a_stale_candidate_before_one_atomic_commit(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
@@ -650,32 +667,18 @@ fn shader_native_search_refreshes_stale_candidate_with_structured_diagnostic(
 
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
-    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_some()
-    );
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
-            .is_some()
-    );
-    let snapshot = runtime.snapshot().expect("stale shader snapshot");
-    assert_eq!(snapshot.graph().nodes().len(), 2);
-    assert!(snapshot.graph().edges().is_empty());
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-
-    let retry = cx
-        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
-        .expect("native stale-search retry");
-    cx.simulate_click(retry.center(), Default::default());
-    draw(cx);
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_none()
-    );
-    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+    let snapshot = runtime.snapshot().expect("freshly rebound shader snapshot");
+    assert_eq!(snapshot.graph().nodes().len(), 3);
+    assert_eq!(snapshot.graph().edges().len(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_some());
+        let host = surface.host().read(cx);
+        assert!(host.connection_search_request().is_none());
+        assert_eq!(
+            host.interaction_presentation().terminal(),
+            Some(InteractionTerminalReason::Applied)
+        );
     });
 }
 
@@ -698,9 +701,12 @@ impl FailOnceConnectionSearchSource {
 impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
     fn candidates(
         &self,
-        host: &OpenGpuiSceneHost,
-        request: OpenGpuiCreateFromWireRequest,
-    ) -> Result<OpenGpuiCreateFromWireCandidates, NativeConnectionSearchSourceError> {
+        _request: ConnectionSearchRequest,
+        query: &mut dyn FnMut() -> Result<
+            CreateFromWireCandidates,
+            NativeConnectionSearchSourceError,
+        >,
+    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError> {
         let attempt = self.attempts.get();
         self.attempts.set(attempt.saturating_add(1));
         if attempt == 0 {
@@ -708,8 +714,7 @@ impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
                 "application-owned candidate query failed",
             ));
         }
-        host.create_from_wire_candidates(request)
-            .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string()))
+        query()
     }
 }
 
@@ -758,7 +763,13 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
     );
     assert!(cx.debug_bounds(&candidate_selector).is_none());
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_some());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_some()
+        );
     });
     let after_failed_query = runtime.snapshot().expect("after failed query");
     assert!(before_failed_query.ptr_eq(&after_failed_query));
@@ -785,7 +796,13 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
     assert!(cx.debug_bounds(&candidate_selector).is_some());
     assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_some());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_some()
+        );
     });
     let after_recovered_query = runtime.snapshot().expect("after recovered query");
     assert!(before_failed_query.ptr_eq(&after_recovered_query));
@@ -810,12 +827,12 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("shader reconnect-search view");
-    let (_surface, cx) =
+    let (surface, cx) =
         cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
     draw(cx);
 
     let previous_focus = focus_shader_preview_control(cx);
-    open_occupied_shader_input_search(cx);
+    open_occupied_shader_input_search(cx, &surface);
     let candidate = select_blueprint_value_candidate(cx);
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
@@ -864,7 +881,7 @@ fn occupied_shader_input_search_reconnects_atomically_and_undo_restores_the_edge
 }
 
 #[open_gpui::test]
-fn occupied_shader_reconnect_search_stale_then_escape_preserves_edge_and_focus(
+fn occupied_shader_reconnect_search_rebinds_stale_candidate_atomically(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
@@ -873,12 +890,12 @@ fn occupied_shader_reconnect_search_stale_then_escape_preserves_edge_and_focus(
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("stale reconnect-search view");
-    let (_surface, cx) =
+    let (surface, cx) =
         cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
     draw(cx);
 
     let previous_focus = focus_shader_preview_control(cx);
-    open_occupied_shader_input_search(cx);
+    open_occupied_shader_input_search(cx, &surface);
     let candidate = select_blueprint_value_candidate(cx);
     let current = runtime.snapshot().expect("current reconnect graph");
     runtime
@@ -895,26 +912,21 @@ fn occupied_shader_reconnect_search_stale_then_escape_preserves_edge_and_focus(
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
 
-    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
-            .is_some()
-    );
-    assert!(
-        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
-            .is_some()
-    );
-    assert_original_shader_edge(&runtime);
-    assert_eq!(runtime.snapshot().unwrap().graph().nodes().len(), 2);
-    assert_eq!(runtime.history_state().unwrap(), history_after_intervening);
-
-    cx.simulate_keystrokes("escape");
-    draw(cx);
-
     assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus)));
-    assert_original_shader_edge(&runtime);
-    assert_eq!(runtime.history_state().unwrap(), history_after_intervening);
+    let reconnected = runtime.snapshot().expect("fresh reconnect snapshot");
+    assert_eq!(reconnected.graph().nodes().len(), 3);
+    assert_eq!(reconnected.graph().edges().len(), 1);
+    let edge = reconnected
+        .graph()
+        .edge(&edge_id())
+        .expect("stable reconnected edge");
+    assert_eq!(edge.from, source_output_id());
+    assert_ne!(edge.to, input_a_id());
+    assert_eq!(
+        runtime.history_state().unwrap().undo_len(),
+        history_after_intervening.undo_len() + 1,
+    );
 }
 
 #[open_gpui::test]
@@ -936,7 +948,7 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
     draw(cx);
 
     let previous_focus = focus_shader_preview_control(cx);
-    open_occupied_shader_input_search(cx);
+    open_occupied_shader_input_search(cx, &surface);
     let candidate = select_blueprint_value_candidate(cx);
     cx.simulate_click(candidate.center(), Default::default());
     draw(cx);
@@ -950,7 +962,13 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
     assert_eq!(runtime.snapshot().unwrap().graph().nodes().len(), 2);
     assert_eq!(runtime.history_state().unwrap(), history_before);
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_some());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_some()
+        );
     });
 
     let backdrop = cx
@@ -967,7 +985,13 @@ fn occupied_shader_reconnect_search_rejection_then_outside_cancel_preserves_edge
     assert_original_shader_edge(&runtime);
     assert_eq!(runtime.history_state().unwrap(), history_before);
     cx.read_entity(&surface, |surface, cx| {
-        assert!(surface.host().read(cx).create_from_wire_request().is_none());
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_none()
+        );
     });
 }
 
@@ -1677,22 +1701,41 @@ fn focus_shader_preview_control(cx: &mut open_gpui::VisualTestContext) -> open_g
         .expect("shader preview focus")
 }
 
-fn open_occupied_shader_input_search(cx: &mut open_gpui::VisualTestContext) {
+fn open_occupied_shader_input_search(
+    cx: &mut open_gpui::VisualTestContext,
+    surface: &open_gpui::Entity<NativeGraphSurface>,
+) {
     let occupied_input = cx
         .debug_bounds(&shader_port_selector(input_a_id()))
         .expect("occupied shader input");
+    let drop_point = point(px(700.0), px(500.0));
     cx.simulate_mouse_down(
         occupied_input.center(),
         MouseButton::Left,
         Default::default(),
     );
-    cx.simulate_mouse_up(
-        point(px(700.0), px(500.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
+    cx.simulate_mouse_move(drop_point, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(drop_point, MouseButton::Left, Default::default());
     draw(cx);
-    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
+    let state = cx.read_entity(surface, |surface, cx| {
+        let host = surface.host().read(cx);
+        (
+            host.interaction_presentation(),
+            host.connection_search_request(),
+            host.active_port_drag(),
+        )
+    });
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some(),
+        "occupied-input activation must open reconnect search: {state:?}"
+    );
+    assert!(
+        matches!(
+            state.1.map(ConnectionSearchRequest::intent),
+            Some(ConnectionGestureIntent::Reconnect { .. })
+        ),
+        "occupied-input activation must preserve reconnect intent: {state:?}"
+    );
 }
 
 fn select_blueprint_value_candidate(

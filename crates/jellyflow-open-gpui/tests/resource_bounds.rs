@@ -9,15 +9,16 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
-    FrameMaterializationBudget, GraphCommand, GraphRuntime, IncidentEdgePolicy, TopologyEdit,
-    TopologyPort, ViewCloseReason, ViewSessionError, ViewSessionOptions, WeakViewSession,
+    CanvasInteractionPhase, FrameMaterializationBudget, GraphCommand, GraphRuntime,
+    IncidentEdgePolicy, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
+    ViewSessionOptions, WeakViewSession,
 };
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiConnectionPhase, OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding,
-    OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
-    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+    OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard,
+    OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
+    OpenGpuiSceneHost,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -617,7 +618,10 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     cx.update(|window, cx| assert_eq!(window.focused(cx), Some(previous_focus.clone())));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
         assert_eq!(
             host.stats().protected_instances(),
             OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY

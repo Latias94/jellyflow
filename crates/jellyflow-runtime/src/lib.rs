@@ -58,11 +58,12 @@ pub use runtime::interaction::{
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,
     ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation, ConnectionProbe,
-    ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchStatus, FreshGraphMutation,
-    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
-    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
-    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
-    SelectionMode, SelectionMutation, ViewportMutation,
+    ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
+    ConnectionSearchStatus, ConnectionTopology, FreshGraphMutation, FreshGraphMutationBindError,
+    InteractionDamage, InteractionGeneration, InteractionOwner, InteractionPosition,
+    InteractionQueryId, InteractionTerminalReason, InteractionTickDemand, InteractionTicketId,
+    NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent, SelectionBaseline, SelectionMode,
+    SelectionMutation, ViewportMutation,
 };
 pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 pub use runtime::view_session::{

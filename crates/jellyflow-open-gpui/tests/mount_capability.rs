@@ -7,12 +7,11 @@ use jellyflow::core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphCommand, GraphRuntime, ViewSessionOptions};
+use jellyflow::runtime::{CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
-    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiConnectionPhase, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingRead, OpenGpuiNodeBindingReadError, OpenGpuiNodeMountError,
-    OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortHandle,
-    OpenGpuiSceneHost,
+    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
+    OpenGpuiNodeBindingReadError, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
+    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortHandle, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -282,7 +281,10 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
     cx.simulate_mouse_up(port.center(), MouseButton::Left, Default::default());
     assert_eq!(callbacks.get(), 0, "revoked painted callback must be inert");
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
     });
 
     draw(cx);
@@ -294,7 +296,10 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
     cx.simulate_mouse_up(port.center(), MouseButton::Left, Default::default());
     assert_eq!(callbacks.get(), 0, "old mount must not target replacement");
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
     });
 }
 
@@ -359,7 +364,10 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
         .expect("replacement port bounds");
     cx.simulate_mouse_down(live_port.center(), MouseButton::Left, Default::default());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Dragging);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed
+        );
     });
     assert_eq!(
         live_phases.borrow().as_slice(),
@@ -376,7 +384,10 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
     );
     assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Dragging);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed
+        );
     });
 
     cx.simulate_mouse_up(live_port.center(), MouseButton::Left, Default::default());
@@ -385,7 +396,10 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
         [OpenGpuiPortDragPhase::Start, OpenGpuiPortDragPhase::Release,]
     );
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
     });
 }
 

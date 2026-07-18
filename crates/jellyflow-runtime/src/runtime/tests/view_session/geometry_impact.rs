@@ -225,6 +225,79 @@ fn same_frame_applied_command_stales_only_intersecting_candidate() {
 }
 
 #[test]
+fn same_frame_node_translation_rejects_old_layout_without_withdrawing_geometry() {
+    let (graph, ids) = graph_with_routed_edge();
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+
+    let initial = session.frame(request()).unwrap();
+    let initial_collector = initial.collector();
+    for node in [ids.source, ids.target, ids.alternate_source] {
+        initial_collector
+            .layout(layout_for(&initial, node))
+            .unwrap();
+    }
+    session
+        .submit_feedback(initial_collector.finish().unwrap())
+        .unwrap();
+    let before = session.geometry_snapshot().unwrap();
+    let before_source_anchor = before
+        .port(ids.source_port)
+        .expect("source port is initially published")
+        .route_anchor();
+    let before_route = before
+        .route(ids.edge)
+        .expect("incident route is initially published")
+        .facts()
+        .path
+        .clone();
+
+    let frame = session.frame(request()).unwrap();
+    let collector = frame.collector();
+    collector
+        .command(GraphCommand::set_node_position(
+            0,
+            ids.source,
+            CanvasPoint { x: 80.0, y: 40.0 },
+        ))
+        .unwrap();
+    collector.layout(layout_for(&frame, ids.source)).unwrap();
+    let receipt = session
+        .submit_feedback(collector.finish().unwrap())
+        .unwrap();
+
+    assert!(matches!(
+        receipt.operations()[0].command_outcome(),
+        Some(Ok(GraphCommandOutcome::Applied(_)))
+    ));
+    assert_eq!(
+        receipt.operations()[1].layout_status(),
+        Some(LayoutNodeStatus::Stale),
+        "the measurement belongs to the pre-command frame and must still be rejected",
+    );
+    assert!(receipt.publication().is_none());
+
+    let after = session.geometry_snapshot().unwrap();
+    let source = after
+        .node(ids.source)
+        .expect("translated node geometry remains published");
+    assert!(source.is_fresh());
+    assert_eq!(source.bounds().origin, CanvasPoint { x: 80.0, y: 40.0 });
+    let after_source_anchor = after
+        .port(ids.source_port)
+        .expect("translated port geometry remains published")
+        .route_anchor();
+    assert_eq!(after_source_anchor.x - before_source_anchor.x, 80.0);
+    assert_eq!(after_source_anchor.y - before_source_anchor.y, 40.0);
+    let after_route = after
+        .route(ids.edge)
+        .expect("incident route remains continuously published");
+    assert_ne!(after_route.facts().path, before_route);
+}
+
+#[test]
 fn noop_rejected_and_conflicting_commands_do_not_create_geometry_impact() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())

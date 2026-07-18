@@ -7,14 +7,13 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
-    FrameRequest, GraphCommand, GraphRuntime, IncidentEdgePolicy, RendererStamp, TopologyEdit,
-    TopologyPort, ViewCloseReason, ViewSessionOptions,
+    CanvasInteractionPhase, FrameRequest, GraphCommand, GraphRuntime, IncidentEdgePolicy,
+    RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionOptions,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiConnectionCancelReason, OpenGpuiConnectionPhase, OpenGpuiNodeBinding,
-    OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry, OpenGpuiPortActivationSource,
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
-    open_gpui_port_element_id,
+    OpenGpuiNodeBinding, OpenGpuiNodeInteractionGuard, OpenGpuiNodeRegistry,
+    OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase,
+    OpenGpuiPortEvent, OpenGpuiSceneHost, open_gpui_port_element_id,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityId, KeyUpEvent, Keystroke, Modifiers, MouseButton,
@@ -218,6 +217,54 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
 }
 
 #[open_gpui::test]
+fn rejected_pointer_start_reports_start_before_cancel_without_cancelling_keyboard_search(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx, port, _, _, _, _, _) = mount_scene(cx);
+    draw(cx);
+
+    let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
+    cx.simulate_click(control.center(), Default::default());
+    cx.simulate_keystrokes("tab");
+    simulate_key_up(cx, "enter");
+    cx.run_until_parked();
+    let request = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
+        host.connection_search_request().expect("keyboard search")
+    });
+
+    let bounds = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
+    cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        port.pointer.borrow().as_slice(),
+        [
+            OpenGpuiPortDragPhase::Start,
+            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::InteractionUnavailable),
+        ],
+        "a deferred rejection must not overtake the product's Start callback",
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.connection_search_request(), Some(request));
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
+    });
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.cancel_connection_search(request, window, cx)
+        })
+        .expect("cancel search");
+    });
+}
+
+#[open_gpui::test]
 fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -288,11 +335,17 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
 fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, _) = mount_scene(cx);
+    let (_runtime, host, cx, port_events, node_events, canvas_events, _, _, control_focus) =
+        mount_scene(cx);
     draw(cx);
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    let control_focus = control_focus
+        .borrow()
+        .as_ref()
+        .and_then(WeakFocusHandle::upgrade)
+        .expect("mounted control focus");
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
 
@@ -310,7 +363,7 @@ fn disabling_an_active_port_drag_cancels_only_that_owner_and_releases_resources(
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
-    cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+    cx.update(|window, cx| assert_eq!(window.focused(cx), Some(control_focus)));
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
         assert_eq!(host.stats().protected_instances(), 0);
@@ -360,8 +413,11 @@ fn removing_a_captured_dynamic_port_cancels_capture_after_the_topology_patch(
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
-        assert!(host.create_from_wire_request().is_none());
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert!(host.connection_search_request().is_none());
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().protected_leases(), 0);
     });
@@ -400,8 +456,11 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
     simulate_key_up(cx, "enter");
     cx.run_until_parked();
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Searching);
-        assert!(host.create_from_wire_request().is_some());
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
+        assert!(host.connection_search_request().is_some());
     });
 
     runtime
@@ -427,8 +486,11 @@ fn removing_a_keyboard_activated_dynamic_port_cancels_create_from_wire(
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
-        assert!(host.create_from_wire_request().is_none());
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert!(host.connection_search_request().is_none());
         assert!(host.active_port_drag().is_none());
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().protected_leases(), 0);
@@ -536,18 +598,29 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     assert!(canvas_events.borrow().is_empty());
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     cx.update(|window, cx| {
-        assert_eq!(window.focused(cx), control_focus.upgrade());
+        assert_ne!(window.focused(cx), control_focus.upgrade());
+        assert!(window.focused(cx).is_some());
     });
     let request = cx.read_entity(&host, |host, _| {
         assert!(host.active_port_drag().is_none());
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Searching);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
         assert_eq!(host.stats().protected_instances(), 1);
-        host.create_from_wire_request().expect("search request")
+        host.connection_search_request().expect("search request")
     });
-    cx.update_entity(&host, |host, _| {
-        host.cancel_create_from_wire(request, OpenGpuiConnectionCancelReason::OutsideClick)
-            .expect("cancel search");
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.cancel_connection_search(request, window, cx)
+        })
+        .expect("cancel search");
+    });
+    cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().protected_instances(), 0);
+    });
+    cx.update(|window, cx| {
+        assert_eq!(window.focused(cx), control_focus.upgrade());
     });
     assert!(graph_before.ptr_eq(&runtime.snapshot().expect("snapshot after port capture")));
     assert_eq!(
@@ -637,9 +710,6 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
-    cx.update(|window, cx| {
-        assert!(window.focused(cx).is_some());
-    });
 }
 
 #[open_gpui::test]
@@ -767,18 +837,19 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
     draw(cx);
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    cx.simulate_mouse_up(
-        point(px(700.0), px(500.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
+    let outside = point(px(700.0), px(500.0));
+    cx.simulate_mouse_move(outside, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
     let request = cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Searching);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
         assert_eq!(host.stats().protected_instances(), 1);
         assert_eq!(host.stats().protected_leases(), 1);
-        host.create_from_wire_request().expect("search request")
+        host.connection_search_request().expect("search request")
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -790,17 +861,21 @@ fn create_from_wire_search_force_includes_its_source_until_cancelled(
         assert_eq!(host.stats().active_nodes(), 1);
         assert_eq!(host.stats().parked_nodes(), 0);
         assert_eq!(host.stats().protected_instances(), 1);
-        assert_eq!(host.create_from_wire_request(), Some(request));
+        assert_eq!(host.connection_search_request(), Some(request));
     });
 
-    cx.update_entity(&host, |host, cx| {
-        host.cancel_create_from_wire(request, OpenGpuiConnectionCancelReason::OutsideClick)
-            .expect("cancel search");
-        cx.notify();
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.cancel_connection_search(request, window, cx)
+        })
+        .expect("cancel search");
     });
     draw(cx);
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
         assert_eq!(host.stats().active_nodes(), 0);
         assert_eq!(host.stats().parked_nodes(), 1);
         assert_eq!(host.stats().protected_instances(), 0);
@@ -865,7 +940,10 @@ fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_own
     assert!(canvas_events.borrow().is_empty());
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Closed
+        );
         assert!(host.active_port_drag().is_none());
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().strong_instances(), 0);
@@ -891,22 +969,31 @@ fn cancelling_create_from_wire_restores_the_pre_drag_focus_and_leaves_no_owner(
 
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
-    cx.simulate_mouse_up(
-        point(px(700.0), px(500.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
+    let outside = point(px(700.0), px(500.0));
+    cx.simulate_mouse_move(outside, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
     cx.run_until_parked();
 
-    cx.update_entity(&host, |host, _| {
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Searching);
-        let request = host
-            .create_from_wire_request()
-            .expect("create-from-wire request");
-        host.cancel_create_from_wire(request, OpenGpuiConnectionCancelReason::OutsideClick)
-            .expect("cancel current search");
-        assert_eq!(host.connection_phase(), OpenGpuiConnectionPhase::Idle);
-        assert!(host.create_from_wire_request().is_none());
+    let request = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch
+        );
+        host.connection_search_request()
+            .expect("create-from-wire request")
+    });
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.cancel_connection_search(request, window, cx)
+        })
+        .expect("cancel current search");
+    });
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle
+        );
+        assert!(host.connection_search_request().is_none());
         assert!(host.active_port_drag().is_none());
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().protected_leases(), 0);

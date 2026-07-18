@@ -1,25 +1,21 @@
 mod connection;
 mod diagnostics;
 mod frame_feedback;
+mod interaction_session;
 mod lifecycle;
 mod node_lifecycle;
 mod retained_mount_store;
 mod scene_gesture;
 mod scene_render;
 
-pub use self::connection::{
-    OpenGpuiConnectionCommitEvent, OpenGpuiConnectionCommitFailure,
-    OpenGpuiConnectionCommitOutcome, OpenGpuiConnectionCommitStage,
-    OpenGpuiCreateFromWireCandidates, OpenGpuiCreateFromWireError,
-    OpenGpuiCreateFromWireSubmission,
-};
+pub use self::connection::{OpenGpuiConnectionSearchError, OpenGpuiConnectionSearchSubmission};
 pub use self::diagnostics::{
     OpenGpuiEdgeLayerOverflow, OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind,
     OpenGpuiSceneHostStats,
 };
 pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 
-use self::connection::{MountedConnectionOwner, OpenGpuiConnectionPreview};
+use self::connection::MountedConnectionOwner;
 use self::frame_feedback::DeferredFrameFeedback;
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
@@ -32,7 +28,7 @@ use self::scene_render::{
     OpenGpuiConnectionPreviewEvidence, OpenGpuiSceneEvidence, OpenGpuiSceneLayer,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -40,21 +36,21 @@ use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
-    AdapterEnvironment, FrameMaterializationBudget, FrameMaterializationError,
-    FrameMaterializationOverflow, FrameRequest, RendererStamp, ViewCloseReason, ViewPoint,
-    ViewRect, ViewSession, ViewSessionError, ViewSize, WeakViewSession,
+    AdapterEnvironment, CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
+    FrameMaterializationBudget, FrameMaterializationError, FrameMaterializationOverflow,
+    FrameRequest, RendererStamp, ViewCloseReason, ViewPoint, ViewRect, ViewSession,
+    ViewSessionError, ViewSize, WeakViewSession,
 };
 use open_gpui::{Context, FocusHandle, IntoElement, Pixels, Render, Window};
 
 use self::lifecycle::HostLifecycleBridge;
 use self::retained_mount_store::RetainedMountStore;
-use self::scene_gesture::SceneGestureController;
 
 use crate::activity::OpenGpuiActivityCoordinator;
 use crate::command_journal::{
-    OpenGpuiCommandJournal, OpenGpuiCommandTicketError, resolve_command_tickets,
+    OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, OpenGpuiCommandTicketError,
+    resolve_command_tickets,
 };
-use crate::connection_controller::{OpenGpuiConnectionController, OpenGpuiCreateFromWireRequest};
 use crate::interaction::{OpenGpuiInteractionCoordinator, OpenGpuiSceneInteractionCoordinator};
 use crate::port_handle::OpenGpuiPendingMeasurements;
 use crate::registry::OpenGpuiNodeRegistry;
@@ -63,11 +59,6 @@ use crate::registry::OpenGpuiNodeRegistry;
 use crate::binding::OpenGpuiNodeBinding;
 #[cfg(test)]
 use crate::command_journal::OpenGpuiCommandOrigin;
-#[cfg(test)]
-use crate::connection_controller::{
-    OpenGpuiConnectionCancelReason, OpenGpuiConnectionCommitRejection, OpenGpuiConnectionIntent,
-    OpenGpuiConnectionPhase,
-};
 #[cfg(test)]
 use crate::interaction::{OpenGpuiSceneGestureCancelReason, OpenGpuiSceneGesturePhase};
 
@@ -100,17 +91,21 @@ pub struct OpenGpuiSceneHost {
     activity_coordinator: OpenGpuiActivityCoordinator,
     interactions: OpenGpuiInteractionCoordinator,
     scene_interactions: OpenGpuiSceneInteractionCoordinator,
-    scene_gesture: SceneGestureController,
-    connections: OpenGpuiConnectionController,
+    canvas_interaction: CanvasInteractionSession,
+    pending_interaction_queries: VecDeque<CanvasInteractionQuery>,
+    pending_interaction_submission: Option<interaction_session::PendingInteractionSubmission>,
+    ready_interaction_prefixes: VecDeque<(
+        jellyflow::runtime::InteractionTicketId,
+        OpenGpuiCommandPrefixBarrierResult,
+    )>,
+    interaction_tick_scheduled: bool,
     connection_owner: Option<MountedConnectionOwner>,
-    connection_preview: Option<OpenGpuiConnectionPreview>,
-    last_create_from_wire: Option<OpenGpuiCreateFromWireRequest>,
-    last_connection_commit: Option<OpenGpuiConnectionCommitEvent>,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
     interaction_focus: Option<FocusHandle>,
     document_epoch: Option<jellyflow::runtime::DocumentEpoch>,
     terminal_reason: Option<ViewCloseReason>,
+    terminal_window_cleanup_pending: bool,
     lifecycle_bridge: Option<HostLifecycleBridge>,
     #[cfg(test)]
     scene_evidence: Rc<OpenGpuiSceneEvidence>,
@@ -156,6 +151,13 @@ impl OpenGpuiSceneHost {
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, viewport: CanvasRect) -> Self {
         let catalog = view.catalog_owned();
         let frame_request_template = catalog_frame_request(&catalog, viewport);
+        let canvas_interaction = CanvasInteractionSession::new(
+            view.id(),
+            view.generation()
+                .expect("a newly constructed native host owns an open view"),
+            CanvasInteractionConfig::default(),
+        )
+        .expect("the built-in canvas interaction configuration is valid");
         Self {
             view,
             commands: OpenGpuiCommandJournal::new(),
@@ -174,17 +176,18 @@ impl OpenGpuiSceneHost {
             ),
             interactions: OpenGpuiInteractionCoordinator::new(),
             scene_interactions: OpenGpuiSceneInteractionCoordinator::new(),
-            scene_gesture: SceneGestureController::default(),
-            connections: OpenGpuiConnectionController::new(),
+            canvas_interaction,
+            pending_interaction_queries: VecDeque::new(),
+            pending_interaction_submission: None,
+            ready_interaction_prefixes: VecDeque::new(),
+            interaction_tick_scheduled: false,
             connection_owner: None,
-            connection_preview: None,
-            last_create_from_wire: None,
-            last_connection_commit: None,
             scene_origin: None,
             scene_transform: None,
             interaction_focus: None,
             document_epoch: None,
             terminal_reason: None,
+            terminal_window_cleanup_pending: false,
             lifecycle_bridge: None,
             #[cfg(test)]
             scene_evidence: Rc::new(OpenGpuiSceneEvidence::new()),
@@ -406,22 +409,16 @@ impl Render for OpenGpuiSceneHost {
         self.scene_interactions.schedule_pending_drain(window, cx);
         self.ensure_lifecycle_bridge(cx);
         if let Some(reason) = self.close_reason() {
-            let completed = self.commands.terminate(reason);
-            self.enter_terminal(reason);
-            let resolutions = self.handle_completed_commands(completed);
-            cx.defer(move |_| resolve_command_tickets(resolutions));
-            self.interactions.schedule_pending_drain(window, cx);
+            self.finish_terminal_render_cleanup(reason, window, cx);
             return self.terminal_scene(host_id, focus_handle);
         }
+        self.process_one_ready_interaction_prefix(window, cx);
+        self.process_one_interaction_query(window, cx);
+        self.sync_native_connection_state(window, cx);
         let frame = match self.view.frame(self.frame_request()) {
             Ok(frame) => frame,
             Err(FrameMaterializationError::Session(ViewSessionError::Closed { reason })) => {
-                let completed = self.commands.terminate(reason);
-                self.enter_terminal(reason);
-                let resolutions = self.handle_completed_commands(completed);
-                cx.defer(move |_| resolve_command_tickets(resolutions));
-                self.interactions.schedule_pending_drain(window, cx);
-                self.scene_interactions.schedule_pending_drain(window, cx);
+                self.finish_terminal_render_cleanup(reason, window, cx);
                 return self.terminal_scene(host_id, focus_handle);
             }
             Err(error) => return self.frame_failure(error.to_string(), cx),
@@ -437,9 +434,11 @@ impl Render for OpenGpuiSceneHost {
                 );
             }
         };
+        let presentation_offsets = self.interaction_node_drag_offsets();
         let measurements = Rc::new(OpenGpuiPendingMeasurements::new(
             frame.nodes(),
             frame.transform(),
+            presentation_offsets,
         ));
         self.reconcile_frame(
             frame.nodes(),
@@ -449,15 +448,10 @@ impl Render for OpenGpuiSceneHost {
             cx,
         );
         self.interactions.schedule_pending_drain(window, cx);
-        let wires = match self.scene_wires() {
+        let wires = match self.scene_wires_with_offsets(measurements.presentation_offsets()) {
             Ok(wires) => wires,
             Err(ViewSessionError::Closed { reason }) => {
-                let completed = self.commands.terminate(reason);
-                self.enter_terminal(reason);
-                let resolutions = self.handle_completed_commands(completed);
-                cx.defer(move |_| resolve_command_tickets(resolutions));
-                self.interactions.schedule_pending_drain(window, cx);
-                self.scene_interactions.schedule_pending_drain(window, cx);
+                self.finish_terminal_render_cleanup(reason, window, cx);
                 return self.terminal_scene(host_id, focus_handle);
             }
             Err(error) => {
@@ -489,7 +483,6 @@ impl Render for OpenGpuiSceneHost {
                 measurements,
                 Rc::clone(&self.commands),
                 command_batch,
-                !self.scene_gesture.has_node_drag_visual(),
             )),
             frame.transform(),
             focus_handle,

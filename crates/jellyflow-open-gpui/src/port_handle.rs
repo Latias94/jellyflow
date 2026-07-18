@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::{CanvasRect, NodeId, PortDirection, PortId};
+use jellyflow::core::{CanvasPoint, CanvasRect, NodeId, PortDirection, PortId};
 use jellyflow::runtime::runtime::geometry::HandlePosition;
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
@@ -683,13 +683,18 @@ pub(crate) struct OpenGpuiPendingMeasurements {
     order: Vec<NodeInstanceKey>,
     nodes: RefCell<BTreeMap<NodeInstanceKey, PendingNodeMeasurement>>,
     transform: ViewportTransform,
+    presentation_offsets: BTreeMap<NodeId, CanvasPoint>,
     scene_origin: Cell<Option<ViewPoint>>,
     errors: RefCell<Vec<OpenGpuiMeasurementError>>,
     error_queue_busy: Cell<bool>,
 }
 
 impl OpenGpuiPendingMeasurements {
-    pub(crate) fn new(frame: &[FrameNode], transform: ViewportTransform) -> Self {
+    pub(crate) fn new(
+        frame: &[FrameNode],
+        transform: ViewportTransform,
+        presentation_offsets: BTreeMap<NodeId, CanvasPoint>,
+    ) -> Self {
         let order = frame.iter().map(|node| node.instance().clone()).collect();
         let nodes = frame
             .iter()
@@ -709,6 +714,7 @@ impl OpenGpuiPendingMeasurements {
             order,
             nodes: RefCell::new(nodes),
             transform,
+            presentation_offsets,
             scene_origin: Cell::new(None),
             errors: RefCell::new(Vec::new()),
             error_queue_busy: Cell::new(false),
@@ -717,6 +723,14 @@ impl OpenGpuiPendingMeasurements {
 
     pub(crate) fn record_scene(&self, bounds: Bounds<Pixels>) {
         self.scene_origin.set(Some(view_rect(bounds).origin));
+    }
+
+    pub(crate) fn presentation_offsets(&self) -> &BTreeMap<NodeId, CanvasPoint> {
+        &self.presentation_offsets
+    }
+
+    pub(crate) fn presentation_offset(&self, node: NodeId) -> Option<CanvasPoint> {
+        self.presentation_offsets.get(&node).copied()
     }
 
     pub(crate) fn record_root(
@@ -788,7 +802,19 @@ impl OpenGpuiPendingMeasurements {
                 .ok_or(OpenGpuiMeasurementError::UnknownInstance {
                     node: instance.node(),
                 })?;
-            let measured_root = node.root.map(|root| relative_rect(root, scene_origin));
+            let presentation_offset = self
+                .presentation_offsets
+                .get(&instance.node())
+                .map(|offset| {
+                    ViewPoint::new(
+                        offset.x * self.transform.zoom,
+                        offset.y * self.transform.zoom,
+                    )
+                })
+                .unwrap_or_default();
+            let measured_root = node.root.map(|root| {
+                remove_presentation_offset(relative_rect(root, scene_origin), presentation_offset)
+            });
             let root = match measured_root {
                 Some(root) => root,
                 None => projected_view_rect(node.frame_node.bounds(), self.transform).ok_or(
@@ -804,9 +830,18 @@ impl OpenGpuiPendingMeasurements {
                 {
                     layout.port_rendered(
                         port.layout_target(),
-                        relative_rect(measurement.visual_bounds, scene_origin),
-                        relative_rect(measurement.hit_bounds, scene_origin),
-                        relative_point(measurement.route_anchor, scene_origin),
+                        remove_presentation_offset(
+                            relative_rect(measurement.visual_bounds, scene_origin),
+                            presentation_offset,
+                        ),
+                        remove_presentation_offset(
+                            relative_rect(measurement.hit_bounds, scene_origin),
+                            presentation_offset,
+                        ),
+                        remove_point_presentation_offset(
+                            relative_point(measurement.route_anchor, scene_origin),
+                            presentation_offset,
+                        ),
                         measurement.outward,
                     )
                 } else {
@@ -848,6 +883,17 @@ impl OpenGpuiPendingMeasurements {
     }
 }
 
+fn remove_presentation_offset(rect: ViewRect, offset: ViewPoint) -> ViewRect {
+    ViewRect::new(
+        remove_point_presentation_offset(rect.origin, offset),
+        rect.size,
+    )
+}
+
+fn remove_point_presentation_offset(point: ViewPoint, offset: ViewPoint) -> ViewPoint {
+    ViewPoint::new(point.x - offset.x, point.y - offset.y)
+}
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum OpenGpuiMeasurementError {
     #[error("native measurement state is busy in another callback")]
@@ -887,7 +933,10 @@ impl OpenGpuiMeasurementError {
     }
 }
 
-fn projected_view_rect(bounds: CanvasRect, transform: ViewportTransform) -> Option<ViewRect> {
+pub(crate) fn projected_view_rect(
+    bounds: CanvasRect,
+    transform: ViewportTransform,
+) -> Option<ViewRect> {
     let origin = transform.screen_point_for_canvas(bounds.origin)?;
     let projected = ViewRect::new(
         ViewPoint::new(origin.x, origin.y),
@@ -1063,7 +1112,11 @@ mod tests {
         assert!(initial_geometry.port(output).is_some());
 
         let fallback = view.frame(request()).expect("fallback frame");
-        let measurements = OpenGpuiPendingMeasurements::new(fallback.nodes(), fallback.transform());
+        let measurements = OpenGpuiPendingMeasurements::new(
+            fallback.nodes(),
+            fallback.transform(),
+            BTreeMap::new(),
+        );
         measurements.record_scene(Bounds {
             origin: point(px(100.0), px(200.0)),
             size: size(px(800.0), px(600.0)),

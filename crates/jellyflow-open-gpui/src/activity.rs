@@ -13,6 +13,7 @@ pub enum OpenGpuiActivityKind {
     Focus,
     Ime,
     PointerCapture,
+    GraphInteraction,
     Overlay,
     Task,
     Subscription,
@@ -22,6 +23,13 @@ pub enum OpenGpuiActivityKind {
 impl OpenGpuiActivityKind {
     fn protects_retention(self) -> bool {
         !matches!(self, Self::Task | Self::Subscription)
+    }
+
+    fn requires_window_cleanup(self) -> bool {
+        matches!(
+            self,
+            Self::Focus | Self::Ime | Self::PointerCapture | Self::GraphInteraction | Self::Overlay
+        )
     }
 }
 
@@ -46,6 +54,7 @@ pub(crate) struct OpenGpuiActivityCoordinator {
 struct ActivityCoordinatorState {
     capacity: usize,
     protected: BTreeMap<NodeInstanceKey, usize>,
+    window_owned_leases: usize,
     protected_high_water: usize,
     overflows: u64,
 }
@@ -64,16 +73,24 @@ impl OpenGpuiActivityCoordinator {
             state: Rc::new(RefCell::new(ActivityCoordinatorState {
                 capacity,
                 protected: BTreeMap::new(),
+                window_owned_leases: 0,
                 protected_high_water: 0,
                 overflows: 0,
             })),
         }
     }
 
-    fn acquire(&self, instance: &NodeInstanceKey) -> Result<(), OpenGpuiActivityAcquireError> {
+    fn acquire(
+        &self,
+        instance: &NodeInstanceKey,
+        kind: OpenGpuiActivityKind,
+    ) -> Result<(), OpenGpuiActivityAcquireError> {
         let mut state = self.state.borrow_mut();
         if let Some(count) = state.protected.get_mut(instance) {
             *count = count.saturating_add(1);
+            if kind.requires_window_cleanup() {
+                state.window_owned_leases = state.window_owned_leases.saturating_add(1);
+            }
             return Ok(());
         }
         if state.protected.len() >= state.capacity {
@@ -83,11 +100,14 @@ impl OpenGpuiActivityCoordinator {
             });
         }
         state.protected.insert(instance.clone(), 1);
+        if kind.requires_window_cleanup() {
+            state.window_owned_leases = state.window_owned_leases.saturating_add(1);
+        }
         state.protected_high_water = state.protected_high_water.max(state.protected.len());
         Ok(())
     }
 
-    fn release(&self, instance: &NodeInstanceKey, leases: usize) {
+    fn release(&self, instance: &NodeInstanceKey, leases: usize, window_owned_leases: usize) {
         if leases == 0 {
             return;
         }
@@ -100,6 +120,13 @@ impl OpenGpuiActivityCoordinator {
         } else {
             *count -= leases;
         }
+        state.window_owned_leases = state
+            .window_owned_leases
+            .saturating_sub(window_owned_leases);
+    }
+
+    pub(crate) fn requires_window_cleanup(&self) -> bool {
+        self.state.borrow().window_owned_leases > 0
     }
 
     pub(crate) fn stats(&self) -> OpenGpuiActivityCoordinatorStats {
@@ -225,11 +252,17 @@ impl OpenGpuiNodeActivityRegistry {
             .values()
             .filter(|entry| entry.kind.protects_retention())
             .count();
+        let window_owned_count = entries
+            .values()
+            .filter(|entry| entry.kind.requires_window_cleanup())
+            .count();
 
         if let Some(coordinated_instance) = coordinated_instance {
-            coordinated_instance
-                .coordinator
-                .release(&coordinated_instance.instance, protected_count);
+            coordinated_instance.coordinator.release(
+                &coordinated_instance.instance,
+                protected_count,
+                window_owned_count,
+            );
         }
 
         let mut first_panic = None;
@@ -272,7 +305,7 @@ impl OpenGpuiNodeActivityRegistry {
             && let Some(coordinated_instance) = &state.coordinated_instance
             && let Err(error) = coordinated_instance
                 .coordinator
-                .acquire(&coordinated_instance.instance)
+                .acquire(&coordinated_instance.instance, kind)
         {
             drop(state);
             invoke_failed_acquisition_callback(revoke);
@@ -334,19 +367,24 @@ impl Drop for OpenGpuiActivityLease {
             return;
         };
 
-        let (entry, coordinated_instance) = {
+        let (entry, coordinated_instance, window_owned) = {
             let mut state = state.borrow_mut();
             let entry = state.entries.remove(&self.id);
             let coordinated_instance = entry
                 .as_ref()
                 .filter(|entry| entry.kind.protects_retention())
                 .and(state.coordinated_instance.clone());
-            (entry, coordinated_instance)
+            let window_owned = entry
+                .as_ref()
+                .is_some_and(|entry| entry.kind.requires_window_cleanup());
+            (entry, coordinated_instance, window_owned)
         };
         if let Some(coordinated_instance) = coordinated_instance {
-            coordinated_instance
-                .coordinator
-                .release(&coordinated_instance.instance, 1);
+            coordinated_instance.coordinator.release(
+                &coordinated_instance.instance,
+                1,
+                usize::from(window_owned),
+            );
         }
         drop(entry);
     }
