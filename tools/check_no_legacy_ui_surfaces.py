@@ -162,6 +162,10 @@ SOURCE_PATTERNS = (
     ForbiddenPattern("old repeatable planner", re.compile(r"\bProductRepeatable\w*\b")),
     ForbiddenPattern("old binding query", re.compile(r"\bBindingQuery\b")),
     ForbiddenPattern(
+        "old interaction guard",
+        re.compile(r"\b(?:OpenGpuiNodeInteractionGuard|OpenGpuiInteractionGuardElement)\b"),
+    ),
+    ForbiddenPattern(
         "adapter test backdoor",
         re.compile(
             r"\b(?:adapter_test_support|with_state_borrowed_for_adapter_test|"

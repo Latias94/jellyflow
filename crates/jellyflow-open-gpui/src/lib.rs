@@ -79,17 +79,13 @@ pub use registry::{
 };
 pub use scale_policy::{
     OPEN_GPUI_DEFAULT_DETAIL_ENTER_ZOOM, OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
-    OpenGpuiNodeScaleBand, OpenGpuiNodeScalePolicy, OpenGpuiNodeScaleState,
-    OpenGpuiSemanticLodConfigError, OpenGpuiSemanticLodPolicy,
+    OpenGpuiNodeScalePolicy, OpenGpuiSemanticLodConfigError, OpenGpuiSemanticLodPolicy,
 };
 pub use size_policy::{
     OPEN_GPUI_DEFAULT_MAX_CONTENT_SIZE, OPEN_GPUI_DEFAULT_MIN_CONTENT_SIZE,
     OPEN_GPUI_DEFAULT_SIZE_ATTEMPT_BOUND, OPEN_GPUI_DEFAULT_SIZE_EPSILON,
     OPEN_GPUI_DEFAULT_STABLE_SIZE_SAMPLES, OpenGpuiContentHeightPolicy, OpenGpuiContentSizePolicy,
-    OpenGpuiNodeSizeCommand, OpenGpuiNodeSizeConfigError, OpenGpuiNodeSizeConvergence,
-    OpenGpuiNodeSizeDiagnostic, OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeFreezeReason,
-    OpenGpuiNodeSizePolicy, OpenGpuiNodeSizeSettlement, OpenGpuiNodeSizeState,
-    OpenGpuiNodeSizeTicket, OpenGpuiNodeSizeUpdate,
+    OpenGpuiNodeSizeConfigError, OpenGpuiNodeSizeConvergence, OpenGpuiNodeSizePolicy,
 };
 pub use theme::{
     OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH, OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,

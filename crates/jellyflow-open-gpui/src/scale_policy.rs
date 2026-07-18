@@ -116,7 +116,7 @@ impl Default for OpenGpuiNodeScalePolicy {
 
 /// Base graph presentation selected by a node scale policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum OpenGpuiNodeScaleBand {
+pub(crate) enum OpenGpuiNodeScaleBand {
     /// Render the graph-interactive native detail presentation.
     #[default]
     Detail,
@@ -129,7 +129,7 @@ pub enum OpenGpuiNodeScaleBand {
 /// Interaction-island presentation is intentionally not represented here. It is a native
 /// lifecycle concern layered over this base graph band and must remain graph-inert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenGpuiNodeScaleState {
+pub(crate) struct OpenGpuiNodeScaleState {
     band: OpenGpuiNodeScaleBand,
 }
 

@@ -85,6 +85,17 @@ def write_repo_file(repo_root: Path, relative: str, contents: str) -> Path:
 
 
 class LegacyUiSurfaceTests(unittest.TestCase):
+    def test_superseded_interaction_guard_symbols_are_forbidden(self) -> None:
+        for symbol in (
+            "OpenGpuiNodeInteractionGuard",
+            "OpenGpuiInteractionGuardElement",
+        ):
+            with self.subTest(symbol=symbol):
+                violations = source_violations(f"let _ = {symbol};\n")
+
+                self.assertEqual(len(violations), 1)
+                self.assertIn("old interaction guard", violations[0])
+
     def test_headless_focusability_symbols_are_forbidden(self) -> None:
         for symbol in ("focusable", "SetNodeFocusable", "SetEdgeFocusable"):
             with self.subTest(symbol=symbol):

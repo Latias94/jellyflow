@@ -8,8 +8,7 @@ mod paths;
 
 pub(crate) use bounds::CanvasBounds;
 pub use edge_route::{
-    EdgeInteractionFacts, EdgePresentationFacts, EdgeRouteFacts, ResolvedEdgeRouteKind,
-    resolve_edge_route_path,
+    EdgeInteractionFacts, EdgePresentationFacts, EdgeRouteFacts, resolve_edge_route_path,
 };
 pub use endpoints::{
     EdgeEndpointInput, EdgeEndpointPosition, EdgePosition, HandleBounds, HandlePosition,

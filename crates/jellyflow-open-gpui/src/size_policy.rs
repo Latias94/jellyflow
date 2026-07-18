@@ -287,7 +287,7 @@ pub enum OpenGpuiNodeSizeConfigError {
 /// Neither field should be derived from graph or binding revision: a size command itself advances
 /// those revisions and would otherwise reset convergence indefinitely.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct OpenGpuiNodeSizeEpoch {
+pub(crate) struct OpenGpuiNodeSizeEpoch {
     content: u64,
     environment: u64,
 }
@@ -300,32 +300,15 @@ impl OpenGpuiNodeSizeEpoch {
             environment,
         }
     }
-
-    #[must_use]
-    pub const fn content(self) -> u64 {
-        self.content
-    }
-
-    #[must_use]
-    pub const fn environment(self) -> u64 {
-        self.environment
-    }
 }
 
 /// Adapter-local identity for one pending size command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct OpenGpuiNodeSizeTicket(u64);
-
-impl OpenGpuiNodeSizeTicket {
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
+pub(crate) struct OpenGpuiNodeSizeTicket(u64);
 
 /// One command intent emitted by the pure convergence reducer.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OpenGpuiNodeSizeCommand {
+pub(crate) struct OpenGpuiNodeSizeCommand {
     ticket: OpenGpuiNodeSizeTicket,
     size: CanvasSize,
 }
@@ -344,7 +327,7 @@ impl OpenGpuiNodeSizeCommand {
 
 /// Terminal outcome for one adapter-local size ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenGpuiNodeSizeSettlement {
+pub(crate) enum OpenGpuiNodeSizeSettlement {
     /// The requested size became authoritative, including a semantic no-op receipt.
     Applied,
     /// The graph rejected the command for a non-conflict reason.
@@ -357,7 +340,7 @@ pub enum OpenGpuiNodeSizeSettlement {
 
 /// Deterministic reason that content-driven sizing stopped for the current epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenGpuiNodeSizeFreezeReason {
+pub(crate) enum OpenGpuiNodeSizeFreezeReason {
     /// The latest desired size continued an alternating A-B command sequence at the bound.
     AlternatingCycle,
     /// The epoch exhausted its configured command-attempt bound.
@@ -366,8 +349,7 @@ pub enum OpenGpuiNodeSizeFreezeReason {
 
 /// One structured, edge-triggered non-convergence diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OpenGpuiNodeSizeDiagnostic {
-    epoch: OpenGpuiNodeSizeEpoch,
+pub(crate) struct OpenGpuiNodeSizeDiagnostic {
     reason: OpenGpuiNodeSizeFreezeReason,
     attempts: u16,
     last_applied_size: CanvasSize,
@@ -375,11 +357,6 @@ pub struct OpenGpuiNodeSizeDiagnostic {
 }
 
 impl OpenGpuiNodeSizeDiagnostic {
-    #[must_use]
-    pub const fn epoch(self) -> OpenGpuiNodeSizeEpoch {
-        self.epoch
-    }
-
     #[must_use]
     pub const fn reason(self) -> OpenGpuiNodeSizeFreezeReason {
         self.reason
@@ -403,10 +380,9 @@ impl OpenGpuiNodeSizeDiagnostic {
 
 /// Effects produced by one pure size-state transition.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct OpenGpuiNodeSizeUpdate {
+pub(crate) struct OpenGpuiNodeSizeUpdate {
     command: Option<OpenGpuiNodeSizeCommand>,
     diagnostic: Option<OpenGpuiNodeSizeDiagnostic>,
-    matched_ticket: bool,
 }
 
 impl OpenGpuiNodeSizeUpdate {
@@ -418,12 +394,6 @@ impl OpenGpuiNodeSizeUpdate {
     #[must_use]
     pub const fn diagnostic(self) -> Option<OpenGpuiNodeSizeDiagnostic> {
         self.diagnostic
-    }
-
-    /// Returns whether a settlement input matched and cleared the current pending ticket.
-    #[must_use]
-    pub const fn matched_ticket(self) -> bool {
-        self.matched_ticket
     }
 
     #[must_use]
@@ -443,7 +413,7 @@ struct PendingSizeCommand {
 /// The state owns no graph, host, or framework handle. Callers map the local ticket to their
 /// command journal, then feed one terminal settlement back through [`Self::settle`].
 #[derive(Debug, Clone)]
-pub struct OpenGpuiNodeSizeState {
+pub(crate) struct OpenGpuiNodeSizeState {
     epoch: OpenGpuiNodeSizeEpoch,
     last_applied_size: CanvasSize,
     stable_candidate: Option<CanvasSize>,
@@ -485,46 +455,6 @@ impl OpenGpuiNodeSizeState {
             next_ticket: Some(1),
             frozen: None,
         })
-    }
-
-    #[must_use]
-    pub const fn epoch(&self) -> OpenGpuiNodeSizeEpoch {
-        self.epoch
-    }
-
-    #[must_use]
-    pub const fn last_applied_size(&self) -> CanvasSize {
-        self.last_applied_size
-    }
-
-    #[must_use]
-    pub fn pending_ticket(&self) -> Option<OpenGpuiNodeSizeTicket> {
-        self.pending.map(|pending| pending.ticket)
-    }
-
-    #[must_use]
-    pub fn pending_size(&self) -> Option<CanvasSize> {
-        self.pending.map(|pending| pending.desired_size)
-    }
-
-    #[must_use]
-    pub const fn latest_desired_size(&self) -> Option<CanvasSize> {
-        self.latest_desired_size
-    }
-
-    #[must_use]
-    pub const fn attempts(&self) -> u16 {
-        self.attempts
-    }
-
-    #[must_use]
-    pub const fn freeze_reason(&self) -> Option<OpenGpuiNodeSizeFreezeReason> {
-        self.frozen
-    }
-
-    #[must_use]
-    pub const fn is_frozen(&self) -> bool {
-        self.frozen.is_some()
     }
 
     /// Begins a new content/environment epoch while preserving any in-flight ticket.
@@ -655,39 +585,25 @@ impl OpenGpuiNodeSizeState {
         if settlement == OpenGpuiNodeSizeSettlement::Retired {
             self.reset_samples();
             self.latest_desired_size = None;
-            return OpenGpuiNodeSizeUpdate {
-                matched_ticket: true,
-                ..OpenGpuiNodeSizeUpdate::default()
-            };
+            return OpenGpuiNodeSizeUpdate::default();
         }
 
         let Some(desired_size) = self.latest_desired_size.take() else {
-            return OpenGpuiNodeSizeUpdate {
-                matched_ticket: true,
-                ..OpenGpuiNodeSizeUpdate::default()
-            };
+            return OpenGpuiNodeSizeUpdate::default();
         };
         let Some(convergence) = policy.convergence() else {
-            return OpenGpuiNodeSizeUpdate {
-                matched_ticket: true,
-                ..OpenGpuiNodeSizeUpdate::default()
-            };
+            return OpenGpuiNodeSizeUpdate::default();
         };
         if sizes_are_equivalent(
             desired_size,
             self.last_applied_size,
             convergence.epsilon_in_canvas(),
         ) {
-            return OpenGpuiNodeSizeUpdate {
-                matched_ticket: true,
-                ..OpenGpuiNodeSizeUpdate::default()
-            };
+            return OpenGpuiNodeSizeUpdate::default();
         }
 
         self.suppressed_size = None;
-        let mut update = self.issue(desired_size, convergence);
-        update.matched_ticket = true;
-        update
+        self.issue(desired_size, convergence)
     }
 
     fn issue(
@@ -720,7 +636,6 @@ impl OpenGpuiNodeSizeState {
             self.latest_desired_size = None;
             return OpenGpuiNodeSizeUpdate {
                 diagnostic: Some(OpenGpuiNodeSizeDiagnostic {
-                    epoch: self.epoch,
                     reason,
                     attempts: self.attempts,
                     last_applied_size: self.last_applied_size,
@@ -854,8 +769,8 @@ mod tests {
                 );
             }
         }
-        assert_eq!(state.attempts(), 0);
-        assert_eq!(state.last_applied_size(), size(240.0, 100.0));
+        assert_eq!(state.attempts, 0);
+        assert_eq!(state.last_applied_size, size(240.0, 100.0));
     }
 
     #[test]
@@ -898,15 +813,14 @@ mod tests {
 
         assert!(observe_twice(&mut state, policy, document, size(130.0, 130.0)).is_idle());
         assert!(observe_twice(&mut state, policy, document, size(140.0, 140.0)).is_idle());
-        assert_eq!(state.latest_desired_size(), Some(size(140.0, 140.0)));
+        assert_eq!(state.latest_desired_size, Some(size(140.0, 140.0)));
 
         let settled = state.settle(policy, first.ticket(), OpenGpuiNodeSizeSettlement::Applied);
-        assert!(settled.matched_ticket());
         assert_eq!(
             settled.command().map(OpenGpuiNodeSizeCommand::size),
             Some(size(140.0, 140.0))
         );
-        assert_eq!(state.attempts(), 2);
+        assert_eq!(state.attempts, 2);
     }
 
     #[test]
@@ -925,10 +839,29 @@ mod tests {
                 .command()
                 .expect("pending command");
             let update = state.settle(policy, command.ticket(), settlement);
-            assert!(update.matched_ticket());
             assert!(update.command().is_none());
-            assert_eq!(state.pending_ticket(), None);
+            assert_eq!(state.pending, None);
         }
+    }
+
+    #[test]
+    fn stale_settlement_is_inert_and_preserves_the_pending_command() {
+        let policy = OpenGpuiNodeSizePolicy::Content(OpenGpuiContentSizePolicy::default());
+        let document = size(100.0, 100.0);
+        let mut state = state(document);
+        let command = observe_twice(&mut state, policy, document, size(120.0, 120.0))
+            .command()
+            .expect("pending command");
+        let stale_ticket = OpenGpuiNodeSizeTicket(command.ticket().0 + 1);
+
+        let update = state.settle(policy, stale_ticket, OpenGpuiNodeSizeSettlement::Applied);
+
+        assert!(update.is_idle());
+        assert_eq!(
+            state.pending.map(|pending| pending.ticket),
+            Some(command.ticket())
+        );
+        assert_eq!(state.last_applied_size, document);
     }
 
     #[test]
@@ -944,12 +877,10 @@ mod tests {
             let rejected = observe_twice(&mut state, policy, document, size(120.0, 120.0))
                 .command()
                 .expect("pending command");
-            assert!(
-                state
-                    .settle(policy, rejected.ticket(), settlement)
-                    .matched_ticket()
-            );
-            let epoch = state.epoch();
+            let update = state.settle(policy, rejected.ticket(), settlement);
+            assert!(update.is_idle());
+            assert_eq!(state.pending, None);
+            let epoch = state.epoch;
 
             for _ in 0..120 {
                 assert!(
@@ -995,16 +926,18 @@ mod tests {
                 .observe(policy, next_epoch, document, size(140.0, 140.0))
                 .is_idle()
         );
-        assert_eq!(state.pending_ticket(), Some(first.ticket()));
-        assert_eq!(state.attempts(), 0);
+        assert_eq!(
+            state.pending.map(|pending| pending.ticket),
+            Some(first.ticket())
+        );
+        assert_eq!(state.attempts, 0);
 
         let update = state.settle(policy, first.ticket(), OpenGpuiNodeSizeSettlement::Applied);
-        assert!(update.matched_ticket());
         assert_eq!(
             update.command().map(OpenGpuiNodeSizeCommand::size),
             Some(size(140.0, 140.0))
         );
-        assert_eq!(state.attempts(), 1);
+        assert_eq!(state.attempts, 1);
     }
 
     #[test]
@@ -1024,9 +957,9 @@ mod tests {
             assert!(update.is_idle(), "sample {index} emitted an effect");
         }
 
-        assert_eq!(state.attempts(), 0);
-        assert_eq!(state.pending_ticket(), None);
-        assert!(!state.is_frozen());
+        assert_eq!(state.attempts, 0);
+        assert_eq!(state.pending, None);
+        assert_eq!(state.frozen, None);
     }
 
     #[test]
@@ -1044,15 +977,13 @@ mod tests {
             let command = observe_twice(&mut state, policy, document, target)
                 .command()
                 .expect("bounded command");
-            assert!(
-                state
-                    .settle(
-                        policy,
-                        command.ticket(),
-                        OpenGpuiNodeSizeSettlement::Applied
-                    )
-                    .matched_ticket()
+            let update = state.settle(
+                policy,
+                command.ticket(),
+                OpenGpuiNodeSizeSettlement::Applied,
             );
+            assert!(update.is_idle());
+            assert_eq!(state.pending, None);
         }
         let frozen = observe_twice(&mut state, policy, document, a);
         let diagnostic = frozen.diagnostic().expect("one freeze diagnostic");
@@ -1063,19 +994,22 @@ mod tests {
         assert_eq!(diagnostic.attempts(), 4);
         assert_eq!(diagnostic.last_applied_size(), b);
         assert_eq!(diagnostic.suppressed_size(), a);
-        assert!(state.is_frozen());
+        assert_eq!(
+            state.frozen,
+            Some(OpenGpuiNodeSizeFreezeReason::AlternatingCycle)
+        );
 
         for _ in 0..120 {
             assert!(state.observe(policy, EPOCH, document, a).is_idle());
         }
-        assert_eq!(state.attempts(), 4);
+        assert_eq!(state.attempts, 4);
 
         let next_epoch = OpenGpuiNodeSizeEpoch::new(4, 6);
         assert!(state.observe(policy, next_epoch, b, a).is_idle());
         let resumed = state.observe(policy, next_epoch, b, a);
         assert!(resumed.command().is_some());
-        assert!(!state.is_frozen());
-        assert_eq!(state.attempts(), 1);
+        assert_eq!(state.frozen, None);
+        assert_eq!(state.attempts, 1);
     }
 
     #[test]
@@ -1091,15 +1025,13 @@ mod tests {
             let command = observe_twice(&mut state, policy, document, target)
                 .command()
                 .expect("bounded command");
-            assert!(
-                state
-                    .settle(
-                        policy,
-                        command.ticket(),
-                        OpenGpuiNodeSizeSettlement::Applied
-                    )
-                    .matched_ticket()
+            let update = state.settle(
+                policy,
+                command.ticket(),
+                OpenGpuiNodeSizeSettlement::Applied,
             );
+            assert!(update.is_idle());
+            assert_eq!(state.pending, None);
         }
 
         let diagnostic = observe_twice(&mut state, policy, document, size(160.0, 160.0))

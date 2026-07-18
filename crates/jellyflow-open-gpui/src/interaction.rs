@@ -1624,7 +1624,10 @@ impl Element for OpenGpuiOverlayInteractionElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut child = self.child.take().expect("interaction guard child missing");
+        let mut child = self
+            .child
+            .take()
+            .expect("overlay interaction boundary child missing");
         let layout_id = child.request_layout(window, cx);
         (layout_id, child)
     }

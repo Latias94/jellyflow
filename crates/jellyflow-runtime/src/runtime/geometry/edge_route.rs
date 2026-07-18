@@ -1,43 +1,9 @@
-use jellyflow_core::core::{Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
-use serde::{Deserialize, Serialize};
-
 use super::{
     BezierEdgeOptions, EdgeHitTestOptions, EdgePath, EdgePosition, OrthogonalEdgeOptions,
-    SmoothStepEdgeOptions, bezier_edge_path, edge_path_contains_point, orthogonal_edge_path,
-    smoothstep_edge_path, straight_edge_path,
+    SmoothStepEdgeOptions, bezier_edge_path, orthogonal_edge_path, smoothstep_edge_path,
+    straight_edge_path,
 };
-
-/// Effective route kind used by runtime geometry projections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolvedEdgeRouteKind {
-    Straight,
-    Orthogonal,
-    Bezier,
-    SmoothStep,
-}
-
-impl From<EdgeRouteKind> for ResolvedEdgeRouteKind {
-    fn from(value: EdgeRouteKind) -> Self {
-        match value {
-            EdgeRouteKind::Straight => Self::Straight,
-            EdgeRouteKind::Orthogonal => Self::Orthogonal,
-            EdgeRouteKind::Bezier => Self::Bezier,
-            EdgeRouteKind::SmoothStep => Self::SmoothStep,
-        }
-    }
-}
-
-impl From<ResolvedEdgeRouteKind> for EdgeRouteKind {
-    fn from(value: ResolvedEdgeRouteKind) -> Self {
-        match value {
-            ResolvedEdgeRouteKind::Straight => Self::Straight,
-            ResolvedEdgeRouteKind::Orthogonal => Self::Orthogonal,
-            ResolvedEdgeRouteKind::Bezier => Self::Bezier,
-            ResolvedEdgeRouteKind::SmoothStep => Self::SmoothStep,
-        }
-    }
-}
+use jellyflow_core::core::{Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
 
 /// Adapter-facing interaction facts for an edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,7 +26,6 @@ impl EdgeInteractionFacts {
 pub struct EdgeRouteFacts {
     /// Semantic graph edge kind used by adapter painter fallbacks.
     pub edge_kind: EdgeKind,
-    pub kind: ResolvedEdgeRouteKind,
     pub endpoints: EdgePosition,
     pub path: EdgePath,
     pub presentation: EdgePresentationFacts,
@@ -80,44 +45,28 @@ pub struct EdgePresentationFacts {
 }
 
 impl EdgeRouteFacts {
-    pub fn with_hit_test(mut self, hit_test: EdgeHitTestOptions) -> Self {
-        self.hit_test = hit_test;
-        self
-    }
-
     pub fn with_interaction(mut self, interaction: EdgeInteractionFacts) -> Self {
         self.interaction = interaction;
         self
-    }
-
-    pub fn contains_point(
-        &self,
-        point: jellyflow_core::core::CanvasPoint,
-    ) -> Result<bool, super::EdgePathFlattenError> {
-        edge_path_contains_point(&self.path, point, self.hit_test)
     }
 }
 
 /// Resolves the route style and path for an edge from persisted view hints.
 pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<EdgeRouteFacts> {
-    let kind = edge
-        .view
-        .route_kind
-        .map(ResolvedEdgeRouteKind::from)
-        .unwrap_or(ResolvedEdgeRouteKind::Bezier);
+    let kind = edge.view.route_kind.unwrap_or(EdgeRouteKind::Bezier);
     let path = match kind {
-        ResolvedEdgeRouteKind::Straight => straight_edge_path(endpoints.source, endpoints.target),
-        ResolvedEdgeRouteKind::Orthogonal => orthogonal_edge_path(
+        EdgeRouteKind::Straight => straight_edge_path(endpoints.source, endpoints.target),
+        EdgeRouteKind::Orthogonal => orthogonal_edge_path(
             endpoints.source,
             endpoints.target,
             OrthogonalEdgeOptions::default(),
         ),
-        ResolvedEdgeRouteKind::SmoothStep => smoothstep_edge_path(
+        EdgeRouteKind::SmoothStep => smoothstep_edge_path(
             endpoints.source,
             endpoints.target,
             SmoothStepEdgeOptions::default(),
         ),
-        ResolvedEdgeRouteKind::Bezier => bezier_edge_path(
+        EdgeRouteKind::Bezier => bezier_edge_path(
             endpoints.source,
             endpoints.target,
             BezierEdgeOptions::default(),
@@ -126,7 +75,6 @@ pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<E
 
     Some(EdgeRouteFacts {
         edge_kind: edge.kind,
-        kind,
         endpoints,
         path,
         presentation: EdgePresentationFacts {
