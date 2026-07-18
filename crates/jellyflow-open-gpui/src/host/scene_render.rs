@@ -662,7 +662,7 @@ impl OpenGpuiSceneHost {
                 path_cache
                     .borrow_mut()
                     .resolve_paint_plan(Some(plan_key), |cache| {
-                        let mut batches = Vec::<OpenGpuiEdgePaintBatch>::new();
+                        let mut batches = BTreeMap::new();
                         for wire in published[range.clone()].iter() {
                             let Some(route) = geometry.route(wire.edge) else {
                                 continue;
@@ -692,20 +692,9 @@ impl OpenGpuiSceneHost {
                             let Some(path) = built else {
                                 continue;
                             };
-                            if let Some(batch) = batches.last_mut()
-                                && batch.key == wire.paint_key
-                            {
-                                merge_native_paths(&mut batch.path, path);
-                                batch.edge_count = batch.edge_count.saturating_add(1);
-                            } else {
-                                batches.push(OpenGpuiEdgePaintBatch {
-                                    key: wire.paint_key,
-                                    path,
-                                    edge_count: 1,
-                                });
-                            }
+                            merge_edge_paint_batch(&mut batches, wire.paint_key, path);
                         }
-                        batches
+                        batches.into_values().collect()
                     })
             },
             move |_, batches, window, _| {
@@ -732,131 +721,151 @@ impl OpenGpuiSceneHost {
         wires: &OpenGpuiSceneWires,
         transform: ViewportTransform,
     ) -> AnyElement {
-        let mut chrome = div().absolute().size_full();
-        let marker_wires = wires.published.clone();
-        let marker_hover = wires.hover_overlay.clone();
-        let marker_hover_edge = marker_hover.as_ref().map(|wire| wire.edge);
+        let ordinary_markers = self.render_edge_marker_canvas(
+            wires.published.clone(),
+            0..wires.ordinary_count,
+            transform,
+            wires.published_plan_id,
+            OpenGpuiEdgePaintPlanSegment::MarkerOrdinary,
+        );
+        let hover_markers = wires.hover_overlay.clone().map(|wire| {
+            let edge = wire.edge;
+            self.render_edge_marker_canvas(
+                Rc::<[OpenGpuiSceneWire]>::from(vec![wire]),
+                0..1,
+                transform,
+                wires.published_plan_id,
+                OpenGpuiEdgePaintPlanSegment::MarkerHover(edge),
+            )
+        });
+        let emphasized_markers = (wires.ordinary_count < wires.published.len()).then(|| {
+            self.render_edge_marker_canvas(
+                wires.published.clone(),
+                wires.ordinary_count..wires.published.len(),
+                transform,
+                wires.published_plan_id,
+                OpenGpuiEdgePaintPlanSegment::MarkerEmphasized,
+            )
+        });
+        let mut labels = Vec::new();
+        visit_edge_chrome_wires_in_paint_order(wires, |wire| {
+            if let Some(label) = self.render_edge_label(wire, transform) {
+                labels.push(label);
+            }
+        });
+
+        div()
+            .absolute()
+            .size_full()
+            .child(ordinary_markers)
+            .children(hover_markers)
+            .children(emphasized_markers)
+            .children(labels)
+            .into_any_element()
+    }
+
+    fn render_edge_marker_canvas(
+        &self,
+        wires: Rc<[OpenGpuiSceneWire]>,
+        range: std::ops::Range<usize>,
+        transform: ViewportTransform,
+        plan_id: u64,
+        segment: OpenGpuiEdgePaintPlanSegment,
+    ) -> AnyElement {
         let marker_diameter = self.graph_theme.metrics.edge_marker_diameter;
-        let marker_plan_id = wires.published_plan_id;
         let marker_cache = self.edge_paths.clone();
         let marker_paint_cache = marker_cache.clone();
-        chrome = chrome.child(
-            canvas(
-                move |bounds, _, _| {
-                    let key = OpenGpuiEdgePaintPlanKey::new(
-                        marker_plan_id,
-                        OpenGpuiEdgePaintPlanSegment::Markers(marker_hover_edge),
-                        transform.pan.x,
-                        transform.pan.y,
-                        transform.zoom,
-                        bounds.origin.x.as_f32(),
-                        bounds.origin.y.as_f32(),
-                    );
-                    marker_cache.borrow_mut().resolve_marker_plan(key, || {
-                        let mut batches = Vec::<OpenGpuiEdgePaintBatch>::new();
-                        for published_wire in marker_wires.iter() {
-                            let wire = marker_hover
-                                .as_ref()
-                                .filter(|hover| hover.edge == published_wire.edge)
-                                .unwrap_or(published_wire);
-                            let color = wire.paint_key.path().color();
-                            for marker in [wire.source_marker, wire.target_marker]
-                                .into_iter()
-                                .flatten()
-                            {
-                                let Some(center) = project_scene_point(
-                                    marker.sample.point,
-                                    transform,
-                                    bounds.origin,
-                                ) else {
-                                    continue;
-                                };
-                                let Some(path) = build_edge_marker_path(
-                                    center,
-                                    marker.sample.tangent,
-                                    marker.shape,
-                                    marker_diameter,
-                                    marker.reverse,
-                                ) else {
-                                    continue;
-                                };
-                                if let Some(batch) = batches
-                                    .iter_mut()
-                                    .find(|batch| batch.key.path().color() == color)
-                                {
-                                    merge_native_paths(&mut batch.path, path);
-                                    batch.edge_count = batch.edge_count.saturating_add(1);
-                                } else {
-                                    batches.push(OpenGpuiEdgePaintBatch {
-                                        key: wire.paint_key,
-                                        path,
-                                        edge_count: 1,
-                                    });
-                                }
-                            }
+        canvas(
+            move |bounds, _, _| {
+                let key = OpenGpuiEdgePaintPlanKey::new(
+                    plan_id,
+                    segment,
+                    transform.pan.x,
+                    transform.pan.y,
+                    transform.zoom,
+                    bounds.origin.x.as_f32(),
+                    bounds.origin.y.as_f32(),
+                );
+                marker_cache.borrow_mut().resolve_marker_plan(key, || {
+                    let mut batches = BTreeMap::new();
+                    for wire in wires[range.clone()].iter() {
+                        for marker in [wire.source_marker, wire.target_marker]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let Some(center) =
+                                project_scene_point(marker.sample.point, transform, bounds.origin)
+                            else {
+                                continue;
+                            };
+                            let Some(path) = build_edge_marker_path(
+                                center,
+                                marker.sample.tangent,
+                                marker.shape,
+                                marker_diameter,
+                                marker.reverse,
+                            ) else {
+                                continue;
+                            };
+                            merge_edge_paint_batch(&mut batches, wire.paint_key, path);
                         }
-                        batches
-                    })
-                },
-                move |_, batches, window, _| {
-                    let marker_count = batches.iter().map(|batch| batch.edge_count).sum::<usize>();
-                    marker_paint_cache
-                        .borrow_mut()
-                        .record_native_marker_paint(batches.len(), marker_count);
-                    for batch in batches.iter() {
-                        window.paint_path(batch.path.clone(), batch.key.path().color());
                     }
-                },
-            )
-            .absolute()
-            .size_full(),
-        );
+                    batches.into_values().collect()
+                })
+            },
+            move |_, batches, window, _| {
+                let marker_count = batches.iter().map(|batch| batch.edge_count).sum::<usize>();
+                marker_paint_cache
+                    .borrow_mut()
+                    .record_native_marker_paint(batches.len(), marker_count);
+                for batch in batches.iter() {
+                    window.paint_path(batch.path.clone(), batch.key.path().color());
+                }
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
+    }
 
+    fn render_edge_label(
+        &self,
+        wire: &OpenGpuiSceneWire,
+        transform: ViewportTransform,
+    ) -> Option<AnyElement> {
         let label_metrics = self.graph_theme.metrics;
-        for published_wire in wires.published.iter() {
-            let wire = wires
-                .hover_overlay
-                .as_ref()
-                .filter(|hover| hover.edge == published_wire.edge)
-                .unwrap_or(published_wire);
-            let Some(label) = wire.label.as_ref() else {
-                continue;
-            };
-            let Some(position) = transform.screen_point_for_canvas(label.point) else {
-                continue;
-            };
-            let mut label_chrome = div()
-                .max_w(px(label_metrics.edge_label_max_width))
-                .truncate()
-                .rounded(px(label_metrics.edge_label_corner_radius))
-                .pl(px(label_metrics.edge_label_horizontal_padding))
-                .pr(px(label_metrics.edge_label_horizontal_padding))
-                .pt(px(label_metrics.edge_label_vertical_padding))
-                .pb(px(label_metrics.edge_label_vertical_padding))
-                .text_size(px(label_metrics.edge_label_font_size))
-                .text_color(self.graph_theme.palette.label_text)
-                .bg(self.graph_theme.palette.label_background)
-                .child(label.text.clone());
-            if label.appearance == OpenGpuiEdgeLabelAppearance::Badge {
-                label_chrome = label_chrome
-                    .border_1()
-                    .border_color(wire.paint_key.path().color());
-            }
-            let label_height = label_metrics.edge_label_font_size
-                + 2.0 * label_metrics.edge_label_vertical_padding;
-            chrome = chrome.child(
-                div()
-                    .absolute()
-                    .left(px(position.x - label_metrics.edge_label_max_width / 2.0))
-                    .top(px(position.y - label_height / 2.0))
-                    .w(px(label_metrics.edge_label_max_width))
-                    .flex()
-                    .justify_center()
-                    .child(label_chrome),
-            );
+        let label = wire.label.as_ref()?;
+        let position = transform.screen_point_for_canvas(label.point)?;
+        let mut label_chrome = div()
+            .max_w(px(label_metrics.edge_label_max_width))
+            .truncate()
+            .rounded(px(label_metrics.edge_label_corner_radius))
+            .pl(px(label_metrics.edge_label_horizontal_padding))
+            .pr(px(label_metrics.edge_label_horizontal_padding))
+            .pt(px(label_metrics.edge_label_vertical_padding))
+            .pb(px(label_metrics.edge_label_vertical_padding))
+            .text_size(px(label_metrics.edge_label_font_size))
+            .text_color(self.graph_theme.palette.label_text)
+            .bg(self.graph_theme.palette.label_background)
+            .child(label.text.clone());
+        if label.appearance == OpenGpuiEdgeLabelAppearance::Badge {
+            label_chrome = label_chrome
+                .border_1()
+                .border_color(wire.paint_key.path().color());
         }
-
-        chrome.into_any_element()
+        let label_height =
+            label_metrics.edge_label_font_size + 2.0 * label_metrics.edge_label_vertical_padding;
+        Some(
+            div()
+                .absolute()
+                .left(px(position.x - label_metrics.edge_label_max_width / 2.0))
+                .top(px(position.y - label_height / 2.0))
+                .w(px(label_metrics.edge_label_max_width))
+                .flex()
+                .justify_center()
+                .child(label_chrome)
+                .into_any_element(),
+        )
     }
 
     fn render_interaction_chrome_layer(
@@ -2406,6 +2415,45 @@ fn build_scene_wire_path(
         return None;
     }
     builder.build().ok()
+}
+
+pub(super) fn visit_edge_chrome_wires_in_paint_order(
+    wires: &OpenGpuiSceneWires,
+    mut visit: impl FnMut(&OpenGpuiSceneWire),
+) {
+    let hovered = wires.hover_overlay.as_ref().map(|wire| wire.edge);
+    for wire in wires.published[..wires.ordinary_count]
+        .iter()
+        .filter(|wire| Some(wire.edge) != hovered)
+    {
+        visit(wire);
+    }
+    if let Some(wire) = wires.hover_overlay.as_ref() {
+        visit(wire);
+    }
+    for wire in wires.published[wires.ordinary_count..].iter() {
+        visit(wire);
+    }
+}
+
+fn merge_edge_paint_batch(
+    batches: &mut BTreeMap<OpenGpuiEdgePainterBatchKey, OpenGpuiEdgePaintBatch>,
+    key: OpenGpuiEdgePainterBatchKey,
+    path: Path<Pixels>,
+) {
+    if let Some(batch) = batches.get_mut(&key) {
+        merge_native_paths(&mut batch.path, path);
+        batch.edge_count = batch.edge_count.saturating_add(1);
+    } else {
+        batches.insert(
+            key,
+            OpenGpuiEdgePaintBatch {
+                key,
+                path,
+                edge_count: 1,
+            },
+        );
+    }
 }
 
 fn merge_native_paths(batch: &mut Path<Pixels>, mut path: Path<Pixels>) {

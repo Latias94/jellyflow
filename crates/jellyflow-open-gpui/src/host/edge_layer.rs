@@ -76,7 +76,9 @@ pub(super) enum OpenGpuiEdgePaintPlanSegment {
     Ordinary,
     Emphasized,
     Hover(EdgeId),
-    Markers(Option<EdgeId>),
+    MarkerOrdinary,
+    MarkerEmphasized,
+    MarkerHover(EdgeId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

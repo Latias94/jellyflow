@@ -26,7 +26,7 @@ use crate::interaction::{
 };
 use crate::{OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiPortHandle};
 
-use super::scene_render::edge_path_endpoints;
+use super::scene_render::{edge_path_endpoints, visit_edge_chrome_wires_in_paint_order};
 use super::{
     LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
     OpenGpuiConnectionPreviewEvidence, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
@@ -810,6 +810,131 @@ fn matching_edge_markers_share_native_submissions_and_reuse_their_plan(
     assert_eq!(after.retained_edge_entities(), 0);
 }
 
+#[open_gpui::test]
+fn alternating_edge_styles_merge_globally_within_their_visual_layer(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    const EDGE_COUNT: usize = 6;
+    let mut index = 0usize;
+    let (graph, _) = bounded_edge_graph_with(EDGE_COUNT, 0, |output, input| {
+        let mut edge = Edge::new(EdgeKind::Data, output, input);
+        edge.view.style_token = Some(if index.is_multiple_of(2) {
+            "data.primary".to_owned()
+        } else {
+            "warning".to_owned()
+        });
+        edge.view.target_marker_key = Some("arrow".to_owned());
+        index = index.saturating_add(1);
+        edge
+    });
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
+
+    draw(cx);
+    draw(cx);
+    let before = cx.read_entity(&host, |host, _| host.stats());
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw_once(cx);
+    let after = cx.read_entity(&host, |host, _| host.stats());
+
+    let painted_edges = after.edge_native_edges_painted() - before.edge_native_edges_painted();
+    let path_passes = painted_edges / EDGE_COUNT as u64;
+    assert_eq!(painted_edges % EDGE_COUNT as u64, 0);
+    assert!(path_passes > 0);
+    assert_eq!(
+        after.edge_native_paint_calls() - before.edge_native_paint_calls(),
+        path_passes * 2,
+        "each paint pass must globally merge alternating edges into two style batches",
+    );
+    let painted_markers =
+        after.edge_native_markers_painted() - before.edge_native_markers_painted();
+    let marker_passes = painted_markers / EDGE_COUNT as u64;
+    assert_eq!(painted_markers % EDGE_COUNT as u64, 0);
+    assert!(marker_passes > 0);
+    assert_eq!(
+        after.edge_native_marker_paint_calls() - before.edge_native_marker_paint_calls(),
+        marker_passes * 2,
+        "each marker pass must use the same two complete visual-style keys",
+    );
+    assert_eq!(after.retained_edge_entities(), 0);
+}
+
+#[open_gpui::test]
+fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (graph, edges) = bounded_edge_graph_with(3, 0, |output, input| {
+        let mut edge = Edge::new(EdgeKind::Data, output, input);
+        edge.view.label = Some("payload".to_owned());
+        edge.view.target_marker_key = Some("arrow".to_owned());
+        edge
+    });
+    let ordinary = edges[0];
+    let hovered = edges[1];
+    let selected = edges[2];
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, graph);
+
+    draw(cx);
+    draw(cx);
+    cx.update_entity(&host, |host, _| {
+        host.view
+            .set_selection(Vec::new(), vec![selected], Vec::new())
+            .expect("select emphasized edge");
+    });
+    cx.run_until_parked();
+    draw(cx);
+    let before_hover = cx.read_entity(&host, |host, _| host.stats());
+
+    let pointer = cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("edge geometry");
+        let sample = geometry
+            .route(hovered)
+            .expect("hover route")
+            .facts()
+            .path
+            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .expect("hover route center");
+        let position = host
+            .view
+            .viewport_transform()
+            .expect("viewport transform")
+            .screen_point_for_canvas(sample.point)
+            .expect("project hover route");
+        let origin = host.scene_origin.expect("scene origin");
+        point(origin.x + px(position.x), origin.y + px(position.y))
+    });
+    cx.simulate_mouse_move(pointer, None, Default::default());
+    cx.run_until_parked();
+    draw_once(cx);
+    let after_hover = cx.read_entity(&host, |host, _| host.stats());
+    assert_eq!(
+        after_hover.edge_marker_preparations() - before_hover.edge_marker_preparations(),
+        1,
+        "hover builds one marker overlay instead of regrouping the published marker list",
+    );
+    assert!(
+        after_hover.edge_marker_plan_reuses() >= before_hover.edge_marker_plan_reuses() + 2,
+        "ordinary and emphasized marker plans remain reusable across hover",
+    );
+
+    let paint_order = cx.update_entity(&host, |host, _| {
+        let wires = host.scene_wires().expect("layered edge chrome plan");
+        let mut order = Vec::new();
+        visit_edge_chrome_wires_in_paint_order(&wires, |wire| {
+            order.push((wire.edge, wire.visual_state));
+        });
+        order
+    });
+    assert_eq!(
+        paint_order,
+        vec![
+            (ordinary, OpenGpuiEdgeVisualState::Ordinary),
+            (hovered, OpenGpuiEdgeVisualState::Hovered),
+            (selected, OpenGpuiEdgeVisualState::Selected),
+        ],
+        "paths, endpoint markers, and labels must share one explicit visual-layer order",
+    );
+}
+
 #[test]
 fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
     let runtime = GraphRuntime::builder(catalog())
@@ -1066,6 +1191,61 @@ fn ten_thousand_routes_keep_each_visible_query_page_hard_bounded() {
         stats.edge_route_query_entries_examined(),
         "terminal exhaustion must not restart the 10k scan every frame",
     );
+}
+
+#[test]
+fn ten_thousand_spatial_routes_materialize_only_the_local_hundred() {
+    const GRID_SIDE: usize = 100;
+    const SPACING: f32 = 512.0;
+    const QUERY_BUDGET: usize = 256;
+
+    let (graph, edges) = spatial_edge_graph(GRID_SIDE, SPACING);
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph)
+        .expect("valid spatial edge graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach spatial edge view");
+    publish_spatial_edge_geometry(&view, GRID_SIDE, SPACING);
+    let query_viewport = CanvasRect {
+        origin: CanvasPoint { x: -16.0, y: -16.0 },
+        size: CanvasSize {
+            width: 9.0 * SPACING + 132.0,
+            height: 9.0 * SPACING + 32.0,
+        },
+    };
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal()
+            .expect("valid empty test registry"),
+        query_viewport,
+    )
+    .with_visible_route_query_budget(QUERY_BUDGET);
+
+    let wires = host
+        .scene_wires()
+        .expect("spatial edge plan completes in one bounded query");
+    assert_eq!(edges.len(), GRID_SIDE * GRID_SIDE);
+    assert_eq!(wires.published.len(), 100);
+    assert_eq!(
+        wires
+            .published
+            .iter()
+            .map(|wire| wire.paint_key)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        1,
+        "the local hundred remain one batchable ordinary style",
+    );
+    let overflow = host.last_edge_layer_overflow();
+    assert!(!overflow.query_pending());
+    assert!(!overflow.query_budget_exhausted());
+    assert!(overflow.query_entries_examined() <= QUERY_BUDGET as u64);
+    assert_eq!(overflow.query_candidates_matched(), 100);
+    let stats = host.stats();
+    assert_eq!(stats.edge_routes_planned(), 100);
+    assert_eq!(stats.retained_edge_entities(), 0);
 }
 
 #[open_gpui::test]
@@ -5026,6 +5206,51 @@ fn dense_edge_graph(edge_count: usize) -> (jellyflow::core::Graph, Vec<EdgeId>) 
     (graph.build().expect("valid dense edge graph"), edges)
 }
 
+fn spatial_edge_graph(grid_side: usize, spacing: f32) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+    assert!(grid_side > 0);
+    let edge_count = grid_side * grid_side;
+    let source = NodeId::from_u128(400_000);
+    let target = NodeId::from_u128(400_001);
+    let outputs = (0..edge_count)
+        .map(|index| PortId::from_u128(500_000 + index as u128))
+        .collect::<Vec<_>>();
+    let inputs = (0..edge_count)
+        .map(|index| PortId::from_u128(600_000 + index as u128))
+        .collect::<Vec<_>>();
+    let edges = (0..edge_count)
+        .map(|index| EdgeId::from_u128(700_000 + index as u128))
+        .collect::<Vec<_>>();
+    let extent = grid_side as f32 * spacing + 160.0;
+    let mut source_node = node(CanvasPoint::default(), outputs[0]);
+    source_node.size = Some(CanvasSize {
+        width: extent,
+        height: extent,
+    });
+    source_node.ports = outputs.clone();
+    let mut target_node = node(CanvasPoint::default(), inputs[0]);
+    target_node.size = source_node.size;
+    target_node.ports = inputs.clone();
+
+    let mut graph = GraphBuilder::new(GraphId::from_u128(2));
+    graph.insert_node(source, source_node);
+    graph.insert_node(target, target_node);
+    for index in 0..edge_count {
+        graph.insert_port(
+            outputs[index],
+            port(source, &format!("output-{index}"), PortDirection::Out),
+        );
+        graph.insert_port(
+            inputs[index],
+            port(target, &format!("input-{index}"), PortDirection::In),
+        );
+        graph.insert_edge(
+            edges[index],
+            Edge::new(EdgeKind::Data, outputs[index], inputs[index]),
+        );
+    }
+    (graph.build().expect("valid spatial edge graph"), edges)
+}
+
 fn bounded_edge_graph(
     visible_edges: usize,
     offscreen_edges: usize,
@@ -5085,15 +5310,65 @@ fn bounded_edge_graph_with(
 }
 
 fn publish_all_edge_geometry(view: &ViewSession, selected: impl IntoIterator<Item = EdgeId>) {
+    publish_edge_geometry_with(
+        view,
+        selected,
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: 12_000.0,
+                height: 2_000.0,
+            },
+        },
+        |_, _, bounds, direction| {
+            let x = match direction {
+                PortDirection::In => bounds.origin.x,
+                PortDirection::Out => bounds.origin.x + bounds.size.width - 12.0,
+            };
+            ViewRect::new(
+                ViewPoint::new(x, bounds.origin.y + 44.0),
+                ViewSize::new(12.0, 12.0),
+            )
+        },
+    );
+}
+
+fn publish_spatial_edge_geometry(view: &ViewSession, grid_side: usize, spacing: f32) {
+    let extent = grid_side as f32 * spacing + 160.0;
+    publish_edge_geometry_with(
+        view,
+        [],
+        CanvasRect {
+            origin: CanvasPoint::default(),
+            size: CanvasSize {
+                width: extent,
+                height: extent,
+            },
+        },
+        |_, index, bounds, direction| {
+            let row = index / grid_side;
+            let column = index % grid_side;
+            let x = bounds.origin.x
+                + column as f32 * spacing
+                + match direction {
+                    PortDirection::Out => 0.0,
+                    PortDirection::In => 128.0,
+                };
+            let y = bounds.origin.y + row as f32 * spacing;
+            ViewRect::new(ViewPoint::new(x, y), ViewSize::new(4.0, 4.0))
+        },
+    );
+}
+
+fn publish_edge_geometry_with(
+    view: &ViewSession,
+    selected: impl IntoIterator<Item = EdgeId>,
+    frame_bounds: CanvasRect,
+    mut visual_for_port: impl FnMut(NodeId, usize, CanvasRect, PortDirection) -> ViewRect,
+) {
     let frame = view
         .frame(FrameRequest::new(
-            CanvasRect {
-                origin: CanvasPoint::default(),
-                size: CanvasSize {
-                    width: 12_000.0,
-                    height: 2_000.0,
-                },
-            },
+            frame_bounds,
             RendererStamp::new(RENDERER, 1),
         ))
         .expect("materialize all edge endpoints");
@@ -5108,16 +5383,9 @@ fn publish_all_edge_geometry(view: &ViewSession, selected: impl IntoIterator<Ite
             ViewSize::new(bounds.size.width, bounds.size.height),
         );
         let mut layout = node.begin_layout(root);
-        for port in node.ports() {
+        for (index, port) in node.ports().iter().enumerate() {
             let direction = port.port().expect("frame port exists").dir;
-            let x = match direction {
-                PortDirection::In => bounds.origin.x,
-                PortDirection::Out => bounds.origin.x + bounds.size.width - 12.0,
-            };
-            let visual = ViewRect::new(
-                ViewPoint::new(x, bounds.origin.y + 44.0),
-                ViewSize::new(12.0, 12.0),
-            );
+            let visual = visual_for_port(node.id(), index, bounds, direction);
             let (anchor_x, outward) = match direction {
                 PortDirection::In => (visual.origin.x, HandlePosition::Left),
                 PortDirection::Out => (visual.origin.x + visual.size.width, HandlePosition::Right),
