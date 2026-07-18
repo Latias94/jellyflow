@@ -26,10 +26,7 @@ use crate::model_options::{
 };
 
 use super::super::sync_activity_lease;
-use super::{
-    WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert,
-    workflow_fixed_port_elements, workflow_header,
-};
+use super::{WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
 
 pub const WORKFLOW_LLM_KIND: &str = "workflow.llm";
 pub const WORKFLOW_LLM_RENDERER: &str = "jellyflow.open-gpui.workflow.llm";
@@ -817,10 +814,9 @@ impl Render for WorkflowLlmNode {
             .border_color(rgb(0x3d556f))
             .bg(rgb(0x1d2733))
             .text_color(rgb(0xe8edf3))
-            .child(workflow_header(node_id, data.title, "LLM", status))
+            .child(workflow_header(node_id, data.title, "LLM", status, ports))
             .child(controls)
             .children(diagnostic)
-            .children(workflow_fixed_port_elements(ports))
     }
 }
 
@@ -1201,7 +1197,6 @@ fn bound_ports(binding: &Entity<OpenGpuiNodeBinding>, cx: &App) -> Vec<WorkflowP
                 .map(|(port, handle)| WorkflowPort {
                     id: port.id(),
                     direction: port.port().dir,
-                    label: port.port().key.0.clone(),
                     handle,
                 })
                 .collect::<Vec<_>>())

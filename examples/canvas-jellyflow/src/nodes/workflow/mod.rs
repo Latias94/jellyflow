@@ -47,6 +47,8 @@ const WORKFLOW_FORWARD_EDGE_ID: u128 = 0xd1fa_0301;
 const WORKFLOW_RETRY_EDGE_ID: u128 = 0xd1fa_0302;
 const MATCH_BRANCH_ID: &str = "branch-match";
 const ELSE_BRANCH_ID: &str = "branch-else";
+const WORKFLOW_HEADER_HEIGHT: f32 = 44.0;
+pub(super) const WORKFLOW_PORT_DIAMETER: f32 = 13.0;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum WorkflowNodeError {
@@ -159,7 +161,6 @@ impl std::error::Error for WorkflowNodeError {}
 pub(super) struct WorkflowPort {
     pub(super) id: PortId,
     pub(super) direction: PortDirection,
-    pub(super) label: String,
     pub(super) handle: OpenGpuiPortHandle,
 }
 
@@ -200,42 +201,32 @@ impl WorkflowNodeStatus {
     }
 }
 
-pub(super) fn workflow_fixed_port_elements(ports: Vec<WorkflowPort>) -> Vec<AnyElement> {
+fn workflow_header_port_elements(ports: Vec<WorkflowPort>) -> Vec<AnyElement> {
     ports
         .into_iter()
-        .enumerate()
-        .map(|(index, port)| {
-            let marker = port.handle.interactive(
+        .map(|port| {
+            let WorkflowPort {
+                id,
+                direction,
+                handle,
+            } = port;
+            let marker = handle.interactive(
                 div()
-                    .debug_selector(move || format!("jellyflow-workflow-port-{}", port.id.0))
-                    .w(px(13.0))
-                    .h(px(13.0))
+                    .debug_selector(move || workflow_port_selector(id))
+                    .w(px(WORKFLOW_PORT_DIAMETER))
+                    .h(px(WORKFLOW_PORT_DIAMETER))
                     .rounded_full()
                     .border_1()
                     .border_color(rgb(0xc9d3df))
                     .bg(rgb(0x4f8fc0)),
                 |_, _, _| {},
             );
-            let top = px(60.0 + index as f32 * 164.0);
-            let row = div()
-                .absolute()
-                .top(top)
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_xs()
-                .text_color(rgb(0xcbd4df));
-            match port.direction {
-                PortDirection::In => row
-                    .left(px(-6.0))
-                    .child(marker)
-                    .child(port.label)
-                    .into_any_element(),
-                PortDirection::Out => row
-                    .right(px(-6.0))
-                    .child(port.label)
-                    .child(marker)
-                    .into_any_element(),
+            let top = px((WORKFLOW_HEADER_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0);
+            let edge_offset = px(-WORKFLOW_PORT_DIAMETER / 2.0);
+            let port = div().absolute().top(top).flex().items_center();
+            match direction {
+                PortDirection::In => port.left(edge_offset).child(marker).into_any_element(),
+                PortDirection::Out => port.right(edge_offset).child(marker).into_any_element(),
             }
         })
         .collect()
@@ -246,11 +237,13 @@ pub(super) fn workflow_header(
     title: String,
     badge: &'static str,
     status: WorkflowNodeStatus,
+    ports: Vec<WorkflowPort>,
 ) -> impl open_gpui::IntoElement {
     let status_selector = workflow_node_status_selector(node_id, status.key());
     let (status_text, status_background) = status.colors();
     div()
-        .h(px(44.0))
+        .relative()
+        .h(px(WORKFLOW_HEADER_HEIGHT))
         .px(px(14.0))
         .flex()
         .items_center()
@@ -276,6 +269,7 @@ pub(super) fn workflow_header(
                         .child(status.label()),
                 ),
         )
+        .children(workflow_header_port_elements(ports))
 }
 
 pub(super) fn workflow_alert(
@@ -291,6 +285,11 @@ pub(super) fn workflow_alert(
 #[must_use]
 pub fn workflow_node_status_selector(node: NodeId, status: &str) -> String {
     format!("jellyflow-workflow-status-{}-{status}", node.0)
+}
+
+#[must_use]
+pub fn workflow_port_selector(port: PortId) -> String {
+    format!("jellyflow-workflow-port-{}", port.0)
 }
 
 pub(super) fn catalog_specs() -> [NodeKindSpec; 2] {
@@ -344,7 +343,7 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .instantiate_node_with_ids(
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
-            CanvasPoint { x: 570.0, y: 170.0 },
+            CanvasPoint { x: 500.0, y: 170.0 },
             [condition_input],
         )
         .expect("workflow condition fixture must match its fixed catalog ports");

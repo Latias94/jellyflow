@@ -37,7 +37,7 @@ pub use workflow::{
     workflow_model_options_failed_selector, workflow_model_options_loading_selector,
     workflow_model_options_partial_selector, workflow_model_options_retry_selector,
     workflow_model_reapply_selector, workflow_model_selector, workflow_node_status_selector,
-    workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
+    workflow_port_selector, workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
     workflow_prompt_conflict_selector, workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
 

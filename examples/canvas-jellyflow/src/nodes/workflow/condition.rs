@@ -19,10 +19,8 @@ use open_gpui::{
 };
 use open_gpui_ui_components::{Button, ButtonVariant};
 
-use super::{
-    WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert,
-    workflow_fixed_port_elements, workflow_header,
-};
+use super::WORKFLOW_PORT_DIAMETER;
+use super::{WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
 
 pub const WORKFLOW_CONDITION_KIND: &str = "workflow.condition";
 pub const WORKFLOW_CONDITION_RENDERER: &str = "jellyflow.open-gpui.workflow.condition";
@@ -32,6 +30,9 @@ pub const WORKFLOW_CONDITION_DEFAULT_SIZE: CanvasSize = CanvasSize {
 };
 
 const WORKFLOW_CONDITION_NODE_ID: u128 = 0xd1fa_0002;
+const CONDITION_BODY_HORIZONTAL_PADDING: f32 = 14.0;
+const CONDITION_BRANCH_HORIZONTAL_PADDING: f32 = 9.0;
+const CONDITION_BRANCH_ROW_HEIGHT: f32 = 37.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkflowBranch {
@@ -418,6 +419,7 @@ impl Render for WorkflowConditionNode {
         let commands_locked = !matches!(&self.command_state, ConditionCommandState::Idle);
         let add_node = cx.weak_entity();
         let add_button = div()
+            .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
             .debug_selector(move || workflow_condition_add_selector(node_id))
             .child(
                 Button::new(workflow_condition_add_id(node_id), "Add branch")
@@ -428,7 +430,11 @@ impl Render for WorkflowConditionNode {
                         window.refresh();
                     }),
             );
-        let mut rows = div().flex().flex_col().gap(px(7.0));
+        let mut rows = div()
+            .px(px(CONDITION_BODY_HORIZONTAL_PADDING))
+            .flex()
+            .flex_col()
+            .gap(px(7.0));
         let branch_count = data.branches.len();
         for (index, (branch, handle)) in data.branches.into_iter().enumerate() {
             let port_id = branch.port_id();
@@ -444,6 +450,15 @@ impl Render for WorkflowConditionNode {
                     .bg(rgb(0xd5a84e)),
                 |_, _, _| {},
             );
+            let marker = div()
+                .absolute()
+                .top(px(
+                    (CONDITION_BRANCH_ROW_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0
+                ))
+                .right(px(
+                    -(CONDITION_BODY_HORIZONTAL_PADDING + CONDITION_BRANCH_HORIZONTAL_PADDING)
+                ))
+                .child(marker);
             let mut actions = div().flex().gap(px(4.0));
             if index > 0 {
                 let move_node = cx.weak_entity();
@@ -496,22 +511,17 @@ impl Render for WorkflowConditionNode {
             }
             rows = rows.child(
                 div()
-                    .h(px(37.0))
-                    .px(px(9.0))
+                    .relative()
+                    .h(px(CONDITION_BRANCH_ROW_HEIGHT))
+                    .px(px(CONDITION_BRANCH_HORIZONTAL_PADDING))
                     .flex()
                     .items_center()
                     .justify_between()
                     .rounded(px(4.0))
                     .bg(rgb(0x292d35))
                     .child(div().text_sm().child(branch.label().to_owned()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(7.0))
-                            .child(actions)
-                            .child(marker),
-                    ),
+                    .child(actions)
+                    .child(marker),
             );
         }
         let scroll_selector = workflow_condition_scroll_selector(node_id);
@@ -531,21 +541,22 @@ impl Render for WorkflowConditionNode {
         .then(|| {
             let retry_node = cx.weak_entity();
             let retry_selector = workflow_condition_retry_selector(node_id);
-            div().debug_selector(move || retry_selector.clone()).child(
-                Button::new(
-                    format!("jellyflow-workflow-condition-retry-button-{}", node_id.0),
-                    "Retry",
-                )
-                .variant(ButtonVariant::Secondary)
-                .on_click(move |_, window, cx| {
-                    let _ = retry_node.update(cx, |node, cx| node.retry(cx));
-                    window.refresh();
-                }),
+            div().px(px(CONDITION_BODY_HORIZONTAL_PADDING)).child(
+                div().debug_selector(move || retry_selector.clone()).child(
+                    Button::new(
+                        format!("jellyflow-workflow-condition-retry-button-{}", node_id.0),
+                        "Retry",
+                    )
+                    .variant(ButtonVariant::Secondary)
+                    .on_click(move |_, window, cx| {
+                        let _ = retry_node.update(cx, |node, cx| node.retry(cx));
+                        window.refresh();
+                    }),
+                ),
             )
         });
         let controls = OpenGpuiNodeInteractionGuard::control(
             div()
-                .px(px(14.0))
                 .py(px(12.0))
                 .flex()
                 .flex_col()
@@ -574,10 +585,15 @@ impl Render for WorkflowConditionNode {
             .border_color(rgb(0x66583c))
             .bg(rgb(0x24262c))
             .text_color(rgb(0xf0ece4))
-            .child(workflow_header(node_id, data.title, "CONDITION", status))
+            .child(workflow_header(
+                node_id,
+                data.title,
+                "CONDITION",
+                status,
+                data.inputs,
+            ))
             .child(controls)
             .children(diagnostic)
-            .children(workflow_fixed_port_elements(data.inputs))
     }
 }
 
@@ -852,7 +868,6 @@ fn read_condition_binding(
             handles.remove(&port.id()).map(|handle| WorkflowPort {
                 id: port.id(),
                 direction: port.port().dir,
-                label: port.port().key.0.clone(),
                 handle,
             })
         })

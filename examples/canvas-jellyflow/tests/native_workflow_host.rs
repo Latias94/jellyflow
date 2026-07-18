@@ -10,7 +10,7 @@ use jellyflow::runtime::{
     ViewSessionOptions,
 };
 use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
-use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 use open_gpui_canvas_jellyflow::nodes::{
     ConditionBranchAction, NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND,
     WorkflowBranch, condition_branches, native_node_catalog, native_node_registry,
@@ -20,7 +20,7 @@ use open_gpui_canvas_jellyflow::nodes::{
     workflow_condition_up_selector, workflow_demo_graph, workflow_llm_node_id,
     workflow_model_conflict_selector, workflow_model_option_selector,
     workflow_model_reapply_selector, workflow_model_selector, workflow_node_status_selector,
-    workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
+    workflow_port_selector, workflow_prompt_accept_remote_selector, workflow_prompt_apply_selector,
     workflow_prompt_conflict_selector, workflow_prompt_reapply_selector, workflow_prompt_selector,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -139,6 +139,87 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
     assert!(
         cx.debug_bounds(&workflow_condition_add_selector(condition))
             .is_some()
+    );
+}
+
+#[open_gpui::test]
+fn condition_header_input_port_stays_clear_of_the_first_branch_row(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime =
+        native_runtime(workflow_demo_graph().expect("workflow graph")).expect("workflow runtime");
+    let condition = workflow_condition_node_id();
+    let snapshot = runtime.snapshot().expect("workflow snapshot");
+    let input = snapshot
+        .graph()
+        .node(&condition)
+        .expect("condition node")
+        .ports
+        .iter()
+        .copied()
+        .find(|port_id| {
+            snapshot
+                .graph()
+                .port(port_id)
+                .is_some_and(|port| port.key.0 == "input")
+        })
+        .expect("condition input port");
+    let first_branch = condition_branches(&snapshot, condition)
+        .expect("condition branches")
+        .into_iter()
+        .next()
+        .expect("first condition branch");
+    drop(snapshot);
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("workflow view");
+    let weak_view = view.downgrade();
+    let (_host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(view, native_registry(cx), viewport())
+    });
+
+    draw(cx);
+
+    let input_marker = cx
+        .debug_bounds(&workflow_port_selector(input))
+        .expect("condition header input marker");
+    let first_branch_marker = cx
+        .debug_bounds(&workflow_condition_branch_selector(
+            condition,
+            first_branch.port_id(),
+        ))
+        .expect("first condition branch marker");
+    assert!(
+        input_marker.origin.y + input_marker.size.height + px(12.0) <= first_branch_marker.origin.y,
+        "the fixed input port must remain in the header instead of sharing the first branch row"
+    );
+
+    let geometry = weak_view.geometry_snapshot().expect("workflow geometry");
+    let node_bounds = geometry
+        .node(condition)
+        .expect("condition node geometry")
+        .bounds();
+    let input_bounds = geometry
+        .port(input)
+        .expect("condition input geometry")
+        .visual_bounds();
+    let first_branch_bounds = geometry
+        .port(first_branch.port_id())
+        .expect("first condition branch geometry")
+        .visual_bounds();
+    let input_center_x = input_bounds.origin.x + input_bounds.size.width / 2.0;
+    let first_branch_right = first_branch_bounds.origin.x + first_branch_bounds.size.width;
+    assert!(
+        (input_center_x - node_bounds.origin.x).abs() <= 1.0,
+        "the input marker center {input_center_x} must stay on the node's left boundary {}",
+        node_bounds.origin.x,
+    );
+    let node_right = node_bounds.origin.x + node_bounds.size.width;
+    assert!(
+        (first_branch_right - node_right).abs() <= 1.0,
+        "the branch marker edge {first_branch_right} must stay on the node's right boundary \
+         {node_right}"
     );
 }
 
