@@ -81,10 +81,14 @@ fn persisted_element_overrides_take_precedence_over_runtime_fallbacks() {
         EdgeReconnectableEndpoint::Source,
     ));
     let enabled_edge_policy = resolve_edge_policy(&enabled_edge, &disabled);
+    assert!(enabled_edge_policy.can_select());
     assert!(enabled_edge_policy.can_delete());
     assert!(enabled_edge_policy.reconnectable());
     assert!(enabled_edge_policy.can_reconnect_source());
     assert!(!enabled_edge_policy.can_reconnect_target());
+
+    enabled_edge.selectable = Some(false);
+    assert!(!resolve_edge_policy(&enabled_edge, &disabled).can_select());
 }
 
 #[test]

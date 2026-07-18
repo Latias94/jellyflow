@@ -14,7 +14,10 @@ pub use endpoints::{
     EdgeEndpointInput, EdgeEndpointPosition, EdgePosition, HandleBounds, HandlePosition,
     edge_position, handle_anchor_position, handle_center_position,
 };
-pub use hit_test::{EdgeHitTestOptions, edge_path_contains_point, edge_path_distance};
+pub use hit_test::{
+    DEFAULT_EDGE_INTERACTION_WIDTH, EdgeHitTestOptions, edge_path_contains_point,
+    edge_path_distance,
+};
 pub use paths::{
     BezierEdgeOptions, EdgePath, EdgePathLabel, PathCommand, SmoothStepEdgeOptions,
     bezier_edge_path, smoothstep_edge_path, straight_edge_path,

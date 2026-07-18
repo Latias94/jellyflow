@@ -140,9 +140,6 @@ pub struct EdgeViewDescriptor {
     /// Route-style hint, interpreted by adapters and runtime geometry projections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_kind: Option<EdgeRouteKind>,
-    /// Optional hit-test width hint in logical pixels.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hit_target_width: Option<f32>,
 }
 
 impl EdgeViewDescriptor {
@@ -182,11 +179,6 @@ impl EdgeViewDescriptor {
 
     pub fn with_route_kind(mut self, route_kind: EdgeRouteKind) -> Self {
         self.route_kind = Some(route_kind);
-        self
-    }
-
-    pub fn with_hit_target_width(mut self, hit_target_width: f32) -> Self {
-        self.hit_target_width = Some(hit_target_width);
         self
     }
 

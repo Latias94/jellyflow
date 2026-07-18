@@ -13,11 +13,12 @@ use crate::runtime::adapter_protocol::{
     PublishedPortGeometry, PublishedPortOutcome, RendererStamp, SharedGeometryMap,
 };
 use crate::runtime::geometry::{
-    CanvasBounds, EdgeEndpointPosition, EdgePosition, resolve_edge_route_path,
+    CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
 };
 use crate::runtime::graph_runtime::{
     GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
 };
+use crate::runtime::policy::resolve_edge_policy;
 
 #[cfg(test)]
 use super::DerivedFactCounts;
@@ -493,7 +494,17 @@ pub(super) fn recompute_routes(
                 source: absolute_port_endpoint(source)?,
                 target: absolute_port_endpoint(target)?,
             };
+            let policy = resolve_edge_policy(edge, &state.policy);
             resolve_edge_route_path(edge, endpoints)
+                .map(|facts| {
+                    facts.with_interaction(EdgeInteractionFacts {
+                        selectable: policy.can_select(),
+                        selected: state.selected_edge_membership.contains(edge_id),
+                        deletable: policy.can_delete(),
+                        reconnect_source: policy.can_reconnect_source(),
+                        reconnect_target: policy.can_reconnect_target(),
+                    })
+                })
                 .map(|facts| PublishedEdgeRoute::new(*edge_id, facts))
         })();
         if let Some(route) = route {

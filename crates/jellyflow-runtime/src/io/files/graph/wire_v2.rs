@@ -926,8 +926,6 @@ struct EdgeViewV2 {
     style_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     route_kind: Option<EdgeRouteKindV2>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    hit_target_width: Option<f32>,
 }
 
 impl From<&EdgeViewDescriptor> for EdgeViewV2 {
@@ -940,7 +938,6 @@ impl From<&EdgeViewDescriptor> for EdgeViewV2 {
             target_marker_key: value.target_marker_key.clone(),
             style_token: value.style_token.clone(),
             route_kind: value.route_kind.map(EdgeRouteKindV2::from),
-            hit_target_width: value.hit_target_width,
         }
     }
 }
@@ -955,7 +952,6 @@ impl From<EdgeViewV2> for EdgeViewDescriptor {
             target_marker_key: value.target_marker_key,
             style_token: value.style_token,
             route_kind: value.route_kind.map(EdgeRouteKind::from),
-            hit_target_width: value.hit_target_width,
         }
     }
 }

@@ -4,12 +4,17 @@ use super::GraphRuntimePolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResolvedEdgePolicy {
+    pub(crate) selectable: bool,
     pub(crate) deletable: bool,
     pub(crate) reconnect_source: bool,
     pub(crate) reconnect_target: bool,
 }
 
 impl ResolvedEdgePolicy {
+    pub(crate) fn can_select(self) -> bool {
+        self.selectable
+    }
+
     pub(crate) fn can_delete(self) -> bool {
         self.deletable
     }
@@ -35,6 +40,7 @@ pub(crate) fn resolve_edge_policy(edge: &Edge, policy: &GraphRuntimePolicy) -> R
     let (reconnect_source, reconnect_target) = reconnectable.endpoint_flags();
 
     ResolvedEdgePolicy {
+        selectable: !edge.hidden && edge.selectable.unwrap_or(true),
         deletable: edge.deletable.unwrap_or(policy.edge_deletion_enabled()),
         reconnect_source,
         reconnect_target,

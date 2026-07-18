@@ -2,6 +2,8 @@ use jellyflow_core::core::CanvasPoint;
 
 use super::paths::{EdgePath, PathCommand};
 
+pub const DEFAULT_EDGE_INTERACTION_WIDTH: f32 = 18.0;
+
 /// Options for numeric edge hit testing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdgeHitTestOptions {
@@ -31,7 +33,7 @@ impl EdgeHitTestOptions {
 impl Default for EdgeHitTestOptions {
     fn default() -> Self {
         Self {
-            interaction_width: 12.0,
+            interaction_width: DEFAULT_EDGE_INTERACTION_WIDTH,
             curve_samples: 24,
         }
     }

@@ -652,6 +652,39 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         route.facts().endpoints.target.point,
         CanvasPoint { x: 243.0, y: 79.0 }
     );
+    assert!(route.facts().interaction.selectable);
+    assert!(!route.facts().interaction.selected);
+    assert!(route.facts().interaction.deletable);
+    assert!(route.facts().interaction.reconnect_source);
+    assert!(route.facts().interaction.reconnect_target);
+    assert_eq!(route.facts().hit_test.interaction_width, 18.0);
+
+    session
+        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
+        .unwrap();
+    assert!(
+        session
+            .geometry_snapshot()
+            .unwrap()
+            .route(ids.edge)
+            .unwrap()
+            .facts()
+            .interaction
+            .selected
+    );
+    session
+        .set_selection(Vec::new(), Vec::new(), Vec::new())
+        .unwrap();
+    assert!(
+        !session
+            .geometry_snapshot()
+            .unwrap()
+            .route(ids.edge)
+            .unwrap()
+            .facts()
+            .interaction
+            .selected
+    );
     assert_eq!(
         session
             .nodes_intersecting(CanvasRect {

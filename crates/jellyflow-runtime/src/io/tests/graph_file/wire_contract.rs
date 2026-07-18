@@ -164,6 +164,13 @@ fn graph_file_rejects_unknown_fields_inside_the_v2_wire_schema() {
             }) as fn(&mut serde_json::Value),
         ),
         (
+            "removed_edge_hit_width",
+            (|source: &mut serde_json::Value| {
+                source["graph"]["edges"]["00000000-0000-0000-0000-00000000e001"]["view"]["hit_target_width"] =
+                    serde_json::json!(24.0);
+            }) as fn(&mut serde_json::Value),
+        ),
+        (
             "binding_target",
             (|source: &mut serde_json::Value| {
                 source["graph"]["bindings"]["00000000-0000-0000-0000-000000000c00"]["subject"]["target"]

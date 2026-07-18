@@ -28,6 +28,11 @@ impl PublishedEdgeRoute {
     pub fn facts(&self) -> &EdgeRouteFacts {
         &self.facts
     }
+
+    pub(crate) fn with_selected(mut self, selected: bool) -> Self {
+        self.facts.interaction.selected = selected;
+        self
+    }
 }
 
 /// Published canvas-space geometry for one real graph port.

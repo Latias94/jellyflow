@@ -1,4 +1,4 @@
-use jellyflow_core::core::{Edge, EdgeLabelAnchor, EdgeRouteKind};
+use jellyflow_core::core::{Edge, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -109,13 +109,83 @@ pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<E
         endpoints,
         path,
         label_anchor: edge.view.label_anchor.unwrap_or(EdgeLabelAnchor::Center),
-        hit_test: EdgeHitTestOptions::default(),
-        interaction: EdgeInteractionFacts {
+        hit_test: EdgeHitTestOptions::new(
+            edge.interaction_width
+                .unwrap_or(super::DEFAULT_EDGE_INTERACTION_WIDTH),
+            EdgeHitTestOptions::default().curve_samples,
+        ),
+        interaction: default_edge_interaction(edge),
+    })
+}
+
+fn default_edge_interaction(edge: &Edge) -> EdgeInteractionFacts {
+    if edge.hidden {
+        return EdgeInteractionFacts {
             selectable: false,
             selected: false,
             deletable: false,
             reconnect_source: false,
             reconnect_target: false,
-        },
-    })
+        };
+    }
+    let (reconnect_source, reconnect_target) = edge
+        .reconnectable
+        .unwrap_or(EdgeReconnectable::Bool(true))
+        .endpoint_flags();
+    EdgeInteractionFacts {
+        selectable: edge.selectable.unwrap_or(true),
+        selected: false,
+        deletable: edge.deletable.unwrap_or(true),
+        reconnect_source,
+        reconnect_target,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jellyflow_core::core::{
+        CanvasPoint, Edge, EdgeKind, EdgeReconnectable, EdgeReconnectableEndpoint, PortId,
+    };
+
+    use super::*;
+    use crate::runtime::geometry::{EdgeEndpointPosition, HandlePosition};
+
+    fn endpoints() -> EdgePosition {
+        EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint { x: 0.0, y: 0.0 },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint { x: 100.0, y: 0.0 },
+                position: HandlePosition::Left,
+            },
+        }
+    }
+
+    #[test]
+    fn route_facts_use_one_interaction_width_and_real_edge_defaults() {
+        let default_edge = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
+        let defaults = resolve_edge_route_path(&default_edge, endpoints()).expect("default route");
+        assert!(defaults.interaction.selectable);
+        assert!(defaults.interaction.deletable);
+        assert!(defaults.interaction.reconnect_source);
+        assert!(defaults.interaction.reconnect_target);
+        assert_eq!(defaults.hit_test.interaction_width, 18.0);
+
+        let mut restricted = default_edge;
+        restricted.selectable = Some(false);
+        restricted.deletable = Some(false);
+        restricted.reconnectable = Some(EdgeReconnectable::Endpoint(
+            EdgeReconnectableEndpoint::Source,
+        ));
+        restricted.interaction_width = Some(26.0);
+        let restricted =
+            resolve_edge_route_path(&restricted, endpoints()).expect("restricted route");
+        assert!(!restricted.interaction.selectable);
+        assert!(!restricted.interaction.deletable);
+        assert!(restricted.interaction.reconnect_source);
+        assert!(!restricted.interaction.reconnect_target);
+        assert_eq!(restricted.hit_test.interaction_width, 26.0);
+    }
 }

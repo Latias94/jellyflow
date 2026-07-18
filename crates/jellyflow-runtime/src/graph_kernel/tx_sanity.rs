@@ -60,11 +60,9 @@ impl NonFiniteGeometry {
             GraphOp::AddStickyNote { note, .. } => {
                 (!note.rect.is_finite()).then_some("AddStickyNote.rect")
             }
-            GraphOp::AddEdge { edge, .. } => edge_non_finite_field(
-                edge,
-                "AddEdge.edge.interaction_width",
-                "AddEdge.edge.view.hit_target_width",
-            ),
+            GraphOp::AddEdge { edge, .. } => {
+                edge_non_finite_field(edge, "AddEdge.edge.interaction_width")
+            }
 
             GraphOp::SetNodePos { to, .. } => (!to.is_finite()).then_some("SetNodePos.to"),
             GraphOp::SetNodeOrigin { to, .. } => {
@@ -86,10 +84,6 @@ impl NonFiniteGeometry {
             GraphOp::SetEdgeInteractionWidth { to, .. } => {
                 option_non_finite(*to).then_some("SetEdgeInteractionWidth.to")
             }
-            GraphOp::SetEdgeView { to, .. } => {
-                edge_view_non_finite_field(to, "SetEdgeView.to.hit_target_width")
-            }
-
             GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }
             | GraphOp::SetImportAlias { .. }
@@ -112,6 +106,7 @@ impl NonFiniteGeometry {
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::SetEdgeReconnectable { .. }
             | GraphOp::SetEdgeData { .. }
+            | GraphOp::SetEdgeView { .. }
             | GraphOp::RemoveNode { .. }
             | GraphOp::SetNodeKind { .. }
             | GraphOp::SetNodeKindVersion { .. }
@@ -146,18 +141,8 @@ impl NonFiniteGeometry {
 fn edge_non_finite_field(
     edge: &jellyflow_core::core::Edge,
     interaction_width_field: &'static str,
-    view_hit_target_width_field: &'static str,
 ) -> Option<&'static str> {
-    option_non_finite(edge.interaction_width)
-        .then_some(interaction_width_field)
-        .or_else(|| edge_view_non_finite_field(&edge.view, view_hit_target_width_field))
-}
-
-fn edge_view_non_finite_field(
-    view: &jellyflow_core::core::EdgeViewDescriptor,
-    hit_target_width_field: &'static str,
-) -> Option<&'static str> {
-    option_non_finite(view.hit_target_width).then_some(hit_target_width_field)
+    option_non_finite(edge.interaction_width).then_some(interaction_width_field)
 }
 
 fn option_non_finite(value: Option<f32>) -> bool {

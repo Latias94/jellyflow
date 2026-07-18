@@ -805,7 +805,13 @@ impl RuntimeShared {
             .next_view_id
             .checked_add(1)
             .ok_or(AttachViewError::IdentityExhausted)?;
-        let view = ViewShared::new(view_id, ViewGeneration::initial(), state.revision, seed);
+        let view = ViewShared::new(
+            view_id,
+            ViewGeneration::initial(),
+            state.revision,
+            state.policy,
+            seed,
+        );
         state.sessions.insert(view_id, Rc::downgrade(&view));
         Ok(ViewSession::new(
             Rc::downgrade(self),

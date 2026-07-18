@@ -25,8 +25,8 @@ use crate::runtime::commands::{
 };
 use crate::runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, GraphRevision, GraphRuntimeError,
-    GraphSnapshot, NodeIncarnation, PortConnectionDragIntent, PortConnectionFacts, RuntimeFactKey,
-    RuntimeId, RuntimePatch, RuntimePatchKind, RuntimeShared,
+    GraphRuntimePolicy, GraphSnapshot, NodeIncarnation, PortConnectionDragIntent,
+    PortConnectionFacts, RuntimeFactKey, RuntimeId, RuntimePatch, RuntimePatchKind, RuntimeShared,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
 use crate::runtime::viewport::ViewportTransform;
@@ -375,6 +375,7 @@ struct ViewState {
     generation: ViewGeneration,
     status: ViewStatus,
     seen_revision: GraphRevision,
+    policy: GraphRuntimePolicy,
     facts: ViewFacts,
     node_draw_order_ranks: BTreeMap<NodeId, usize>,
     selected_node_membership: HashSet<NodeId>,
@@ -569,6 +570,16 @@ impl ViewState {
         self.routes.insert_mut(edge, Arc::new(route));
         self.record_geometry_snapshot_updates(1);
         true
+    }
+
+    fn update_route_selection(&mut self, edges: &BTreeSet<EdgeId>) {
+        for edge in edges {
+            let Some(route) = self.routes.get(edge).map(|route| route.as_ref().clone()) else {
+                continue;
+            };
+            let selected = self.selected_edge_membership.contains(edge);
+            self.upsert_route(*edge, route.with_selected(selected));
+        }
     }
 
     fn remove_route(&mut self, edge: EdgeId) -> bool {
@@ -1181,6 +1192,7 @@ impl ViewShared {
         id: ViewId,
         generation: ViewGeneration,
         seen_revision: GraphRevision,
+        policy: GraphRuntimePolicy,
         seed: ViewSessionSeed,
     ) -> Rc<Self> {
         let facts = ViewFacts::from_seed(seed);
@@ -1197,6 +1209,7 @@ impl ViewShared {
                 generation,
                 status: ViewStatus::Open,
                 seen_revision,
+                policy,
                 facts,
                 node_draw_order_ranks,
                 selected_node_membership,
@@ -1311,7 +1324,13 @@ impl ViewShared {
             if selection == before {
                 None
             } else {
+                let previous_edges = state.selected_edge_membership.clone();
                 state.rebuild_selection_membership();
+                let changed_edges = previous_edges
+                    .symmetric_difference(&state.selected_edge_membership)
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                state.update_route_selection(&changed_edges);
                 Some(selection)
             }
         };
