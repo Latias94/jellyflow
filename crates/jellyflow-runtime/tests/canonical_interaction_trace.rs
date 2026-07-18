@@ -22,7 +22,8 @@ use jellyflow_runtime::{
     EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome,
     FrameRequest, GraphCommand, GraphRuntime, HandlePosition, InteractionOwner,
     InteractionPosition, InteractionTicketId, RendererStamp, SelectionBaseline, SelectionMode,
-    TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
+    SelectionMutation, TopologyEdit, ViewDelta, ViewPoint, ViewRect, ViewSession,
+    ViewSessionOptions, ViewSize, ViewportMutation,
 };
 
 #[test]
@@ -150,6 +151,52 @@ fn repeated_toggle_marquee_trace_is_independent_of_move_event_count() {
     };
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn view_session_applies_renderer_neutral_selection_and_viewport_effects() {
+    let harness = TraceHarness::new();
+    let baseline = SelectionBaseline::new(
+        [harness.ids.source_node, harness.ids.invalid_node],
+        [harness.ids.reconnect_edge],
+        [],
+    );
+    let mutation = SelectionMutation::Marquee {
+        bounds: CanvasRect {
+            origin: CanvasPoint { x: 130.0, y: 50.0 },
+            size: CanvasSize {
+                width: 140.0,
+                height: 60.0,
+            },
+        },
+        mode: SelectionMode::Toggle,
+        baseline,
+    };
+
+    harness
+        .view
+        .apply_selection_mutation(mutation.clone())
+        .unwrap();
+    let first = harness.view.selection().unwrap();
+    harness.view.apply_selection_mutation(mutation).unwrap();
+    let second = harness.view.selection().unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first.nodes(),
+        [harness.ids.source_node, harness.ids.valid_node]
+    );
+    assert_eq!(first.edges(), [harness.ids.reconnect_edge]);
+
+    let before = harness.view.viewport_transform().unwrap();
+    harness
+        .view
+        .apply_viewport_mutation(ViewportMutation::PanByView(ViewDelta::new(20.0, -10.0)))
+        .unwrap();
+    let after = harness.view.viewport_transform().unwrap();
+    assert_eq!(after.zoom, before.zoom);
+    assert_eq!(after.pan.x, before.pan.x + 20.0 / before.zoom);
+    assert_eq!(after.pan.y, before.pan.y - 10.0 / before.zoom);
 }
 
 #[test]

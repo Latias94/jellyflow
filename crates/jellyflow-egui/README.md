@@ -9,14 +9,34 @@ each admitted node, records graph commands in native event order, measures the n
 real ports, and submits the feedback log once. Egui widget state stays in egui and is retired by
 the full Jellyflow node-instance identity when a node is replaced, removed, or its view closes.
 
+`EguiCanvasInteraction` is the matching input bridge. Begin it with the current scene rectangle,
+pass only explicit graph-interactive `egui::Response` values to `handle_response`, and end it after
+all responses have been rendered. The bridge normalizes raw press/move/release events, owns the
+active egui `Id`, resolves bounded runtime geometry queries, and applies renderer-neutral selection
+and viewport effects to the same `ViewSession`. Missing responses, stolen drag ownership, escape,
+pointer loss, owner retirement, and view close all terminate native ownership explicitly.
+
+```rust,ignore
+interaction.begin_frame(view, ui.ctx(), ui.max_rect())?;
+interaction.handle_response(view, &drag_handle, node_drag_target)?;
+interaction.handle_response(view, &port_handle, connection_target)?;
+let output = interaction.end_frame(view, ui.ctx())?;
+```
+
+`output` retains only application work: create-from-wire search requests and fresh graph mutations.
+The application must bind graph mutations to a fresh snapshot, preserve its command ordering, and
+return the resulting ticket settlement. This crate deliberately does not copy Open GPUI's command
+journal, visual theme, or retained component lifecycle.
+
 Applications that dispatch renderers dynamically use `show_with_fallback`: returning `None` keeps
 unknown-kind handling inside the adapter, emits a structured diagnostic, and renders and measures
 all real ports without reading or rewriting the node's opaque payload.
 
 This crate intentionally does not ship product galleries, schema-driven controls, renderer
-catalogs, inspectors, or sample applications. Its tests use adapter-local protocol tracers and
-compare graph/protocol outcomes rather than widget trees or pixel geometry. Open GPUI is the
-product-tier native adapter; egui remains a compact conformance implementation for adapter authors.
+catalogs, inspectors, or sample applications. Its tests drive real egui pointer/key events through
+the shared connection, candidate, edge-pick, node-drag, cancellation, retirement, close, and
+receipt traces. Open GPUI is the product-tier native adapter; egui remains a compact conformance
+implementation for adapter authors.
 
 Run its protocol witness tests with:
 

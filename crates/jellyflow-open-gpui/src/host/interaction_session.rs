@@ -1,15 +1,13 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use jellyflow::core::{CanvasPoint, EdgeId, GroupId, NodeId};
+use jellyflow::core::{CanvasPoint, NodeId};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::runtime::viewport::{ViewportPanRequest, pan_viewport};
 use jellyflow::runtime::{
     CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionPhase,
     CanvasInteractionQuery, CanvasInteractionUpdate, CommandSettlement, ConnectionProbeQueryError,
     EdgePickQueryError, FreshGraphMutation, InteractionOwner, InteractionPosition,
-    InteractionTerminalReason, InteractionTickDemand, InteractionTicketId, SelectionBaseline,
-    SelectionMode, SelectionMutation, ViewPoint, ViewRect, ViewportMutation,
+    InteractionTerminalReason, InteractionTickDemand, InteractionTicketId, ViewPoint, ViewRect,
 };
 use open_gpui::{Context, Pixels, Point, Task, Window};
 
@@ -116,9 +114,11 @@ impl OpenGpuiSceneHost {
     ) -> Result<(), String> {
         match effect {
             CanvasInteractionEffect::Selection(selection) => self
+                .view
                 .apply_selection_mutation(selection)
                 .map_err(|error| error.to_string()),
             CanvasInteractionEffect::Viewport(viewport) => self
+                .view
                 .apply_viewport_mutation(viewport)
                 .map_err(|error| error.to_string()),
             CanvasInteractionEffect::Search(_) => Ok(()),
@@ -515,82 +515,6 @@ impl OpenGpuiSceneHost {
         self.record_command_diagnostic(format!("native command prefix failed: {error}"));
     }
 
-    fn apply_selection_mutation(
-        &self,
-        mutation: SelectionMutation,
-    ) -> Result<(), jellyflow::runtime::ViewSessionError> {
-        let snapshot = self.view.graph_snapshot()?;
-        match mutation {
-            SelectionMutation::Node { node, mode } => {
-                if !snapshot
-                    .graph()
-                    .node(&node)
-                    .is_some_and(|record| record.selectable.unwrap_or(true))
-                {
-                    return Ok(());
-                }
-                let (mut nodes, mut edges, mut groups) = self.view.selection()?.into_parts();
-                if mode != SelectionMode::Replace || !nodes.contains(&node) {
-                    apply_item_selection(&mut nodes, node, mode);
-                }
-                if mode == SelectionMode::Replace {
-                    edges.clear();
-                    groups.clear();
-                }
-                self.view.set_selection(nodes, edges, groups)
-            }
-            SelectionMutation::Edge { edge, mode } => {
-                if snapshot.graph().edge(&edge).is_none() {
-                    return Ok(());
-                }
-                let (mut nodes, mut edges, mut groups) = self.view.selection()?.into_parts();
-                apply_item_selection(&mut edges, edge, mode);
-                if mode == SelectionMode::Replace {
-                    nodes.clear();
-                    groups.clear();
-                }
-                self.view.set_selection(nodes, edges, groups)
-            }
-            SelectionMutation::Marquee {
-                bounds,
-                mode,
-                baseline,
-            } => {
-                let mut intersecting = self.view.nodes_intersecting(bounds)?;
-                intersecting.retain(|node| {
-                    snapshot
-                        .graph()
-                        .node(node)
-                        .is_some_and(|record| record.selectable.unwrap_or(true))
-                });
-                let (nodes, edges, groups) =
-                    marquee_selection_from_baseline(&baseline, intersecting, mode);
-                self.view.set_selection(nodes, edges, groups)
-            }
-            SelectionMutation::Clear => self.view.set_selection(Vec::new(), Vec::new(), Vec::new()),
-            SelectionMutation::Restore(baseline) => self.view.set_selection(
-                baseline.nodes().to_vec(),
-                baseline.edges().to_vec(),
-                baseline.groups().to_vec(),
-            ),
-        }
-    }
-
-    fn apply_viewport_mutation(
-        &self,
-        mutation: ViewportMutation,
-    ) -> Result<(), jellyflow::runtime::ViewSessionError> {
-        let transform = self.view.viewport_transform()?;
-        match mutation {
-            ViewportMutation::PanByView(delta) => {
-                if let Some(next) = pan_viewport(transform, ViewportPanRequest::new(delta)) {
-                    self.view.set_viewport(next.pan, next.zoom)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn schedule_interaction_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.interaction_tick_scheduled {
             return;
@@ -695,123 +619,11 @@ impl InteractionEnqueueFailure {
     }
 }
 
-fn apply_item_selection<T: Copy + Eq>(items: &mut Vec<T>, item: T, mode: SelectionMode) {
-    match mode {
-        SelectionMode::Replace => {
-            items.clear();
-            items.push(item);
-        }
-        SelectionMode::Add => {
-            if !items.contains(&item) {
-                items.push(item);
-            }
-        }
-        SelectionMode::Toggle => {
-            if let Some(index) = items.iter().position(|current| *current == item) {
-                items.remove(index);
-            } else {
-                items.push(item);
-            }
-        }
-    }
-}
-
-fn apply_many_selection<T: Copy + Ord>(
-    items: &mut Vec<T>,
-    incoming: impl IntoIterator<Item = T>,
-    mode: SelectionMode,
-) {
-    if mode == SelectionMode::Replace {
-        items.clear();
-    }
-    let mut positions = items
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, item)| (item, index))
-        .collect::<BTreeMap<_, _>>();
-    let mut ordered = items.iter().copied().map(Some).collect::<Vec<_>>();
-    for item in incoming {
-        match mode {
-            SelectionMode::Replace | SelectionMode::Add => {
-                if let std::collections::btree_map::Entry::Vacant(entry) = positions.entry(item) {
-                    entry.insert(ordered.len());
-                    ordered.push(Some(item));
-                }
-            }
-            SelectionMode::Toggle => {
-                if let Some(index) = positions.remove(&item) {
-                    ordered[index] = None;
-                } else {
-                    positions.insert(item, ordered.len());
-                    ordered.push(Some(item));
-                }
-            }
-        }
-    }
-    *items = ordered.into_iter().flatten().collect();
-}
-
-fn marquee_selection_from_baseline(
-    baseline: &SelectionBaseline,
-    intersecting: impl IntoIterator<Item = NodeId>,
-    mode: SelectionMode,
-) -> (Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>) {
-    let mut nodes = baseline.nodes().to_vec();
-    let mut edges = baseline.edges().to_vec();
-    let mut groups = baseline.groups().to_vec();
-    apply_many_selection(&mut nodes, intersecting, mode);
-    if mode == SelectionMode::Replace {
-        edges.clear();
-        groups.clear();
-    }
-    (nodes, edges, groups)
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn batch_selection_preserves_stable_order_and_duplicate_toggle_semantics() {
-        let mut toggled = vec![1_u8, 2];
-        apply_many_selection(&mut toggled, [2, 3, 3, 1, 1, 2], SelectionMode::Toggle);
-        assert_eq!(toggled, vec![1, 2]);
-
-        let mut replaced = vec![9_u8];
-        apply_many_selection(&mut replaced, [3, 2, 3], SelectionMode::Replace);
-        assert_eq!(replaced, vec![3, 2]);
-
-        apply_many_selection(&mut replaced, [2, 4, 4], SelectionMode::Add);
-        assert_eq!(replaced, vec![3, 2, 4]);
-    }
-
-    #[test]
-    fn repeated_toggle_marquee_resolution_is_absolute_from_the_frozen_baseline() {
-        let retained = NodeId::from_u128(1);
-        let toggled_off = NodeId::from_u128(2);
-        let toggled_on = NodeId::from_u128(3);
-        let retained_edge = EdgeId::from_u128(4);
-        let baseline = SelectionBaseline::new([retained, toggled_off], [retained_edge], []);
-
-        let first = marquee_selection_from_baseline(
-            &baseline,
-            [toggled_off, toggled_on],
-            SelectionMode::Toggle,
-        );
-        let second = marquee_selection_from_baseline(
-            &baseline,
-            [toggled_off, toggled_on],
-            SelectionMode::Toggle,
-        );
-
-        assert_eq!(first, second);
-        assert_eq!(first.0, vec![retained, toggled_on]);
-        assert_eq!(first.1, vec![retained_edge]);
-        assert!(first.2.is_empty());
-    }
 
     #[test]
     fn interaction_clock_preserves_elapsed_time_at_common_refresh_rates() {

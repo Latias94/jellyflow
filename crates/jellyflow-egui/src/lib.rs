@@ -8,8 +8,12 @@
 
 pub use egui;
 
+mod interaction;
 mod native_host;
 
+pub use interaction::{
+    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiInteractionQueryKind,
+};
 pub use native_host::{
     EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome, EguiNativeNode,
     EguiNativeNodeDiagnostic, EguiNativePortError,

@@ -33,9 +33,11 @@ use crate::runtime::graph_runtime::{
     PortConnectionFacts, PortConnectionSummary, RuntimeFactKey, RuntimeId, RuntimePatch,
     RuntimePatchKind, RuntimeShared,
 };
-use crate::runtime::interaction::{NodeDragStart, SelectionMode};
+use crate::runtime::interaction::{
+    NodeDragStart, SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation,
+};
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
-use crate::runtime::viewport::ViewportTransform;
+use crate::runtime::viewport::{ViewportPanRequest, ViewportTransform, pan_viewport};
 use crate::schema::NodeCatalog;
 
 pub use self::edge_pick::{
@@ -942,6 +944,87 @@ impl ViewSession {
             .set_selection(snapshot.graph(), nodes, edges, groups)
     }
 
+    /// Applies one renderer-neutral selection effect against current graph and view facts.
+    ///
+    /// Adapters should use this instead of reimplementing selection ordering, toggle semantics,
+    /// selectability checks, or marquee baseline restoration.
+    pub fn apply_selection_mutation(
+        &self,
+        mutation: SelectionMutation,
+    ) -> Result<(), ViewSessionError> {
+        let snapshot = self.graph_snapshot()?;
+        match mutation {
+            SelectionMutation::Node { node, mode } => {
+                if !snapshot
+                    .graph()
+                    .node(&node)
+                    .is_some_and(|record| record.selectable.unwrap_or(true))
+                {
+                    return Ok(());
+                }
+                let (mut nodes, mut edges, mut groups) = self.selection()?.into_parts();
+                if mode != SelectionMode::Replace || !nodes.contains(&node) {
+                    apply_item_selection(&mut nodes, node, mode);
+                }
+                if mode == SelectionMode::Replace {
+                    edges.clear();
+                    groups.clear();
+                }
+                self.set_selection(nodes, edges, groups)
+            }
+            SelectionMutation::Edge { edge, mode } => {
+                if snapshot.graph().edge(&edge).is_none() {
+                    return Ok(());
+                }
+                let (mut nodes, mut edges, mut groups) = self.selection()?.into_parts();
+                apply_item_selection(&mut edges, edge, mode);
+                if mode == SelectionMode::Replace {
+                    nodes.clear();
+                    groups.clear();
+                }
+                self.set_selection(nodes, edges, groups)
+            }
+            SelectionMutation::Marquee {
+                bounds,
+                mode,
+                baseline,
+            } => {
+                let mut intersecting = self.nodes_intersecting(bounds)?;
+                intersecting.retain(|node| {
+                    snapshot
+                        .graph()
+                        .node(node)
+                        .is_some_and(|record| record.selectable.unwrap_or(true))
+                });
+                let (nodes, edges, groups) =
+                    marquee_selection_from_baseline(&baseline, intersecting, mode);
+                self.set_selection(nodes, edges, groups)
+            }
+            SelectionMutation::Clear => self.set_selection(Vec::new(), Vec::new(), Vec::new()),
+            SelectionMutation::Restore(baseline) => self.set_selection(
+                baseline.nodes().to_vec(),
+                baseline.edges().to_vec(),
+                baseline.groups().to_vec(),
+            ),
+        }
+    }
+
+    /// Applies one renderer-neutral viewport effect against the current view transform.
+    pub fn apply_viewport_mutation(
+        &self,
+        mutation: ViewportMutation,
+    ) -> Result<(), ViewSessionError> {
+        let transform = self.viewport_transform()?;
+        match mutation {
+            ViewportMutation::PanByView(delta) => {
+                if let Some(next) = pan_viewport(transform, ViewportPanRequest::new(delta)) {
+                    self.set_viewport(next.pan, next.zoom)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn export_seed(&self) -> Result<ViewSessionSeed, ViewSessionError> {
         let snapshot = self.graph_snapshot()?;
         self.shared.export_seed(snapshot.graph())
@@ -1806,6 +1889,79 @@ fn admit_node_drag_start(
             })
         });
     NodeDragStart::new(clicked, peers, clicked_node.pos, selection_mode)
+}
+
+fn apply_item_selection<T: Copy + Eq>(items: &mut Vec<T>, item: T, mode: SelectionMode) {
+    match mode {
+        SelectionMode::Replace => {
+            items.clear();
+            items.push(item);
+        }
+        SelectionMode::Add => {
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        SelectionMode::Toggle => {
+            if let Some(index) = items.iter().position(|current| *current == item) {
+                items.remove(index);
+            } else {
+                items.push(item);
+            }
+        }
+    }
+}
+
+fn apply_many_selection<T: Copy + Ord>(
+    items: &mut Vec<T>,
+    incoming: impl IntoIterator<Item = T>,
+    mode: SelectionMode,
+) {
+    if mode == SelectionMode::Replace {
+        items.clear();
+    }
+    let mut positions = items
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, item)| (item, index))
+        .collect::<BTreeMap<_, _>>();
+    let mut ordered = items.iter().copied().map(Some).collect::<Vec<_>>();
+    for item in incoming {
+        match mode {
+            SelectionMode::Replace | SelectionMode::Add => {
+                if let std::collections::btree_map::Entry::Vacant(entry) = positions.entry(item) {
+                    entry.insert(ordered.len());
+                    ordered.push(Some(item));
+                }
+            }
+            SelectionMode::Toggle => {
+                if let Some(index) = positions.remove(&item) {
+                    ordered[index] = None;
+                } else {
+                    positions.insert(item, ordered.len());
+                    ordered.push(Some(item));
+                }
+            }
+        }
+    }
+    *items = ordered.into_iter().flatten().collect();
+}
+
+fn marquee_selection_from_baseline(
+    baseline: &SelectionBaseline,
+    intersecting: impl IntoIterator<Item = NodeId>,
+    mode: SelectionMode,
+) -> (Vec<NodeId>, Vec<EdgeId>, Vec<GroupId>) {
+    let mut nodes = baseline.nodes().to_vec();
+    let mut edges = baseline.edges().to_vec();
+    let mut groups = baseline.groups().to_vec();
+    apply_many_selection(&mut nodes, intersecting, mode);
+    if mode == SelectionMode::Replace {
+        edges.clear();
+        groups.clear();
+    }
+    (nodes, edges, groups)
 }
 
 fn ensure_open(status: ViewStatus) -> Result<(), ViewSessionError> {
