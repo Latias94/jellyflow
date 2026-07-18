@@ -9,7 +9,7 @@ mod feedback;
 mod frame;
 mod geometry;
 
-pub use coordinates::{ViewPoint, ViewRect, ViewSize, side_anchor};
+pub use coordinates::{ViewDelta, ViewPoint, ViewRect, ViewSize, side_anchor};
 pub use feedback::{
     FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt, FeedbackReceipt,
     FeedbackSubmissionError, FrameFeedback, FrameMaterializationError, HandlePosition,

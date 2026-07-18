@@ -11,15 +11,21 @@ pub use intent::{
     ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation, FreshGraphMutationBindError,
     RelativeNodeMoveIntent, SelectionBaseline,
 };
-pub use navigation::{AlignmentSnapResult, fit_viewport, resolve_alignment_snap};
+pub(crate) use navigation::resolve_alignment_snap;
+pub use navigation::{
+    AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapResult, AlignmentSnapWork,
+    fit_viewport,
+};
 pub use presentation::{
-    AlignmentGuide, CanvasInteractionPhase, CanvasInteractionPresentation, ConnectionPresentation,
-    ConnectionSearchStatus, InteractionPosition, InteractionTerminalReason, NodeDragPresentation,
+    AlignmentGuide, AlignmentGuideAxis, CanvasInteractionPhase, CanvasInteractionPresentation,
+    ConnectionPresentation, ConnectionSearchStatus, InteractionPosition, InteractionTerminalReason,
+    NodeDragPresentation,
 };
 pub use session::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
-    CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback,
-    CanvasPressTarget, CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
+    AlignmentSnapConfig, CanvasInteractionConfig, CanvasInteractionDispatch,
+    CanvasInteractionEffect, CanvasInteractionError, CanvasInteractionQuery,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
+    CommandSettlement, ConnectionInteractionStart, ConnectionSearchRequest,
     ConnectionSearchSelection, InteractionDamage, InteractionGeneration, InteractionOwner,
     InteractionQueryId, InteractionTickDemand, InteractionTicketId, NodeDragStart, SelectionMode,
     SelectionMutation, ViewportMutation,

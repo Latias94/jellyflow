@@ -1,27 +1,155 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, NodeId};
 
 use crate::runtime::adapter_protocol::{GeometrySnapshot, ViewSize};
+use crate::runtime::view_session::{ViewGeneration, ViewId};
 use crate::runtime::viewport::ViewportTransform;
 
-use super::AlignmentGuide;
+use super::{AlignmentGuide, AlignmentGuideAxis, InteractionGeneration};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AlignmentSnapLocks {
+    x: Option<AxisSnapLock>,
+    y: Option<AxisSnapLock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AxisSnapLock {
+    moving: NodeId,
+    candidate: NodeId,
+    moving_feature: usize,
+    candidate_feature: usize,
+}
+
+/// One bounded, renderer-neutral node-alignment query.
+#[derive(Debug, Clone)]
+pub struct AlignmentSnapQuery {
+    view: ViewId,
+    view_generation: ViewGeneration,
+    generation: InteractionGeneration,
+    moving_nodes: Arc<[NodeId]>,
+    delta: CanvasPoint,
+    acquire_tolerance_in_view: f32,
+    release_tolerance_in_view: f32,
+    entry_budget: usize,
+    locks: AlignmentSnapLocks,
+}
+
+impl AlignmentSnapQuery {
+    pub(super) fn new(
+        view: ViewId,
+        view_generation: ViewGeneration,
+        generation: InteractionGeneration,
+        moving_nodes: Arc<[NodeId]>,
+        delta: CanvasPoint,
+        acquire_tolerance_in_view: f32,
+        release_tolerance_in_view: f32,
+        entry_budget: usize,
+        locks: AlignmentSnapLocks,
+    ) -> Self {
+        Self {
+            view,
+            view_generation,
+            generation,
+            moving_nodes,
+            delta,
+            acquire_tolerance_in_view,
+            release_tolerance_in_view,
+            entry_budget,
+            locks,
+        }
+    }
+
+    pub fn view(&self) -> ViewId {
+        self.view
+    }
+
+    pub fn view_generation(&self) -> ViewGeneration {
+        self.view_generation
+    }
+
+    pub fn generation(&self) -> InteractionGeneration {
+        self.generation
+    }
+
+    pub fn moving_nodes(&self) -> &[NodeId] {
+        &self.moving_nodes
+    }
+
+    pub fn delta(&self) -> CanvasPoint {
+        self.delta
+    }
+
+    pub fn acquire_tolerance_in_view(&self) -> f32 {
+        self.acquire_tolerance_in_view
+    }
+
+    pub fn release_tolerance_in_view(&self) -> f32 {
+        self.release_tolerance_in_view
+    }
+
+    pub fn entry_budget(&self) -> usize {
+        self.entry_budget
+    }
+}
+
+/// Bounded work evidence for a node-alignment query that could not produce a snap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlignmentSnapWork {
+    generation: InteractionGeneration,
+    entries_examined: u64,
+}
+
+impl AlignmentSnapWork {
+    pub(crate) fn new(generation: InteractionGeneration, entries_examined: u64) -> Self {
+        Self {
+            generation,
+            entries_examined,
+        }
+    }
+
+    pub fn generation(self) -> InteractionGeneration {
+        self.generation
+    }
+
+    pub fn entries_examined(self) -> u64 {
+        self.entries_examined
+    }
+}
+
+/// Terminal result of one bounded node-alignment query.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlignmentSnapQueryOutcome {
+    Complete(AlignmentSnapResult),
+    BudgetExhausted(AlignmentSnapWork),
+    GeometryIndeterminate(AlignmentSnapWork),
+}
+
+impl AlignmentSnapQueryOutcome {
+    pub fn generation(&self) -> InteractionGeneration {
+        match self {
+            Self::Complete(result) => result.generation(),
+            Self::BudgetExhausted(work) | Self::GeometryIndeterminate(work) => work.generation(),
+        }
+    }
+}
 
 /// Bounded alignment result for one node-drag presentation update.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlignmentSnapResult {
+    generation: InteractionGeneration,
     delta: CanvasPoint,
     guides: Box<[AlignmentGuide]>,
     candidates_examined: usize,
+    locks: AlignmentSnapLocks,
 }
 
 impl AlignmentSnapResult {
-    fn unchanged(delta: CanvasPoint) -> Self {
-        Self {
-            delta,
-            guides: Box::default(),
-            candidates_examined: 0,
-        }
+    pub fn generation(&self) -> InteractionGeneration {
+        self.generation
     }
 
     /// Returns the canvas-space delta after alignment snapping.
@@ -38,6 +166,17 @@ impl AlignmentSnapResult {
     pub fn candidates_examined(&self) -> usize {
         self.candidates_examined
     }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        InteractionGeneration,
+        CanvasPoint,
+        Box<[AlignmentGuide]>,
+        AlignmentSnapLocks,
+    ) {
+        (self.generation, self.delta, self.guides, self.locks)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +191,17 @@ struct AxisSnap {
 }
 
 impl AxisSnap {
+    fn lock(self) -> AxisSnapLock {
+        AxisSnapLock {
+            moving: self.moving,
+            candidate: self.candidate,
+            moving_feature: self.moving_feature,
+            candidate_feature: self.candidate_feature,
+        }
+    }
+}
+
+impl AxisSnap {
     fn is_better_than(self, current: Self) -> bool {
         self.distance
             .total_cmp(&current.distance)
@@ -63,31 +213,30 @@ impl AxisSnap {
     }
 }
 
-/// Resolves deterministic axis alignment against an adapter-supplied spatial candidate set.
-///
-/// `tolerance_in_canvas` must already be converted from the adapter's screen-pixel setting through
-/// the current viewport zoom. The function never scans graph storage: callers decide which
-/// spatially admitted candidates are eligible for this frame.
-pub fn resolve_alignment_snap(
+pub(crate) fn resolve_alignment_snap(
     geometry: &GeometrySnapshot,
-    moving_nodes: &[NodeId],
-    candidate_nodes: &[NodeId],
-    delta: CanvasPoint,
-    tolerance_in_canvas: f32,
+    query: &AlignmentSnapQuery,
+    candidate_nodes: &BTreeSet<NodeId>,
+    acquire_tolerance_in_canvas: f32,
+    release_tolerance_in_canvas: f32,
 ) -> AlignmentSnapResult {
-    if !delta.is_finite()
-        || !tolerance_in_canvas.is_finite()
-        || tolerance_in_canvas <= 0.0
-        || moving_nodes.is_empty()
-    {
-        return AlignmentSnapResult::unchanged(delta);
-    }
-
-    let mut x_snap = None;
-    let mut y_snap = None;
+    let moving_membership = query.moving_nodes.iter().copied().collect::<BTreeSet<_>>();
+    let moving = query
+        .moving_nodes
+        .iter()
+        .filter_map(|node| node_features(geometry, *node, query.delta))
+        .collect::<Vec<_>>();
+    let mut x_snap = query.locks.x.and_then(|lock| {
+        retained_axis_snap(geometry, &moving, lock, true, release_tolerance_in_canvas)
+    });
+    let mut y_snap = query.locks.y.and_then(|lock| {
+        retained_axis_snap(geometry, &moving, lock, false, release_tolerance_in_canvas)
+    });
+    let x_locked = x_snap.is_some();
+    let y_locked = y_snap.is_some();
     let mut candidates_examined = 0_usize;
     for candidate in candidate_nodes.iter().copied() {
-        if moving_nodes.contains(&candidate) {
+        if moving_membership.contains(&candidate) {
             continue;
         }
         let Some(candidate_geometry) = geometry.node(candidate).filter(|node| node.is_fresh())
@@ -99,53 +248,103 @@ pub fn resolve_alignment_snap(
         let candidate_x = axis_features(candidate_bounds.origin.x, candidate_bounds.size.width);
         let candidate_y = axis_features(candidate_bounds.origin.y, candidate_bounds.size.height);
 
-        for moving in moving_nodes.iter().copied() {
-            let Some(moving_geometry) = geometry.node(moving).filter(|node| node.is_fresh()) else {
-                continue;
-            };
-            let moving_bounds = moving_geometry.bounds();
-            let moving_x =
-                axis_features(moving_bounds.origin.x + delta.x, moving_bounds.size.width);
-            let moving_y =
-                axis_features(moving_bounds.origin.y + delta.y, moving_bounds.size.height);
-            x_snap = best_axis_snap(
-                x_snap,
-                moving,
-                candidate,
-                moving_x,
-                candidate_x,
-                tolerance_in_canvas,
-            );
-            y_snap = best_axis_snap(
-                y_snap,
-                moving,
-                candidate,
-                moving_y,
-                candidate_y,
-                tolerance_in_canvas,
-            );
+        for moving in &moving {
+            if !x_locked {
+                x_snap = best_axis_snap(
+                    x_snap,
+                    moving.node,
+                    candidate,
+                    moving.x,
+                    candidate_x,
+                    acquire_tolerance_in_canvas,
+                );
+            }
+            if !y_locked {
+                y_snap = best_axis_snap(
+                    y_snap,
+                    moving.node,
+                    candidate,
+                    moving.y,
+                    candidate_y,
+                    acquire_tolerance_in_canvas,
+                );
+            }
         }
     }
 
     let mut guides = Vec::with_capacity(2);
-    let mut snapped = delta;
+    let mut snapped = query.delta;
     if let Some(x) = x_snap {
         snapped.x += x.adjustment;
-        guides.push(AlignmentGuide::Vertical {
-            canvas_x: x.coordinate,
-        });
+        if let Some(guide) = AlignmentGuide::new(AlignmentGuideAxis::Vertical, x.coordinate) {
+            guides.push(guide);
+        }
     }
     if let Some(y) = y_snap {
         snapped.y += y.adjustment;
-        guides.push(AlignmentGuide::Horizontal {
-            canvas_y: y.coordinate,
-        });
+        if let Some(guide) = AlignmentGuide::new(AlignmentGuideAxis::Horizontal, y.coordinate) {
+            guides.push(guide);
+        }
     }
     AlignmentSnapResult {
+        generation: query.generation,
         delta: snapped,
         guides: guides.into_boxed_slice(),
         candidates_examined,
+        locks: AlignmentSnapLocks {
+            x: x_snap.map(AxisSnap::lock),
+            y: y_snap.map(AxisSnap::lock),
+        },
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NodeFeatures {
+    node: NodeId,
+    x: [f32; 3],
+    y: [f32; 3],
+}
+
+fn node_features(
+    geometry: &GeometrySnapshot,
+    node: NodeId,
+    delta: CanvasPoint,
+) -> Option<NodeFeatures> {
+    let bounds = geometry.node(node).filter(|node| node.is_fresh())?.bounds();
+    Some(NodeFeatures {
+        node,
+        x: axis_features(bounds.origin.x + delta.x, bounds.size.width),
+        y: axis_features(bounds.origin.y + delta.y, bounds.size.height),
+    })
+}
+
+fn retained_axis_snap(
+    geometry: &GeometrySnapshot,
+    moving: &[NodeFeatures],
+    lock: AxisSnapLock,
+    horizontal_axis: bool,
+    tolerance: f32,
+) -> Option<AxisSnap> {
+    let moving = moving.iter().find(|node| node.node == lock.moving)?;
+    let candidate = node_features(geometry, lock.candidate, CanvasPoint::default())?;
+    let moving_features = if horizontal_axis { moving.x } else { moving.y };
+    let candidate_features = if horizontal_axis {
+        candidate.x
+    } else {
+        candidate.y
+    };
+    let moving_value = *moving_features.get(lock.moving_feature)?;
+    let candidate_value = *candidate_features.get(lock.candidate_feature)?;
+    let adjustment = candidate_value - moving_value;
+    (adjustment.abs() <= tolerance).then_some(AxisSnap {
+        distance: adjustment.abs(),
+        adjustment,
+        coordinate: candidate_value,
+        moving: lock.moving,
+        candidate: lock.candidate,
+        moving_feature: lock.moving_feature,
+        candidate_feature: lock.candidate_feature,
+    })
 }
 
 /// Fits one positive canvas rectangle into a native viewport with screen-pixel padding.

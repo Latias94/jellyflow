@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
 
+use crate::runtime::adapter_protocol::ViewDelta;
+
 /// Current viewport transform.
 ///
 /// `pan` is stored in canvas space and `zoom` is a positive scale factor. Screen projection follows
@@ -76,11 +78,11 @@ impl ViewportConstraints {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ViewportPanRequest {
     /// Logical screen-pixel delta for the content movement.
-    pub screen_delta: CanvasPoint,
+    pub screen_delta: ViewDelta,
 }
 
 impl ViewportPanRequest {
-    pub fn new(screen_delta: CanvasPoint) -> Self {
+    pub fn new(screen_delta: ViewDelta) -> Self {
         Self { screen_delta }
     }
 }

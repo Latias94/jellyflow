@@ -12,8 +12,8 @@ use jellyflow::runtime::runtime::geometry::{
 };
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
-    AlignmentGuide, CanvasInteractionPhase, EdgeEndpoint, FeedbackSubmissionError,
-    GeometrySnapshot, RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
+    CanvasInteractionPhase, EdgeEndpoint, FeedbackSubmissionError, GeometrySnapshot,
+    RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
     VisibleRouteQueryRevision,
 };
 use open_gpui::prelude::FluentBuilder;
@@ -1484,8 +1484,9 @@ impl OpenGpuiSceneHost {
         if let Some(drag) = self.canvas_interaction.presentation().node_drag() {
             let guide_width = self.graph_theme.metrics.guide_width;
             for guide in drag.guides() {
-                let line = match *guide {
-                    AlignmentGuide::Vertical { canvas_x } => {
+                let line = match guide.axis() {
+                    jellyflow::runtime::AlignmentGuideAxis::Vertical => {
+                        let canvas_x = guide.canvas_coordinate();
                         let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
                             x: canvas_x,
                             y: 0.0,
@@ -1499,7 +1500,8 @@ impl OpenGpuiSceneHost {
                             .w(px(guide_width))
                             .h_full()
                     }
-                    AlignmentGuide::Horizontal { canvas_y } => {
+                    jellyflow::runtime::AlignmentGuideAxis::Horizontal => {
+                        let canvas_y = guide.canvas_coordinate();
                         let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
                             x: 0.0,
                             y: canvas_y,

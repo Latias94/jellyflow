@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use jellyflow_core::core::{CanvasPoint, CanvasRect, EdgeId, NodeId, PortId};
 
 use crate::runtime::adapter_protocol::ViewPoint;
 use crate::runtime::geometry::HandlePosition;
+use crate::runtime::viewport::ViewportTransform;
 
 use super::{ConnectionGestureIntent, ConnectionProbe, InteractionGeneration, InteractionTicketId};
 
@@ -42,8 +45,10 @@ pub struct InteractionPosition {
 }
 
 impl InteractionPosition {
-    pub fn new(view: ViewPoint, canvas: CanvasPoint) -> Option<Self> {
-        (view.is_finite() && canvas.is_finite()).then_some(Self { view, canvas })
+    /// Normalizes one native view-space point through the current viewport transform.
+    pub fn from_view(view: ViewPoint, transform: ViewportTransform) -> Option<Self> {
+        let canvas = view.to_canvas_point(transform)?;
+        Some(Self { view, canvas })
     }
 
     pub fn view(self) -> ViewPoint {
@@ -158,18 +163,20 @@ impl ConnectionPresentation {
 #[derive(Debug, Clone)]
 pub struct NodeDragPresentation {
     generation: InteractionGeneration,
-    nodes: Box<[NodeId]>,
+    nodes: Arc<[NodeId]>,
     delta: CanvasPoint,
-    guides: Box<[AlignmentGuide]>,
+    guides: Arc<[AlignmentGuide]>,
+    release_pending: bool,
     ticket: Option<InteractionTicketId>,
 }
 
 impl NodeDragPresentation {
     pub(super) fn new(
         generation: InteractionGeneration,
-        nodes: Box<[NodeId]>,
+        nodes: Arc<[NodeId]>,
         delta: CanvasPoint,
-        guides: Box<[AlignmentGuide]>,
+        guides: Arc<[AlignmentGuide]>,
+        release_pending: bool,
         ticket: Option<InteractionTicketId>,
     ) -> Self {
         Self {
@@ -177,6 +184,7 @@ impl NodeDragPresentation {
             nodes,
             delta,
             guides,
+            release_pending,
             ticket,
         }
     }
@@ -197,15 +205,43 @@ impl NodeDragPresentation {
         &self.guides
     }
 
+    pub fn is_release_pending(&self) -> bool {
+        self.release_pending
+    }
+
     pub fn ticket(&self) -> Option<InteractionTicketId> {
         self.ticket
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignmentGuideAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// One runtime-issued alignment guide in canvas space.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AlignmentGuide {
-    Vertical { canvas_x: f32 },
-    Horizontal { canvas_y: f32 },
+pub struct AlignmentGuide {
+    axis: AlignmentGuideAxis,
+    canvas_coordinate: f32,
+}
+
+impl AlignmentGuide {
+    pub(super) fn new(axis: AlignmentGuideAxis, canvas_coordinate: f32) -> Option<Self> {
+        canvas_coordinate.is_finite().then_some(Self {
+            axis,
+            canvas_coordinate,
+        })
+    }
+
+    pub fn axis(self) -> AlignmentGuideAxis {
+        self.axis
+    }
+
+    pub fn canvas_coordinate(self) -> f32 {
+        self.canvas_coordinate
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -299,5 +335,25 @@ impl CanvasInteractionPresentation {
 
     pub fn terminal(&self) -> Option<InteractionTerminalReason> {
         self.terminal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interaction_position_normalizes_view_space_at_common_zoom_levels() {
+        let view = ViewPoint::new(40.0, 20.0);
+        for (zoom, expected) in [
+            (0.5, CanvasPoint { x: 80.0, y: 40.0 }),
+            (1.0, CanvasPoint { x: 40.0, y: 20.0 }),
+            (2.0, CanvasPoint { x: 20.0, y: 10.0 }),
+        ] {
+            let transform = ViewportTransform::new(CanvasPoint::default(), zoom).unwrap();
+            let position = InteractionPosition::from_view(view, transform).unwrap();
+            assert_eq!(position.view(), view);
+            assert_eq!(position.canvas(), expected);
+        }
     }
 }

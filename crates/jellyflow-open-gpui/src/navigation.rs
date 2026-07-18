@@ -1,5 +1,5 @@
 use jellyflow::core::CanvasSize;
-use jellyflow::runtime::CanvasInteractionConfig;
+use jellyflow::runtime::{AlignmentSnapConfig, CanvasInteractionConfig};
 
 const DEFAULT_MIN_ZOOM: f32 = 0.1;
 const DEFAULT_MAX_ZOOM: f32 = 4.0;
@@ -116,6 +116,17 @@ impl OpenGpuiNavigationConfig {
         self.sanitized()
     }
 
+    /// Replaces node and blank-canvas click tolerances, in logical screen pixels.
+    ///
+    /// Movement above a click tolerance but not beyond its drag threshold is an intentional dead
+    /// zone: it neither activates the click nor starts a drag.
+    #[must_use]
+    pub fn with_click_tolerances(mut self, node: f32, canvas: f32) -> Self {
+        self.interaction.node_click_tolerance_in_view = node;
+        self.interaction.canvas_click_tolerance_in_view = canvas;
+        self.sanitized()
+    }
+
     /// Replaces the edge band and maximum view-pixel speed used by runtime auto-pan.
     #[must_use]
     pub fn with_auto_pan(mut self, band_in_view: f32, speed_in_view_per_second: f32) -> Self {
@@ -167,6 +178,9 @@ impl OpenGpuiNavigationConfig {
                 .snap_to_grid
                 .then_some(self.grid_size_in_canvas)
                 .flatten(),
+            alignment_snap: self
+                .alignment_snap_tolerance_in_view
+                .and_then(|tolerance| AlignmentSnapConfig::new(tolerance, tolerance * 1.5)),
             ..self.interaction
         }
     }

@@ -7,7 +7,7 @@ use jellyflow::runtime::runtime::viewport::{
 };
 use jellyflow::runtime::{
     CanvasInteractionError, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
-    InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode,
+    InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode, ViewDelta,
 };
 use open_gpui::{
     Context, Modifiers, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent, Window, px,
@@ -290,29 +290,11 @@ impl OpenGpuiSceneHost {
             return None;
         }
 
-        let snapshot = self.view.graph_snapshot().ok()?;
-        let graph = snapshot.graph();
         let clicked = instance.node();
-        let clicked_node = graph.node(&clicked)?;
-        if !clicked_node.selectable.unwrap_or(true) || !clicked_node.draggable.unwrap_or(true) {
-            return None;
-        }
-
-        let selection = self.view.selection().ok()?;
-        let clicked_is_selected = selection.nodes().contains(&clicked);
-        let preserve_selected_peers = clicked_is_selected || selection_mode == SelectionMode::Add;
-        let nodes = preserve_selected_peers
-            .then_some(selection.nodes())
-            .into_iter()
+        self.view
+            .node_drag_start(clicked, selection_mode)
+            .ok()
             .flatten()
-            .copied()
-            .filter(|node| {
-                graph.node(node).is_some_and(|node| {
-                    node.selectable.unwrap_or(true) && node.draggable.unwrap_or(true)
-                })
-            });
-
-        NodeDragStart::new(clicked, nodes, clicked_node.pos, selection_mode)
     }
 
     fn scene_event_owner_is_current(&self, kind: &OpenGpuiSceneGestureKind) -> bool {
@@ -350,7 +332,7 @@ impl OpenGpuiSceneHost {
             return false;
         };
         let delta = event.delta.pixel_delta(px(SCENE_WHEEL_LINE_HEIGHT));
-        let delta = CanvasPoint {
+        let delta = ViewDelta {
             x: delta.x.as_f32(),
             y: delta.y.as_f32(),
         };

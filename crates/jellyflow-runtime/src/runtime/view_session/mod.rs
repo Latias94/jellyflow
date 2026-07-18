@@ -33,6 +33,7 @@ use crate::runtime::graph_runtime::{
     PortConnectionFacts, PortConnectionSummary, RuntimeFactKey, RuntimeId, RuntimePatch,
     RuntimePatchKind, RuntimeShared,
 };
+use crate::runtime::interaction::{NodeDragStart, SelectionMode};
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
 use crate::runtime::viewport::ViewportTransform;
 use crate::schema::NodeCatalog;
@@ -904,6 +905,26 @@ impl ViewSession {
         self.shared.selection()
     }
 
+    /// Admits a node drag from authoritative graph and view-selection facts.
+    ///
+    /// Hidden, non-selectable, and non-draggable nodes never enter the optimistic moved set. The
+    /// returned set preserves selected peers when the clicked node is already selected or the
+    /// adapter requested an additive/toggle gesture that becomes additive once dragging starts.
+    pub fn node_drag_start(
+        &self,
+        clicked: NodeId,
+        selection_mode: SelectionMode,
+    ) -> Result<Option<NodeDragStart>, ViewSessionError> {
+        let snapshot = self.graph_snapshot()?;
+        let selection = self.shared.selection()?;
+        Ok(admit_node_drag_start(
+            snapshot.graph(),
+            selection.nodes(),
+            clicked,
+            selection_mode,
+        ))
+    }
+
     /// Returns a bounded prefix of selected edges without cloning the full selection.
     pub fn selected_edge_ids(&self, limit: usize) -> Result<SelectedEdgeIds, ViewSessionError> {
         self.runtime()?;
@@ -1165,6 +1186,23 @@ impl WeakViewSession {
     pub fn selection(&self) -> Result<ViewSelectionSeed, ViewSessionError> {
         let (view, _) = self.open_capability()?;
         view.selection()
+    }
+
+    /// Admits a node drag without reviving or owning the view session.
+    pub fn node_drag_start(
+        &self,
+        clicked: NodeId,
+        selection_mode: SelectionMode,
+    ) -> Result<Option<NodeDragStart>, ViewSessionError> {
+        let (view, runtime) = self.open_capability()?;
+        let snapshot = runtime.snapshot()?;
+        let selection = view.selection()?;
+        Ok(admit_node_drag_start(
+            snapshot.graph(),
+            selection.nodes(),
+            clicked,
+            selection_mode,
+        ))
     }
 
     /// Updates the selection without owning or reviving the view session.
@@ -1739,6 +1777,35 @@ impl ViewShared {
         drop(state);
         (true, self.subscriptions.publish_terminal(reason))
     }
+}
+
+fn admit_node_drag_start(
+    graph: &Graph,
+    selected_nodes: &[NodeId],
+    clicked: NodeId,
+    selection_mode: SelectionMode,
+) -> Option<NodeDragStart> {
+    let clicked_node = graph.node(&clicked)?;
+    if clicked_node.hidden
+        || !clicked_node.selectable.unwrap_or(true)
+        || !clicked_node.draggable.unwrap_or(true)
+    {
+        return None;
+    }
+    let clicked_was_selected = selected_nodes.contains(&clicked);
+    let preserve_selected_peers = clicked_was_selected
+        || matches!(selection_mode, SelectionMode::Add | SelectionMode::Toggle);
+    let peers = preserve_selected_peers
+        .then_some(selected_nodes)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|node| {
+            graph.node(node).is_some_and(|node| {
+                !node.hidden && node.selectable.unwrap_or(true) && node.draggable.unwrap_or(true)
+            })
+        });
+    NodeDragStart::new(clicked, peers, clicked_node.pos, selection_mode)
 }
 
 fn ensure_open(status: ViewStatus) -> Result<(), ViewSessionError> {

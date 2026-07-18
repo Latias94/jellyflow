@@ -37,8 +37,8 @@ pub use runtime::adapter_protocol::{
     HandlePosition, LayoutNodeStatus, LayoutPublicationReceipt, NodeInstanceKey, NodeLayout,
     NodeLayoutBuilder, NodeLayoutBuilderError, NodeLayoutTarget, PortLayoutOutcome,
     PortLayoutTarget, PublishedEdgeRoute, PublishedNodeGeometry, PublishedPortGeometry,
-    PublishedPortOutcome, RenderedPortLayout, RendererStamp, StaleFrameReason, ViewPoint, ViewRect,
-    ViewSize, side_anchor,
+    PublishedPortOutcome, RenderedPortLayout, RendererStamp, StaleFrameReason, ViewDelta,
+    ViewPoint, ViewRect, ViewSize, side_anchor,
 };
 pub use runtime::commands::{
     ConnectionDecision, ConnectionEdit, ConnectionEvaluation, GraphCommand, GraphCommandConflict,
@@ -54,17 +54,18 @@ pub use runtime::graph_runtime::{
     PortIncidentConnectionFacts, RuntimeFactDelta, RuntimeFactKey, RuntimePatch, RuntimePatchKind,
 };
 pub use runtime::interaction::{
-    AlignmentGuide, AlignmentSnapResult, CanvasInteractionConfig, CanvasInteractionEffect,
-    CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionPresentation,
-    CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback,
-    CanvasPressTarget, CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart,
-    ConnectionPresentation, ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest,
-    ConnectionSearchSelection, ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent,
-    FreshGraphMutation, FreshGraphMutationBindError, InteractionDamage, InteractionGeneration,
-    InteractionOwner, InteractionPosition, InteractionQueryId, InteractionTerminalReason,
-    InteractionTickDemand, InteractionTicketId, NodeDragPresentation, NodeDragStart,
-    RelativeNodeMoveIntent, SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation,
-    fit_viewport, resolve_alignment_snap,
+    AlignmentGuide, AlignmentGuideAxis, AlignmentSnapConfig, AlignmentSnapQuery,
+    AlignmentSnapQueryOutcome, AlignmentSnapResult, AlignmentSnapWork, CanvasInteractionConfig,
+    CanvasInteractionDispatch, CanvasInteractionEffect, CanvasInteractionError,
+    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
+    CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation,
+    ConnectionProbe, ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchSelection,
+    ConnectionSearchStatus, ConnectionTopology, EdgeDeletionIntent, FreshGraphMutation,
+    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
+    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
+    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
+    SelectionBaseline, SelectionMode, SelectionMutation, ViewportMutation, fit_viewport,
 };
 pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 pub use runtime::view_session::{

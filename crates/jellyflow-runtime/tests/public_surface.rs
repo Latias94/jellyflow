@@ -190,13 +190,17 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
         CanvasInteractionConfig::default(),
     )
     .unwrap();
-    let position = InteractionPosition::new(
+    let position = InteractionPosition::from_view(
         ViewPoint::new(160.0, 186.0),
-        CanvasPoint { x: 80.0, y: 93.0 },
+        view.viewport_transform().unwrap(),
     )
     .unwrap();
     let edge_query = interaction.request_edge_pick(position).unwrap();
-    let (queries, effects, damage, tick_demand) = edge_query.into_parts();
+    let dispatch = edge_query.into_dispatch();
+    let queries = dispatch.queries;
+    let effects = dispatch.pre_query_effects;
+    let damage = dispatch.damage;
+    let tick_demand = dispatch.tick_demand;
     assert!(matches!(
         queries.as_slice(),
         [CanvasInteractionQuery::EdgePick { .. }]

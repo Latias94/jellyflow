@@ -666,7 +666,7 @@ impl OpenGpuiSceneHost {
             .scene_transform
             .or_else(|| self.view.viewport_transform().ok())?;
         let view = transform.screen_point_for_canvas(canvas)?;
-        InteractionPosition::new(ViewPoint::new(view.x, view.y), canvas)
+        InteractionPosition::from_view(ViewPoint::new(view.x, view.y), transform)
     }
 
     pub(super) fn cancel_connection_for_drag(

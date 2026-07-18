@@ -18,7 +18,11 @@ use crate::runtime::geometry::{
 use crate::runtime::graph_runtime::{
     GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
 };
+use crate::runtime::interaction::{
+    AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapWork, resolve_alignment_snap,
+};
 use crate::runtime::policy::resolve_edge_policy;
+use crate::runtime::viewport::ViewportTransform;
 
 #[cfg(test)]
 use super::DerivedFactCounts;
@@ -45,6 +49,15 @@ impl ViewSession {
             .nodes
             .into_iter()
             .collect())
+    }
+
+    /// Resolves one bounded alignment query from this view's fresh spatial geometry.
+    pub fn alignment_snap(
+        &self,
+        query: AlignmentSnapQuery,
+    ) -> Result<AlignmentSnapQueryOutcome, ViewSessionError> {
+        self.runtime()?;
+        self.shared.alignment_snap(query)
     }
 
     #[cfg(test)]
@@ -158,6 +171,15 @@ impl WeakViewSession {
         let (view, _) = self.open_capability()?;
         view.geometry_snapshot()
     }
+
+    /// Resolves one bounded alignment query without reviving or owning the view session.
+    pub fn alignment_snap(
+        &self,
+        query: AlignmentSnapQuery,
+    ) -> Result<AlignmentSnapQueryOutcome, ViewSessionError> {
+        let (view, _) = self.open_capability()?;
+        view.alignment_snap(query)
+    }
 }
 
 impl ViewShared {
@@ -182,6 +204,86 @@ impl ViewShared {
             state.stats.geometry_snapshot_builds.saturating_add(1);
         Ok(snapshot)
     }
+
+    fn alignment_snap(
+        &self,
+        query: AlignmentSnapQuery,
+    ) -> Result<AlignmentSnapQueryOutcome, ViewSessionError> {
+        let mut state = self
+            .state
+            .try_borrow_mut()
+            .map_err(|_| ViewSessionError::Busy)?;
+        ensure_open(state.status)?;
+        let work = |entries_examined| AlignmentSnapWork::new(query.generation(), entries_examined);
+        if query.view() != state.id || query.view_generation() != state.generation {
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+        }
+        let Some(transform) = ViewportTransform::new(state.facts.pan, state.facts.zoom) else {
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+        };
+        let acquire_tolerance = query.acquire_tolerance_in_view() / transform.zoom;
+        let release_tolerance = query.release_tolerance_in_view() / transform.zoom;
+        if !acquire_tolerance.is_finite()
+            || acquire_tolerance <= 0.0
+            || !release_tolerance.is_finite()
+            || release_tolerance < acquire_tolerance
+            || query.entry_budget() == 0
+        {
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+        }
+        let geometry = state.geometry_snapshot_cache.clone().unwrap_or_else(|| {
+            let snapshot = GeometrySnapshot::new(
+                state.layout_revision,
+                state.geometry.clone(),
+                state.geometry_ports.clone(),
+                state.geometry_port_outcomes.clone(),
+                state.routes.clone(),
+            );
+            state.geometry_snapshot_cache = Some(snapshot.clone());
+            state.stats.geometry_snapshot_builds =
+                state.stats.geometry_snapshot_builds.saturating_add(1);
+            snapshot
+        });
+        if query.moving_nodes().len() > query.entry_budget() {
+            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted(work(0)));
+        }
+        let Some(moving_bounds) = query
+            .moving_nodes()
+            .iter()
+            .copied()
+            .map(|node| {
+                let bounds = geometry.node(node).filter(|node| node.is_fresh())?.bounds();
+                let moved = CanvasRect {
+                    origin: CanvasPoint {
+                        x: bounds.origin.x + query.delta().x,
+                        y: bounds.origin.y + query.delta().y,
+                    },
+                    size: bounds.size,
+                };
+                moved.is_positive_finite().then_some(moved)
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
+        };
+        let candidates = state.spatial.nodes_near_alignment_with_limit(
+            &moving_bounds,
+            release_tolerance,
+            query.entry_budget(),
+        );
+        if candidates.truncated {
+            return Ok(AlignmentSnapQueryOutcome::BudgetExhausted(work(
+                candidates.entries_examined,
+            )));
+        }
+        Ok(AlignmentSnapQueryOutcome::Complete(resolve_alignment_snap(
+            &geometry,
+            &query,
+            &candidates.nodes,
+            acquire_tolerance,
+            release_tolerance,
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -201,8 +303,18 @@ pub(super) struct SpatialQuery {
 #[derive(Debug, Default)]
 pub(super) struct ViewSpatialIndex {
     cells: BTreeMap<SpatialCell, BTreeSet<NodeId>>,
-    nodes: BTreeMap<NodeId, (CanvasRect, Vec<SpatialCell>)>,
+    alignment_x: BTreeMap<i32, BTreeSet<NodeId>>,
+    alignment_y: BTreeMap<i32, BTreeSet<NodeId>>,
+    nodes: BTreeMap<NodeId, IndexedNodeSpatial>,
     overflow_nodes: BTreeSet<NodeId>,
+}
+
+#[derive(Debug)]
+struct IndexedNodeSpatial {
+    bounds: CanvasRect,
+    covered: Vec<SpatialCell>,
+    alignment_x: Vec<i32>,
+    alignment_y: Vec<i32>,
 }
 
 impl ViewSpatialIndex {
@@ -215,7 +327,7 @@ impl ViewSpatialIndex {
         if self
             .nodes
             .get(&node)
-            .is_some_and(|(current, _)| *current == bounds)
+            .is_some_and(|current| current.bounds == bounds)
         {
             return false;
         }
@@ -227,16 +339,32 @@ impl ViewSpatialIndex {
         for cell in &covered {
             self.cells.entry(*cell).or_default().insert(node);
         }
-        self.nodes.insert(node, (bounds, covered));
+        let alignment_x = alignment_feature_cells(bounds.origin.x, bounds.size.width);
+        let alignment_y = alignment_feature_cells(bounds.origin.y, bounds.size.height);
+        for cell in &alignment_x {
+            self.alignment_x.entry(*cell).or_default().insert(node);
+        }
+        for cell in &alignment_y {
+            self.alignment_y.entry(*cell).or_default().insert(node);
+        }
+        self.nodes.insert(
+            node,
+            IndexedNodeSpatial {
+                bounds,
+                covered,
+                alignment_x,
+                alignment_y,
+            },
+        );
         true
     }
 
     pub(super) fn remove(&mut self, node: NodeId) -> bool {
-        let Some((_, covered)) = self.nodes.remove(&node) else {
+        let Some(indexed) = self.nodes.remove(&node) else {
             return false;
         };
         self.overflow_nodes.remove(&node);
-        for cell in covered {
+        for cell in indexed.covered {
             let remove_cell = self.cells.get_mut(&cell).is_some_and(|nodes| {
                 nodes.remove(&node);
                 nodes.is_empty()
@@ -245,11 +373,15 @@ impl ViewSpatialIndex {
                 self.cells.remove(&cell);
             }
         }
+        remove_axis_membership(&mut self.alignment_x, indexed.alignment_x, node);
+        remove_axis_membership(&mut self.alignment_y, indexed.alignment_y, node);
         true
     }
 
     pub(super) fn clear(&mut self) {
         self.cells.clear();
+        self.alignment_x.clear();
+        self.alignment_y.clear();
         self.nodes.clear();
         self.overflow_nodes.clear();
     }
@@ -314,10 +446,93 @@ impl ViewSpatialIndex {
             .filter(|node| {
                 self.nodes
                     .get(node)
-                    .and_then(|(bounds, _)| CanvasBounds::from_rect(*bounds))
+                    .and_then(|indexed| CanvasBounds::from_rect(indexed.bounds))
                     .is_some_and(|bounds| bounds.intersects(query))
             })
             .collect();
+        SpatialQuery {
+            nodes,
+            cells_examined,
+            entries_examined,
+            truncated,
+        }
+    }
+
+    pub(super) fn nodes_near_alignment_with_limit(
+        &self,
+        moving_bounds: &[CanvasRect],
+        tolerance: f32,
+        entry_limit: usize,
+    ) -> SpatialQuery {
+        if moving_bounds.is_empty()
+            || moving_bounds
+                .iter()
+                .any(|bounds| !bounds.is_positive_finite())
+            || !tolerance.is_finite()
+            || tolerance <= 0.0
+            || entry_limit == 0
+        {
+            return SpatialQuery::default();
+        }
+        let mut x_cells = BTreeSet::new();
+        let mut y_cells = BTreeSet::new();
+        for bounds in moving_bounds {
+            for feature in alignment_axis_features(bounds.origin.x, bounds.size.width) {
+                if !insert_axis_cell_range(&mut x_cells, feature, tolerance, entry_limit) {
+                    return SpatialQuery {
+                        truncated: true,
+                        ..SpatialQuery::default()
+                    };
+                }
+            }
+            for feature in alignment_axis_features(bounds.origin.y, bounds.size.height) {
+                if !insert_axis_cell_range(&mut y_cells, feature, tolerance, entry_limit) {
+                    return SpatialQuery {
+                        truncated: true,
+                        ..SpatialQuery::default()
+                    };
+                }
+            }
+        }
+
+        let mut nodes = BTreeSet::new();
+        let mut remaining = entry_limit;
+        let mut entries_examined = 0_u64;
+        let mut cells_examined = 0_u64;
+        let mut truncated = extend_unique_spatial_candidates(
+            &mut nodes,
+            self.overflow_nodes.iter(),
+            &mut remaining,
+            &mut entries_examined,
+        );
+        for cell in x_cells {
+            if truncated {
+                break;
+            }
+            cells_examined = cells_examined.saturating_add(1);
+            if let Some(candidates) = self.alignment_x.get(&cell) {
+                truncated = extend_unique_spatial_candidates(
+                    &mut nodes,
+                    candidates.iter(),
+                    &mut remaining,
+                    &mut entries_examined,
+                );
+            }
+        }
+        for cell in y_cells {
+            if truncated {
+                break;
+            }
+            cells_examined = cells_examined.saturating_add(1);
+            if let Some(candidates) = self.alignment_y.get(&cell) {
+                truncated = extend_unique_spatial_candidates(
+                    &mut nodes,
+                    candidates.iter(),
+                    &mut remaining,
+                    &mut entries_examined,
+                );
+            }
+        }
         SpatialQuery {
             nodes,
             cells_examined,
@@ -444,6 +659,76 @@ fn extend_spatial_candidates<'a>(
         candidates.insert(*node);
     }
     false
+}
+
+fn extend_unique_spatial_candidates<'a>(
+    candidates: &mut BTreeSet<NodeId>,
+    nodes: impl IntoIterator<Item = &'a NodeId>,
+    remaining: &mut usize,
+    entries_examined: &mut u64,
+) -> bool {
+    for node in nodes {
+        if candidates.contains(node) {
+            continue;
+        }
+        if *remaining == 0 {
+            return true;
+        }
+        *remaining -= 1;
+        *entries_examined = entries_examined.saturating_add(1);
+        candidates.insert(*node);
+    }
+    false
+}
+
+fn alignment_axis_features(origin: f32, extent: f32) -> [f32; 3] {
+    [origin, origin + extent * 0.5, origin + extent]
+}
+
+fn alignment_feature_cells(origin: f32, extent: f32) -> Vec<i32> {
+    alignment_axis_features(origin, extent)
+        .into_iter()
+        .map(spatial_cell_coordinate)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn insert_axis_cell_range(
+    cells: &mut BTreeSet<i32>,
+    feature: f32,
+    tolerance: f32,
+    cell_limit: usize,
+) -> bool {
+    let start = spatial_cell_coordinate(feature - tolerance);
+    let end = spatial_cell_coordinate(feature + tolerance);
+    let width = i64::from(end) - i64::from(start) + 1;
+    if width <= 0 || width as u64 > cell_limit as u64 {
+        return false;
+    }
+    for cell in start..=end {
+        cells.insert(cell);
+        if cells.len() > cell_limit {
+            return false;
+        }
+    }
+    true
+}
+
+fn remove_axis_membership(
+    index: &mut BTreeMap<i32, BTreeSet<NodeId>>,
+    cells: Vec<i32>,
+    node: NodeId,
+) {
+    for cell in cells {
+        let remove_cell = index.get_mut(&cell).is_some_and(|nodes| {
+            nodes.remove(&node);
+            nodes.is_empty()
+        });
+        if remove_cell {
+            index.remove(&cell);
+        }
+    }
 }
 
 fn covered_spatial_cells(bounds: CanvasRect) -> Option<Vec<SpatialCell>> {

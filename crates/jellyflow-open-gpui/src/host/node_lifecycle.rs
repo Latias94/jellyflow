@@ -581,7 +581,7 @@ impl OpenGpuiSceneHost {
         ) {
             let update = self.canvas_interaction.cancel();
             self.discard_pending_interaction_submission();
-            self.queue_interaction_queries(update.into_parts().0);
+            self.queue_interaction_queries(update.into_dispatch().queries);
         }
         if let Some((owner, mount)) = self
             .connection_owner

@@ -21,8 +21,8 @@ use jellyflow_runtime::{
     ConnectionProbeQueryOutcome, ConnectionSearchSelection, EdgeEndpoint,
     EdgePickCursorStaleReason, EdgePickQuery, EdgePickQueryError, EdgePickQueryOutcome,
     FrameRequest, GraphCommand, GraphRuntime, HandlePosition, InteractionOwner,
-    InteractionPosition, InteractionTicketId, NodeDragStart, RendererStamp, SelectionBaseline,
-    SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
+    InteractionPosition, InteractionTicketId, RendererStamp, SelectionBaseline, SelectionMode,
+    TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
 
 #[test]
@@ -276,7 +276,7 @@ fn connection_commit_revalidation_resumes_real_view_query_before_resubmission() 
     let committing = session
         .resolve_connection_probe(release_id, release_probe)
         .unwrap();
-    let (_, effects, _, _) = committing.into_parts();
+    let effects = committing.into_dispatch().pre_query_effects;
     let [CanvasInteractionEffect::SubmitGraph { ticket, .. }] = effects.as_slice() else {
         panic!("release must submit one connection mutation");
     };
@@ -696,13 +696,11 @@ impl TraceHarness {
                 TraceEffect::None
             }
             TraceTarget::NodeDragHandle(_) => {
-                let start = NodeDragStart::new(
-                    self.ids.source_node,
-                    [self.ids.source_node],
-                    CanvasPoint { x: 0.0, y: 0.0 },
-                    SelectionMode::Replace,
-                )
-                .unwrap();
+                let start = self
+                    .view
+                    .node_drag_start(self.ids.source_node, SelectionMode::Replace)
+                    .unwrap()
+                    .unwrap();
                 self.session
                     .press(CanvasPressTarget::NodeDrag(start), self.pointer)
                     .unwrap();
@@ -759,11 +757,13 @@ impl TraceHarness {
             TraceTarget::Edge(_) => {
                 let midpoint = ViewPoint::new(400.0, 80.0);
                 let pointer = normalized_position(&self.view, midpoint);
-                let (mut queries, effects, _, _) = self
+                let dispatch = self
                     .session
                     .request_edge_pick(pointer)
                     .unwrap()
-                    .into_parts();
+                    .into_dispatch();
+                let mut queries = dispatch.queries;
+                let effects = dispatch.pre_query_effects;
                 assert!(effects.is_empty());
                 let CanvasInteractionQuery::EdgePick { id, query } = queries.remove(0) else {
                     panic!("edge trace requested the wrong query");
@@ -867,7 +867,7 @@ impl TraceHarness {
     }
 
     fn capture_submit(&mut self, update: CanvasInteractionUpdate) -> TraceEffect {
-        let (_, effects, _, _) = update.into_parts();
+        let effects = update.into_dispatch().pre_query_effects;
         for effect in effects {
             if let CanvasInteractionEffect::SubmitGraph { ticket, mutation } = effect {
                 self.ticket = Some(ticket);
@@ -965,10 +965,12 @@ fn take_probe(
     jellyflow_runtime::InteractionQueryId,
     jellyflow_runtime::ConnectionProbeQuery,
 )> {
-    let (queries, _, _, _) = update.into_parts();
+    let queries = update.into_dispatch().queries;
     queries.into_iter().find_map(|query| match query {
         CanvasInteractionQuery::ConnectionProbe { id, query, .. } => Some((id, query)),
-        CanvasInteractionQuery::EdgePick { .. } => None,
+        CanvasInteractionQuery::AlignmentSnap { .. } | CanvasInteractionQuery::EdgePick { .. } => {
+            None
+        }
     })
 }
 
@@ -980,7 +982,9 @@ fn connection_probe_query_ref(
 )> {
     match query {
         CanvasInteractionQuery::ConnectionProbe { id, query, .. } => Some((*id, query)),
-        CanvasInteractionQuery::EdgePick { .. } => None,
+        CanvasInteractionQuery::AlignmentSnap { .. } | CanvasInteractionQuery::EdgePick { .. } => {
+            None
+        }
     }
 }
 
@@ -991,7 +995,9 @@ fn drive_connection_pages(
 ) -> Vec<CanvasInteractionEffect> {
     let mut emitted = Vec::new();
     loop {
-        let (queries, effects, _, _) = update.into_parts();
+        let dispatch = update.into_dispatch();
+        let queries = dispatch.queries;
+        let effects = dispatch.pre_query_effects;
         emitted.extend(effects);
         let mut queries = queries.into_iter();
         let Some(CanvasInteractionQuery::ConnectionProbe { id, query, .. }) = queries.next() else {
@@ -1109,8 +1115,7 @@ fn publish_trace_geometry(view: &ViewSession, ids: TraceGraphIds, anchors: Trace
 }
 
 fn normalized_position(view: &ViewSession, point: ViewPoint) -> InteractionPosition {
-    let canvas = canvas_anchor(view, point);
-    InteractionPosition::new(point, canvas).unwrap()
+    InteractionPosition::from_view(point, view.viewport_transform().unwrap()).unwrap()
 }
 
 fn canvas_anchor(view: &ViewSession, point: ViewPoint) -> CanvasPoint {

@@ -1,3 +1,4 @@
+mod alignment;
 mod connection_queries;
 mod fanout;
 mod feedback_ordering;
@@ -7,6 +8,7 @@ mod geometry_publication;
 mod lifecycle;
 mod middleware;
 mod multi_view;
+mod node_drag;
 mod notifications;
 mod ownership;
 mod performance_contract;

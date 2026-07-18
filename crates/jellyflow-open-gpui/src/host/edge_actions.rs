@@ -225,7 +225,7 @@ impl OpenGpuiSceneHost {
             .scene_transform
             .or_else(|| self.view.viewport_transform().ok())?;
         let view = transform.screen_point_for_canvas(sample.point)?;
-        InteractionPosition::new(ViewPoint::new(view.x, view.y), sample.point)
+        InteractionPosition::from_view(ViewPoint::new(view.x, view.y), transform)
     }
 
     fn edge_endpoint_interaction_position(
@@ -244,7 +244,7 @@ impl OpenGpuiSceneHost {
             .scene_transform
             .or_else(|| self.view.viewport_transform().ok())?;
         let view = transform.screen_point_for_canvas(sample.point)?;
-        InteractionPosition::new(ViewPoint::new(view.x, view.y), sample.point)
+        InteractionPosition::from_view(ViewPoint::new(view.x, view.y), transform)
     }
 }
 

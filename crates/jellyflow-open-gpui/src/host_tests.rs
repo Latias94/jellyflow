@@ -1922,7 +1922,7 @@ fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_c
                     .selection()
                     .expect("selection after node press")
                     .nodes(),
-                [target, source],
+                [target],
             );
         });
 

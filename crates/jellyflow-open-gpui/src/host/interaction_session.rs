@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use jellyflow::core::{CanvasPoint, EdgeId, GroupId, NodeId};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
@@ -9,7 +10,6 @@ use jellyflow::runtime::{
     EdgePickQueryError, FreshGraphMutation, InteractionOwner, InteractionPosition,
     InteractionTerminalReason, InteractionTickDemand, InteractionTicketId, SelectionBaseline,
     SelectionMode, SelectionMutation, ViewPoint, ViewRect, ViewportMutation,
-    resolve_alignment_snap,
 };
 use open_gpui::{Context, Pixels, Point, Task, Window};
 
@@ -20,8 +20,6 @@ use crate::command_journal::{
 use crate::port_handle::projected_view_rect;
 
 use super::OpenGpuiSceneHost;
-
-const INTERACTION_TICK_SECONDS: f32 = 1.0 / 60.0;
 
 pub(super) struct PendingInteractionSubmission {
     ticket: InteractionTicketId,
@@ -56,8 +54,7 @@ impl OpenGpuiSceneHost {
         let transform = self
             .scene_transform
             .or_else(|| self.view.viewport_transform().ok())?;
-        let canvas = transform.canvas_point_at_screen(screen);
-        InteractionPosition::new(ViewPoint::new(screen.x, screen.y), canvas)
+        InteractionPosition::from_view(ViewPoint::new(screen.x, screen.y), transform)
     }
 
     pub(super) fn apply_canvas_interaction_update(
@@ -66,10 +63,14 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (queries, effects, damage, tick_demand) = update.into_parts();
+        let dispatch = update.into_dispatch();
+        let effects = dispatch.pre_query_effects;
+        let queries = dispatch.queries;
+        let damage = dispatch.damage;
+        let tick_demand = dispatch.tick_demand;
         let has_queries = !queries.is_empty();
         let has_effects = !effects.is_empty();
-        let mut has_damage = damage != Default::default();
+        let has_damage = damage != Default::default();
         let mut effects_succeeded = true;
         for effect in effects {
             if let Err(error) = self.apply_canvas_interaction_effect(effect, cx) {
@@ -86,62 +87,26 @@ impl OpenGpuiSceneHost {
                 ) {
                     let cancelled = self.canvas_interaction.cancel();
                     self.discard_pending_interaction_submission();
-                    self.queue_interaction_queries(cancelled.into_parts().0);
+                    self.queue_interaction_queries(cancelled.into_dispatch().queries);
                 }
                 break;
             }
         }
         if effects_succeeded {
-            has_damage |= self.refresh_node_alignment_snap();
             self.queue_interaction_queries(queries);
         }
         self.discard_orphaned_interaction_revalidation();
         self.sync_native_connection_state(window, cx);
-        if tick_demand == InteractionTickDemand::WhileActive
-            && (has_queries || has_effects || has_damage)
-        {
+        let should_continue_ticking = tick_demand == InteractionTickDemand::WhileActive
+            && (has_queries || has_effects || has_damage);
+        if should_continue_ticking {
             self.schedule_interaction_tick(window, cx);
+        } else {
+            self.last_interaction_tick_at = None;
         }
         if has_damage || !self.pending_interaction_queries.is_empty() {
             cx.notify();
         }
-    }
-
-    fn refresh_node_alignment_snap(&mut self) -> bool {
-        let Some(tolerance_in_view) = self.navigation.alignment_snap_tolerance_in_view() else {
-            return false;
-        };
-        let presentation = self.canvas_interaction.presentation();
-        let Some(drag) = presentation
-            .node_drag()
-            .filter(|drag| drag.ticket().is_none())
-        else {
-            return false;
-        };
-        let generation = drag.generation();
-        let moving_nodes = drag.nodes().to_vec();
-        let delta = drag.delta();
-        let Ok(transform) = self.view.viewport_transform() else {
-            return false;
-        };
-        let Ok(geometry) = self.view.geometry_snapshot() else {
-            return false;
-        };
-        let candidate_nodes = self
-            .mounts
-            .active_in_order()
-            .map(|(instance, _)| instance.node())
-            .collect::<Vec<_>>();
-        let snap = resolve_alignment_snap(
-            &geometry,
-            &moving_nodes,
-            &candidate_nodes,
-            delta,
-            tolerance_in_view / transform.zoom,
-        );
-        self.canvas_interaction
-            .apply_alignment_snap(generation, snap.delta(), snap.guides().iter().copied())
-            .is_ok_and(|update| update.damage() != Default::default())
     }
 
     fn apply_canvas_interaction_effect(
@@ -169,6 +134,11 @@ impl OpenGpuiSceneHost {
     ) {
         for query in queries {
             match &query {
+                CanvasInteractionQuery::AlignmentSnap { .. } => {
+                    self.pending_interaction_queries.retain(|queued| {
+                        !matches!(queued, CanvasInteractionQuery::AlignmentSnap { .. })
+                    })
+                }
                 CanvasInteractionQuery::ConnectionProbe { .. } => {
                     self.pending_interaction_queries.retain(|queued| {
                         !matches!(queued, CanvasInteractionQuery::ConnectionProbe { .. })
@@ -191,6 +161,15 @@ impl OpenGpuiSceneHost {
             return;
         };
         let update = match query {
+            CanvasInteractionQuery::AlignmentSnap { id, query, .. } => self
+                .view
+                .alignment_snap(query)
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| {
+                    self.canvas_interaction
+                        .resolve_alignment_snap(id, outcome)
+                        .map_err(|error| error.to_string())
+                }),
             CanvasInteractionQuery::ConnectionProbe { id, query, .. } => {
                 match self.view.connection_probe(query) {
                     Ok(outcome) => self
@@ -482,7 +461,7 @@ impl OpenGpuiSceneHost {
         settlement: CommandSettlement,
     ) {
         match self.canvas_interaction.settle(ticket, settlement) {
-            Ok(update) => self.queue_interaction_queries(update.into_parts().0),
+            Ok(update) => self.queue_interaction_queries(update.into_dispatch().queries),
             Err(error) => self.record_command_diagnostic(format!(
                 "failed to settle native canvas interaction: {error}"
             )),
@@ -529,7 +508,7 @@ impl OpenGpuiSceneHost {
         {
             self.discard_pending_interaction_submission();
         }
-        self.queue_interaction_queries(update.into_parts().0);
+        self.queue_interaction_queries(update.into_dispatch().queries);
     }
 
     fn record_prefix_barrier_failure(&mut self, error: OpenGpuiCommandPrefixBarrierError) {
@@ -588,6 +567,7 @@ impl OpenGpuiSceneHost {
                     marquee_selection_from_baseline(&baseline, intersecting, mode);
                 self.view.set_selection(nodes, edges, groups)
             }
+            SelectionMutation::Clear => self.view.set_selection(Vec::new(), Vec::new(), Vec::new()),
             SelectionMutation::Restore(baseline) => self.view.set_selection(
                 baseline.nodes().to_vec(),
                 baseline.edges().to_vec(),
@@ -616,6 +596,8 @@ impl OpenGpuiSceneHost {
             return;
         }
         self.interaction_tick_scheduled = true;
+        self.last_interaction_tick_at
+            .get_or_insert_with(Instant::now);
         let host = cx.weak_entity();
         window.on_next_frame(move |window, cx| {
             let Some(host) = host.upgrade() else {
@@ -623,17 +605,27 @@ impl OpenGpuiSceneHost {
             };
             host.update(cx, |host, cx| {
                 host.interaction_tick_scheduled = false;
+                let elapsed_seconds =
+                    interaction_elapsed_seconds(&mut host.last_interaction_tick_at, Instant::now());
                 let Some(viewport) = host.surface_size else {
+                    host.last_interaction_tick_at = None;
                     return;
                 };
                 let Ok(transform) = host.view.viewport_transform() else {
+                    host.last_interaction_tick_at = None;
                     return;
                 };
-                if let Ok(update) =
-                    host.canvas_interaction
-                        .tick(INTERACTION_TICK_SECONDS, viewport, transform)
+                match host
+                    .canvas_interaction
+                    .tick(elapsed_seconds, viewport, transform)
                 {
-                    host.apply_canvas_interaction_update(update, window, cx);
+                    Ok(update) => host.apply_canvas_interaction_update(update, window, cx),
+                    Err(error) => {
+                        host.last_interaction_tick_at = None;
+                        host.record_command_diagnostic(format!(
+                            "native canvas interaction tick failed: {error}"
+                        ));
+                    }
                 }
             });
         });
@@ -669,6 +661,13 @@ impl OpenGpuiSceneHost {
         let bounds = self.canvas_interaction.presentation().marquee()?;
         projected_view_rect(bounds, transform)
     }
+}
+
+fn interaction_elapsed_seconds(last_tick: &mut Option<Instant>, now: Instant) -> f32 {
+    let previous = last_tick.replace(now).unwrap_or(now);
+    now.saturating_duration_since(previous)
+        .as_secs_f32()
+        .max(f32::EPSILON)
 }
 
 struct InteractionEnqueueFailure {
@@ -771,6 +770,8 @@ fn marquee_selection_from_baseline(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -810,5 +811,22 @@ mod tests {
         assert_eq!(first.0, vec![retained, toggled_on]);
         assert_eq!(first.1, vec![retained_edge]);
         assert!(first.2.is_empty());
+    }
+
+    #[test]
+    fn interaction_clock_preserves_elapsed_time_at_common_refresh_rates() {
+        let start = Instant::now();
+        for frames_per_second in [30_u32, 60, 120] {
+            let mut last_tick = Some(start);
+            let mut accumulated = 0.0_f32;
+            for frame in 1..=frames_per_second {
+                let now = start + Duration::from_secs_f64(frame as f64 / frames_per_second as f64);
+                accumulated += interaction_elapsed_seconds(&mut last_tick, now);
+            }
+            assert!(
+                (accumulated - 1.0).abs() < 0.000_1,
+                "{frames_per_second}Hz accumulated {accumulated}s"
+            );
+        }
     }
 }

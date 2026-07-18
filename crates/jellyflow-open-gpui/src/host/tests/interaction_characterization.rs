@@ -290,7 +290,7 @@ fn hold_released_connection_at_adapter_boundary(
             .canvas_interaction
             .release(position)
             .expect("release active connection");
-        host.queue_interaction_queries(release.into_parts().0);
+        host.queue_interaction_queries(release.into_dispatch().queries);
 
         let mut pending = host
             .pending_interaction_queries
@@ -315,7 +315,9 @@ fn hold_released_connection_at_adapter_boundary(
                 .canvas_interaction
                 .resolve_connection_probe(id, outcome)
                 .expect("apply connection probe result");
-            let (queries, effects, _, _) = update.into_parts();
+            let dispatch = update.into_dispatch();
+            let queries = dispatch.queries;
+            let effects = dispatch.pre_query_effects;
 
             if host.interaction_presentation().phase()
                 == jellyflow::runtime::CanvasInteractionPhase::Committing

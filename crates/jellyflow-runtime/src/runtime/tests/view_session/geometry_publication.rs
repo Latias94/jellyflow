@@ -835,15 +835,15 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     )
     .unwrap();
     let pointer_in_view = ViewPoint::new(440.0, 118.0);
-    let pointer_in_canvas = session
-        .viewport_transform()
+    let pointer =
+        InteractionPosition::from_view(pointer_in_view, session.viewport_transform().unwrap())
+            .unwrap();
+    let dispatch = interaction
+        .request_edge_pick(pointer)
         .unwrap()
-        .canvas_point_at_screen(CanvasPoint {
-            x: pointer_in_view.x,
-            y: pointer_in_view.y,
-        });
-    let pointer = InteractionPosition::new(pointer_in_view, pointer_in_canvas).unwrap();
-    let (mut queries, effects, _, _) = interaction.request_edge_pick(pointer).unwrap().into_parts();
+        .into_dispatch();
+    let mut queries = dispatch.queries;
+    let effects = dispatch.pre_query_effects;
     assert!(effects.is_empty());
     let CanvasInteractionQuery::EdgePick { id, query } = queries.remove(0) else {
         panic!("idle pointer movement must request one edge pick");

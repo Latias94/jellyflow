@@ -38,6 +38,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
@@ -137,6 +138,7 @@ pub struct OpenGpuiSceneHost {
         OpenGpuiCommandPrefixBarrierResult,
     )>,
     interaction_tick_scheduled: bool,
+    last_interaction_tick_at: Option<Instant>,
     connection_owner: Option<MountedConnectionOwner>,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
@@ -229,6 +231,7 @@ impl OpenGpuiSceneHost {
             pending_interaction_submission: None,
             ready_interaction_prefixes: VecDeque::new(),
             interaction_tick_scheduled: false,
+            last_interaction_tick_at: None,
             connection_owner: None,
             scene_origin: None,
             scene_transform: None,

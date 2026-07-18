@@ -1,6 +1,7 @@
 //! Framework logical-pixel coordinates reported by native layout systems.
 
 use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize};
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::geometry::HandlePosition;
 use crate::runtime::viewport::ViewportTransform;
@@ -21,7 +22,7 @@ impl ViewPoint {
         self.x.is_finite() && self.y.is_finite()
     }
 
-    pub(crate) fn to_canvas_point(self, transform: ViewportTransform) -> Option<CanvasPoint> {
+    pub fn to_canvas_point(self, transform: ViewportTransform) -> Option<CanvasPoint> {
         if !self.is_finite() || !transform.is_valid() {
             return None;
         }
@@ -30,6 +31,34 @@ impl ViewPoint {
             y: self.y,
         });
         point.is_finite().then_some(point)
+    }
+}
+
+/// A displacement in framework view-space logical pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewDelta {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl ViewDelta {
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    pub fn between(start: ViewPoint, current: ViewPoint) -> Self {
+        Self {
+            x: current.x - start.x,
+            y: current.y - start.y,
+        }
+    }
+
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.x == 0.0 && self.y == 0.0
     }
 }
 
