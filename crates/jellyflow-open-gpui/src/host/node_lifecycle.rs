@@ -16,9 +16,13 @@ use crate::binding::{
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::{OpenGpuiPortDragCancelReason, OpenGpuiSceneGestureCancelReason};
 use crate::node_drag_handle::OpenGpuiNodeDragHandle;
-use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPendingMeasurements};
-use crate::registry::OpenGpuiNodeMountOutcome;
-use crate::semantic_zoom::OpenGpuiSemanticZoomState;
+use crate::port_handle::{
+    OpenGpuiGraphPresentationSource, OpenGpuiMeasurementSink, OpenGpuiPendingMeasurements,
+};
+use crate::registry::{OpenGpuiNodeMountOutcome, OpenGpuiNodeRegistrationPolicy};
+use crate::scale_policy::OpenGpuiNodeScaleState;
+use crate::semantic_zoom::{OpenGpuiNodePresentation, OpenGpuiSemanticZoomState};
+use crate::size_policy::{OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeState};
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnosticKind, binding_diagnostic, mount_diagnostic};
@@ -33,6 +37,10 @@ pub(super) struct MountedNode {
     pub(super) measurement: OpenGpuiMeasurementSink,
     pub(super) focus: FocusHandle,
     pub(super) semantic_zoom: OpenGpuiSemanticZoomState,
+    pub(super) registration_policy: OpenGpuiNodeRegistrationPolicy,
+    pub(super) scale_state: OpenGpuiNodeScaleState,
+    pub(super) size_state: OpenGpuiNodeSizeState,
+    pub(super) content_epoch: u64,
     binding_revision: jellyflow::runtime::GraphRevision,
     pub(super) bounds: CanvasRect,
     pub(super) accessible_name: String,
@@ -53,6 +61,22 @@ impl MountedNodeContentKind {
 }
 
 impl MountedNode {
+    pub(super) fn graph_presentation(&self) -> OpenGpuiNodePresentation {
+        OpenGpuiNodePresentation::from_scale_state(self.scale_state)
+    }
+
+    pub(super) fn graph_measurement_source(&self) -> OpenGpuiGraphPresentationSource {
+        match self.graph_presentation() {
+            OpenGpuiNodePresentation::Detail => OpenGpuiGraphPresentationSource::Detail,
+            OpenGpuiNodePresentation::Overview => OpenGpuiGraphPresentationSource::Overview,
+        }
+    }
+
+    pub(super) fn has_interaction_island(&self) -> bool {
+        self.graph_presentation() == OpenGpuiNodePresentation::Overview
+            && self.activity.requires_interaction_island()
+    }
+
     pub(super) fn revoke(self) {
         self.mount.revoke();
         self.activity.revoke_all();
@@ -156,6 +180,7 @@ impl OpenGpuiSceneHost {
         &mut self,
         frame: &[FrameNode],
         document_epoch: jellyflow::runtime::DocumentEpoch,
+        zoom: f32,
         measurements: &Rc<OpenGpuiPendingMeasurements>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -184,10 +209,14 @@ impl OpenGpuiSceneHost {
                 .remove(&key)
                 .or_else(|| self.mounts.restore(&key));
             let mounted = match retained {
-                Some(mounted) => self.reconcile_binding(mounted, frame_node, cx),
-                None => self.mount_node(frame_node, window, cx),
+                Some(mounted) => self.reconcile_binding(mounted, frame_node, zoom, cx),
+                None => self.mount_node(frame_node, zoom, window, cx),
             };
-            if let Err(error) = mounted.measurement.activate(measurements) {
+            if let Err(error) = mounted.measurement.activate(
+                measurements,
+                mounted.graph_measurement_source(),
+                mounted.content_epoch,
+            ) {
                 self.record_measurement_failure(error);
             }
             if let Some(evicted) = self.mounts.insert_active(key, mounted) {
@@ -217,9 +246,17 @@ impl OpenGpuiSceneHost {
         &mut self,
         mut mounted: MountedNode,
         frame: &FrameNode,
+        zoom: f32,
         cx: &mut Context<Self>,
     ) -> MountedNode {
+        let previous_size = mounted.semantic_zoom.canonical_size();
         mounted.semantic_zoom.reconcile(frame, &self.catalog);
+        if mounted.semantic_zoom.canonical_size() != previous_size {
+            mounted.content_epoch = mounted.content_epoch.saturating_add(1);
+        }
+        mounted
+            .scale_state
+            .reconcile(mounted.registration_policy.scale_policy(), zoom);
         mounted.bounds = CanvasRect {
             origin: mounted.semantic_zoom.canonical_origin(),
             size: mounted.semantic_zoom.canonical_size(),
@@ -334,6 +371,9 @@ impl OpenGpuiSceneHost {
         {
             return Ok(false);
         }
+        if let Some(mounted) = self.mounts.get_mut(instance) {
+            mounted.content_epoch = mounted.content_epoch.saturating_add(1);
+        }
         let invalidated = self.view.invalidate_node_layout(instance)?;
         if invalidated {
             cx.notify();
@@ -344,6 +384,7 @@ impl OpenGpuiSceneHost {
     fn mount_node(
         &mut self,
         frame: &FrameNode,
+        zoom: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> MountedNode {
@@ -378,7 +419,7 @@ impl OpenGpuiSceneHost {
         let accessible_name = self.accessible_node_name(frame);
         let semantic_zoom = OpenGpuiSemanticZoomState::from_frame(frame, &self.catalog);
 
-        let (view, content_kind, binding) = match snapshot {
+        let (view, content_kind, binding, registration_policy) = match snapshot {
             Ok(snapshot) => {
                 self.stats.binding_snapshot_builds =
                     self.stats.binding_snapshot_builds.saturating_add(1);
@@ -393,9 +434,9 @@ impl OpenGpuiSceneHost {
                         cx,
                     )
                 });
-                let (view, content_kind) =
+                let (view, content_kind, registration_policy) =
                     self.mount_registered_or_fallback(frame, binding.clone(), window, cx);
-                (view, content_kind, Some(binding))
+                (view, content_kind, Some(binding), registration_policy)
             }
             Err(error) => {
                 let diagnostic = binding_diagnostic(frame, error);
@@ -405,9 +446,16 @@ impl OpenGpuiSceneHost {
                     view,
                     MountedNodeContentKind::Diagnostic(OpenGpuiSceneHostDiagnosticKind::Binding),
                     None,
+                    OpenGpuiNodeRegistrationPolicy::default(),
                 )
             }
         };
+        let scale_state = OpenGpuiNodeScaleState::new(registration_policy.scale_policy(), zoom);
+        let size_state = OpenGpuiNodeSizeState::new(
+            OpenGpuiNodeSizeEpoch::new(0, self.adapter_environment_epoch),
+            semantic_zoom.canonical_size(),
+        )
+        .expect("frame geometry always has a positive finite canonical node size");
 
         MountedNode {
             view,
@@ -421,6 +469,10 @@ impl OpenGpuiSceneHost {
                 size: semantic_zoom.canonical_size(),
             },
             semantic_zoom,
+            registration_policy,
+            scale_state,
+            size_state,
+            content_epoch: 0,
             binding_revision: frame.binding_revision(),
             accessible_name,
             selected: frame.selected(),
@@ -444,15 +496,19 @@ impl OpenGpuiSceneHost {
         binding: Entity<OpenGpuiNodeBinding>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyView, MountedNodeContentKind) {
+    ) -> (
+        AnyView,
+        MountedNodeContentKind,
+        OpenGpuiNodeRegistrationPolicy,
+    ) {
         let renderer_key = frame.renderer().key();
         match self
             .registry
             .mount(renderer_key, binding.clone(), window, cx)
         {
-            OpenGpuiNodeMountOutcome::Mounted(view) => {
+            OpenGpuiNodeMountOutcome::Mounted { view, policy } => {
                 self.clear_matching_factory_diagnostic(frame);
-                (view, MountedNodeContentKind::Renderer)
+                (view, MountedNodeContentKind::Renderer, policy)
             }
             OpenGpuiNodeMountOutcome::Invalid(issue) => {
                 let diagnostic = mount_diagnostic(
@@ -467,6 +523,7 @@ impl OpenGpuiSceneHost {
                     MountedNodeContentKind::Diagnostic(
                         OpenGpuiSceneHostDiagnosticKind::InvalidRendererRegistration,
                     ),
+                    OpenGpuiNodeRegistrationPolicy::default(),
                 )
             }
             OpenGpuiNodeMountOutcome::Missing => {
@@ -482,6 +539,7 @@ impl OpenGpuiSceneHost {
                     MountedNodeContentKind::Diagnostic(
                         OpenGpuiSceneHostDiagnosticKind::MissingRenderer,
                     ),
+                    OpenGpuiNodeRegistrationPolicy::default(),
                 )
             }
             OpenGpuiNodeMountOutcome::FactoryFailed(error) => {
@@ -497,6 +555,7 @@ impl OpenGpuiSceneHost {
                     MountedNodeContentKind::Diagnostic(
                         OpenGpuiSceneHostDiagnosticKind::FactoryFailure,
                     ),
+                    OpenGpuiNodeRegistrationPolicy::default(),
                 )
             }
         }

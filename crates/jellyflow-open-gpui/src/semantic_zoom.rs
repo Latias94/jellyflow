@@ -4,29 +4,24 @@ use jellyflow::runtime::schema::NodeCatalog;
 use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px};
 
 use crate::binding::OpenGpuiNodeBinding;
+use crate::scale_policy::{OpenGpuiNodeScaleBand, OpenGpuiNodeScalePolicy, OpenGpuiNodeScaleState};
 use crate::theme::OpenGpuiGraphTheme;
 
 pub(crate) const OPEN_GPUI_OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
-const NATIVE_DETAIL_ZOOM_THRESHOLD: f32 = 1.0;
 const MAX_OVERVIEW_MARKER_DIAMETER: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum OpenGpuiNodePresentation {
-    Native,
+    Detail,
     Overview,
 }
 
 impl OpenGpuiNodePresentation {
-    pub(crate) fn for_zoom(zoom: f32, protected_leases: usize) -> Self {
-        if zoom < NATIVE_DETAIL_ZOOM_THRESHOLD && protected_leases == 0 {
-            Self::Overview
-        } else {
-            Self::Native
+    pub(crate) const fn from_scale_state(state: OpenGpuiNodeScaleState) -> Self {
+        match state.band() {
+            OpenGpuiNodeScaleBand::Detail => Self::Detail,
+            OpenGpuiNodeScaleBand::Overview => Self::Overview,
         }
-    }
-
-    pub(crate) fn is_native(self) -> bool {
-        self == Self::Native
     }
 }
 
@@ -73,11 +68,12 @@ impl OpenGpuiSemanticZoomState {
         &self,
         zoom: f32,
         presentation: OpenGpuiNodePresentation,
+        scale_policy: OpenGpuiNodeScalePolicy,
     ) -> CanvasSize {
-        let scale = if presentation.is_native() {
-            zoom.max(NATIVE_DETAIL_ZOOM_THRESHOLD)
-        } else {
-            zoom
+        let scale = match (presentation, scale_policy) {
+            (OpenGpuiNodePresentation::Overview, _)
+            | (OpenGpuiNodePresentation::Detail, OpenGpuiNodeScalePolicy::ComponentManaged) => zoom,
+            (OpenGpuiNodePresentation::Detail, OpenGpuiNodeScalePolicy::SemanticLod(_)) => 1.0,
         };
         CanvasSize {
             width: self.canonical_size.width * scale,
@@ -154,7 +150,9 @@ impl OpenGpuiSemanticZoomState {
             else {
                 continue;
             };
-            let handle = handle.with_minimum_hit_diameter(theme.metrics.port_hit_diameter);
+            let handle = handle
+                .for_host_overview()
+                .with_minimum_hit_diameter(theme.metrics.port_hit_diameter);
             let marker_color = match port.direction {
                 PortDirection::In => theme.palette.edge_data,
                 PortDirection::Out => theme.palette.edge_control,
@@ -242,7 +240,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_and_screen_size_preserve_native_detail_without_scaling_subtrees() {
+    fn semantic_detail_stays_native_while_overview_tracks_canvas_zoom() {
         let state = OpenGpuiSemanticZoomState {
             canonical_origin: CanvasPoint::default(),
             canonical_size: CanvasSize {
@@ -252,23 +250,39 @@ mod tests {
             ports: Vec::new(),
         };
 
-        let overview = OpenGpuiNodePresentation::for_zoom(0.5, 0);
-        assert_eq!(overview, OpenGpuiNodePresentation::Overview);
         assert_eq!(
-            state.screen_size(0.5, overview),
+            state.screen_size(
+                0.5,
+                OpenGpuiNodePresentation::Overview,
+                OpenGpuiNodeScalePolicy::default(),
+            ),
             CanvasSize {
                 width: 110.0,
                 height: 60.0,
             },
         );
 
-        let protected = OpenGpuiNodePresentation::for_zoom(0.5, 1);
-        assert_eq!(protected, OpenGpuiNodePresentation::Native);
         assert_eq!(
-            state.screen_size(0.5, protected),
+            state.screen_size(
+                0.5,
+                OpenGpuiNodePresentation::Detail,
+                OpenGpuiNodeScalePolicy::default(),
+            ),
             CanvasSize {
                 width: 220.0,
                 height: 120.0,
+            },
+        );
+
+        assert_eq!(
+            state.screen_size(
+                0.5,
+                OpenGpuiNodePresentation::Detail,
+                OpenGpuiNodeScalePolicy::ComponentManaged,
+            ),
+            CanvasSize {
+                width: 110.0,
+                height: 60.0,
             },
         );
     }

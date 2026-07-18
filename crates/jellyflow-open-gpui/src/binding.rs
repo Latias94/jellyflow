@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 use jellyflow::core::{Node, NodeId, Port, PortDirection, PortId};
 use jellyflow::runtime::GraphSnapshot;
+use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
     FrameNode, GraphCommand, GraphRevision, NodeInstanceKey, PortConnectionFacts, ViewSessionError,
     WeakViewSession,
 };
-use open_gpui::{App, Context, FocusHandle};
+use open_gpui::{AnyElement, App, Context, FocusHandle, IntoElement};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::command_journal::{
@@ -228,6 +229,15 @@ impl OpenGpuiNodeBindingRead {
         self.snapshot.revision()
     }
 
+    /// Returns the current view transform for a component-managed scale policy.
+    ///
+    /// The host does not synthesize arbitrary subtree transforms. A renderer that opts into
+    /// component-managed scaling uses this value to choose coherent native metrics itself.
+    pub fn viewport_transform(&self) -> Result<ViewportTransform, OpenGpuiNodeBindingReadError> {
+        self.ensure_current_instance()?;
+        self.view.viewport_transform().map_err(Into::into)
+    }
+
     pub fn node(&self) -> &Node {
         self.snapshot
             .graph()
@@ -349,6 +359,15 @@ impl OpenGpuiNodeBinding {
     #[must_use]
     pub fn drag_handle(&self) -> OpenGpuiNodeDragHandle {
         self.drag_handle.clone()
+    }
+
+    /// Measures one native content root for a content-authoritative registration policy.
+    ///
+    /// The wrapped element is measured in native logical pixels before graph feedback is
+    /// submitted. The host never infers content size from its zoomed graph wrapper. Renderers
+    /// using document-authoritative size may omit this wrapper.
+    pub fn measure_content(&self, child: impl IntoElement) -> AnyElement {
+        self.measurement.measure_content(child)
     }
 
     /// Invalidates native geometry for this exact retained node instance.

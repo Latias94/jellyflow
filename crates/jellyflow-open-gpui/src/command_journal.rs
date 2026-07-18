@@ -7,12 +7,14 @@ use std::task::{Context, Poll, Waker};
 
 use jellyflow::runtime::{
     FeedbackCollector, FeedbackCollectorError, FeedbackReceipt, FeedbackSubmissionError,
-    GraphCommand, GraphCommandOutcome, GraphRuntimeError, ViewCloseReason, ViewCloseReceipt,
-    ViewSessionError,
+    GraphCommand, GraphCommandOutcome, GraphRuntimeError, NodeInstanceKey, ViewCloseReason,
+    ViewCloseReceipt, ViewSessionError,
 };
 use open_gpui::{App, EntityId};
 
 use jellyflow::runtime::InteractionTicketId;
+
+use crate::size_policy::OpenGpuiNodeSizeTicket;
 
 /// Maximum number of commands owned by one native host across its queue and in-flight batch.
 pub const OPEN_GPUI_COMMAND_JOURNAL_CAPACITY: usize = 256;
@@ -295,10 +297,16 @@ impl OpenGpuiCommandSink {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum OpenGpuiCommandOrigin {
     Binding,
-    Interaction { ticket: InteractionTicketId },
+    Interaction {
+        ticket: InteractionTicketId,
+    },
+    NodeSize {
+        instance: NodeInstanceKey,
+        ticket: OpenGpuiNodeSizeTicket,
+    },
 }
 
 struct OneShotCompletion<T> {
@@ -509,7 +517,6 @@ impl OpenGpuiCommandJournal {
             .ok_or(OpenGpuiCommandEnqueueError::IdentityExhausted)
     }
 
-    #[cfg(test)]
     pub(crate) fn enqueue_detached(
         &self,
         command: GraphCommand,

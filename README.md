@@ -96,6 +96,13 @@ and scroll areas need no Jellyflow wrapper. A native control builds a command fr
 read, enqueues it into the host's ordered feedback journal, and observes the eventual receipt
 through a one-shot ticket; it does not synchronously mutate the runtime during render.
 
+Renderer registration also selects explicit scale and size authority. The default semantic LOD
+keeps arbitrary controls at native metrics, switches to canonical overview with hysteresis, and
+uses a graph-inert interaction island for active focus, IME, or overlays. Continuous scaling is an
+explicit component-managed responsibility. Document size remains the default; Dify-style growing
+nodes opt into `ContentHeight`, wrap one 1:1 root with `binding.measure_content`, and converge through
+revisioned geometry commands rather than render-time mutation.
+
 See:
 
 - `examples/canvas-jellyflow`: retained workflow and typed shader nodes.

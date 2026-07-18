@@ -146,6 +146,7 @@ pub struct OpenGpuiSceneHost {
     graph_focus: OpenGpuiGraphFocusCoordinator,
     hovered_node: Option<jellyflow::core::NodeId>,
     document_epoch: Option<jellyflow::runtime::DocumentEpoch>,
+    adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
     terminal_window_cleanup_pending: bool,
     lifecycle_bridge: Option<HostLifecycleBridge>,
@@ -239,6 +240,7 @@ impl OpenGpuiSceneHost {
             graph_focus: OpenGpuiGraphFocusCoordinator::default(),
             hovered_node: None,
             document_epoch: None,
+            adapter_environment_epoch: 0,
             terminal_reason: None,
             terminal_window_cleanup_pending: false,
             lifecycle_bridge: None,
@@ -530,6 +532,7 @@ impl OpenGpuiSceneHost {
     ) -> Result<bool, ViewSessionError> {
         let changed = self.view.set_adapter_environment(environment)?;
         if changed {
+            self.adapter_environment_epoch = self.adapter_environment_epoch.saturating_add(1);
             cx.notify();
         }
         Ok(changed)
@@ -672,15 +675,17 @@ impl Render for OpenGpuiSceneHost {
             frame.nodes(),
             frame.transform(),
             presentation_offsets,
+            self.adapter_environment_epoch,
         ));
         self.reconcile_frame(
             frame.nodes(),
             frame.document_epoch(),
+            frame.transform().zoom,
             &measurements,
             window,
             cx,
         );
-        if let Err(error) = self.sync_binding_presentations(frame.transform().zoom, window, cx) {
+        if let Err(error) = self.sync_binding_presentations(window, cx) {
             self.record_feedback_failure(None, error.to_string());
         }
         self.interactions.schedule_pending_drain(window, cx);

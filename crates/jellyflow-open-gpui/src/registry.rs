@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, fmt};
 use open_gpui::{AnyView, App, Entity, Render, Window};
 
 use crate::binding::OpenGpuiNodeBinding;
+use crate::scale_policy::OpenGpuiNodeScalePolicy;
+use crate::size_policy::OpenGpuiNodeSizePolicy;
 
 type ErasedNodeFactory = dyn Fn(
         Entity<OpenGpuiNodeBinding>,
@@ -122,8 +124,51 @@ impl fmt::Display for OpenGpuiNodeRegistryConfigError {
 impl std::error::Error for OpenGpuiNodeRegistryConfigError {}
 
 enum PendingRegistration {
-    Factory(Box<ErasedNodeFactory>),
+    Renderer(OpenGpuiNodeRendererRegistration),
     Invalid(OpenGpuiNodeRegistryIssueKind),
+}
+
+struct OpenGpuiNodeRendererRegistration {
+    factory: Box<ErasedNodeFactory>,
+    policy: OpenGpuiNodeRegistrationPolicy,
+}
+
+/// Host policy attached to one native renderer registration.
+///
+/// This is graph-adapter metadata, not a widget DSL. The registered entity remains an arbitrary
+/// Open GPUI component tree and owns its native controls, layout, and paint.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OpenGpuiNodeRegistrationPolicy {
+    scale: OpenGpuiNodeScalePolicy,
+    size: OpenGpuiNodeSizePolicy,
+}
+
+impl OpenGpuiNodeRegistrationPolicy {
+    /// Replaces the adapter's level-of-detail authority for this renderer.
+    #[must_use]
+    pub const fn with_scale_policy(mut self, scale: OpenGpuiNodeScalePolicy) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Replaces the graph-document size authority for this renderer.
+    #[must_use]
+    pub const fn with_size_policy(mut self, size: OpenGpuiNodeSizePolicy) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Returns the registered level-of-detail authority.
+    #[must_use]
+    pub const fn scale_policy(self) -> OpenGpuiNodeScalePolicy {
+        self.scale
+    }
+
+    /// Returns the registered node-size authority.
+    #[must_use]
+    pub const fn size_policy(self) -> OpenGpuiNodeSizePolicy {
+        self.size
+    }
 }
 
 /// Mutable construction phase for a host-scoped Open GPUI node registry.
@@ -143,10 +188,28 @@ impl OpenGpuiNodeRegistryBuilder {
         F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
         V: Render + 'static,
     {
+        self.register_with_policy(
+            renderer_key,
+            OpenGpuiNodeRegistrationPolicy::default(),
+            factory,
+        );
+    }
+
+    /// Registers a retained entity factory with explicit adapter scale and size policy.
+    pub fn register_with_policy<K, F, V>(
+        &mut self,
+        renderer_key: K,
+        policy: OpenGpuiNodeRegistrationPolicy,
+        factory: F,
+    ) where
+        K: Into<String>,
+        F: Fn(Entity<OpenGpuiNodeBinding>, &mut Window, &mut App) -> Entity<V> + 'static,
+        V: Render + 'static,
+    {
         let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
             Ok(AnyView::from(factory(binding, window, cx)))
         });
-        self.insert(renderer_key.into(), factory);
+        self.insert(renderer_key.into(), factory, policy);
     }
 
     /// Registers a retained entity factory that can report a recoverable mount failure.
@@ -164,13 +227,41 @@ impl OpenGpuiNodeRegistryBuilder {
             + 'static,
         V: Render + 'static,
     {
+        self.try_register_with_policy(
+            renderer_key,
+            OpenGpuiNodeRegistrationPolicy::default(),
+            factory,
+        );
+    }
+
+    /// Registers a fallible retained factory with explicit adapter scale and size policy.
+    pub fn try_register_with_policy<K, F, V>(
+        &mut self,
+        renderer_key: K,
+        policy: OpenGpuiNodeRegistrationPolicy,
+        factory: F,
+    ) where
+        K: Into<String>,
+        F: Fn(
+                Entity<OpenGpuiNodeBinding>,
+                &mut Window,
+                &mut App,
+            ) -> Result<Entity<V>, OpenGpuiNodeMountError>
+            + 'static,
+        V: Render + 'static,
+    {
         let factory = Box::new(move |binding, window: &mut Window, cx: &mut App| {
             factory(binding, window, cx).map(AnyView::from)
         });
-        self.insert(renderer_key.into(), factory);
+        self.insert(renderer_key.into(), factory, policy);
     }
 
-    fn insert(&mut self, renderer_key: String, factory: Box<ErasedNodeFactory>) {
+    fn insert(
+        &mut self,
+        renderer_key: String,
+        factory: Box<ErasedNodeFactory>,
+        policy: OpenGpuiNodeRegistrationPolicy,
+    ) {
         if renderer_key.trim().is_empty() {
             self.registrations.insert(
                 renderer_key,
@@ -181,7 +272,9 @@ impl OpenGpuiNodeRegistryBuilder {
 
         match self.registrations.entry(renderer_key) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(PendingRegistration::Factory(factory));
+                entry.insert(PendingRegistration::Renderer(
+                    OpenGpuiNodeRendererRegistration { factory, policy },
+                ));
             }
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 entry.insert(PendingRegistration::Invalid(
@@ -199,15 +292,15 @@ impl OpenGpuiNodeRegistryBuilder {
     /// prevents sealing. Duplicate non-empty keys remain isolated invalid entries in the sealed
     /// registry; when sealing also fails, they are included in the aggregate diagnostic.
     pub fn seal(self) -> Result<OpenGpuiNodeRegistry, OpenGpuiNodeRegistryConfigError> {
-        let mut factories = BTreeMap::new();
+        let mut renderers = BTreeMap::new();
         let mut invalid = BTreeMap::new();
         let mut issues = Vec::new();
         let mut prevents_seal = false;
 
         for (renderer_key, registration) in self.registrations {
             match registration {
-                PendingRegistration::Factory(factory) => {
-                    factories.insert(renderer_key, factory);
+                PendingRegistration::Renderer(renderer) => {
+                    renderers.insert(renderer_key, renderer);
                 }
                 PendingRegistration::Invalid(kind) => {
                     let issue = OpenGpuiNodeRegistryIssue { renderer_key, kind };
@@ -225,14 +318,14 @@ impl OpenGpuiNodeRegistryBuilder {
         if prevents_seal {
             Err(OpenGpuiNodeRegistryConfigError { issues })
         } else {
-            Ok(OpenGpuiNodeRegistry { factories, invalid })
+            Ok(OpenGpuiNodeRegistry { renderers, invalid })
         }
     }
 }
 
 /// A sealed, host-scoped registry of retained Open GPUI node factories.
 pub struct OpenGpuiNodeRegistry {
-    factories: BTreeMap<String, Box<ErasedNodeFactory>>,
+    renderers: BTreeMap<String, OpenGpuiNodeRendererRegistration>,
     invalid: BTreeMap<String, OpenGpuiNodeRegistryIssue>,
 }
 
@@ -246,19 +339,19 @@ impl OpenGpuiNodeRegistry {
     /// Returns the number of valid renderer factories.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.factories.len()
+        self.renderers.len()
     }
 
     /// Returns whether the registry has no valid renderer factories.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
+        self.renderers.is_empty()
     }
 
     /// Returns the sealed registration state for an exact renderer key.
     #[must_use]
     pub fn status(&self, renderer_key: &str) -> OpenGpuiRendererRegistrationStatus {
-        if self.factories.contains_key(renderer_key) {
+        if self.renderers.contains_key(renderer_key) {
             OpenGpuiRendererRegistrationStatus::Registered
         } else if let Some(issue) = self.invalid.get(renderer_key) {
             OpenGpuiRendererRegistrationStatus::Invalid(issue.kind())
@@ -277,19 +370,25 @@ impl OpenGpuiNodeRegistry {
         if let Some(issue) = self.invalid.get(renderer_key) {
             return OpenGpuiNodeMountOutcome::Invalid(issue.clone());
         }
-        let Some(factory) = self.factories.get(renderer_key) else {
+        let Some(renderer) = self.renderers.get(renderer_key) else {
             return OpenGpuiNodeMountOutcome::Missing;
         };
 
-        match factory(binding, window, cx) {
-            Ok(view) => OpenGpuiNodeMountOutcome::Mounted(view),
+        match (renderer.factory)(binding, window, cx) {
+            Ok(view) => OpenGpuiNodeMountOutcome::Mounted {
+                view,
+                policy: renderer.policy,
+            },
             Err(error) => OpenGpuiNodeMountOutcome::FactoryFailed(error),
         }
     }
 }
 
 pub(crate) enum OpenGpuiNodeMountOutcome {
-    Mounted(AnyView),
+    Mounted {
+        view: AnyView,
+        policy: OpenGpuiNodeRegistrationPolicy,
+    },
     Invalid(OpenGpuiNodeRegistryIssue),
     Missing,
     FactoryFailed(OpenGpuiNodeMountError),

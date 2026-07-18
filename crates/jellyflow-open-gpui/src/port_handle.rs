@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, NodeId, PortDirection, PortId};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
 use jellyflow::runtime::runtime::geometry::HandlePosition;
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
@@ -40,6 +40,13 @@ pub enum OpenGpuiPortSide {
     Right,
     Bottom,
     Left,
+}
+
+/// Capability identifying the sole graph-interactive node presentation for one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenGpuiGraphPresentationSource {
+    Detail,
+    Overview,
 }
 
 /// Route-anchor policy for a native port marker.
@@ -90,6 +97,7 @@ pub struct OpenGpuiPortHandle {
     focus_handle: Option<FocusHandle>,
     anchor: OpenGpuiPortAnchor,
     minimum_hit_diameter: f32,
+    source: OpenGpuiGraphPresentationSource,
     sink: OpenGpuiMeasurementSink,
 }
 
@@ -131,6 +139,7 @@ impl OpenGpuiPortHandle {
             focus_handle: None,
             anchor: OpenGpuiPortAnchor::default(),
             minimum_hit_diameter: OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
+            source: OpenGpuiGraphPresentationSource::Detail,
             sink,
         }
     }
@@ -235,18 +244,29 @@ impl OpenGpuiPortHandle {
         self
     }
 
+    pub(crate) fn for_host_overview(mut self) -> Self {
+        self.source = OpenGpuiGraphPresentationSource::Overview;
+        self
+    }
+
     /// Wraps an ordinary Open GPUI element and reports its post-layout bounds as this real port.
-    pub fn measure(&self, child: impl IntoElement) -> impl IntoElement {
+    pub fn measure(&self, child: impl IntoElement) -> AnyElement {
+        let child = child.into_any_element();
+        if !self.sink.admits(self.source) {
+            return child;
+        }
         OpenGpuiPortMeasurementElement {
             id: open_gpui_port_element_id(self.sink.host, &self.instance, self.port),
-            child: Some(child.into_any_element()),
+            child: Some(child),
             port: self.port,
             side: self.side,
             anchor: self.anchor,
             minimum_hit_diameter: self.minimum_hit_diameter,
             accessible_name: self.semantic_accessible_name(),
+            source: self.source,
             sink: self.sink.clone(),
         }
+        .into_any_element()
     }
 
     /// Wraps a native port marker with measurement, pointer targeting, capture, and typed events.
@@ -257,7 +277,11 @@ impl OpenGpuiPortHandle {
         &self,
         child: impl IntoElement,
         listener: impl Fn(OpenGpuiPortEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
+        let child = child.into_any_element();
+        if !self.sink.admits(self.source) {
+            return child;
+        }
         let interaction_enabled =
             self.interaction_enabled && !self.presentation.disabled() && self.sink.mount.is_live();
         let semantic_id = open_gpui_port_element_id(self.sink.host, &self.instance, self.port);
@@ -325,11 +349,13 @@ impl OpenGpuiPortHandle {
             anchor: self.anchor,
             interaction_enabled,
             minimum_hit_diameter: self.minimum_hit_diameter,
+            source: self.source,
             sink: self.sink.clone(),
             activity: self.sink.activity.clone(),
             coordinator: self.sink.interactions.clone(),
             listener,
         }
+        .into_any_element()
     }
 
     fn semantic_accessible_name(&self) -> String {
@@ -396,6 +422,7 @@ struct OpenGpuiPortMeasurementElement {
     anchor: OpenGpuiPortAnchor,
     minimum_hit_diameter: f32,
     accessible_name: String,
+    source: OpenGpuiGraphPresentationSource,
     sink: OpenGpuiMeasurementSink,
 }
 
@@ -434,6 +461,7 @@ impl Element for OpenGpuiPortMeasurementElement {
     ) {
         child.prepaint(window, cx);
         let _ = self.sink.record_port(
+            self.source,
             self.port,
             bounds,
             self.side,
@@ -480,6 +508,7 @@ struct OpenGpuiPortInteractionElement {
     anchor: OpenGpuiPortAnchor,
     interaction_enabled: bool,
     minimum_hit_diameter: f32,
+    source: OpenGpuiGraphPresentationSource,
     sink: OpenGpuiMeasurementSink,
     activity: OpenGpuiNodeActivityRegistry,
     coordinator: OpenGpuiInteractionCoordinator,
@@ -521,6 +550,7 @@ impl Element for OpenGpuiPortInteractionElement {
     ) -> Self::PrepaintState {
         child.prepaint(window, cx);
         let _ = self.sink.record_port(
+            self.source,
             self.owner.port(),
             bounds,
             self.side,
@@ -609,6 +639,73 @@ impl IntoElement for OpenGpuiPortInteractionElement {
     }
 }
 
+struct OpenGpuiContentMeasurementElement {
+    child: Option<AnyElement>,
+    sink: OpenGpuiMeasurementSink,
+}
+
+impl Element for OpenGpuiContentMeasurementElement {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut child = self
+            .child
+            .take()
+            .expect("content measurement child missing");
+        let layout_id = child.request_layout(window, cx);
+        (layout_id, child)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        child.prepaint(window, cx);
+        let _ = self.sink.record_content(bounds);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        child.paint(window, cx);
+    }
+}
+
+impl IntoElement for OpenGpuiContentMeasurementElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
 fn minimum_hit_pixel_bounds(bounds: Bounds<Pixels>, diameter: f32) -> Bounds<Pixels> {
     if !diameter.is_finite() || diameter <= 0.0 {
         return bounds;
@@ -669,6 +766,8 @@ impl OpenGpuiMeasurementSink {
     pub(crate) fn activate(
         &self,
         pending: &Rc<OpenGpuiPendingMeasurements>,
+        source: OpenGpuiGraphPresentationSource,
+        content_epoch: u64,
     ) -> Result<(), OpenGpuiMeasurementError> {
         if !self.mount.is_live() {
             return Err(OpenGpuiMeasurementError::Inactive {
@@ -681,12 +780,68 @@ impl OpenGpuiMeasurementSink {
                 .map_err(|_| OpenGpuiMeasurementError::Busy {
                     node: Some(self.instance.node()),
                 })?;
+        pending.activate(&self.instance, source, content_epoch)?;
         *current = Some(Rc::downgrade(pending));
         Ok(())
     }
 
+    fn admits(&self, source: OpenGpuiGraphPresentationSource) -> bool {
+        self.mount.is_live()
+            && self
+                .pending
+                .try_borrow()
+                .ok()
+                .and_then(|pending| pending.as_ref().and_then(Weak::upgrade))
+                .is_some_and(|pending| pending.admits(&self.instance, source))
+    }
+
+    pub(crate) fn measure_content(&self, child: impl IntoElement) -> AnyElement {
+        let child = child.into_any_element();
+        if !self.mount.is_live() {
+            return child;
+        }
+        OpenGpuiContentMeasurementElement {
+            child: Some(child),
+            sink: self.clone(),
+        }
+        .into_any_element()
+    }
+
+    fn record_content(&self, bounds: Bounds<Pixels>) -> Result<(), OpenGpuiMeasurementError> {
+        if !self.mount.is_live() {
+            return Err(OpenGpuiMeasurementError::Inactive {
+                node: self.instance.node(),
+            });
+        }
+        let result: Result<(), OpenGpuiMeasurementError> = (|| {
+            let pending = self
+                .pending
+                .try_borrow()
+                .map_err(|_| OpenGpuiMeasurementError::Busy {
+                    node: Some(self.instance.node()),
+                })?
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .ok_or(OpenGpuiMeasurementError::Inactive {
+                    node: self.instance.node(),
+                })?;
+            pending.record_content(
+                &self.instance,
+                CanvasSize {
+                    width: bounds.size.width.as_f32(),
+                    height: bounds.size.height.as_f32(),
+                },
+            )
+        })();
+        if let Err(error) = &result {
+            self.record_error(error.clone());
+        }
+        result
+    }
+
     fn record_port(
         &self,
+        source: OpenGpuiGraphPresentationSource,
         port: PortId,
         bounds: Bounds<Pixels>,
         side: OpenGpuiPortSide,
@@ -720,6 +875,7 @@ impl OpenGpuiMeasurementSink {
             )?;
             pending.record_port(
                 &self.instance,
+                source,
                 RawPortMeasurement {
                     port,
                     visual_bounds,
@@ -765,8 +921,11 @@ impl OpenGpuiMeasurementSink {
 struct PendingNodeMeasurement {
     frame_node: FrameNode,
     expected_ports: BTreeSet<PortId>,
+    source: Option<OpenGpuiGraphPresentationSource>,
+    content_epoch: u64,
     root: Option<ViewRect>,
     ports: BTreeMap<PortId, RawPortMeasurement>,
+    content_size: Option<CanvasSize>,
 }
 
 struct RawPortMeasurement {
@@ -783,6 +942,7 @@ pub(crate) struct OpenGpuiPendingMeasurements {
     transform: ViewportTransform,
     presentation_offsets: BTreeMap<NodeId, CanvasPoint>,
     scene_origin: Cell<Option<ViewPoint>>,
+    environment_epoch: u64,
     errors: RefCell<Vec<OpenGpuiMeasurementError>>,
     error_queue_busy: Cell<bool>,
 }
@@ -792,6 +952,7 @@ impl OpenGpuiPendingMeasurements {
         frame: &[FrameNode],
         transform: ViewportTransform,
         presentation_offsets: BTreeMap<NodeId, CanvasPoint>,
+        environment_epoch: u64,
     ) -> Self {
         let order = frame.iter().map(|node| node.instance().clone()).collect();
         let nodes = frame
@@ -802,8 +963,11 @@ impl OpenGpuiPendingMeasurements {
                     PendingNodeMeasurement {
                         frame_node: node.clone(),
                         expected_ports: node.ports().iter().map(|port| port.id()).collect(),
+                        source: None,
+                        content_epoch: 0,
                         root: None,
                         ports: BTreeMap::new(),
+                        content_size: None,
                     },
                 )
             })
@@ -814,6 +978,7 @@ impl OpenGpuiPendingMeasurements {
             transform,
             presentation_offsets,
             scene_origin: Cell::new(None),
+            environment_epoch,
             errors: RefCell::new(Vec::new()),
             error_queue_busy: Cell::new(false),
         }
@@ -834,6 +999,7 @@ impl OpenGpuiPendingMeasurements {
     pub(crate) fn record_root(
         &self,
         instance: &NodeInstanceKey,
+        source: OpenGpuiGraphPresentationSource,
         bounds: Bounds<Pixels>,
     ) -> Result<(), OpenGpuiMeasurementError> {
         let result: Result<(), OpenGpuiMeasurementError> = (|| {
@@ -849,6 +1015,9 @@ impl OpenGpuiPendingMeasurements {
                     .ok_or(OpenGpuiMeasurementError::UnknownInstance {
                         node: instance.node(),
                     })?;
+            if node.source != Some(source) {
+                return Ok(());
+            }
             node.root = Some(view_rect(bounds));
             Ok(())
         })();
@@ -861,6 +1030,7 @@ impl OpenGpuiPendingMeasurements {
     fn record_port(
         &self,
         instance: &NodeInstanceKey,
+        source: OpenGpuiGraphPresentationSource,
         measurement: RawPortMeasurement,
     ) -> Result<(), OpenGpuiMeasurementError> {
         let mut nodes =
@@ -874,6 +1044,9 @@ impl OpenGpuiPendingMeasurements {
             .ok_or(OpenGpuiMeasurementError::UnknownInstance {
                 node: instance.node(),
             })?;
+        if node.source != Some(source) {
+            return Ok(());
+        }
         if !node.expected_ports.contains(&measurement.port) {
             return Err(OpenGpuiMeasurementError::UnknownPort {
                 node: instance.node(),
@@ -882,6 +1055,80 @@ impl OpenGpuiPendingMeasurements {
         }
         node.ports.insert(measurement.port, measurement);
         Ok(())
+    }
+
+    fn activate(
+        &self,
+        instance: &NodeInstanceKey,
+        source: OpenGpuiGraphPresentationSource,
+        content_epoch: u64,
+    ) -> Result<(), OpenGpuiMeasurementError> {
+        let mut nodes =
+            self.nodes
+                .try_borrow_mut()
+                .map_err(|_| OpenGpuiMeasurementError::Busy {
+                    node: Some(instance.node()),
+                })?;
+        let node = nodes
+            .get_mut(instance)
+            .ok_or(OpenGpuiMeasurementError::UnknownInstance {
+                node: instance.node(),
+            })?;
+        node.source = Some(source);
+        node.content_epoch = content_epoch;
+        Ok(())
+    }
+
+    fn admits(&self, instance: &NodeInstanceKey, source: OpenGpuiGraphPresentationSource) -> bool {
+        self.nodes
+            .try_borrow()
+            .ok()
+            .and_then(|nodes| nodes.get(instance).map(|node| node.source))
+            .flatten()
+            == Some(source)
+    }
+
+    fn record_content(
+        &self,
+        instance: &NodeInstanceKey,
+        size: CanvasSize,
+    ) -> Result<(), OpenGpuiMeasurementError> {
+        if !size.is_positive_finite() {
+            return Err(OpenGpuiMeasurementError::InvalidContentBounds {
+                node: instance.node(),
+            });
+        }
+        let mut nodes =
+            self.nodes
+                .try_borrow_mut()
+                .map_err(|_| OpenGpuiMeasurementError::Busy {
+                    node: Some(instance.node()),
+                })?;
+        let node = nodes
+            .get_mut(instance)
+            .ok_or(OpenGpuiMeasurementError::UnknownInstance {
+                node: instance.node(),
+            })?;
+        node.content_size = Some(size);
+        Ok(())
+    }
+
+    pub(crate) fn environment_epoch(&self) -> u64 {
+        self.environment_epoch
+    }
+
+    pub(crate) fn content_sizes(&self) -> Vec<(NodeInstanceKey, u64, CanvasSize)> {
+        let Ok(nodes) = self.nodes.try_borrow() else {
+            return Vec::new();
+        };
+        self.order
+            .iter()
+            .filter_map(|instance| {
+                let node = nodes.get(instance)?;
+                node.content_size
+                    .map(|size| (instance.clone(), node.content_epoch, size))
+            })
+            .collect()
     }
 
     pub(crate) fn layouts(&self) -> Result<Vec<NodeLayout>, OpenGpuiMeasurementError> {
@@ -1006,6 +1253,8 @@ pub(crate) enum OpenGpuiMeasurementError {
     UnknownPort { node: NodeId, port: PortId },
     #[error("native measurement has invalid bounds for port {port:?} on node {node:?}")]
     InvalidPortBounds { node: NodeId, port: PortId },
+    #[error("native content measurement has invalid bounds for node {node:?}")]
+    InvalidContentBounds { node: NodeId },
     #[error("native measurement cannot project fallback bounds for node {node:?}")]
     UnprojectableRoot { node: NodeId },
     #[error("native measurement has invalid port coverage for node {node:?}: {source}")]
@@ -1024,6 +1273,7 @@ impl OpenGpuiMeasurementError {
             | Self::UnknownInstance { node }
             | Self::UnknownPort { node, .. }
             | Self::InvalidPortBounds { node, .. }
+            | Self::InvalidContentBounds { node }
             | Self::UnprojectableRoot { node }
             | Self::InvalidPortCoverage { node, .. } => Some(*node),
             Self::MissingSceneRoot => None,
@@ -1334,6 +1584,7 @@ mod tests {
             fallback.nodes(),
             fallback.transform(),
             BTreeMap::new(),
+            0,
         );
         measurements.record_scene(Bounds {
             origin: point(px(100.0), px(200.0)),

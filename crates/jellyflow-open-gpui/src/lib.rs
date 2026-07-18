@@ -19,7 +19,9 @@ mod node_drag_handle;
 mod port_handle;
 pub mod presentation;
 pub mod registry;
+mod scale_policy;
 mod semantic_zoom;
+mod size_policy;
 pub mod theme;
 
 pub use accessibility::{
@@ -71,9 +73,23 @@ pub use presentation::{
     OpenGpuiPortCandidateState, OpenGpuiPortInteractionState, OpenGpuiSettlementState,
 };
 pub use registry::{
-    OpenGpuiNodeMountError, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryBuilder,
-    OpenGpuiNodeRegistryConfigError, OpenGpuiNodeRegistryIssue, OpenGpuiNodeRegistryIssueKind,
-    OpenGpuiRendererRegistrationStatus,
+    OpenGpuiNodeMountError, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
+    OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRegistryConfigError, OpenGpuiNodeRegistryIssue,
+    OpenGpuiNodeRegistryIssueKind, OpenGpuiRendererRegistrationStatus,
+};
+pub use scale_policy::{
+    OPEN_GPUI_DEFAULT_DETAIL_ENTER_ZOOM, OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,
+    OpenGpuiNodeScaleBand, OpenGpuiNodeScalePolicy, OpenGpuiNodeScaleState,
+    OpenGpuiSemanticLodConfigError, OpenGpuiSemanticLodPolicy,
+};
+pub use size_policy::{
+    OPEN_GPUI_DEFAULT_MAX_CONTENT_SIZE, OPEN_GPUI_DEFAULT_MIN_CONTENT_SIZE,
+    OPEN_GPUI_DEFAULT_SIZE_ATTEMPT_BOUND, OPEN_GPUI_DEFAULT_SIZE_EPSILON,
+    OPEN_GPUI_DEFAULT_STABLE_SIZE_SAMPLES, OpenGpuiContentHeightPolicy, OpenGpuiContentSizePolicy,
+    OpenGpuiNodeSizeCommand, OpenGpuiNodeSizeConfigError, OpenGpuiNodeSizeConvergence,
+    OpenGpuiNodeSizeDiagnostic, OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeFreezeReason,
+    OpenGpuiNodeSizePolicy, OpenGpuiNodeSizeSettlement, OpenGpuiNodeSizeState,
+    OpenGpuiNodeSizeTicket, OpenGpuiNodeSizeUpdate,
 };
 pub use theme::{
     OPEN_GPUI_DEFAULT_EDGE_EMPHASIZED_WIDTH, OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,

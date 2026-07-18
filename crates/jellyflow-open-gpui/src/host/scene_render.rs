@@ -34,7 +34,10 @@ use crate::chrome::{
     OpenGpuiEdgePainterBatchKey, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeVisualState,
 };
 use crate::command_journal::{OpenGpuiCommandTicketError, resolve_command_tickets};
-use crate::interaction::{OpenGpuiGraphKeyListener, OpenGpuiSceneGestureKind, interaction_root};
+use crate::interaction::{
+    OpenGpuiGraphKeyListener, OpenGpuiOverlayInteractionBoundary, OpenGpuiSceneGestureKind,
+    interaction_root,
+};
 use crate::semantic_zoom::OpenGpuiNodePresentation;
 
 #[cfg(test)]
@@ -1137,13 +1140,10 @@ impl OpenGpuiSceneHost {
         let mut nodes = div().absolute().size_full();
         for pass in [
             OpenGpuiNodePresentation::Overview,
-            OpenGpuiNodePresentation::Native,
+            OpenGpuiNodePresentation::Detail,
         ] {
             for (key, mounted) in self.mounts.active_in_order() {
-                let presentation = OpenGpuiNodePresentation::for_zoom(
-                    transform.zoom,
-                    mounted.activity.protected_count(),
-                );
+                let presentation = mounted.graph_presentation();
                 if presentation != pass {
                     continue;
                 }
@@ -1156,9 +1156,11 @@ impl OpenGpuiSceneHost {
                 let origin = transform
                     .screen_point_for_canvas(bounds.origin)
                     .unwrap_or(bounds.origin);
-                let screen_size = mounted
-                    .semantic_zoom
-                    .screen_size(transform.zoom, presentation);
+                let screen_size = mounted.semantic_zoom.screen_size(
+                    transform.zoom,
+                    presentation,
+                    mounted.registration_policy.scale_policy(),
+                );
                 let overview_binding = mounted.binding.as_ref().map(|binding| binding.read(cx));
                 let overview_drag_handle =
                     overview_binding.map(|binding| binding.drag_handle().for_host_presentation());
@@ -1193,7 +1195,7 @@ impl OpenGpuiSceneHost {
                     }
                 }
                 let content = match presentation {
-                    OpenGpuiNodePresentation::Native => mounted.view.clone().into_any_element(),
+                    OpenGpuiNodePresentation::Detail => mounted.view.clone().into_any_element(),
                     OpenGpuiNodePresentation::Overview => {
                         let overview = mounted.semantic_zoom.overview_element(
                             overview_binding,
@@ -1319,15 +1321,41 @@ impl OpenGpuiSceneHost {
                     )
                 });
                 let instance = key.clone();
+                let source = mounted.graph_measurement_source();
                 let measurements = feedback.measurements.clone();
                 nodes = nodes.child(measured_element(
                     open_gpui_node_measurement_element_id(host_id, key),
                     child,
                     move |_, bounds, _, _, _| {
-                        let _ = measurements.record_root(&instance, bounds);
+                        let _ = measurements.record_root(&instance, source, bounds);
                     },
                 ));
             }
+        }
+        for (key, mounted) in self.mounts.active_in_order() {
+            if !mounted.has_interaction_island() {
+                continue;
+            }
+            let mut bounds = mounted.bounds;
+            if let Some(delta) = feedback.measurements.presentation_offset(key.node()) {
+                bounds.origin.x += delta.x;
+                bounds.origin.y += delta.y;
+            }
+            let origin = transform
+                .screen_point_for_canvas(bounds.origin)
+                .unwrap_or(bounds.origin);
+            let size = mounted.semantic_zoom.canonical_size();
+            nodes = nodes.child(
+                div()
+                    .absolute()
+                    .left(px(origin.x))
+                    .top(px(origin.y))
+                    .w(px(size.width))
+                    .h(px(size.height))
+                    .child(OpenGpuiOverlayInteractionBoundary::wrap(
+                        mounted.view.clone(),
+                    )),
+            );
         }
         nodes.into_any_element()
     }
@@ -1791,6 +1819,8 @@ impl OpenGpuiSceneHost {
                             host.take_prepaint_measurement_errors(&feedback.measurements);
                         let mut request_next_frame =
                             viewport_changed || feedback.requires_follow_up_frame();
+                        request_next_frame |=
+                            host.observe_content_measurements(&feedback.measurements);
                         let mut submission_panic = None;
                         match feedback.submit(&host.view) {
                             DeferredFeedbackSubmission::Submitted(receipt) => {

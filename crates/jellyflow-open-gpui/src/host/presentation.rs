@@ -14,7 +14,6 @@ use super::OpenGpuiSceneHost;
 impl OpenGpuiSceneHost {
     pub(super) fn sync_binding_presentations(
         &mut self,
-        zoom: f32,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<(), ViewSessionError> {
@@ -38,11 +37,11 @@ impl OpenGpuiSceneHost {
                 let node_focused = mounted.focus.contains_focused(window, cx);
                 let focused_ports = binding.read(cx);
                 let node = graph.graph().node(&instance.node())?;
-                let lod = match OpenGpuiNodePresentation::for_zoom(
-                    zoom,
-                    mounted.activity.protected_count(),
-                ) {
-                    OpenGpuiNodePresentation::Native => OpenGpuiNodeLod::Detail,
+                let lod = match mounted.graph_presentation() {
+                    OpenGpuiNodePresentation::Detail => OpenGpuiNodeLod::Detail,
+                    OpenGpuiNodePresentation::Overview if mounted.has_interaction_island() => {
+                        OpenGpuiNodeLod::InteractionIsland
+                    }
                     OpenGpuiNodePresentation::Overview => OpenGpuiNodeLod::Overview,
                 };
                 let node_pending = node_drag.as_ref().is_some_and(|drag| {

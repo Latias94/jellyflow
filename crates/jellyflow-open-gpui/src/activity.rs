@@ -31,6 +31,10 @@ impl OpenGpuiActivityKind {
             Self::Focus | Self::Ime | Self::PointerCapture | Self::GraphInteraction | Self::Overlay
         )
     }
+
+    fn requires_interaction_island(self) -> bool {
+        matches!(self, Self::Focus | Self::Ime | Self::Overlay)
+    }
 }
 
 /// Failure to acquire an activity lease.
@@ -220,6 +224,14 @@ impl OpenGpuiNodeActivityRegistry {
             .values()
             .filter(|entry| entry.kind.protects_retention())
             .count()
+    }
+
+    pub(crate) fn requires_interaction_island(&self) -> bool {
+        self.state
+            .borrow()
+            .entries
+            .values()
+            .any(|entry| entry.kind.requires_interaction_island())
     }
 
     pub fn is_active(&self, id: u64) -> bool {
