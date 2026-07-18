@@ -16,7 +16,7 @@ use crate::runtime::geometry::{
     CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
 };
 use crate::runtime::graph_runtime::{
-    GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
+    GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
 };
 use crate::runtime::policy::resolve_edge_policy;
 
@@ -594,7 +594,8 @@ pub(super) fn publish_layouts(
     state: &mut ViewState,
     snapshot: &GraphSnapshot,
     pending: &PendingFrame,
-    current_incarnations: &BTreeMap<NodeId, NodeIncarnation>,
+    current_node_facts: &BTreeMap<NodeId, (NodeIncarnation, IncidentEdgeSnapshot)>,
+    geometry_impact: &GeometryImpact,
     layouts: Vec<PendingLayout>,
     receipts: &mut [Option<FeedbackOperationReceipt>],
     global_stale: bool,
@@ -615,16 +616,27 @@ pub(super) fn publish_layouts(
     for pending_layout in layouts {
         let node = pending_layout.layout.node();
         let expected = pending.nodes.get(&node);
+        let impact_stale = expected.is_some_and(|expected| {
+            state.stats.layout_impact_candidates_checked = state
+                .stats
+                .layout_impact_candidates_checked
+                .saturating_add(1);
+            geometry_impact.affects_layout(
+                node,
+                expected.ports.iter().copied(),
+                expected.incident_edges.iter().copied(),
+            )
+        });
         let (status, candidate) = if node_layout_counts.get(&node).copied().unwrap_or_default() > 1
         {
             (LayoutNodeStatus::DuplicateNode, None)
-        } else if global_stale {
+        } else if global_stale || impact_stale {
             (LayoutNodeStatus::Stale, None)
         } else if let Some(expected) = expected {
             evaluate_layout_candidate(
                 state,
                 snapshot,
-                current_incarnations,
+                current_node_facts,
                 expected,
                 pending_layout.layout,
                 pending.sequence,
@@ -639,6 +651,10 @@ pub(super) fn publish_layouts(
             };
             (status, None)
         };
+        if impact_stale && status == LayoutNodeStatus::Stale {
+            state.stats.layout_impact_candidates_stale =
+                state.stats.layout_impact_candidates_stale.saturating_add(1);
+        }
 
         request_refresh |= status == LayoutNodeStatus::Stale;
         if let Some(candidate) = candidate {
@@ -675,6 +691,7 @@ pub(super) fn publish_layouts(
         route_edges.extend(incident_edges.iter().copied());
         published_nodes.push(node);
     }
+    let mut withdrew_geometry = false;
     for (node, incident_edges) in withdrawals {
         let expected_ports = pending
             .nodes
@@ -683,10 +700,19 @@ pub(super) fn publish_layouts(
             .into_iter()
             .flatten();
         if state.mark_node_geometry_stale(node, expected_ports) {
-            incident_work.materialize(&incident_edges);
-            route_edges.extend(incident_edges.iter().copied());
+            let mut affected_edges = incident_edges.as_ref().clone();
+            if let Some((_, current_incident_edges)) = current_node_facts.get(&node) {
+                affected_edges.extend(current_incident_edges.iter().copied());
+            }
+            incident_work.materialize(&affected_edges);
+            route_edges.extend(affected_edges);
             withdrawn_nodes.push(node);
+            withdrew_geometry = true;
         }
+    }
+    if withdrew_geometry && !geometry_impact.incident_edges().is_empty() {
+        incident_work.materialize(geometry_impact.incident_edges());
+        route_edges.extend(geometry_impact.incident_edges().iter().copied());
     }
 
     if request_refresh {
@@ -726,7 +752,7 @@ pub(super) fn publish_layouts(
 fn evaluate_layout_candidate(
     state: &ViewState,
     snapshot: &GraphSnapshot,
-    current_incarnations: &BTreeMap<NodeId, NodeIncarnation>,
+    current_node_facts: &BTreeMap<NodeId, (NodeIncarnation, IncidentEdgeSnapshot)>,
     expected: &ExpectedNodeLayout,
     layout: crate::runtime::adapter_protocol::NodeLayout,
     frame_sequence: u64,
@@ -744,7 +770,7 @@ fn evaluate_layout_candidate(
     {
         return (LayoutNodeStatus::Stale, None);
     }
-    let Some(incarnation) = current_incarnations.get(&node) else {
+    let Some((incarnation, _)) = current_node_facts.get(&node) else {
         return (LayoutNodeStatus::MissingNode, None);
     };
     if *incarnation != expected.incarnation

@@ -15,10 +15,11 @@ use jellyflow_runtime::schema::{
     NodeCatalog, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
 };
 use jellyflow_runtime::{
-    AdapterEnvironment, ConnectionEdit, Diagnostic, DiagnosticTarget, FeedbackCollector,
-    FrameRequest, GraphCommand, GraphProfile, GraphRuntime, GraphRuntimePolicy, HandlePosition,
-    IncidentEdgePolicy, NodeLayoutTarget, RendererStamp, TopologyEdit, TopologyPort, ViewPoint,
-    ViewRect, ViewSessionOptions, ViewSize, VisibleRouteQuery,
+    AdapterEnvironment, CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
+    ConnectionEdit, Diagnostic, DiagnosticTarget, EdgePickQuery, FeedbackCollector, FrameRequest,
+    GraphCommand, GraphProfile, GraphRuntime, GraphRuntimePolicy, HandlePosition,
+    IncidentEdgePolicy, InteractionPosition, NodeLayoutTarget, RendererStamp, TopologyEdit,
+    TopologyPort, ViewPoint, ViewRect, ViewSessionOptions, ViewSize, VisibleRouteQuery,
 };
 
 fn graph_with_one_port() -> (Graph, NodeId, PortId) {
@@ -182,6 +183,27 @@ fn graph_runtime_and_view_session_are_the_public_adapter_seam() {
         64,
     )
     .with_margin(24.0);
+    let _edge_pick = EdgePickQuery::new(ViewPoint::new(160.0, 186.0), 4.0, 64);
+    let mut interaction = CanvasInteractionSession::new(
+        view.id(),
+        view.generation().unwrap(),
+        CanvasInteractionConfig::default(),
+    )
+    .unwrap();
+    let position = InteractionPosition::new(
+        ViewPoint::new(160.0, 186.0),
+        CanvasPoint { x: 80.0, y: 93.0 },
+    )
+    .unwrap();
+    let edge_query = interaction.request_edge_pick(position).unwrap();
+    let (queries, effects, damage, tick_demand) = edge_query.into_parts();
+    assert!(matches!(
+        queries.as_slice(),
+        [CanvasInteractionQuery::EdgePick { .. }]
+    ));
+    assert!(effects.is_empty());
+    assert_eq!(damage, jellyflow_runtime::InteractionDamage::default());
+    assert_eq!(tick_demand, jellyflow_runtime::InteractionTickDemand::None);
 
     assert!(
         view.set_adapter_environment(AdapterEnvironment::new(2, 3, 4, 5))

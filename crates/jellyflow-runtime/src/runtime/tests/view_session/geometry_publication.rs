@@ -18,9 +18,15 @@ use crate::runtime::adapter_protocol::{
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::GraphRuntime;
+use crate::runtime::interaction::{
+    CanvasInteractionConfig, CanvasInteractionQuery, CanvasInteractionSession,
+    ConnectionGestureIntent, ConnectionProbe, InteractionPosition,
+};
 use crate::runtime::view_session::{
-    ViewSession, ViewSessionEvent, ViewSessionOptions, VisibleRouteCursorStaleReason,
-    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome,
+    ConnectionProbeQuery, ConnectionProbeQueryOutcome, EdgePickCursorStaleReason, EdgePickQuery,
+    EdgePickQueryError, EdgePickQueryOutcome, ViewSession, ViewSessionEvent, ViewSessionOptions,
+    VisibleRouteCursorStaleReason, VisibleRouteQuery, VisibleRouteQueryError,
+    VisibleRouteQueryOutcome,
 };
 
 use super::fixtures::{RoutedGraphIds, graph_with_nodes, graph_with_routed_edge, node};
@@ -662,6 +668,52 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
     assert!(route.facts().interaction.reconnect_target);
     assert_eq!(route.facts().hit_test.interaction_width, 18.0);
 
+    let intent = ConnectionGestureIntent::connect(
+        EdgeId::from_u128(0xfeed),
+        ids.alternate_source_port,
+        NodeGraphConnectionMode::Strict,
+    );
+    match session
+        .connection_probe(ConnectionProbeQuery::new(
+            intent,
+            ViewPoint::new(506.0, 118.0),
+            12.0,
+            64,
+        ))
+        .unwrap()
+    {
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Valid { target, .. },
+            work,
+        } => {
+            assert_eq!(target.port(), ids.target_port);
+            assert_eq!(work.policy_evaluations, 1);
+        }
+        other => panic!("published target port must be a valid candidate: {other:?}"),
+    }
+    match session
+        .connection_probe(ConnectionProbeQuery::new(
+            intent,
+            ViewPoint::new(386.0, 118.0),
+            12.0,
+            64,
+        ))
+        .unwrap()
+    {
+        ConnectionProbeQueryOutcome::Complete {
+            probe: ConnectionProbe::Invalid { diagnostics, .. },
+            work,
+        } => {
+            assert_eq!(work.policy_evaluations, 1);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.key == "connect.direction_mismatch")
+            );
+        }
+        other => panic!("same-direction port must remain an invalid candidate: {other:?}"),
+    }
+
     session
         .set_selection(Vec::new(), vec![ids.edge], Vec::new())
         .unwrap();
@@ -738,6 +790,68 @@ fn view_space_layout_uses_the_issued_transform_for_all_canvas_geometry() {
         }
         other => panic!("cached route query must complete: {other:?}"),
     }
+
+    let pick_cursor = match session
+        .edge_pick(EdgePickQuery::new(ViewPoint::new(440.0, 118.0), 0.0, 0))
+        .unwrap()
+    {
+        EdgePickQueryOutcome::Incomplete { cursor, work } => {
+            assert_eq!(work.entries_examined, 0);
+            cursor
+        }
+        other => panic!("zero-budget edge pick must be resumable: {other:?}"),
+    };
+    session
+        .set_selection(Vec::new(), vec![ids.edge], Vec::new())
+        .unwrap();
+    assert!(matches!(
+        session.edge_pick(EdgePickQuery::resume(pick_cursor, 64)),
+        Err(EdgePickQueryError::StaleCursor(
+            EdgePickCursorStaleReason::PaintOrder
+        ))
+    ));
+    session
+        .set_selection(Vec::new(), Vec::new(), Vec::new())
+        .unwrap();
+    match session
+        .edge_pick(EdgePickQuery::new(ViewPoint::new(440.0, 118.0), 0.0, 64))
+        .unwrap()
+    {
+        EdgePickQueryOutcome::Complete {
+            pick: Some(pick),
+            work,
+        } => {
+            assert_eq!(pick.edge(), ids.edge);
+            assert_eq!(pick.distance_in_view(), 0.0);
+            assert_eq!(work.exact_tests, 1);
+            assert_eq!(work.flatten_cache_hits, 1);
+        }
+        other => panic!("published route must be edge-pickable: {other:?}"),
+    }
+    let mut interaction = CanvasInteractionSession::new(
+        session.id(),
+        session.generation().unwrap(),
+        CanvasInteractionConfig::default(),
+    )
+    .unwrap();
+    let pointer_in_view = ViewPoint::new(440.0, 118.0);
+    let pointer_in_canvas = session
+        .viewport_transform()
+        .unwrap()
+        .canvas_point_at_screen(CanvasPoint {
+            x: pointer_in_view.x,
+            y: pointer_in_view.y,
+        });
+    let pointer = InteractionPosition::new(pointer_in_view, pointer_in_canvas).unwrap();
+    let (mut queries, effects, _, _) = interaction.request_edge_pick(pointer).unwrap().into_parts();
+    assert!(effects.is_empty());
+    let CanvasInteractionQuery::EdgePick { id, query } = queries.remove(0) else {
+        panic!("idle pointer movement must request one edge pick");
+    };
+    assert!(queries.is_empty());
+    let outcome = session.edge_pick(query).unwrap();
+    interaction.resolve_edge_pick(id, outcome).unwrap();
+    assert_eq!(interaction.presentation().hovered_edge(), Some(ids.edge));
     assert_eq!(
         session
             .nodes_intersecting(CanvasRect {

@@ -14,8 +14,8 @@ use crate::runtime::adapter_protocol::{
 };
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
-    DocumentEpoch, GraphRevision, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork,
-    NodeIncarnation,
+    DocumentEpoch, GeometryImpact, GraphRevision, GraphSnapshot, IncidentEdgeSnapshot,
+    IncidentSnapshotWork, NodeIncarnation, RuntimePatch,
 };
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume};
 use crate::runtime::viewport::ViewportTransform;
@@ -37,11 +37,46 @@ pub(super) struct ExpectedNodeLayout {
 pub(super) struct PendingFrame {
     pub(super) sequence: u64,
     pub(super) graph_revision: GraphRevision,
+    pub(super) impact_through_revision: GraphRevision,
+    pub(super) geometry_impact: GeometryImpact,
     pub(super) document_epoch: DocumentEpoch,
     pub(super) transform_revision: u64,
     pub(super) transform: ViewportTransform,
     pub(super) environment: AdapterEnvironment,
     pub(super) nodes: BTreeMap<NodeId, ExpectedNodeLayout>,
+}
+
+impl PendingFrame {
+    /// Merges one authoritative patch into the facts changed since this frame was materialized.
+    ///
+    /// Returns `true` when revision continuity was lost and the frame had to fall back to a global
+    /// geometry impact.
+    pub(super) fn observe_patch(&mut self, patch: &RuntimePatch) -> bool {
+        merge_patch_impact(
+            &mut self.geometry_impact,
+            &mut self.impact_through_revision,
+            self.document_epoch,
+            patch,
+        )
+    }
+}
+
+fn merge_patch_impact(
+    impact: &mut GeometryImpact,
+    through_revision: &mut GraphRevision,
+    document_epoch: DocumentEpoch,
+    patch: &RuntimePatch,
+) -> bool {
+    let fallback = patch.document_epoch() != document_epoch
+        || patch.from_revision() != *through_revision
+        || patch.kind() == crate::runtime::graph_runtime::RuntimePatchKind::DocumentReset;
+    if fallback {
+        impact.make_global();
+    } else {
+        impact.merge(patch.geometry_impact());
+    }
+    *through_revision = patch.to_revision();
+    fallback
 }
 
 pub(super) struct PendingLayout {
@@ -524,6 +559,8 @@ impl ViewSession {
             state.pending_frame = Some(PendingFrame {
                 sequence,
                 graph_revision: snapshot.revision(),
+                impact_through_revision: snapshot.revision(),
+                geometry_impact: GeometryImpact::default(),
                 document_epoch: snapshot.document_epoch(),
                 transform_revision,
                 transform,
@@ -629,6 +666,10 @@ impl ViewSession {
         let notification_batch = runtime.defer_notifications();
         let submission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let token = feedback.token;
+            let mut geometry_impact = pending.geometry_impact.clone();
+            let mut impact_through_revision = pending.impact_through_revision;
+            let mut impact_patches_merged = 0_u64;
+            let mut impact_global_fallbacks = 0_u64;
             let mut receipts = (0..feedback.operations.len())
                 .map(|_| None)
                 .collect::<Vec<_>>();
@@ -653,8 +694,22 @@ impl ViewSession {
                         });
                     }
                     FeedbackOperation::Command(command) => {
+                        let outcome = self.execute(command);
+                        if let Ok(outcome) = &outcome
+                            && let Some(applied) = outcome.applied()
+                        {
+                            impact_global_fallbacks = impact_global_fallbacks.saturating_add(
+                                u64::from(merge_patch_impact(
+                                    &mut geometry_impact,
+                                    &mut impact_through_revision,
+                                    pending.document_epoch,
+                                    applied.patch(),
+                                )),
+                            );
+                            impact_patches_merged = impact_patches_merged.saturating_add(1);
+                        }
                         receipts[operation_index] = Some(FeedbackOperationReceipt::Command {
-                            outcome: Box::new(self.execute(command)),
+                            outcome: Box::new(outcome),
                         });
                     }
                     FeedbackOperation::Layout(layout) => {
@@ -674,8 +729,8 @@ impl ViewSession {
                     .iter()
                     .map(|pending| pending.layout.node())
                     .collect::<BTreeSet<_>>();
-                let current_incarnations = runtime
-                    .adapter_node_incarnations(&layout_nodes)
+                let current_node_facts = runtime
+                    .adapter_frame_node_facts(&layout_nodes)
                     .map_err(ViewSessionError::from)?;
                 let mut state = self
                     .shared
@@ -683,8 +738,19 @@ impl ViewSession {
                     .try_borrow_mut()
                     .map_err(|_| ViewSessionError::Busy)?;
                 ensure_open(state.status)?;
-                let global_stale = current.revision() != pending.graph_revision
-                    || current.document_epoch() != pending.document_epoch
+                if impact_through_revision != current.revision() {
+                    geometry_impact.make_global();
+                    impact_global_fallbacks = impact_global_fallbacks.saturating_add(1);
+                }
+                state.stats.geometry_impact_patches_merged = state
+                    .stats
+                    .geometry_impact_patches_merged
+                    .saturating_add(impact_patches_merged);
+                state.stats.geometry_impact_global_fallbacks = state
+                    .stats
+                    .geometry_impact_global_fallbacks
+                    .saturating_add(impact_global_fallbacks);
+                let global_stale = current.document_epoch() != pending.document_epoch
                     || state.transform_revision != pending.transform_revision
                     || state.environment != pending.environment
                     || state.last_issued_frame > token.sequence;
@@ -692,7 +758,8 @@ impl ViewSession {
                     &mut state,
                     &current,
                     &pending,
-                    &current_incarnations,
+                    &current_node_facts,
+                    &geometry_impact,
                     layouts,
                     &mut receipts,
                     global_stale,
@@ -778,7 +845,9 @@ impl ViewSession {
                 reason: StaleFrameReason::DocumentEpoch,
             });
         }
-        if pending.graph_revision != snapshot.revision() {
+        if pending.impact_through_revision != snapshot.revision()
+            || state.seen_revision != snapshot.revision()
+        {
             return Err(FeedbackSubmissionError::StaleFrame {
                 sequence: token.sequence,
                 reason: StaleFrameReason::GraphRevision,
@@ -797,12 +866,18 @@ impl ViewSession {
             });
         }
         if pending.nodes.iter().any(|(node, expected)| {
-            state
+            let generation_changed = state
                 .layout_generations
                 .get(node)
                 .copied()
                 .unwrap_or_default()
-                != expected.layout_generation
+                != expected.layout_generation;
+            generation_changed
+                && !pending.geometry_impact.affects_layout(
+                    *node,
+                    expected.ports.iter().copied(),
+                    expected.incident_edges.iter().copied(),
+                )
         }) {
             return Err(FeedbackSubmissionError::StaleFrame {
                 sequence: token.sequence,

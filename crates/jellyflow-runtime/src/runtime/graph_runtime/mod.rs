@@ -69,7 +69,8 @@ impl RuntimeId {
 
 pub(crate) use self::index::GraphIndex;
 pub use self::patch::{
-    FactChange, FactChangeMask, RuntimeFactDelta, RuntimeFactKey, RuntimePatch, RuntimePatchKind,
+    FactChange, FactChangeMask, GeometryImpact, RuntimeFactDelta, RuntimeFactKey, RuntimePatch,
+    RuntimePatchKind,
 };
 pub use self::subscriptions::GraphRuntimeSubscriptionToken;
 
@@ -659,26 +660,6 @@ impl RuntimeShared {
                 let incarnation = state.incarnations.get(node).copied()?;
                 let incident_edges = state.index.incident_edge_snapshot(*node)?;
                 Some((*node, (incarnation, incident_edges)))
-            })
-            .collect())
-    }
-
-    pub(crate) fn adapter_node_incarnations(
-        &self,
-        nodes: &BTreeSet<NodeId>,
-    ) -> Result<BTreeMap<NodeId, NodeIncarnation>, GraphRuntimeError> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| GraphRuntimeError::Busy)?;
-        Ok(nodes
-            .iter()
-            .filter_map(|node| {
-                state
-                    .incarnations
-                    .get(node)
-                    .copied()
-                    .map(|incarnation| (*node, incarnation))
             })
             .collect())
     }

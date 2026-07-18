@@ -47,20 +47,35 @@ pub use runtime::commands::{
 };
 pub use runtime::graph_runtime::{
     CreateFromWireCandidates, CreateFromWireQueryError, DocumentEpoch, FactChange, FactChangeMask,
-    GraphRevision, GraphRuntime, GraphRuntimeBuilder, GraphRuntimeError, GraphRuntimeEvent,
-    GraphRuntimePolicy, GraphRuntimeStats, GraphRuntimeSubscriptionToken, GraphSnapshot,
-    HistoryState, NodeIncarnation, PortConnectionDragFacts, PortConnectionDragIntent,
-    PortConnectionFacts, PortIncidentConnectionFacts, RuntimeFactDelta, RuntimeFactKey,
-    RuntimePatch, RuntimePatchKind,
+    GeometryImpact, GraphRevision, GraphRuntime, GraphRuntimeBuilder, GraphRuntimeError,
+    GraphRuntimeEvent, GraphRuntimePolicy, GraphRuntimeStats, GraphRuntimeSubscriptionToken,
+    GraphSnapshot, HistoryState, NodeIncarnation, PortConnectionDragFacts,
+    PortConnectionDragIntent, PortConnectionFacts, PortIncidentConnectionFacts, RuntimeFactDelta,
+    RuntimeFactKey, RuntimePatch, RuntimePatchKind,
+};
+pub use runtime::interaction::{
+    AlignmentGuide, CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
+    CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
+    CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,
+    ConnectionGestureIntent, ConnectionInteractionStart, ConnectionPresentation, ConnectionProbe,
+    ConnectionProbeTarget, ConnectionSearchRequest, ConnectionSearchStatus, FreshGraphMutation,
+    FreshGraphMutationBindError, InteractionDamage, InteractionGeneration, InteractionOwner,
+    InteractionPosition, InteractionQueryId, InteractionTerminalReason, InteractionTickDemand,
+    InteractionTicketId, NodeDragPresentation, NodeDragStart, RelativeNodeMoveIntent,
+    SelectionMode, SelectionMutation, ViewportMutation,
 };
 pub use runtime::middleware::{GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot};
 pub use runtime::view_session::{
-    AttachViewError, NodeBindingEvent, NodeBindingKey, SelectedEdgeIds, ViewCloseOutcome,
-    ViewCloseReason, ViewCloseReceipt, ViewCloseRequest, ViewCreateFromWireQueryError,
-    ViewGeneration, ViewId, ViewSession, ViewSessionError, ViewSessionEvent, ViewSessionOptions,
-    ViewSessionStats, ViewSubscriptionToken, VisibleRouteCursor, VisibleRouteCursorStaleReason,
-    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
-    VisibleRouteQueryOutcome, VisibleRouteQueryWork, VisibleRoutes, WeakViewSession,
+    AttachViewError, ConnectionProbeCursor, ConnectionProbeCursorStaleReason, ConnectionProbeQuery,
+    ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeWork, EdgePick,
+    EdgePickCursor, EdgePickCursorStaleReason, EdgePickGeometryFailure, EdgePickQuery,
+    EdgePickQueryError, EdgePickQueryOutcome, EdgePickWork, NodeBindingEvent, NodeBindingKey,
+    SelectedEdgeIds, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt, ViewCloseRequest,
+    ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession, ViewSessionError,
+    ViewSessionEvent, ViewSessionOptions, ViewSessionStats, ViewSubscriptionToken,
+    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
+    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryWork,
+    VisibleRoutes, WeakViewSession,
 };
 
 #[cfg(test)]

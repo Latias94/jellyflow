@@ -12,11 +12,13 @@ use crate::runtime::geometry::{
 use crate::runtime::viewport::ViewportTransform;
 
 use super::order::sort_render_order;
+use super::spatial_grid::{
+    HierarchicalSpatialIndex, SpatialCell, SpatialQuerySource, bounded_spatial_cells_for_rect,
+    max_spatial_cell_level, spatial_cell_coords, spatial_cell_size,
+};
 use super::{ViewGeneration, ViewId, ViewSession, ViewSessionError, ensure_open};
 
 const ROUTE_INDEX_EPSILON: f32 = 0.001;
-const ROUTE_BASE_CELL_SIZE: f32 = 256.0;
-const MAX_ROUTE_CELL_LEVEL: u8 = 32;
 const MAX_CELLS_PER_SEGMENT: usize = 128;
 const MAX_QUERY_CELLS_PER_LEVEL: i64 = 4_096;
 const INDEX_FLATTEN_ERROR: f32 = 8.0;
@@ -49,7 +51,7 @@ impl VisibleRouteQuery {
         self
     }
 
-    pub fn resume(cursor: VisibleRouteCursor, entry_budget: usize) -> Self {
+    pub fn resume(cursor: Box<VisibleRouteCursor>, entry_budget: usize) -> Self {
         Self {
             request: VisibleRouteRequest::Resume(cursor),
             entry_budget,
@@ -60,7 +62,7 @@ impl VisibleRouteQuery {
 #[derive(Debug)]
 enum VisibleRouteRequest {
     Start { bounds: ViewRect, margin: f32 },
-    Resume(VisibleRouteCursor),
+    Resume(Box<VisibleRouteCursor>),
 }
 
 #[derive(Debug)]
@@ -86,22 +88,21 @@ struct RouteScan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum RouteQuerySource {
-    Cell(RouteCell),
+pub(super) enum RouteQuerySource {
+    Cell(SpatialCell),
     Level(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct RouteCell {
-    level: u8,
-    x: i32,
-    y: i32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct RouteSegmentKey {
+pub(super) struct RouteSegmentKey {
     edge: EdgeId,
     ordinal: usize,
+}
+
+impl RouteSegmentKey {
+    pub(super) fn edge(self) -> EdgeId {
+        self.edge
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -165,7 +166,7 @@ pub enum VisibleRouteQueryOutcome {
         work: VisibleRouteQueryWork,
     },
     Incomplete {
-        cursor: VisibleRouteCursor,
+        cursor: Box<VisibleRouteCursor>,
         work: VisibleRouteQueryWork,
     },
     BudgetExhausted {
@@ -200,7 +201,9 @@ pub(super) struct RouteGeometryIndex {
     spatial: RouteSpatialIndex,
     indexed: BTreeMap<EdgeId, IndexedRoute>,
     flatten_cache: BTreeMap<EdgeId, CachedFlatten>,
+    interaction_half_widths: BTreeMap<u32, usize>,
     index_epoch: u128,
+    pick_epoch: u128,
     next_path_revision: u128,
 }
 
@@ -209,6 +212,22 @@ struct IndexedRoute {
     path_revision: u128,
     path: EdgePath,
     bounds: CanvasRect,
+    pick: IndexedRoutePickFacts,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IndexedRoutePickFacts {
+    interaction_width: f32,
+    selectable: bool,
+}
+
+impl From<&PublishedEdgeRoute> for IndexedRoutePickFacts {
+    fn from(route: &PublishedEdgeRoute) -> Self {
+        Self {
+            interaction_width: route.facts().hit_test.interaction_width,
+            selectable: route.facts().interaction.selectable,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -216,6 +235,29 @@ struct CachedFlatten {
     path_revision: u128,
     tolerance_bucket: u32,
     result: Result<Arc<FlattenedEdgePath>, EdgePathFlattenError>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct RouteFlattenWork {
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub segments_built: u64,
+    pub overflows: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RoutePickFacts {
+    pub bounds: CanvasRect,
+    pub interaction_width: f32,
+    pub selectable: bool,
+}
+
+fn interaction_half_width(interaction_width: f32) -> f32 {
+    if interaction_width.is_finite() && interaction_width > 0.0 {
+        interaction_width * 0.5
+    } else {
+        crate::runtime::geometry::DEFAULT_EDGE_INTERACTION_WIDTH * 0.5
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -226,15 +268,8 @@ pub(super) struct RouteIndexMutation {
 
 #[derive(Debug, Default)]
 struct RouteSpatialIndex {
-    cells: BTreeMap<RouteCell, BTreeSet<RouteSegmentKey>>,
-    routes: BTreeMap<EdgeId, Vec<IndexedSegmentEntry>>,
-    levels: BTreeMap<u8, BTreeSet<RouteSegmentKey>>,
-}
-
-#[derive(Debug)]
-struct IndexedSegmentEntry {
-    key: RouteSegmentKey,
-    cells: Vec<RouteCell>,
+    spatial: HierarchicalSpatialIndex<RouteSegmentKey>,
+    routes: BTreeMap<EdgeId, Vec<RouteSegmentKey>>,
 }
 
 impl RouteSpatialIndex {
@@ -246,8 +281,8 @@ impl RouteSpatialIndex {
             .map(|(ordinal, segment)| {
                 let key = RouteSegmentKey { edge, ordinal };
                 let cells = route_cells_for_segment(segment.from(), segment.to());
-                self.insert_entry(key, &cells);
-                IndexedSegmentEntry { key, cells }
+                self.spatial.upsert(key, cells);
+                key
             })
             .collect();
         self.routes.insert(edge, entries);
@@ -257,17 +292,8 @@ impl RouteSpatialIndex {
         self.remove(edge);
         let key = RouteSegmentKey { edge, ordinal: 0 };
         let cells = route_cells_for_bounds(bounds);
-        self.insert_entry(key, &cells);
-        self.routes
-            .insert(edge, vec![IndexedSegmentEntry { key, cells }]);
-    }
-
-    fn insert_entry(&mut self, key: RouteSegmentKey, cells: &[RouteCell]) {
-        let level = cells.first().map_or(0, |cell| cell.level);
-        self.levels.entry(level).or_default().insert(key);
-        for cell in cells {
-            self.cells.entry(*cell).or_default().insert(key);
-        }
+        self.spatial.upsert(key, cells);
+        self.routes.insert(edge, vec![key]);
     }
 
     fn remove(&mut self, edge: EdgeId) -> bool {
@@ -275,53 +301,32 @@ impl RouteSpatialIndex {
             return false;
         };
         for entry in entries {
-            if let Some(level) = entry.cells.first().map(|cell| cell.level) {
-                let remove_level = self.levels.get_mut(&level).is_some_and(|entries| {
-                    entries.remove(&entry.key);
-                    entries.is_empty()
-                });
-                if remove_level {
-                    self.levels.remove(&level);
-                }
-            }
-            for cell in entry.cells {
-                let remove_cell = self.cells.get_mut(&cell).is_some_and(|entries| {
-                    entries.remove(&entry.key);
-                    entries.is_empty()
-                });
-                if remove_cell {
-                    self.cells.remove(&cell);
-                }
-            }
+            self.spatial.remove(entry);
         }
         true
     }
 
     fn clear(&mut self) {
-        self.cells.clear();
+        self.spatial.clear();
         self.routes.clear();
-        self.levels.clear();
     }
 
     fn query_sources(&self, bounds: CanvasRect) -> Vec<RouteQuerySource> {
-        let mut sources = Vec::new();
-        let expanded = inflate_canvas_rect(bounds, INDEX_FLATTEN_ERROR);
-        for level in self.levels.keys().copied() {
-            if let Some(cells) = expanded
-                .and_then(|bounds| route_cells_for_rect(bounds, level, MAX_QUERY_CELLS_PER_LEVEL))
-            {
-                sources.extend(cells.into_iter().map(RouteQuerySource::Cell));
-            } else {
-                sources.push(RouteQuerySource::Level(level));
-            }
-        }
-        sources
+        let query_bounds = inflate_canvas_rect(bounds, INDEX_FLATTEN_ERROR).unwrap_or(bounds);
+        self.spatial
+            .query_sources(query_bounds, MAX_QUERY_CELLS_PER_LEVEL)
+            .into_iter()
+            .map(|source| match source {
+                SpatialQuerySource::Cell(cell) => RouteQuerySource::Cell(cell),
+                SpatialQuerySource::Level(level) => RouteQuerySource::Level(level),
+            })
+            .collect()
     }
 
     fn source(&self, source: RouteQuerySource) -> Option<&BTreeSet<RouteSegmentKey>> {
         match source {
-            RouteQuerySource::Cell(cell) => self.cells.get(&cell),
-            RouteQuerySource::Level(level) => self.levels.get(&level),
+            RouteQuerySource::Cell(cell) => self.spatial.source(SpatialQuerySource::Cell(cell)),
+            RouteQuerySource::Level(level) => self.spatial.source(SpatialQuerySource::Level(level)),
         }
     }
 }
@@ -332,11 +337,20 @@ impl RouteGeometryIndex {
         edge: EdgeId,
         route: &PublishedEdgeRoute,
     ) -> RouteIndexMutation {
-        if self
-            .indexed
-            .get(&edge)
-            .is_some_and(|indexed| indexed.path == route.facts().path)
+        let pick = IndexedRoutePickFacts::from(route);
+        if let Some(indexed) = self.indexed.get(&edge)
+            && indexed.path == route.facts().path
         {
+            if indexed.pick == pick {
+                return RouteIndexMutation::default();
+            }
+            let old_width = indexed.pick.interaction_width;
+            self.replace_interaction_half_width(old_width, pick.interaction_width);
+            self.indexed
+                .get_mut(&edge)
+                .expect("the route was read immediately before mutation")
+                .pick = pick;
+            self.pick_epoch = self.pick_epoch.saturating_add(1);
             return RouteIndexMutation::default();
         }
         let Some(bounds) = edge_path_conservative_bounds(&route.facts().path)
@@ -349,6 +363,10 @@ impl RouteGeometryIndex {
         let cache_invalidations = u64::from(self.flatten_cache.remove(&edge).is_some());
         self.next_path_revision = self.next_path_revision.saturating_add(1);
         let path_revision = self.next_path_revision;
+        if let Some(indexed) = self.indexed.get(&edge) {
+            self.remove_interaction_half_width(indexed.pick.interaction_width);
+        }
+        self.insert_interaction_half_width(pick.interaction_width);
         match flatten_edge_path(
             &route.facts().path,
             EdgeFlattenOptions::new(INDEX_FLATTEN_ERROR),
@@ -364,9 +382,11 @@ impl RouteGeometryIndex {
                 path_revision,
                 path: route.facts().path.clone(),
                 bounds,
+                pick,
             },
         );
         self.index_epoch = self.index_epoch.saturating_add(1);
+        self.pick_epoch = self.pick_epoch.saturating_add(1);
         RouteIndexMutation {
             index_changed: true,
             cache_invalidations,
@@ -374,14 +394,18 @@ impl RouteGeometryIndex {
     }
 
     pub(super) fn remove(&mut self, edge: EdgeId) -> RouteIndexMutation {
-        let indexed = self.indexed.remove(&edge).is_some();
+        let indexed = self.indexed.remove(&edge);
+        if let Some(indexed) = &indexed {
+            self.remove_interaction_half_width(indexed.pick.interaction_width);
+        }
         let spatial = self.spatial.remove(edge);
         let cache_invalidations = u64::from(self.flatten_cache.remove(&edge).is_some());
-        if indexed || spatial {
+        if indexed.is_some() || spatial {
             self.index_epoch = self.index_epoch.saturating_add(1);
+            self.pick_epoch = self.pick_epoch.saturating_add(1);
         }
         RouteIndexMutation {
-            index_changed: indexed || spatial,
+            index_changed: indexed.is_some() || spatial,
             cache_invalidations,
         }
     }
@@ -392,13 +416,85 @@ impl RouteGeometryIndex {
         self.spatial.clear();
         self.indexed.clear();
         self.flatten_cache.clear();
+        self.interaction_half_widths.clear();
         if index_changed {
             self.index_epoch = self.index_epoch.saturating_add(1);
+            self.pick_epoch = self.pick_epoch.saturating_add(1);
         }
         RouteIndexMutation {
             index_changed,
             cache_invalidations,
         }
+    }
+
+    pub(super) fn index_epoch(&self) -> u128 {
+        self.index_epoch
+    }
+
+    pub(super) fn pick_epoch(&self) -> u128 {
+        self.pick_epoch
+    }
+
+    pub(super) fn max_interaction_half_width(&self) -> f32 {
+        self.interaction_half_widths
+            .last_key_value()
+            .map_or(0.0, |(bits, _)| f32::from_bits(*bits))
+    }
+
+    pub(super) fn pick_query_sources(&self, bounds: CanvasRect) -> Vec<RouteQuerySource> {
+        self.spatial.query_sources(bounds)
+    }
+
+    pub(super) fn pick_source(
+        &self,
+        source: RouteQuerySource,
+    ) -> Option<&BTreeSet<RouteSegmentKey>> {
+        self.spatial.source(source)
+    }
+
+    pub(super) fn pick_facts(&self, edge: EdgeId) -> Option<RoutePickFacts> {
+        let indexed = self.indexed.get(&edge)?;
+        Some(RoutePickFacts {
+            bounds: indexed.bounds,
+            interaction_width: indexed.pick.interaction_width,
+            selectable: indexed.pick.selectable,
+        })
+    }
+
+    pub(super) fn flattened_for_pick(
+        &mut self,
+        edge: EdgeId,
+        zoom: f32,
+        work: &mut RouteFlattenWork,
+    ) -> Result<Arc<FlattenedEdgePath>, EdgePathFlattenError> {
+        self.flattened(edge, zoom, work)
+    }
+
+    fn insert_interaction_half_width(&mut self, interaction_width: f32) {
+        let bits = interaction_half_width(interaction_width).to_bits();
+        *self.interaction_half_widths.entry(bits).or_default() += 1;
+    }
+
+    fn remove_interaction_half_width(&mut self, interaction_width: f32) {
+        let bits = interaction_half_width(interaction_width).to_bits();
+        let remove = self
+            .interaction_half_widths
+            .get_mut(&bits)
+            .is_some_and(|count| {
+                *count = count.saturating_sub(1);
+                *count == 0
+            });
+        if remove {
+            self.interaction_half_widths.remove(&bits);
+        }
+    }
+
+    fn replace_interaction_half_width(&mut self, old: f32, new: f32) {
+        if interaction_half_width(old).to_bits() == interaction_half_width(new).to_bits() {
+            return;
+        }
+        self.remove_interaction_half_width(old);
+        self.insert_interaction_half_width(new);
     }
 
     fn new_cursor(
@@ -492,7 +588,6 @@ impl RouteGeometryIndex {
                     cursor.matched.insert(edge);
                     cursor.flatten_overflows.insert(edge, error);
                     work.candidates_matched = work.candidates_matched.saturating_add(1);
-                    work.flatten_overflows = work.flatten_overflows.saturating_add(1);
                 }
             }
         }
@@ -511,7 +606,21 @@ impl RouteGeometryIndex {
         if !rects_intersect(indexed.bounds, query) {
             return RouteIntersection::Hidden;
         }
-        match self.flattened(edge, zoom, work) {
+        let mut flatten_work = RouteFlattenWork::default();
+        let result = self.flattened(edge, zoom, &mut flatten_work);
+        work.flatten_cache_hits = work
+            .flatten_cache_hits
+            .saturating_add(flatten_work.cache_hits);
+        work.flatten_cache_misses = work
+            .flatten_cache_misses
+            .saturating_add(flatten_work.cache_misses);
+        work.flatten_segments_built = work
+            .flatten_segments_built
+            .saturating_add(flatten_work.segments_built);
+        work.flatten_overflows = work
+            .flatten_overflows
+            .saturating_add(flatten_work.overflows);
+        match result {
             Ok(path) => {
                 if flattened_path_intersects_rect(&path, query) {
                     RouteIntersection::Visible
@@ -527,7 +636,7 @@ impl RouteGeometryIndex {
         &mut self,
         edge: EdgeId,
         zoom: f32,
-        work: &mut VisibleRouteQueryWork,
+        work: &mut RouteFlattenWork,
     ) -> Result<Arc<FlattenedEdgePath>, EdgePathFlattenError> {
         let mut options = EdgeFlattenOptions::default()
             .for_zoom(zoom)
@@ -540,17 +649,19 @@ impl RouteGeometryIndex {
             && cached.path_revision == indexed.path_revision
             && cached.tolerance_bucket == tolerance_bucket
         {
-            work.flatten_cache_hits = work.flatten_cache_hits.saturating_add(1);
+            work.cache_hits = work.cache_hits.saturating_add(1);
             return cached.result.clone();
         }
         let path_revision = indexed.path_revision;
-        work.flatten_cache_misses = work.flatten_cache_misses.saturating_add(1);
+        work.cache_misses = work.cache_misses.saturating_add(1);
         options.max_error = tolerance;
         let result = flatten_edge_path(&indexed.path, options).map(Arc::new);
         if let Ok(path) = &result {
-            work.flatten_segments_built = work
-                .flatten_segments_built
+            work.segments_built = work
+                .segments_built
                 .saturating_add(path.segments().len() as u64);
+        } else {
+            work.overflows = work.overflows.saturating_add(1);
         }
         self.flatten_cache.insert(
             edge,
@@ -656,7 +767,7 @@ impl ViewSession {
                 }
                 VisibleRouteRequest::Resume(cursor) => {
                     validate_cursor(&state, &cursor)?;
-                    cursor
+                    *cursor
                 }
             };
             let result =
@@ -703,7 +814,10 @@ impl ViewSession {
                 })
             }
             InternalRouteQueryOutcome::Incomplete { cursor, work } => {
-                Ok(VisibleRouteQueryOutcome::Incomplete { cursor, work })
+                Ok(VisibleRouteQueryOutcome::Incomplete {
+                    cursor: Box::new(cursor),
+                    work,
+                })
             }
             InternalRouteQueryOutcome::BudgetExhausted { work } => {
                 Ok(VisibleRouteQueryOutcome::BudgetExhausted { work })
@@ -770,8 +884,8 @@ fn inflate_canvas_rect(bounds: CanvasRect, amount: f32) -> Option<CanvasRect> {
     expanded.is_positive_finite().then_some(expanded)
 }
 
-fn route_cells_for_segment(from: CanvasPoint, to: CanvasPoint) -> Vec<RouteCell> {
-    for level in 0..=MAX_ROUTE_CELL_LEVEL {
+fn route_cells_for_segment(from: CanvasPoint, to: CanvasPoint) -> Vec<SpatialCell> {
+    for level in 0..=max_spatial_cell_level() {
         if let Some(cells) = route_cells_for_segment_at_level(from, to, level) {
             return cells;
         }
@@ -783,13 +897,13 @@ fn route_cells_for_segment_at_level(
     from: CanvasPoint,
     to: CanvasPoint,
     level: u8,
-) -> Option<Vec<RouteCell>> {
-    let cell_size = route_cell_size(level);
-    let start = route_cell_coords(from, cell_size);
-    let end = route_cell_coords(to, cell_size);
+) -> Option<Vec<SpatialCell>> {
+    let cell_size = spatial_cell_size(level);
+    let start = spatial_cell_coords(from, cell_size);
+    let end = spatial_cell_coords(to, cell_size);
     let mut cells = BTreeSet::new();
     let mut insert = |x: i32, y: i32| {
-        cells.insert(RouteCell { level, x, y });
+        cells.insert(SpatialCell { level, x, y });
         cells.len() <= MAX_CELLS_PER_SEGMENT
     };
 
@@ -878,57 +992,8 @@ fn route_cells_for_segment_at_level(
     Some(cells.into_iter().collect())
 }
 
-fn route_cells_for_bounds(bounds: CanvasRect) -> Vec<RouteCell> {
-    for level in 0..=MAX_ROUTE_CELL_LEVEL {
-        if let Some(cells) = route_cells_for_rect(bounds, level, MAX_CELLS_PER_SEGMENT as i64) {
-            return cells;
-        }
-    }
-    unreachable!("the coarsest route grid covers every finite f32 rectangle")
-}
-
-fn route_cells_for_rect(bounds: CanvasRect, level: u8, limit: i64) -> Option<Vec<RouteCell>> {
-    if limit <= 0 || !bounds.is_positive_finite() {
-        return None;
-    }
-    let cell_size = route_cell_size(level);
-    let min_x = route_cell_coord(f64::from(bounds.origin.x), cell_size);
-    let min_y = route_cell_coord(f64::from(bounds.origin.y), cell_size);
-    let max_x = route_cell_coord(
-        f64::from(bounds.origin.x) + f64::from(bounds.size.width),
-        cell_size,
-    );
-    let max_y = route_cell_coord(
-        f64::from(bounds.origin.y) + f64::from(bounds.size.height),
-        cell_size,
-    );
-    let width = i64::from(max_x) - i64::from(min_x) + 1;
-    let height = i64::from(max_y) - i64::from(min_y) + 1;
-    if width <= 0 || height <= 0 || i128::from(width) * i128::from(height) > i128::from(limit) {
-        return None;
-    }
-    let mut cells = Vec::with_capacity((width * height) as usize);
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            cells.push(RouteCell { level, x, y });
-        }
-    }
-    Some(cells)
-}
-
-fn route_cell_size(level: u8) -> f64 {
-    f64::from(ROUTE_BASE_CELL_SIZE) * 16.0_f64.powi(i32::from(level))
-}
-
-fn route_cell_coords(point: CanvasPoint, cell_size: f64) -> (i32, i32) {
-    (
-        route_cell_coord(f64::from(point.x), cell_size),
-        route_cell_coord(f64::from(point.y), cell_size),
-    )
-}
-
-fn route_cell_coord(value: f64, cell_size: f64) -> i32 {
-    (value / cell_size).floor() as i32
+fn route_cells_for_bounds(bounds: CanvasRect) -> Vec<SpatialCell> {
+    bounded_spatial_cells_for_rect(bounds, MAX_CELLS_PER_SEGMENT as i64)
 }
 
 fn tolerance_bucket(desired: f32) -> (u32, f32) {

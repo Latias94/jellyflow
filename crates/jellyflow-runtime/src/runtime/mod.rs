@@ -7,6 +7,7 @@ pub mod adapter_protocol;
 pub mod commands;
 pub mod geometry;
 pub mod graph_runtime;
+pub mod interaction;
 pub mod layout;
 pub mod middleware;
 pub mod policy;

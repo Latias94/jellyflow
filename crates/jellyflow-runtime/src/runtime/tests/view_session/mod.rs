@@ -2,6 +2,7 @@ mod connection_queries;
 mod fanout;
 mod feedback_ordering;
 pub(super) mod fixtures;
+mod geometry_impact;
 mod geometry_publication;
 mod lifecycle;
 mod middleware;

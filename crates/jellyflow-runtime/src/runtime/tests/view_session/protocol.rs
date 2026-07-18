@@ -566,7 +566,7 @@ fn provisional_admission_uses_document_catalog_and_protocol_sizes_in_order() {
 }
 
 #[test]
-fn graph_transform_and_environment_freshness_are_checked_before_commands() {
+fn commands_own_graph_freshness_while_transform_and_environment_precede_execution() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -594,17 +594,16 @@ fn graph_transform_and_environment_freshness_are_checked_before_commands() {
             serde_json::json!({ "revision": 1 }),
         ))
         .unwrap();
-    let error = session
+    let receipt = session
         .submit_feedback(stale_graph.finish().unwrap())
-        .unwrap_err();
+        .unwrap();
     assert!(matches!(
-        error,
-        FeedbackSubmissionError::StaleFrame {
-            reason: crate::runtime::adapter_protocol::StaleFrameReason::GraphRevision,
-            ..
-        }
+        receipt.operations()[0].command_outcome(),
+        Some(Ok(crate::runtime::commands::GraphCommandOutcome::Applied(
+            _
+        )))
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
 
     let frame = session
         .frame(FrameRequest::new(
@@ -615,7 +614,7 @@ fn graph_transform_and_environment_freshness_are_checked_before_commands() {
     let stale_transform = frame.collector();
     stale_transform
         .command(GraphCommand::set_node_data(
-            1,
+            2,
             nodes[0],
             serde_json::json!({ "should_not_apply": true }),
         ))
@@ -633,7 +632,7 @@ fn graph_transform_and_environment_freshness_are_checked_before_commands() {
             ..
         }
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
 
     let frame = session
         .frame(FrameRequest::new(
@@ -644,7 +643,7 @@ fn graph_transform_and_environment_freshness_are_checked_before_commands() {
     let stale_environment = frame.collector();
     stale_environment
         .command(GraphCommand::set_node_data(
-            1,
+            2,
             nodes[0],
             serde_json::json!({ "should_not_apply": true }),
         ))
@@ -664,7 +663,7 @@ fn graph_transform_and_environment_freshness_are_checked_before_commands() {
             ..
         }
     ));
-    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 2);
 }
 
 #[test]

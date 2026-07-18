@@ -18,10 +18,17 @@ pub(super) fn sort_render_order<T, Id: Copy + Ord>(
 ) {
     admitted.sort_unstable_by_key(|candidate| {
         let id = id(candidate);
-        let elevated = is_selected(candidate);
-        match explicit_ranks.get(&id) {
-            Some(rank) => (elevated, false, *rank, id),
-            None => (elevated, true, 0, id),
-        }
+        render_order_key(id, is_selected(candidate), explicit_ranks)
     });
+}
+
+pub(super) fn render_order_key<Id: Copy + Ord>(
+    id: Id,
+    is_selected: bool,
+    explicit_ranks: &BTreeMap<Id, usize>,
+) -> (bool, bool, usize, Id) {
+    match explicit_ranks.get(&id) {
+        Some(rank) => (is_selected, false, *rank, id),
+        None => (is_selected, true, 0, id),
+    }
 }

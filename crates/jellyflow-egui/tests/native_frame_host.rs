@@ -11,8 +11,8 @@ use jellyflow::runtime::runtime::geometry::HandlePosition;
 use jellyflow::runtime::{
     FeedbackOperationReceipt, FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRevision,
     GraphRuntime, HistoryState, IncidentEdgePolicy, LayoutNodeStatus, PublishedPortOutcome,
-    RendererStamp, StaleFrameReason, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
-    ViewSessionEvent, ViewSessionOptions,
+    RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError, ViewSessionEvent,
+    ViewSessionOptions,
 };
 use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
 
@@ -855,7 +855,7 @@ fn render_delete_during_render(ui: &mut Ui, state: &mut DeleteDuringRenderState)
 }
 
 #[test]
-fn delete_during_render_reports_stale_submission_and_retires_node_state() {
+fn delete_during_render_stales_only_the_retired_node_and_publishes_its_peer() {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(480.0, 360.0))
         .build_ui_state(render_delete_during_render, DeleteDuringRenderState::new());
@@ -863,18 +863,31 @@ fn delete_during_render_reports_stale_submission_and_retires_node_state() {
     let text_id = state.text_id.expect("text state id");
     let initial_result_count = state.frame_results.len();
     let first_result = state.frame_results.first().expect("first frame result");
+    let outcome = first_result
+        .as_ref()
+        .expect("local geometry impact keeps the frame submittable");
     assert!(
         matches!(
-            first_result,
-            Err(EguiNativeFrameError::Submission(
-                FeedbackSubmissionError::StaleFrame {
-                    reason: StaleFrameReason::GraphRevision,
+            outcome.receipt().operations(),
+            [
+                FeedbackOperationReceipt::Layout {
+                    node,
+                    status: LayoutNodeStatus::Stale,
+                },
+                FeedbackOperationReceipt::Layout {
+                    status: LayoutNodeStatus::Published,
                     ..
                 }
-            ))
+            ] if *node == state.node
         ),
         "unexpected delete-during-render result: {first_result:?}"
     );
+    let publication = outcome
+        .receipt()
+        .publication()
+        .expect("the unaffected peer publishes");
+    assert_eq!(publication.published_nodes().len(), 1);
+    assert_ne!(publication.published_nodes()[0], state.node);
     assert!(state.deleted);
     assert!(state.focus_acquired);
     assert!(state.host.view().close_reason().is_none());

@@ -1,9 +1,12 @@
 //! View-local capability issued by an authoritative [`GraphRuntime`](super::graph_runtime::GraphRuntime).
 
+mod edge_pick;
 mod facts;
 mod geometry;
+mod port_geometry;
 mod protocol;
 mod route_geometry;
+mod spatial_grid;
 mod subscriptions;
 
 use std::cell::RefCell;
@@ -33,8 +36,17 @@ use crate::runtime::unwind::{PanicCollector, PanicPayload, resume, suppress};
 use crate::runtime::viewport::ViewportTransform;
 use crate::schema::NodeCatalog;
 
+pub use self::edge_pick::{
+    EdgePick, EdgePickCursor, EdgePickCursorStaleReason, EdgePickGeometryFailure, EdgePickQuery,
+    EdgePickQueryError, EdgePickQueryOutcome, EdgePickWork,
+};
 use self::geometry::{AdmissionIndex, ViewSpatialIndex, recompute_routes};
 use self::order::index_draw_order;
+use self::port_geometry::PortGeometryIndex;
+pub use self::port_geometry::{
+    ConnectionProbeCursor, ConnectionProbeCursorStaleReason, ConnectionProbeQuery,
+    ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeWork,
+};
 use self::protocol::PendingFrame;
 use self::route_geometry::RouteGeometryIndex;
 pub use self::route_geometry::{
@@ -342,6 +354,24 @@ pub struct ViewSessionStats {
     pub node_invalidations: u64,
     pub node_binding_notifications: u64,
     pub spatial_updates: u64,
+    pub geometry_impact_patches_merged: u64,
+    pub geometry_impact_global_fallbacks: u64,
+    pub layout_impact_candidates_checked: u64,
+    pub layout_impact_candidates_stale: u64,
+    pub port_index_updates: u64,
+    pub port_query_cells_examined: u64,
+    pub port_query_entries_examined: u64,
+    pub port_query_exact_tests: u64,
+    pub port_query_incomplete: u64,
+    pub port_query_budget_exhausted: u64,
+    pub connection_probe_policy_evaluations: u64,
+    pub edge_pick_cells_examined: u64,
+    pub edge_pick_entries_examined: u64,
+    pub edge_pick_exact_tests: u64,
+    pub edge_pick_candidates_matched: u64,
+    pub edge_pick_incomplete: u64,
+    pub edge_pick_budget_exhausted: u64,
+    pub edge_pick_geometry_indeterminate: u64,
     pub route_invalidations: u64,
     pub route_recomputations: u64,
     pub route_index_updates: u64,
@@ -408,6 +438,7 @@ struct ViewState {
     retired_draw_order_groups: BTreeSet<GroupId>,
     layout_revision: u64,
     transform_revision: u64,
+    interaction_order_revision: u128,
     environment: AdapterEnvironment,
     layout_generations: BTreeMap<NodeId, u64>,
     binding_revisions: BTreeMap<NodeId, GraphRevision>,
@@ -415,6 +446,7 @@ struct ViewState {
     geometry: SharedGeometryMap<NodeId, PublishedNodeGeometry>,
     geometry_ports: SharedGeometryMap<PortId, PublishedPortGeometry>,
     geometry_port_outcomes: SharedGeometryMap<PortId, PublishedPortOutcome>,
+    port_geometry: PortGeometryIndex,
     spatial: ViewSpatialIndex,
     admission: AdmissionIndex,
     active_frame_nodes: BTreeSet<NodeId>,
@@ -477,15 +509,23 @@ impl ViewState {
             .collect::<BTreeSet<_>>();
         let touched_outcomes = old_outcomes.union(&new_outcomes).count();
 
-        for port in old_ports {
-            self.geometry_ports.remove_mut(&port);
+        for port in &old_ports {
+            self.geometry_ports.remove_mut(port);
         }
         for port in old_outcomes {
             self.geometry_port_outcomes.remove_mut(&port);
         }
         for (port, published) in geometry.ports() {
+            if self.port_geometry.upsert(published) {
+                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
+            }
             self.geometry_ports
                 .insert_mut(*port, Arc::new(published.clone()));
+        }
+        for port in old_ports.difference(&new_ports) {
+            if self.port_geometry.remove(*port) {
+                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
+            }
         }
         for (port, outcome) in geometry.port_outcomes() {
             self.geometry_port_outcomes
@@ -503,6 +543,9 @@ impl ViewState {
         self.geometry.remove_mut(&node);
         for port in current.ports().keys() {
             self.geometry_ports.remove_mut(port);
+            if self.port_geometry.remove(*port) {
+                self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
+            }
         }
         for port in current.port_outcomes().keys() {
             self.geometry_port_outcomes.remove_mut(port);
@@ -576,6 +619,9 @@ impl ViewState {
         self.geometry = SharedGeometryMap::new_sync();
         self.geometry_ports = SharedGeometryMap::new_sync();
         self.geometry_port_outcomes = SharedGeometryMap::new_sync();
+        if self.port_geometry.clear() {
+            self.stats.port_index_updates = self.stats.port_index_updates.saturating_add(1);
+        }
         self.record_geometry_snapshot_updates(removed);
     }
 
@@ -1274,6 +1320,7 @@ impl ViewShared {
                 retired_draw_order_groups: BTreeSet::new(),
                 layout_revision: 0,
                 transform_revision: 0,
+                interaction_order_revision: 0,
                 environment: AdapterEnvironment::default(),
                 layout_generations: BTreeMap::new(),
                 binding_revisions: BTreeMap::new(),
@@ -1281,6 +1328,7 @@ impl ViewShared {
                 geometry: SharedGeometryMap::new_sync(),
                 geometry_ports: SharedGeometryMap::new_sync(),
                 geometry_port_outcomes: SharedGeometryMap::new_sync(),
+                port_geometry: PortGeometryIndex::default(),
                 spatial: ViewSpatialIndex::default(),
                 admission: AdmissionIndex::default(),
                 active_frame_nodes: BTreeSet::new(),
@@ -1378,6 +1426,8 @@ impl ViewShared {
             } else {
                 let previous_edges = state.selected_edge_membership.clone();
                 state.rebuild_selection_membership();
+                state.interaction_order_revision =
+                    state.interaction_order_revision.saturating_add(1);
                 let changed_edges = previous_edges
                     .symmetric_difference(&state.selected_edge_membership)
                     .copied()
@@ -1453,6 +1503,15 @@ impl ViewShared {
         let sanitize_selection = patch.kind() == RuntimePatchKind::DocumentReset
             || (patch.impact().sanitize_view_state && state.patch_may_change_selection(patch));
         let selection_before = sanitize_selection.then(|| state.facts.selection());
+        if let Some(pending) = state.pending_frame.as_mut() {
+            let fallback = pending.observe_patch(patch);
+            state.stats.geometry_impact_patches_merged =
+                state.stats.geometry_impact_patches_merged.saturating_add(1);
+            state.stats.geometry_impact_global_fallbacks = state
+                .stats
+                .geometry_impact_global_fallbacks
+                .saturating_add(u64::from(fallback));
+        }
         state.seen_revision = patch.to_revision();
         state.stats.runtime_patches = state.stats.runtime_patches.saturating_add(1);
         state.stats.fact_records_visited = state

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::graph_kernel::{GraphOp, GraphTransaction};
+use crate::graph_kernel::{GraphMutationFootprint, GraphOp, GraphTransaction};
 use jellyflow_core::core::{
     Binding, BindingId, CanvasPoint, EdgeId, Graph, GraphId, GraphLocalBindingTarget, GroupId,
     NodeId, PortId, StickyNoteId, SymbolId, symbol_ref_target_symbol_id,
@@ -77,6 +77,86 @@ impl FactChangeMask {
     }
 }
 
+/// Conservative graph facts that can invalidate native node geometry measured from an older frame.
+///
+/// The runtime derives this value once while the authoritative before/after graphs, transaction,
+/// and indexes are available. Native adapters must consume this value instead of reconstructing
+/// geometry dependencies from patch deltas.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GeometryImpact {
+    global: bool,
+    nodes: BTreeSet<NodeId>,
+    ports: BTreeSet<PortId>,
+    incident_edges: BTreeSet<EdgeId>,
+}
+
+impl GeometryImpact {
+    fn from_footprint(footprint: &GraphMutationFootprint) -> Self {
+        Self {
+            global: footprint.graph || !footprint.imports.is_empty(),
+            nodes: footprint.nodes.clone(),
+            ports: footprint.ports.clone(),
+            incident_edges: footprint.edges.clone(),
+        }
+    }
+
+    /// Returns whether every layout candidate must be treated as affected.
+    pub fn is_global(&self) -> bool {
+        self.global
+    }
+
+    /// Returns node identities whose frame-local layout facts changed.
+    pub fn nodes(&self) -> &BTreeSet<NodeId> {
+        &self.nodes
+    }
+
+    /// Returns port identities whose layout or connection facts changed.
+    pub fn ports(&self) -> &BTreeSet<PortId> {
+        &self.ports
+    }
+
+    /// Returns edge identities whose incident facts changed.
+    pub fn incident_edges(&self) -> &BTreeSet<EdgeId> {
+        &self.incident_edges
+    }
+
+    /// Returns whether facts captured for one layout candidate intersect this impact.
+    pub fn affects_layout(
+        &self,
+        node: NodeId,
+        ports: impl IntoIterator<Item = PortId>,
+        incident_edges: impl IntoIterator<Item = EdgeId>,
+    ) -> bool {
+        self.global
+            || self.nodes.contains(&node)
+            || ports.into_iter().any(|port| self.ports.contains(&port))
+            || incident_edges
+                .into_iter()
+                .any(|edge| self.incident_edges.contains(&edge))
+    }
+
+    pub(crate) fn merge(&mut self, other: &Self) {
+        if self.global {
+            return;
+        }
+        if other.global {
+            self.make_global();
+            return;
+        }
+        self.nodes.extend(other.nodes.iter().copied());
+        self.ports.extend(other.ports.iter().copied());
+        self.incident_edges
+            .extend(other.incident_edges.iter().copied());
+    }
+
+    pub(crate) fn make_global(&mut self) {
+        self.global = true;
+        self.nodes.clear();
+        self.ports.clear();
+        self.incident_edges.clear();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NodeTranslation {
     pub(crate) node: NodeId,
@@ -92,6 +172,7 @@ pub(crate) struct SessionImpact {
     pub(crate) translated_nodes: Vec<NodeTranslation>,
     pub(crate) route_edges: Vec<EdgeId>,
     pub(crate) sanitize_view_state: bool,
+    pub(crate) geometry: GeometryImpact,
 }
 
 #[derive(Debug)]
@@ -136,6 +217,11 @@ impl RuntimePatch {
 
     pub fn affected_nodes(&self) -> &[NodeId] {
         &self.0.impact.affected_nodes
+    }
+
+    /// Returns the authoritative geometry invalidation footprint for this patch.
+    pub fn geometry_impact(&self) -> &GeometryImpact {
+        &self.0.impact.geometry
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
@@ -221,6 +307,10 @@ impl RuntimePatch {
             impact: SessionImpact {
                 affected_nodes,
                 retired_nodes: before.nodes().keys().copied().collect(),
+                geometry: GeometryImpact {
+                    global: true,
+                    ..GeometryImpact::default()
+                },
                 ..SessionImpact::default()
             },
             incarnations,
@@ -440,6 +530,8 @@ fn build_impact(
     transaction: &GraphTransaction,
     facts: &[RuntimeFactDelta],
 ) -> SessionImpact {
+    let footprint = transaction.footprint();
+    let mut geometry = GeometryImpact::from_footprint(&footprint);
     let mut affected_nodes = BTreeSet::new();
     let mut retired_nodes = BTreeSet::new();
     let mut geometry_withdrawals = BTreeSet::new();
@@ -492,6 +584,7 @@ fn build_impact(
                     .flatten()
                 {
                     extend_binding_nodes(&mut affected_nodes, before, after, current);
+                    extend_binding_geometry(&mut geometry, current);
                 }
             }
             RuntimeFactKey::Symbol(symbol) => {
@@ -594,6 +687,11 @@ fn build_impact(
         route_edges.extend(before_index.incident_edges_for_node(*node));
     }
 
+    geometry.nodes.extend(affected_nodes.iter().copied());
+    if geometry.global {
+        geometry.make_global();
+    }
+
     SessionImpact {
         affected_nodes: affected_nodes.into_iter().collect(),
         retired_nodes: retired_nodes.into_iter().collect(),
@@ -605,6 +703,7 @@ fn build_impact(
             .collect(),
         route_edges: route_edges.into_iter().collect(),
         sanitize_view_state,
+        geometry,
     }
 }
 
@@ -680,5 +779,62 @@ fn extend_binding_nodes(
             | GraphLocalBindingTarget::Group { .. }
             | GraphLocalBindingTarget::StickyNote { .. } => {}
         }
+    }
+}
+
+fn extend_binding_geometry(impact: &mut GeometryImpact, binding: &Binding) {
+    for target in [
+        binding.subject.graph_local_target(),
+        binding.target.graph_local_target(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match target {
+            GraphLocalBindingTarget::Graph => impact.make_global(),
+            GraphLocalBindingTarget::Node { id } => {
+                impact.nodes.insert(id);
+            }
+            GraphLocalBindingTarget::Port { id } => {
+                impact.ports.insert(id);
+            }
+            GraphLocalBindingTarget::Edge { id } => {
+                impact.incident_edges.insert(id);
+            }
+            GraphLocalBindingTarget::Group { .. } | GraphLocalBindingTarget::StickyNote { .. } => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imports_and_graph_footprints_require_global_geometry_invalidation() {
+        let mut import_footprint = GraphMutationFootprint::new();
+        import_footprint.touch_import(GraphId::from_u128(0x101));
+        assert!(GeometryImpact::from_footprint(&import_footprint).is_global());
+
+        let mut graph_footprint = GraphMutationFootprint::new();
+        graph_footprint.touch_graph();
+        assert!(GeometryImpact::from_footprint(&graph_footprint).is_global());
+    }
+
+    #[test]
+    fn graph_binding_requires_global_geometry_invalidation() {
+        let binding = Binding::graph_local_to_source(
+            GraphLocalBindingTarget::Graph,
+            "fixture://graph",
+            serde_json::Value::Null,
+        );
+        let mut impact = GeometryImpact::default();
+
+        extend_binding_geometry(&mut impact, &binding);
+
+        assert!(impact.is_global());
+        assert!(impact.nodes().is_empty());
+        assert!(impact.ports().is_empty());
+        assert!(impact.incident_edges().is_empty());
     }
 }
