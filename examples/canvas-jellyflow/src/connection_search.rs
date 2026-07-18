@@ -1,5 +1,6 @@
 use std::fmt;
 use std::rc::Rc;
+use std::time::Duration;
 
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
@@ -11,7 +12,7 @@ use jellyflow_open_gpui::{
 };
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
+    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Task,
     WeakFocusHandle, Window, div, px, rgb,
 };
 use open_gpui_ui_components::gpui_adapter::TextInputController;
@@ -28,7 +29,73 @@ pub const NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR: &str =
 pub const NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR: &str = "jellyflow-native-search-retry";
 pub const NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR: &str =
     "jellyflow-native-connection-search-loading";
+pub const NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR: &str =
+    "jellyflow-native-connection-search-results";
 const NATIVE_CONNECTION_SEARCH_INPUT_SELECTOR: &str = "jellyflow-native-connection-search-input";
+const NATIVE_CONNECTION_SEARCH_SAFE_INSET: f32 = 12.0;
+const NATIVE_CONNECTION_SEARCH_PREFERRED_WIDTH: f32 = 320.0;
+const NATIVE_CONNECTION_SEARCH_MAX_HEIGHT: f32 = 480.0;
+const NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_MAX_HEIGHT: f32 = 96.0;
+const NATIVE_CONNECTION_SEARCH_READY_CHROME_HEIGHT: f32 = 112.0;
+const NATIVE_CONNECTION_SEARCH_ERROR_CHROME_HEIGHT: f32 = 216.0;
+const NATIVE_CONNECTION_SEARCH_MIN_RESULTS_HEIGHT: f32 = 48.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NativeConnectionSearchLayout {
+    left: f32,
+    top: f32,
+    width: f32,
+    max_height: f32,
+    results_max_height: f32,
+}
+
+impl NativeConnectionSearchLayout {
+    fn resolve(
+        surface: ViewSize,
+        anchor: jellyflow::runtime::ViewPoint,
+        has_diagnostic: bool,
+    ) -> Self {
+        let surface_width = finite_non_negative(surface.width);
+        let surface_height = finite_non_negative(surface.height);
+        let available_width = (surface_width - 2.0 * NATIVE_CONNECTION_SEARCH_SAFE_INSET).max(0.0);
+        let available_height =
+            (surface_height - 2.0 * NATIVE_CONNECTION_SEARCH_SAFE_INSET).max(0.0);
+        let width = NATIVE_CONNECTION_SEARCH_PREFERRED_WIDTH.min(available_width);
+        let max_height = NATIVE_CONNECTION_SEARCH_MAX_HEIGHT.min(available_height);
+        let reserved_height = if has_diagnostic {
+            NATIVE_CONNECTION_SEARCH_ERROR_CHROME_HEIGHT
+        } else {
+            NATIVE_CONNECTION_SEARCH_READY_CHROME_HEIGHT
+        };
+        let results_max_height = (max_height - reserved_height)
+            .max(NATIVE_CONNECTION_SEARCH_MIN_RESULTS_HEIGHT)
+            .min(max_height);
+        let right_limit = (surface_width - NATIVE_CONNECTION_SEARCH_SAFE_INSET - width).max(0.0);
+        let bottom_limit =
+            (surface_height - NATIVE_CONNECTION_SEARCH_SAFE_INSET - max_height).max(0.0);
+        Self {
+            left: finite_non_negative(anchor.x).clamp(
+                NATIVE_CONNECTION_SEARCH_SAFE_INSET.min(right_limit),
+                right_limit,
+            ),
+            top: finite_non_negative(anchor.y).clamp(
+                NATIVE_CONNECTION_SEARCH_SAFE_INSET.min(bottom_limit),
+                bottom_limit,
+            ),
+            width,
+            max_height,
+            results_max_height,
+        }
+    }
+}
+
+fn finite_non_negative(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
 
 /// Application-owned source for one revision-bound create-from-wire query.
 pub trait NativeConnectionSearchSource {
@@ -94,6 +161,7 @@ pub struct NativeGraphSurface {
     cleanup_search_focus: bool,
     previous_focus: Option<WeakFocusHandle>,
     surface_focus: FocusHandle,
+    search_load_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -147,6 +215,7 @@ impl NativeGraphSurface {
             cleanup_search_focus: false,
             previous_focus: None,
             surface_focus: cx.focus_handle(),
+            search_load_task: None,
             _subscriptions: vec![host_subscription, query_subscription],
         }
     }
@@ -171,6 +240,7 @@ impl NativeGraphSurface {
                     .as_ref()
                     .is_none_or(|search| search.request != request) =>
             {
+                self.search_load_task = None;
                 self.query_controller
                     .update(cx, |controller, cx| controller.set_value("", cx));
                 self.search = Some(NativeConnectionSearch {
@@ -189,6 +259,7 @@ impl NativeGraphSurface {
             }
             None => {
                 if self.search.take().is_some() {
+                    self.search_load_task = None;
                     self.focus_search_on_next_render = false;
                     self.cleanup_search_focus = true;
                     self.query_controller
@@ -273,6 +344,40 @@ impl NativeGraphSurface {
         cx.notify();
     }
 
+    fn schedule_search_load(
+        &mut self,
+        request: ConnectionSearchRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.search_load_task.is_some()
+            || self
+                .search
+                .as_ref()
+                .is_none_or(|search| search.request != request)
+        {
+            return;
+        }
+        let window_handle = window.window_handle();
+        self.search_load_task = Some(cx.spawn(async move |surface, cx| {
+            cx.background_executor().timer(Duration::ZERO).await;
+            let _ = cx.update(|cx| {
+                window_handle.update(cx, |_, window, cx| {
+                    let _ = surface.update(cx, |surface, cx| {
+                        surface.search_load_task = None;
+                        if surface.search.as_ref().is_some_and(|search| {
+                            search.request == request
+                                && search.candidates.is_none()
+                                && search.diagnostic.is_none()
+                        }) {
+                            surface.load_search(request, window, cx);
+                        }
+                    });
+                })
+            });
+        }));
+    }
+
     fn candidate_rows(
         catalog: &NodeCatalog,
         candidates: &CreateFromWireCandidates,
@@ -324,6 +429,7 @@ impl NativeGraphSurface {
             search.rows.clear();
             search.diagnostic = None;
         }
+        self.search_load_task = None;
         self.load_search(request, window, cx);
     }
 
@@ -399,6 +505,7 @@ impl NativeGraphSurface {
 
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
+        self.search_load_task = None;
         self.focus_search_on_next_render = false;
         self.cleanup_search_focus = false;
         self.query_controller
@@ -441,16 +548,23 @@ impl NativeGraphSurface {
             ViewSize::new(fallback.width, fallback.height)
         });
         let anchor = search.request.position().view();
-        let left = anchor.x.clamp(12.0, (surface_size.width - 332.0).max(12.0));
-        let top = anchor
-            .y
-            .clamp(12.0, (surface_size.height - 360.0).max(12.0));
         let surface = cx.weak_entity();
         let backdrop_surface = surface.clone();
         let retry_surface = surface.clone();
         let diagnostic = search.diagnostic.clone();
         let show_retry = diagnostic.is_some() && !committing;
-        let mut results = div().flex().flex_col().gap(px(6.0));
+        let layout =
+            NativeConnectionSearchLayout::resolve(surface_size, anchor, diagnostic.is_some());
+        let mut results = div()
+            .id(NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR)
+            .debug_selector(|| NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR.to_owned())
+            .min_h(px(0.0))
+            .max_h(px(layout.results_max_height))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .overflow_y_scroll()
+            .scrollbar_width(px(7.0));
         for row_index in row_indices {
             let row = &search.rows[row_index];
             let candidate_surface = surface.clone();
@@ -511,7 +625,8 @@ impl NativeGraphSurface {
         }
         let panel = div()
             .debug_selector(|| NATIVE_CONNECTION_SEARCH_SELECTOR.to_owned())
-            .w(px(320.0))
+            .w(px(layout.width))
+            .max_h(px(layout.max_height))
             .p(px(10.0))
             .flex()
             .flex_col()
@@ -535,8 +650,12 @@ impl NativeGraphSurface {
             .child(results)
             .children(diagnostic.map(|message| {
                 div()
+                    .id(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR)
                     .debug_selector(|| NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR.to_owned())
                     .p(px(8.0))
+                    .max_h(px(NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .scrollbar_width(px(7.0))
                     .rounded(px(4.0))
                     .bg(rgb(0x3a292b))
                     .text_xs()
@@ -567,8 +686,8 @@ impl NativeGraphSurface {
                 .child(
                     div()
                         .absolute()
-                        .left(px(left))
-                        .top(px(top))
+                        .left(px(layout.left))
+                        .top(px(layout.top))
                         .child(OpenGpuiOverlayInteractionBoundary::wrap(panel)),
                 ),
         )
@@ -588,7 +707,7 @@ impl Render for NativeGraphSurface {
             .filter(|search| search.candidates.is_none() && search.diagnostic.is_none())
             .map(|search| search.request)
         {
-            self.load_search(request, window, cx);
+            self.schedule_search_load(request, window, cx);
         }
         if self.cleanup_search_focus {
             self.cleanup_search_focus = false;
@@ -628,4 +747,43 @@ pub const fn native_connection_search_input_selector() -> &'static str {
 #[must_use]
 pub fn native_connection_search_candidate_selector(kind: &str, port: &str) -> String {
     format!("jellyflow-native-connection-search-candidate-{kind}-{port}")
+}
+
+#[cfg(test)]
+mod tests {
+    use jellyflow::runtime::{ViewPoint, ViewSize};
+
+    use super::*;
+
+    #[test]
+    fn compact_product_surface_clamps_search_to_the_twelve_pixel_safe_area() {
+        let layout = NativeConnectionSearchLayout::resolve(
+            ViewSize::new(680.0, 640.0),
+            ViewPoint::new(670.0, 630.0),
+            true,
+        );
+
+        assert_eq!(layout.width, 320.0);
+        assert_eq!(layout.max_height, 480.0);
+        assert_eq!(layout.results_max_height, 264.0);
+        assert_eq!(layout.left, 348.0);
+        assert_eq!(layout.top, 148.0);
+        assert!(layout.left + layout.width <= 680.0 - NATIVE_CONNECTION_SEARCH_SAFE_INSET);
+        assert!(layout.top + layout.max_height <= 640.0 - NATIVE_CONNECTION_SEARCH_SAFE_INSET);
+    }
+
+    #[test]
+    fn narrower_surfaces_shrink_the_panel_and_keep_a_bounded_results_viewport() {
+        let layout = NativeConnectionSearchLayout::resolve(
+            ViewSize::new(260.0, 300.0),
+            ViewPoint::new(f32::INFINITY, f32::NAN),
+            true,
+        );
+
+        assert_eq!(layout.left, 12.0);
+        assert_eq!(layout.top, 12.0);
+        assert_eq!(layout.width, 236.0);
+        assert_eq!(layout.max_height, 276.0);
+        assert_eq!(layout.results_max_height, 60.0);
+    }
 }

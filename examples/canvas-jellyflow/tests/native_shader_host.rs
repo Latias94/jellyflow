@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use jellyflow::core::types::TypeDesc;
@@ -15,11 +15,14 @@ use jellyflow::runtime::{
 use jellyflow_open_gpui::{
     OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
 };
-use open_gpui::{AppContext, MouseButton, point, px};
+use open_gpui::{
+    AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, div, point, px,
+};
 use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::connection_search::{
     NATIVE_CONNECTION_SEARCH_BACKDROP_SELECTOR, NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR,
-    NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR, NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR,
+    NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR, NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR,
+    NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR, NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR,
     NATIVE_CONNECTION_SEARCH_SELECTOR, NATIVE_GRAPH_SURFACE_SELECTOR, NativeConnectionSearchSource,
     NativeConnectionSearchSourceError, NativeGraphSurface,
     native_connection_search_candidate_selector, native_connection_search_input_selector,
@@ -718,6 +721,20 @@ impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
     }
 }
 
+struct CompactGraphSurface {
+    graph: Entity<NativeGraphSurface>,
+}
+
+impl Render for CompactGraphSurface {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        div().w(px(680.0)).h(px(640.0)).child(self.graph.clone())
+    }
+}
+
 #[open_gpui::test]
 fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
     cx: &mut open_gpui::TestAppContext,
@@ -746,6 +763,7 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
     );
     draw(cx);
     assert_eq!(source_observer.attempts(), 1);
+    draw(cx);
     let candidate_selector =
         native_connection_search_candidate_selector(BLUEPRINT_CALL_KIND, "value");
     let before_failed_query = runtime.snapshot().expect("before failed query");
@@ -812,6 +830,109 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
             .expect("history after recovered query"),
         history_before_failed_query,
     );
+}
+
+#[open_gpui::test]
+fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bounds(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("compact shader search runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("compact shader search view");
+    let search_source = Rc::new(FailOnceConnectionSearchSource::new());
+    let source_observer = Rc::clone(&search_source);
+    let captured_surface = Rc::new(RefCell::new(None));
+    let surface_capture = Rc::clone(&captured_surface);
+    let (_root, cx) = cx.add_window_view(move |_, cx| {
+        let graph = cx.new(|cx| {
+            NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
+        });
+        *surface_capture.borrow_mut() = Some(graph.clone());
+        CompactGraphSurface { graph }
+    });
+    let surface = captured_surface
+        .borrow()
+        .clone()
+        .expect("captured compact graph surface");
+    draw(cx);
+
+    let graph_bounds = cx
+        .debug_bounds(NATIVE_GRAPH_SURFACE_SELECTOR)
+        .expect("compact graph bounds");
+    assert_eq!(graph_bounds.size.width, px(680.0));
+    assert_eq!(graph_bounds.size.height, px(640.0));
+    let output = cx
+        .debug_bounds(&shader_port_selector(output_id()))
+        .expect("compact shader output");
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(
+        point(
+            graph_bounds.origin.x + px(660.0),
+            graph_bounds.origin.y + px(620.0),
+        ),
+        MouseButton::Left,
+        Default::default(),
+    );
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    assert_eq!(source_observer.attempts(), 0);
+    let loading = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+        .expect("compact loading state paints before candidate resolution");
+    assert_bounds_inside_safe_area(loading, graph_bounds, 12.0);
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(source_observer.attempts(), 1);
+
+    for selector in [
+        NATIVE_CONNECTION_SEARCH_SELECTOR,
+        NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR,
+        NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR,
+        NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR,
+    ] {
+        let bounds = cx.debug_bounds(selector).expect("compact search state");
+        assert_bounds_inside_safe_area(bounds, graph_bounds, 12.0);
+    }
+
+    let retry = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR)
+        .expect("compact retry control");
+    cx.simulate_click(retry.center(), Default::default());
+    draw(cx);
+    let candidate = cx
+        .debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .expect("compact ready candidate");
+    assert_bounds_inside_safe_area(candidate, graph_bounds, 12.0);
+
+    let input = cx
+        .debug_bounds(native_connection_search_input_selector())
+        .expect("compact search input");
+    cx.simulate_click(input.center(), Default::default());
+    cx.simulate_input("no-such-compatible-node");
+    draw(cx);
+    let empty = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR)
+        .expect("compact empty state");
+    let results = cx
+        .debug_bounds(NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR)
+        .expect("compact bounded results viewport");
+    assert!(results.contains(&empty.center()));
+    assert_bounds_inside_safe_area(results, graph_bounds, 12.0);
+    cx.read_entity(&surface, |surface, cx| {
+        assert!(
+            surface
+                .host()
+                .read(cx)
+                .connection_search_request()
+                .is_some()
+        );
+    });
 }
 
 #[open_gpui::test]
@@ -1622,6 +1743,24 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
         window.draw(cx).clear();
     });
     cx.run_until_parked();
+}
+
+fn assert_bounds_inside_safe_area(
+    bounds: open_gpui::Bounds<open_gpui::Pixels>,
+    parent: open_gpui::Bounds<open_gpui::Pixels>,
+    inset: f32,
+) {
+    let inset = px(inset);
+    assert!(bounds.origin.x >= parent.origin.x + inset, "{bounds:?}");
+    assert!(bounds.origin.y >= parent.origin.y + inset, "{bounds:?}");
+    assert!(
+        bounds.origin.x + bounds.size.width <= parent.origin.x + parent.size.width - inset,
+        "{bounds:?}",
+    );
+    assert!(
+        bounds.origin.y + bounds.size.height <= parent.origin.y + parent.size.height - inset,
+        "{bounds:?}",
+    );
 }
 
 struct RejectBlueprintDynamicPinProfile;
