@@ -22,7 +22,7 @@ pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 use self::connection::MountedConnectionOwner;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
 use self::focus_navigation::OpenGpuiGraphFocusCoordinator;
-use self::frame_feedback::DeferredFrameFeedback;
+use self::frame_feedback::{DeferredFrameFeedback, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
 #[cfg(test)]
@@ -137,6 +137,8 @@ pub struct OpenGpuiSceneHost {
         jellyflow::runtime::InteractionTicketId,
         OpenGpuiCommandPrefixBarrierResult,
     )>,
+    pending_node_size_submission: Option<PendingNodeSizeSubmission>,
+    ready_node_size_prefixes: VecDeque<OpenGpuiCommandPrefixBarrierResult>,
     interaction_tick_scheduled: bool,
     last_interaction_tick_at: Option<Instant>,
     connection_owner: Option<MountedConnectionOwner>,
@@ -232,6 +234,8 @@ impl OpenGpuiSceneHost {
             pending_interaction_queries: VecDeque::new(),
             pending_interaction_submission: None,
             ready_interaction_prefixes: VecDeque::new(),
+            pending_node_size_submission: None,
+            ready_node_size_prefixes: VecDeque::new(),
             interaction_tick_scheduled: false,
             last_interaction_tick_at: None,
             connection_owner: None,
@@ -663,15 +667,6 @@ impl Render for OpenGpuiSceneHost {
         };
         self.record_frame_materialization_overflow(frame.materialization_overflow());
         let collector = frame.collector();
-        let command_batch = match self.commands.collect_next_batch(&collector) {
-            Ok(batch) => batch,
-            Err(error) => {
-                return self.frame_failure(
-                    format!("failed to collect native command batch: {error}"),
-                    cx,
-                );
-            }
-        };
         let presentation_offsets = self.interaction_node_drag_offsets();
         let measurements = Rc::new(OpenGpuiPendingMeasurements::new(
             frame.nodes(),
@@ -687,6 +682,17 @@ impl Render for OpenGpuiSceneHost {
             window,
             cx,
         );
+        self.process_one_ready_node_size_prefix(cx);
+        self.schedule_pending_node_size_prefix(cx);
+        let command_batch = match self.commands.collect_next_batch(&collector) {
+            Ok(batch) => batch,
+            Err(error) => {
+                return self.frame_failure(
+                    format!("failed to collect native command batch: {error}"),
+                    cx,
+                );
+            }
+        };
         if let Err(error) = self.sync_binding_presentations(window, cx) {
             self.record_feedback_failure(None, error.to_string());
         }

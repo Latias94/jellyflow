@@ -936,6 +936,7 @@ impl OpenGpuiSceneHost {
                 .w(px(20.0))
                 .h(px(20.0))
                 .rounded_full()
+                .cursor(CursorStyle::PointingHand)
                 .border_1()
                 .border_color(focus.opacity(0.0))
                 .focus_visible(move |style| style.border_2().border_color(focus))
@@ -1074,6 +1075,7 @@ impl OpenGpuiSceneHost {
                     .items_center()
                     .justify_center()
                     .rounded_full()
+                    .cursor(CursorStyle::DragLink)
                     .border_1()
                     .border_color(focus.opacity(0.0))
                     .focus_visible(move |style| style.border_2().border_color(focus))
@@ -1812,7 +1814,7 @@ impl OpenGpuiSceneHost {
                     let Some(host) = host.upgrade() else {
                         return;
                     };
-                    let deferred = host.update(cx, |host, _| {
+                    let deferred = host.update(cx, |host, cx| {
                         let mut resolutions = Vec::new();
                         host.scene_origin = Some(measured_origin);
                         host.scene_transform = Some(transform);
@@ -1828,14 +1830,13 @@ impl OpenGpuiSceneHost {
                             host.take_prepaint_measurement_errors(&feedback.measurements);
                         let mut request_next_frame =
                             viewport_changed || feedback.requires_follow_up_frame();
-                        request_next_frame |=
-                            host.observe_content_measurements(&feedback.measurements);
                         let mut submission_panic = None;
                         match feedback.submit(&host.view) {
                             DeferredFeedbackSubmission::Submitted(receipt) => {
                                 host.stats.feedback_submissions =
                                     host.stats.feedback_submissions.saturating_add(1);
-                                request_next_frame |= host.handle_feedback_receipt(&receipt);
+                                let disposition = host.handle_feedback_receipt(&receipt);
+                                request_next_frame |= disposition.request_next_frame;
                                 let completed = match feedback.complete_commands(receipt) {
                                     Ok(completed) => Ok(completed),
                                     Err(error) => {
@@ -1851,6 +1852,10 @@ impl OpenGpuiSceneHost {
                                     }
                                 };
                                 resolutions.extend(host.settle_command_batch(completed));
+                                request_next_frame |= host.observe_content_measurements(
+                                    &feedback.measurements,
+                                    &disposition.accepted_content_nodes,
+                                );
                             }
                             DeferredFeedbackSubmission::Failed(
                                 DeferredFeedbackError::Measurement(error),
@@ -1932,6 +1937,8 @@ impl OpenGpuiSceneHost {
                         for error in measurement_errors {
                             host.record_measurement_failure(error);
                         }
+                        host.schedule_pending_node_size_prefix(cx);
+                        request_next_frame |= host.node_size_submission_needs_frame();
                         (request_next_frame, resolutions, submission_panic)
                     });
                     let (request_next_frame, resolutions, submission_panic) = deferred;
@@ -2216,6 +2223,14 @@ fn build_edge_marker_path(
         y: direction.x,
     };
     let radius = diameter * 0.5;
+    let center = if shape == OpenGpuiEdgeMarkerShape::Arrow {
+        point(
+            center.x - px(direction.x * radius),
+            center.y - px(direction.y * radius),
+        )
+    } else {
+        center
+    };
     let at = |forward: f32, lateral: f32| {
         point(
             center.x + px(direction.x * forward + normal.x * lateral),
@@ -2249,6 +2264,40 @@ fn build_edge_marker_path(
     let mut builder = PathBuilder::fill();
     builder.add_polygon(&points, true);
     builder.build().ok()
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn arrow_tip_terminates_at_the_endpoint_for_both_directions() {
+        let endpoint = point(px(100.0), px(40.0));
+        let tangent = CanvasPoint { x: 1.0, y: 0.0 };
+
+        let target = build_edge_marker_path(
+            endpoint,
+            tangent,
+            OpenGpuiEdgeMarkerShape::Arrow,
+            8.0,
+            false,
+        )
+        .expect("target arrow");
+        assert!((target.bounds.origin.x.as_f32() - 92.0).abs() <= f32::EPSILON);
+        assert!(
+            (target.bounds.origin.x.as_f32() + target.bounds.size.width.as_f32() - 100.0).abs()
+                <= f32::EPSILON
+        );
+
+        let source =
+            build_edge_marker_path(endpoint, tangent, OpenGpuiEdgeMarkerShape::Arrow, 8.0, true)
+                .expect("source arrow");
+        assert!((source.bounds.origin.x.as_f32() - 100.0).abs() <= f32::EPSILON);
+        assert!(
+            (source.bounds.origin.x.as_f32() + source.bounds.size.width.as_f32() - 108.0).abs()
+                <= f32::EPSILON
+        );
+    }
 }
 
 fn edge_paint_item_key(

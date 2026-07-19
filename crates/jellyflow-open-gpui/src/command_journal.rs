@@ -516,6 +516,7 @@ impl OpenGpuiCommandJournal {
             .ok_or(OpenGpuiCommandEnqueueError::IdentityExhausted)
     }
 
+    #[cfg(test)]
     pub(crate) fn enqueue_detached(
         &self,
         command: GraphCommand,

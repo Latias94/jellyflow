@@ -11,8 +11,8 @@ use jellyflow::runtime::{
 };
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy, OpenGpuiNodeBinding,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy,
-    OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizeConvergence,
+    OpenGpuiNodeSizePolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
@@ -48,6 +48,21 @@ struct RepeatedPrepaintPortNode {
 struct ContentMeasuredNode {
     binding: Entity<OpenGpuiNodeBinding>,
     height: Rc<Cell<f32>>,
+}
+
+struct PrefixQueuedContentNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    render_count: usize,
+}
+
+struct AlternatingContentNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+}
+
+struct StaleContentMeasuredNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    runtime: Rc<GraphRuntime>,
+    render_count: usize,
 }
 
 struct RuntimeDroppingIncompleteNode {
@@ -169,6 +184,95 @@ impl Render for ContentMeasuredNode {
                 .h(px(self.height.get()))
                 .child("content-authoritative node"),
         )
+    }
+}
+
+impl Render for PrefixQueuedContentNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        self.render_count = self.render_count.saturating_add(1);
+        if self.render_count == 2 {
+            let snapshot = self.binding.read(cx).snapshot().clone();
+            let read = snapshot.read().expect("prefix fixture binding stays live");
+            let _ticket = read
+                .enqueue_command(cx, |read| {
+                    GraphCommand::set_node_data(
+                        read.graph_revision(),
+                        NodeId::from_u128(10),
+                        serde_json::json!({ "prefix": true }),
+                    )
+                })
+                .expect("prefix fixture command enters the host journal");
+        }
+        self.binding.read(cx).measure_content(
+            div()
+                .w(px(220.0))
+                .h(px(176.0))
+                .child("prefix-ordered content node"),
+        )
+    }
+}
+
+impl Render for AlternatingContentNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        let binding = self.binding.read(cx);
+        let height = binding
+            .snapshot()
+            .read()
+            .expect("alternating fixture binding stays live")
+            .node()
+            .size
+            .expect("alternating fixture has an authoritative size")
+            .height;
+        let measured_height = if height < 130.0 { 140.0 } else { 120.0 };
+        binding.measure_content(
+            div()
+                .w(px(220.0))
+                .h(px(measured_height))
+                .child("alternating content node"),
+        )
+    }
+}
+
+impl Render for StaleContentMeasuredNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        self.render_count = self.render_count.saturating_add(1);
+        if self.render_count == 2 {
+            let revision = self
+                .runtime
+                .snapshot()
+                .expect("stale fixture snapshot")
+                .revision();
+            self.runtime
+                .execute(GraphCommand::set_node_data(
+                    revision,
+                    NodeId::from_u128(10),
+                    serde_json::json!({ "height": 244.0 }),
+                ))
+                .expect("stale fixture updates the same node");
+        }
+        let binding = self.binding.read(cx);
+        let height = binding
+            .snapshot()
+            .read()
+            .expect("stale fixture binding stays live")
+            .node()
+            .data
+            .get("height")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(176.0) as f32;
+        binding.measure_content(div().w(px(220.0)).h(px(height)).child("stale content node"))
     }
 }
 
@@ -448,6 +552,103 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
 }
 
 #[open_gpui::test]
+fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(80.0, 320.0).expect("valid content-height bounds"),
+        ),
+    );
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register_with_policy(RENDERER, policy, |binding, _window, cx| {
+        cx.new(|_| PrefixQueuedContentNode {
+            binding,
+            render_count: 0,
+        })
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            viewport(),
+        )
+    });
+
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("prefix and size commands settle");
+    let node = snapshot
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("content node remains present");
+    assert_eq!(snapshot.revision(), 2);
+    assert_eq!(node.data, serde_json::json!({ "prefix": true }));
+    assert_eq!(
+        node.size,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 176.0,
+        })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert!(host.last_diagnostic().is_none());
+    });
+}
+
+#[open_gpui::test]
+fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui::TestAppContext) {
+    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let convergence =
+        OpenGpuiNodeSizeConvergence::new(0.5, 2, 4).expect("valid bounded convergence fixture");
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(80.0, 320.0)
+                .expect("valid content-height bounds")
+                .with_convergence(convergence),
+        ),
+    );
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register_with_policy(RENDERER, policy, |binding, _window, cx| {
+        cx.new(|_| AlternatingContentNode { binding })
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            viewport(),
+        )
+    });
+
+    draw(cx);
+
+    assert_eq!(runtime.snapshot().expect("frozen graph").revision(), 4);
+    cx.read_entity(&host, |host, _| {
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("alternating convergence emits one diagnostic");
+        assert_eq!(diagnostic.kind(), OpenGpuiSceneHostDiagnosticKind::Feedback);
+        assert!(diagnostic.message().contains("reason=AlternatingCycle"));
+        assert!(diagnostic.message().contains("attempts=4"));
+    });
+
+    let settled_revision = runtime.snapshot().expect("settled graph").revision();
+    for _ in 0..120 {
+        draw(cx);
+    }
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("quiescent frozen graph")
+            .revision(),
+        settled_revision
+    );
+}
+
+#[open_gpui::test]
 fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -524,6 +725,54 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
     let geometry = weak_view.geometry_snapshot().unwrap();
     assert!(geometry.port(input_id()).is_some());
     assert!(geometry.port(output_id()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().feedback_failures(), 0);
+        assert!(host.last_diagnostic().is_none());
+    });
+}
+
+#[open_gpui::test]
+fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::TestAppContext) {
+    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(80.0, 320.0).expect("valid content-height bounds"),
+        ),
+    );
+    let factory_runtime = Rc::clone(&runtime);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
+        cx.new(|_| StaleContentMeasuredNode {
+            binding,
+            runtime: Rc::clone(&factory_runtime),
+            render_count: 0,
+        })
+    });
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            viewport(),
+        )
+    });
+
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("fresh content size settles");
+    let node = snapshot
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("content node remains present");
+    assert_eq!(snapshot.revision(), 2);
+    assert_eq!(node.data, serde_json::json!({ "height": 244.0 }));
+    assert_eq!(
+        node.size,
+        Some(CanvasSize {
+            width: 220.0,
+            height: 244.0,
+        })
+    );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.stats().feedback_failures(), 0);
         assert!(host.last_diagnostic().is_none());

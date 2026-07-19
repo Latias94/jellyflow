@@ -10,10 +10,11 @@ use jellyflow::runtime::{
     side_anchor,
 };
 use open_gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Div, Element, ElementId, EntityId, FocusHandle,
-    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, Role, Stateful, StatefulInteractiveElement, Window, div, point, px, size,
+    AnyElement, App, Bounds, CursorStyle, DispatchPhase, Div, Element, ElementId, EntityId,
+    FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement,
+    IntoElement, KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Role, Stateful, StatefulInteractiveElement, Window, div, point, px,
+    size,
 };
 
 use crate::accessibility::{
@@ -613,6 +614,7 @@ impl Element for OpenGpuiPortInteractionElement {
         }
 
         let hitbox = hitbox.clone();
+        window.set_cursor_style(CursorStyle::Crosshair, &hitbox);
         let owner = self.owner.clone();
         let listener = self.listener.clone();
         let activity = self.activity.clone();

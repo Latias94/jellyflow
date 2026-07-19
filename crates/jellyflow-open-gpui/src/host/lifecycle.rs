@@ -531,6 +531,7 @@ impl OpenGpuiSceneHost {
             .cancel_deferred(OpenGpuiSceneGestureCancelReason::HostClosed);
         self.canvas_interaction.close();
         self.discard_pending_interaction_submission();
+        self.discard_pending_node_size_submission();
         self.connection_owner = None;
         self.scene_origin = None;
         self.scene_transform = None;

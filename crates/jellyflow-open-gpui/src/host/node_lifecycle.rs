@@ -251,7 +251,13 @@ impl OpenGpuiSceneHost {
     ) -> MountedNode {
         let previous_size = mounted.semantic_zoom.canonical_size();
         mounted.semantic_zoom.reconcile(frame, &self.catalog);
-        if mounted.semantic_zoom.canonical_size() != previous_size {
+        let canonical_size = mounted.semantic_zoom.canonical_size();
+        if canonical_size != previous_size
+            && !mounted.size_state.recognizes_authoritative_size(
+                mounted.registration_policy.size_policy(),
+                canonical_size,
+            )
+        {
             mounted.content_epoch = mounted.content_epoch.saturating_add(1);
         }
         mounted

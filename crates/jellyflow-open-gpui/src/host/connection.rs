@@ -769,7 +769,8 @@ impl OpenGpuiSceneHost {
         let presentation = self.canvas_interaction.presentation();
         let native_armed = presentation.phase() == CanvasInteractionPhase::Armed
             && self.connection_owner.as_ref().is_some_and(|current| {
-                self.interactions.active_owner().as_ref() == Some(&current.owner)
+                self.canvas_interaction
+                    .uses_owner(InteractionOwner::Port(current.owner.port()))
             });
         if presentation.connection().is_none() && !native_armed {
             if let Some(current) = self.connection_owner.as_ref() {

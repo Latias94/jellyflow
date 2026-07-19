@@ -2251,6 +2251,16 @@ impl CanvasInteractionSession {
         update.with_damage(damage)
     }
 
+    /// Reports whether the active semantic interaction still references an owner.
+    ///
+    /// Native adapters may keep pointer capture in a renderer-specific coordinator while
+    /// the renderer-neutral session owns the interaction. This query lets those adapters
+    /// validate lifecycle continuity without assuming which coordinator started the gesture.
+    #[must_use]
+    pub fn uses_owner(&self, owner: InteractionOwner) -> bool {
+        state_uses_owner(&self.state, owner)
+    }
+
     pub fn close(&mut self) -> CanvasInteractionUpdate {
         if self.closed {
             return CanvasInteractionUpdate::default();
@@ -3074,6 +3084,52 @@ mod tests {
         let released = session.release(position(3.0, 0.0)).unwrap();
         assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
         assert!(released.effects().is_empty());
+    }
+
+    #[test]
+    fn semantic_owner_query_tracks_connection_before_and_after_activation() {
+        let edge = EdgeId::from_u128(9);
+        let detached = source_port();
+        let fixed = target_port();
+        let node = source_node();
+        let start = ConnectionInteractionStart::new(
+            node,
+            ConnectionGestureIntent::reconnect(
+                edge,
+                EdgeEndpoint::To,
+                detached,
+                fixed,
+                NodeGraphConnectionMode::Strict,
+            ),
+            CanvasPoint { x: 0.0, y: 8.0 },
+            HandlePosition::Right,
+            false,
+        )
+        .unwrap();
+        let mut session = test_session(CanvasInteractionConfig::default());
+
+        session
+            .press(CanvasPressTarget::Connection(start), position(0.0, 0.0))
+            .unwrap();
+        for owner in [
+            InteractionOwner::Node(node),
+            InteractionOwner::Port(detached),
+            InteractionOwner::Port(fixed),
+            InteractionOwner::Edge(edge),
+        ] {
+            assert!(session.uses_owner(owner));
+        }
+        assert!(!session.uses_owner(InteractionOwner::Node(NodeId::from_u128(999))));
+
+        session.move_to(position(8.0, 0.0)).unwrap();
+        assert_eq!(
+            session.presentation().phase(),
+            CanvasInteractionPhase::ConnectionDrag
+        );
+        assert!(session.uses_owner(InteractionOwner::Port(detached)));
+
+        session.cancel();
+        assert!(!session.uses_owner(InteractionOwner::Port(detached)));
     }
 
     #[test]

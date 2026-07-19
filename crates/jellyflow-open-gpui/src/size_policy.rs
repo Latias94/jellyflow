@@ -310,6 +310,7 @@ pub(crate) struct OpenGpuiNodeSizeTicket(u64);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OpenGpuiNodeSizeCommand {
     ticket: OpenGpuiNodeSizeTicket,
+    epoch: OpenGpuiNodeSizeEpoch,
     size: CanvasSize,
 }
 
@@ -317,6 +318,11 @@ impl OpenGpuiNodeSizeCommand {
     #[must_use]
     pub const fn ticket(self) -> OpenGpuiNodeSizeTicket {
         self.ticket
+    }
+
+    #[must_use]
+    pub const fn epoch(self) -> OpenGpuiNodeSizeEpoch {
+        self.epoch
     }
 
     #[must_use]
@@ -484,6 +490,27 @@ impl OpenGpuiNodeSizeState {
         self.last_attempt_size = None;
         self.frozen = None;
         Ok(())
+    }
+
+    /// Returns whether a reconciled graph size is the latest size accepted by this reducer.
+    ///
+    /// Hosts use this to distinguish their own revisioned size command from an external
+    /// authoritative resize. The latter starts a new content epoch; the former must preserve the
+    /// current convergence attempt history.
+    #[must_use]
+    pub fn recognizes_authoritative_size(
+        &self,
+        policy: OpenGpuiNodeSizePolicy,
+        size: CanvasSize,
+    ) -> bool {
+        let Some(convergence) = policy.convergence() else {
+            return size == self.last_applied_size;
+        };
+        sizes_are_equivalent(
+            size,
+            self.last_applied_size,
+            convergence.epsilon_in_canvas(),
+        )
     }
 
     /// Observes one content measurement taken at native 1:1 scale.
@@ -660,6 +687,7 @@ impl OpenGpuiNodeSizeState {
         OpenGpuiNodeSizeUpdate {
             command: Some(OpenGpuiNodeSizeCommand {
                 ticket,
+                epoch: self.epoch,
                 size: desired_size,
             }),
             ..OpenGpuiNodeSizeUpdate::default()
