@@ -39,9 +39,8 @@ def _try_signal_posix_process_group(
 
 
 def _wait_for_posix_process_group_exit(
-    process: subprocess.Popen[bytes], timeout_seconds: float
+    process: subprocess.Popen[bytes], cleanup_deadline: float
 ) -> bool:
-    deadline = time.monotonic() + timeout_seconds
     while True:
         process.poll()
         probe = _try_signal_posix_process_group(process.pid, 0)
@@ -49,28 +48,37 @@ def _wait_for_posix_process_group_exit(
             return True
 
         # Only ESRCH proves exit; macOS can report EPERM for a zombie group leader.
-        remaining = deadline - time.monotonic()
+        remaining = cleanup_deadline - time.monotonic()
         if remaining <= 0:
             return False
         time.sleep(min(PROCESS_GROUP_POLL_SECONDS, remaining))
 
 
+def _remaining_cleanup_seconds(cleanup_deadline: float) -> float:
+    return max(0.0, cleanup_deadline - time.monotonic())
+
+
 def _terminate_posix_process_group(
-    process: subprocess.Popen[bytes], kill_grace_seconds: float
+    process: subprocess.Popen[bytes], cleanup_deadline: float
 ) -> None:
-    _try_signal_posix_process_group(process.pid, signal.SIGTERM)
-    if not _wait_for_posix_process_group_exit(process, kill_grace_seconds):
+    term_result = _try_signal_posix_process_group(process.pid, signal.SIGTERM)
+    if term_result is _ProcessGroupSignalResult.PERMISSION_DENIED:
+        raise PermissionError(
+            errno.EPERM,
+            f"could not terminate process group {process.pid}",
+        )
+    if not _wait_for_posix_process_group_exit(process, cleanup_deadline):
         kill_result = _try_signal_posix_process_group(process.pid, signal.SIGKILL)
         if kill_result is _ProcessGroupSignalResult.PERMISSION_DENIED:
             raise PermissionError(
                 errno.EPERM,
                 f"could not kill process group {process.pid}",
             )
-    process.wait()
+    process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
 
 
 def _terminate_single_process(
-    process: subprocess.Popen[bytes], kill_grace_seconds: float
+    process: subprocess.Popen[bytes], cleanup_deadline: float
 ) -> None:
     if process.poll() is None:
         try:
@@ -79,7 +87,7 @@ def _terminate_single_process(
             pass
 
     try:
-        process.wait(timeout=kill_grace_seconds)
+        process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
         return
     except subprocess.TimeoutExpired:
         pass
@@ -89,16 +97,16 @@ def _terminate_single_process(
             process.kill()
         except ProcessLookupError:
             pass
-    process.wait()
+    process.wait(timeout=_remaining_cleanup_seconds(cleanup_deadline))
 
 
 def _terminate_process_group(
-    process: subprocess.Popen[bytes], kill_grace_seconds: float
+    process: subprocess.Popen[bytes], cleanup_deadline: float
 ) -> None:
     if os.name == "posix":
-        _terminate_posix_process_group(process, kill_grace_seconds)
+        _terminate_posix_process_group(process, cleanup_deadline)
     else:
-        _terminate_single_process(process, kill_grace_seconds)
+        _terminate_single_process(process, cleanup_deadline)
 
 
 def _close_captured_pipes(process: subprocess.Popen[bytes]) -> None:
@@ -108,10 +116,14 @@ def _close_captured_pipes(process: subprocess.Popen[bytes]) -> None:
 
 
 def _drain_captured_output(
-    process: subprocess.Popen[bytes], original_error: BaseException
+    process: subprocess.Popen[bytes],
+    original_error: BaseException,
+    cleanup_deadline: float,
 ) -> None:
     try:
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(
+            timeout=_remaining_cleanup_seconds(cleanup_deadline)
+        )
     except BaseException as drain_error:
         _close_captured_pipes(process)
         original_error.add_note(
@@ -157,13 +169,14 @@ def run_process(
             stdout = None
             stderr = None
     except BaseException as operation_error:
+        cleanup_deadline = time.monotonic() + kill_grace_seconds
         process_group_cleaned = False
         try:
-            _terminate_process_group(process, kill_grace_seconds)
+            _terminate_process_group(process, cleanup_deadline)
             process_group_cleaned = True
         except BaseException as cleanup_error:
             try:
-                _terminate_single_process(process, kill_grace_seconds)
+                _terminate_single_process(process, cleanup_deadline)
             except BaseException as fallback_error:
                 cleanup_error.add_note(
                     f"direct-process cleanup also failed: {fallback_error!r}"
@@ -173,7 +186,11 @@ def run_process(
             )
         if capture_output:
             if process_group_cleaned:
-                _drain_captured_output(process, operation_error)
+                _drain_captured_output(
+                    process,
+                    operation_error,
+                    cleanup_deadline,
+                )
             else:
                 _close_captured_pipes(process)
         raise

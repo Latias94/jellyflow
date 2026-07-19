@@ -49,9 +49,7 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 kill_grace_seconds=0.01,
             )
 
-        self.assertEqual(attempted_signals[0], signal.SIGTERM)
-        self.assertIn(0, attempted_signals)
-        self.assertEqual(attempted_signals[-1], signal.SIGKILL)
+        self.assertEqual(attempted_signals, [signal.SIGTERM])
         self.assertTrue(
             any(
                 "process-group cleanup failed" in note
