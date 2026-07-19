@@ -326,6 +326,12 @@ impl EguiCanvasInteraction {
         view: &ViewSession,
         ctx: &Context,
     ) -> Result<EguiInteractionOutput, EguiInteractionError> {
+        if view.id() != self.session.view() {
+            return Err(EguiInteractionError::ViewMismatch);
+        }
+        if view.close_reason().is_none() {
+            self.ensure_view(view)?;
+        }
         let mut frame = self
             .frame
             .take()
@@ -337,7 +343,6 @@ impl EguiCanvasInteraction {
             self.clear_tracked_response();
             return Ok(finish_output(ctx, frame.output));
         }
-        self.ensure_view(view)?;
 
         if frame.escape_pressed || frame.pointer_gone {
             let update = self.session.cancel();
@@ -369,6 +374,10 @@ impl EguiCanvasInteraction {
             if frame.primary_released {
                 let position = pointer.ok_or(CanvasInteractionError::InvalidPosition)?;
                 self.last_position = Some(position);
+                if self.session.presentation().phase() == CanvasInteractionPhase::Armed {
+                    let update = self.session.move_to(position)?;
+                    self.process_update(view, update, &mut frame.output)?;
+                }
                 let update = self.session.release(position)?;
                 self.process_update(view, update, &mut frame.output)?;
                 self.release_native_ownership(ctx, &mut frame.output);

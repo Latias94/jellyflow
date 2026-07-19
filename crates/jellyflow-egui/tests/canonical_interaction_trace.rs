@@ -17,7 +17,9 @@ use jellyflow::runtime::{
     GraphRuntime, HandlePosition, InteractionTerminalReason, InteractionTicketId, RendererStamp,
     SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
-use jellyflow_egui::{EguiCanvasInteraction, EguiInteractionOutput, EguiInteractionQueryKind};
+use jellyflow_egui::{
+    EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiInteractionQueryKind,
+};
 use trace::{
     CanonicalInteractionTrace, TraceCancelReason, TraceCandidate, TraceEffect, TraceInput,
     TracePhase, TraceReceipt, TraceReconnectEndpoint, TraceTarget, control_and_drag_handle_traces,
@@ -92,6 +94,48 @@ fn egui_interaction_selection_remains_local_to_its_view() {
     );
     assert!(untouched.selection().unwrap().nodes().is_empty());
     assert!(untouched.geometry_snapshot().unwrap().nodes().is_empty());
+}
+
+#[test]
+fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
+    let mut runner = EguiTraceRunner::new();
+
+    assert_eq!(
+        runner.press(TraceTarget::NodeDragHandle(1)),
+        TraceEffect::None
+    );
+    assert_eq!(runner.observed_phase(), TracePhase::Armed);
+
+    let effect = runner.release_at(runner.state().anchors.empty);
+
+    assert_eq!(effect, TraceEffect::SubmitNodeMove);
+    assert_eq!(runner.observed_phase(), TracePhase::Committing);
+}
+
+#[test]
+fn foreign_closed_view_cannot_consume_the_owner_frame() {
+    let mut state = EguiTraceState::new();
+    let foreign = state
+        ._runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("foreign view");
+    foreign.close().expect("close foreign view");
+    let ctx = egui::Context::default();
+    let scene_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 500.0));
+
+    state
+        .interaction
+        .begin_frame(&state.view, &ctx, scene_rect)
+        .expect("open owner frame");
+    assert!(matches!(
+        state.interaction.end_frame(&foreign, &ctx),
+        Err(EguiInteractionError::ViewMismatch)
+    ));
+
+    state
+        .interaction
+        .end_frame(&state.view, &ctx)
+        .expect("owner still completes its frame");
 }
 
 struct EguiTraceRunner {
@@ -197,6 +241,20 @@ impl EguiTraceRunner {
     }
 
     fn release(&mut self) -> TraceEffect {
+        self.harness.event(Event::PointerButton {
+            pos: self.pointer,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        self.harness.step();
+        let output = self.take_output();
+        assert!(output.released_native_ownership());
+        semantic_effect(&output, false, &mut self.ticket)
+    }
+
+    fn release_at(&mut self, point: ViewPoint) -> TraceEffect {
+        self.pointer = Pos2::new(point.x, point.y);
         self.harness.event(Event::PointerButton {
             pos: self.pointer,
             button: PointerButton::Primary,
