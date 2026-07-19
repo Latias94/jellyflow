@@ -118,6 +118,7 @@ pub struct EdgePickWork {
     pub candidates_matched: u64,
     pub flatten_cache_hits: u64,
     pub flatten_cache_misses: u64,
+    pub flatten_cache_evictions: u64,
     pub flatten_segments_built: u64,
     pub flatten_overflows: u64,
 }
@@ -126,6 +127,9 @@ impl EdgePickWork {
     fn record_flatten(&mut self, work: RouteFlattenWork) {
         self.flatten_cache_hits = self.flatten_cache_hits.saturating_add(work.cache_hits);
         self.flatten_cache_misses = self.flatten_cache_misses.saturating_add(work.cache_misses);
+        self.flatten_cache_evictions = self
+            .flatten_cache_evictions
+            .saturating_add(work.cache_evictions);
         self.flatten_segments_built = self
             .flatten_segments_built
             .saturating_add(work.segments_built);
@@ -499,6 +503,9 @@ fn record_edge_pick_stats(stats: &mut super::ViewSessionStats, outcome: &Interna
     stats.route_flatten_cache_misses = stats
         .route_flatten_cache_misses
         .saturating_add(work.flatten_cache_misses);
+    stats.route_flatten_cache_evictions = stats
+        .route_flatten_cache_evictions
+        .saturating_add(work.flatten_cache_evictions);
     stats.route_flatten_segments_built = stats
         .route_flatten_segments_built
         .saturating_add(work.flatten_segments_built);
@@ -986,6 +993,9 @@ mod tests {
         total.flatten_cache_misses = total
             .flatten_cache_misses
             .saturating_add(page.flatten_cache_misses);
+        total.flatten_cache_evictions = total
+            .flatten_cache_evictions
+            .saturating_add(page.flatten_cache_evictions);
         total.flatten_segments_built = total
             .flatten_segments_built
             .saturating_add(page.flatten_segments_built);

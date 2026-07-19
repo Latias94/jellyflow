@@ -355,6 +355,7 @@ pub struct ViewSessionStats {
     pub route_query_budget_exhausted: u64,
     pub route_flatten_cache_hits: u64,
     pub route_flatten_cache_misses: u64,
+    pub route_flatten_cache_evictions: u64,
     pub route_flatten_cache_invalidations: u64,
     pub route_flatten_segments_built: u64,
     pub route_flatten_overflows: u64,

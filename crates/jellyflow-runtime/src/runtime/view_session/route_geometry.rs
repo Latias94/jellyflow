@@ -23,6 +23,7 @@ const MAX_CELLS_PER_SEGMENT: usize = 128;
 const MAX_QUERY_CELLS_PER_LEVEL: i64 = 4_096;
 const INDEX_FLATTEN_ERROR: f32 = 8.0;
 const HARD_ROUTE_QUERY_ENTRY_LIMIT: u64 = 16_384;
+const ROUTE_FLATTEN_CACHE_CAPACITY: usize = 4_096;
 
 #[derive(Debug)]
 pub struct VisibleRouteQuery {
@@ -112,6 +113,7 @@ pub struct VisibleRouteQueryWork {
     pub candidates_matched: u64,
     pub flatten_cache_hits: u64,
     pub flatten_cache_misses: u64,
+    pub flatten_cache_evictions: u64,
     pub flatten_segments_built: u64,
     pub flatten_overflows: u64,
 }
@@ -266,10 +268,12 @@ pub(super) struct RouteGeometryIndex {
     spatial: RouteSpatialIndex,
     indexed: BTreeMap<EdgeId, IndexedRoute>,
     flatten_cache: BTreeMap<EdgeId, CachedFlatten>,
+    flatten_lru: BTreeSet<(u64, EdgeId)>,
     interaction_half_widths: BTreeMap<u32, usize>,
     index_epoch: u128,
     pick_epoch: u128,
     next_path_revision: u128,
+    next_flatten_access: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -300,12 +304,14 @@ struct CachedFlatten {
     path_revision: u128,
     tolerance_bucket: u32,
     result: Result<Arc<FlattenedEdgePath>, EdgePathFlattenError>,
+    access: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RouteFlattenWork {
     pub cache_hits: u64,
     pub cache_misses: u64,
+    pub cache_evictions: u64,
     pub segments_built: u64,
     pub overflows: u64,
 }
@@ -431,7 +437,7 @@ impl RouteGeometryIndex {
         else {
             return self.remove(edge);
         };
-        let cache_invalidations = u64::from(self.flatten_cache.remove(&edge).is_some());
+        let cache_invalidations = u64::from(self.remove_cached_flatten(edge));
         self.next_path_revision = self.next_path_revision.saturating_add(1);
         let path_revision = self.next_path_revision;
         if let Some(indexed) = self.indexed.get(&edge) {
@@ -470,7 +476,7 @@ impl RouteGeometryIndex {
             self.remove_interaction_half_width(indexed.pick.interaction_width);
         }
         let spatial = self.spatial.remove(edge);
-        let cache_invalidations = u64::from(self.flatten_cache.remove(&edge).is_some());
+        let cache_invalidations = u64::from(self.remove_cached_flatten(edge));
         if indexed.is_some() || spatial {
             self.index_epoch = self.index_epoch.saturating_add(1);
             self.pick_epoch = self.pick_epoch.saturating_add(1);
@@ -487,6 +493,8 @@ impl RouteGeometryIndex {
         self.spatial.clear();
         self.indexed.clear();
         self.flatten_cache.clear();
+        self.flatten_lru.clear();
+        self.next_flatten_access = 0;
         self.interaction_half_widths.clear();
         if index_changed {
             self.index_epoch = self.index_epoch.saturating_add(1);
@@ -685,6 +693,9 @@ impl RouteGeometryIndex {
         work.flatten_cache_misses = work
             .flatten_cache_misses
             .saturating_add(flatten_work.cache_misses);
+        work.flatten_cache_evictions = work
+            .flatten_cache_evictions
+            .saturating_add(flatten_work.cache_evictions);
         work.flatten_segments_built = work
             .flatten_segments_built
             .saturating_add(flatten_work.segments_built);
@@ -713,20 +724,30 @@ impl RouteGeometryIndex {
             .for_zoom(zoom)
             .ok_or(EdgePathFlattenError::InvalidGeometry)?;
         let (tolerance_bucket, tolerance) = tolerance_bucket(options.max_error);
-        let Some(indexed) = self.indexed.get(&edge) else {
+        let Some(path_revision) = self.indexed.get(&edge).map(|route| route.path_revision) else {
             return Err(EdgePathFlattenError::InvalidGeometry);
         };
         if let Some(cached) = self.flatten_cache.get(&edge)
-            && cached.path_revision == indexed.path_revision
+            && cached.path_revision == path_revision
             && cached.tolerance_bucket == tolerance_bucket
         {
+            let result = cached.result.clone();
+            let previous_access = cached.access;
             work.cache_hits = work.cache_hits.saturating_add(1);
-            return cached.result.clone();
+            self.touch_cached_flatten(edge, previous_access);
+            return result;
         }
-        let path_revision = indexed.path_revision;
         work.cache_misses = work.cache_misses.saturating_add(1);
         options.max_error = tolerance;
-        let result = flatten_edge_path(&indexed.path, options).map(Arc::new);
+        let result = flatten_edge_path(
+            &self
+                .indexed
+                .get(&edge)
+                .expect("the indexed route was read immediately before flattening")
+                .path,
+            options,
+        )
+        .map(Arc::new);
         if let Ok(path) = &result {
             work.segments_built = work
                 .segments_built
@@ -734,15 +755,75 @@ impl RouteGeometryIndex {
         } else {
             work.overflows = work.overflows.saturating_add(1);
         }
+        self.remove_cached_flatten(edge);
+        while self.flatten_cache.len() >= ROUTE_FLATTEN_CACHE_CAPACITY {
+            let Some((access, cached_edge)) = self.flatten_lru.pop_first() else {
+                break;
+            };
+            if self
+                .flatten_cache
+                .get(&cached_edge)
+                .is_some_and(|cached| cached.access == access)
+            {
+                self.flatten_cache.remove(&cached_edge);
+                work.cache_evictions = work.cache_evictions.saturating_add(1);
+            }
+        }
+        let access = self.reserve_flatten_access();
+        self.flatten_lru.insert((access, edge));
         self.flatten_cache.insert(
             edge,
             CachedFlatten {
                 path_revision,
                 tolerance_bucket,
                 result: result.clone(),
+                access,
             },
         );
         result
+    }
+
+    fn remove_cached_flatten(&mut self, edge: EdgeId) -> bool {
+        let Some(cached) = self.flatten_cache.remove(&edge) else {
+            return false;
+        };
+        self.flatten_lru.remove(&(cached.access, edge));
+        true
+    }
+
+    fn touch_cached_flatten(&mut self, edge: EdgeId, previous_access: u64) {
+        self.flatten_lru.remove(&(previous_access, edge));
+        let access = self.reserve_flatten_access();
+        if let Some(cached) = self.flatten_cache.get_mut(&edge) {
+            cached.access = access;
+        }
+        self.flatten_lru.insert((access, edge));
+    }
+
+    fn reserve_flatten_access(&mut self) -> u64 {
+        if self.next_flatten_access == u64::MAX {
+            self.rebase_flatten_access_order();
+        }
+        let access = self.next_flatten_access;
+        self.next_flatten_access = self.next_flatten_access.saturating_add(1);
+        access
+    }
+
+    fn rebase_flatten_access_order(&mut self) {
+        let edges = self
+            .flatten_lru
+            .iter()
+            .map(|(_, edge)| *edge)
+            .collect::<Vec<_>>();
+        self.flatten_lru.clear();
+        for (access, edge) in edges.into_iter().enumerate() {
+            let access = access as u64;
+            if let Some(cached) = self.flatten_cache.get_mut(&edge) {
+                cached.access = access;
+            }
+            self.flatten_lru.insert((access, edge));
+        }
+        self.next_flatten_access = self.flatten_cache.len() as u64;
     }
 }
 
@@ -791,6 +872,9 @@ fn record_route_query_stats(
     stats.route_flatten_cache_misses = stats
         .route_flatten_cache_misses
         .saturating_add(work.flatten_cache_misses);
+    stats.route_flatten_cache_evictions = stats
+        .route_flatten_cache_evictions
+        .saturating_add(work.flatten_cache_evictions);
     stats.route_flatten_segments_built = stats
         .route_flatten_segments_built
         .saturating_add(work.flatten_segments_built);
@@ -1305,6 +1389,49 @@ mod tests {
         assert!(work.entries_examined <= 256);
         assert_eq!(work.flatten_cache_misses, 100);
         assert_eq!(index.flatten_cache.len(), 100);
+    }
+
+    #[test]
+    fn flatten_cache_evicts_the_least_recently_used_route_at_capacity() {
+        let mut index = RouteGeometryIndex::default();
+        for ordinal in 0..ROUTE_FLATTEN_CACHE_CAPACITY {
+            let edge = EdgeId::from_u128(ordinal as u128 + 1);
+            let route = test_route_at(
+                edge,
+                (ordinal % 64) as f32 * 160.0,
+                (ordinal / 64) as f32 * 48.0,
+            );
+            assert!(index.upsert(edge, &route).index_changed);
+            let mut work = RouteFlattenWork::default();
+            index
+                .flattened(edge, 1.0, &mut work)
+                .expect("fixture route must flatten");
+            assert_eq!(work.cache_misses, 1);
+            assert_eq!(work.cache_evictions, 0);
+        }
+
+        let first = EdgeId::from_u128(1);
+        let second = EdgeId::from_u128(2);
+        let mut touch_work = RouteFlattenWork::default();
+        index
+            .flattened(first, 1.0, &mut touch_work)
+            .expect("cached fixture route must flatten");
+        assert_eq!(touch_work.cache_hits, 1);
+
+        let extra = EdgeId::from_u128(ROUTE_FLATTEN_CACHE_CAPACITY as u128 + 1);
+        let route = test_route(extra, 12_000.0);
+        assert!(index.upsert(extra, &route).index_changed);
+        let mut eviction_work = RouteFlattenWork::default();
+        index
+            .flattened(extra, 1.0, &mut eviction_work)
+            .expect("extra fixture route must flatten");
+
+        assert_eq!(eviction_work.cache_evictions, 1);
+        assert_eq!(index.flatten_cache.len(), ROUTE_FLATTEN_CACHE_CAPACITY);
+        assert_eq!(index.flatten_lru.len(), ROUTE_FLATTEN_CACHE_CAPACITY);
+        assert!(index.flatten_cache.contains_key(&first));
+        assert!(!index.flatten_cache.contains_key(&second));
+        assert!(index.flatten_cache.contains_key(&extra));
     }
 
     fn finish_query(
