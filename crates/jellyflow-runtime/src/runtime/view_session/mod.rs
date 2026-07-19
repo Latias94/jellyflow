@@ -123,37 +123,6 @@ impl ViewSessionOptions {
     }
 }
 
-/// Stable prefix of the selected edge IDs for bounded rendering queries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelectedEdgeIds {
-    edges: Vec<EdgeId>,
-    total_count: usize,
-}
-
-impl SelectedEdgeIds {
-    fn from_selection(edges: &[EdgeId], limit: usize) -> Self {
-        Self {
-            edges: edges.iter().copied().take(limit).collect(),
-            total_count: edges.len(),
-        }
-    }
-
-    /// Returns the selected edge prefix in stable selection order.
-    pub fn edges(&self) -> &[EdgeId] {
-        &self.edges
-    }
-
-    /// Returns the number of selected edges before the prefix limit was applied.
-    pub const fn total_count(&self) -> usize {
-        self.total_count
-    }
-
-    /// Returns whether selected edges were omitted by the requested limit.
-    pub fn is_truncated(&self) -> bool {
-        self.edges.len() < self.total_count
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum AttachViewError {
     #[error("graph runtime is unavailable")]
@@ -927,12 +896,6 @@ impl ViewSession {
         ))
     }
 
-    /// Returns a bounded prefix of selected edges without cloning the full selection.
-    pub fn selected_edge_ids(&self, limit: usize) -> Result<SelectedEdgeIds, ViewSessionError> {
-        self.runtime()?;
-        self.shared.selected_edge_ids(limit)
-    }
-
     pub fn set_selection(
         &self,
         nodes: Vec<NodeId>,
@@ -1534,18 +1497,6 @@ impl ViewShared {
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
         Ok(state.facts.selection())
-    }
-
-    fn selected_edge_ids(&self, limit: usize) -> Result<SelectedEdgeIds, ViewSessionError> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| ViewSessionError::Busy)?;
-        ensure_open(state.status)?;
-        Ok(SelectedEdgeIds::from_selection(
-            &state.facts.selected_edges,
-            limit,
-        ))
     }
 
     fn set_selection(

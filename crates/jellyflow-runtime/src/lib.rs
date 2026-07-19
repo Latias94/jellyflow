@@ -73,13 +73,12 @@ pub use runtime::view_session::{
     ConnectionProbeQueryError, ConnectionProbeQueryOutcome, ConnectionProbeWork, EdgePick,
     EdgePickCursor, EdgePickCursorStaleReason, EdgePickGeometryFailure, EdgePickQuery,
     EdgePickQueryError, EdgePickQueryOutcome, EdgePickWork, NodeBindingEvent, NodeBindingKey,
-    RouteGeometryRevision, SelectedEdgeIds, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt,
-    ViewCloseRequest, ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession,
-    ViewSessionError, ViewSessionEvent, ViewSessionOptions, ViewSessionStats,
-    ViewSubscriptionToken, VisibleRoute, VisibleRouteCursor, VisibleRouteCursorStaleReason,
-    VisibleRouteGeometryOverflow, VisibleRouteQuery, VisibleRouteQueryError,
-    VisibleRouteQueryOutcome, VisibleRouteQueryRevision, VisibleRouteQueryWork, VisibleRoutes,
-    WeakViewSession,
+    RouteGeometryRevision, ViewCloseOutcome, ViewCloseReason, ViewCloseReceipt, ViewCloseRequest,
+    ViewCreateFromWireQueryError, ViewGeneration, ViewId, ViewSession, ViewSessionError,
+    ViewSessionEvent, ViewSessionOptions, ViewSessionStats, ViewSubscriptionToken, VisibleRoute,
+    VisibleRouteCursor, VisibleRouteCursorStaleReason, VisibleRouteGeometryOverflow,
+    VisibleRouteQuery, VisibleRouteQueryError, VisibleRouteQueryOutcome, VisibleRouteQueryRevision,
+    VisibleRouteQueryWork, VisibleRoutes, WeakViewSession,
 };
 
 #[cfg(test)]
