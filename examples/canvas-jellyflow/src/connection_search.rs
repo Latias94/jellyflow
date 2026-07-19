@@ -488,13 +488,12 @@ impl NativeGraphSurface {
         {
             return;
         }
-        if let Some(focus) = self
-            .previous_focus
-            .as_ref()
-            .and_then(WeakFocusHandle::upgrade)
-        {
-            window.focus(&focus, cx);
-        }
+        restore_search_focus(
+            self.previous_focus.take().and_then(|focus| focus.upgrade()),
+            &self.surface_focus,
+            window,
+            cx,
+        );
         let _ = self.host.update(cx, |host, cx| {
             let result = host.cancel_connection_search(request, window, cx);
             cx.notify();
@@ -510,10 +509,6 @@ impl NativeGraphSurface {
         self.cleanup_search_focus = false;
         self.query_controller
             .update(cx, |controller, cx| controller.set_value("", cx));
-        self.previous_focus = None;
-        if window.focused(cx).is_none() {
-            window.focus(&self.surface_focus, cx);
-        }
         window.refresh();
         cx.notify();
     }
@@ -711,11 +706,12 @@ impl Render for NativeGraphSurface {
         }
         if self.cleanup_search_focus {
             self.cleanup_search_focus = false;
-            if let Some(focus) = self.previous_focus.take().and_then(|focus| focus.upgrade()) {
-                window.focus(&focus, cx);
-            } else {
-                window.focus(&self.surface_focus, cx);
-            }
+            restore_search_focus(
+                self.previous_focus.take().and_then(|focus| focus.upgrade()),
+                &self.surface_focus,
+                window,
+                cx,
+            );
         }
         if self.focus_search_on_next_render && self.search.is_some() {
             self.previous_focus = window.focused(cx).map(|focus| focus.downgrade());
@@ -739,6 +735,19 @@ impl Render for NativeGraphSurface {
     }
 }
 
+fn restore_search_focus(
+    previous_focus: Option<FocusHandle>,
+    surface_focus: &FocusHandle,
+    window: &mut Window,
+    cx: &mut open_gpui::App,
+) {
+    if let Some(focus) = previous_focus {
+        window.focus(&focus, cx);
+    } else {
+        window.focus(surface_focus, cx);
+    }
+}
+
 #[must_use]
 pub const fn native_connection_search_input_selector() -> &'static str {
     NATIVE_CONNECTION_SEARCH_INPUT_SELECTOR
@@ -752,6 +761,7 @@ pub fn native_connection_search_candidate_selector(kind: &str, port: &str) -> St
 #[cfg(test)]
 mod tests {
     use jellyflow::runtime::{ViewPoint, ViewSize};
+    use open_gpui::{ParentElement, Render, Styled, VisualContext};
 
     use super::*;
 
@@ -785,5 +795,52 @@ mod tests {
         assert_eq!(layout.width, 236.0);
         assert_eq!(layout.max_height, 276.0);
         assert_eq!(layout.results_max_height, 60.0);
+    }
+
+    struct FocusRestorationFixture {
+        surface: FocusHandle,
+        hidden_search_input: FocusHandle,
+    }
+
+    impl Render for FocusRestorationFixture {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl open_gpui::IntoElement {
+            div()
+                .size_full()
+                .track_focus(&self.surface)
+                .child(div().size_full().track_focus(&self.hidden_search_input))
+        }
+    }
+
+    #[open_gpui::test]
+    fn destroyed_previous_focus_falls_back_even_while_hidden_search_input_is_focused(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (fixture, cx) = cx.add_window_view(|_, cx| FocusRestorationFixture {
+            surface: cx.focus_handle(),
+            hidden_search_input: cx.focus_handle(),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        cx.update_window_entity(&fixture, |fixture, window, cx| {
+            let previous_handle = open_gpui::App::focus_handle(cx);
+            let previous = previous_handle.downgrade();
+            drop(previous_handle);
+            assert!(previous.upgrade().is_none());
+            window.focus(&fixture.hidden_search_input, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(fixture.hidden_search_input.clone())
+            );
+
+            restore_search_focus(previous.upgrade(), &fixture.surface, window, cx);
+
+            assert_eq!(window.focused(cx), Some(fixture.surface.clone()));
+        });
     }
 }
