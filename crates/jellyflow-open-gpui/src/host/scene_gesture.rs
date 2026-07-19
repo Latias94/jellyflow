@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use jellyflow::core::CanvasPoint;
+use jellyflow::core::{CanvasPoint, CanvasRect};
 use jellyflow::runtime::CanvasInteractionPhase;
 use jellyflow::runtime::runtime::viewport::{
     ViewportPanRequest, ViewportZoomRequest, pan_viewport, zoom_viewport,
@@ -36,19 +36,35 @@ impl OpenGpuiSceneHost {
             return;
         };
         let mut hovered_node = None;
+        let mut hovered_port = None;
+        let graph = self.view.graph_snapshot().ok();
+        let geometry = self.view.geometry_snapshot().ok();
         for (instance, mounted) in self.mounts.active_in_order() {
             let bounds = mounted.bounds;
             let point = position.canvas();
-            if point.x >= bounds.origin.x
-                && point.y >= bounds.origin.y
-                && point.x <= bounds.origin.x + bounds.size.width
-                && point.y <= bounds.origin.y + bounds.size.height
-            {
+            if canvas_rect_contains(bounds, point) {
                 hovered_node = Some(instance.node());
             }
+            let Some(node) = graph
+                .as_ref()
+                .and_then(|snapshot| snapshot.graph().node(&instance.node()))
+            else {
+                continue;
+            };
+            for port in &node.ports {
+                if geometry
+                    .as_ref()
+                    .and_then(|geometry| geometry.port(*port))
+                    .is_some_and(|geometry| canvas_rect_contains(geometry.hit_bounds(), point))
+                {
+                    hovered_node = Some(instance.node());
+                    hovered_port = Some(*port);
+                }
+            }
         }
-        if self.hovered_node != hovered_node {
+        if self.hovered_node != hovered_node || self.hovered_port != hovered_port {
             self.hovered_node = hovered_node;
+            self.hovered_port = hovered_port;
             cx.notify();
         }
         let result = if hovered_node.is_some() {
@@ -64,7 +80,9 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.hovered_node.take().is_some() {
+        let had_hovered_node = self.hovered_node.take().is_some();
+        let had_hovered_port = self.hovered_port.take().is_some();
+        if had_hovered_node || had_hovered_port {
             cx.notify();
         }
         if let Ok(update) = self.canvas_interaction.clear_edge_hover() {
@@ -402,6 +420,13 @@ impl OpenGpuiSceneHost {
         };
         screen.is_finite().then_some(screen)
     }
+}
+
+fn canvas_rect_contains(bounds: CanvasRect, point: CanvasPoint) -> bool {
+    point.x >= bounds.origin.x
+        && point.y >= bounds.origin.y
+        && point.x <= bounds.origin.x + bounds.size.width
+        && point.y <= bounds.origin.y + bounds.size.height
 }
 
 fn scene_selection_mode(event: &OpenGpuiSceneGestureEvent) -> SelectionMode {

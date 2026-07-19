@@ -12,8 +12,8 @@ use jellyflow::runtime::{
 use open_gpui::{
     AnyElement, App, Bounds, DispatchPhase, Div, Element, ElementId, EntityId, FocusHandle,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Pixels, Role,
-    Stateful, StatefulInteractiveElement, Window, div, point, px, size,
+    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    Pixels, Role, Stateful, StatefulInteractiveElement, Window, div, point, px, size,
 };
 
 use crate::accessibility::{
@@ -32,6 +32,8 @@ use crate::theme::OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER;
 
 pub(crate) type OpenGpuiHostPortListener =
     Rc<dyn Fn(&OpenGpuiPortEvent, &mut Window, &mut App) + 'static>;
+pub(crate) type OpenGpuiHostPortHoverListener =
+    Rc<dyn Fn(&NodeInstanceKey, PortId, bool, &mut Window, &mut App) + 'static>;
 
 /// Edge-routing side associated with one native port handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -428,7 +430,7 @@ struct OpenGpuiPortMeasurementElement {
 
 impl Element for OpenGpuiPortMeasurementElement {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -458,7 +460,7 @@ impl Element for OpenGpuiPortMeasurementElement {
         child: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         child.prepaint(window, cx);
         let _ = self.sink.record_port(
             self.source,
@@ -468,6 +470,10 @@ impl Element for OpenGpuiPortMeasurementElement {
             self.anchor,
             self.minimum_hit_diameter,
         );
+        window.insert_hitbox(
+            minimum_hit_pixel_bounds(bounds, self.minimum_hit_diameter),
+            HitboxBehavior::Normal,
+        )
     }
 
     fn paint(
@@ -476,10 +482,12 @@ impl Element for OpenGpuiPortMeasurementElement {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.sink
+            .track_port_hover(self.port, hitbox.clone(), window);
         child.paint(window, cx);
     }
 
@@ -583,6 +591,8 @@ impl Element for OpenGpuiPortInteractionElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.sink
+            .track_port_hover(self.owner.port(), hitbox.clone(), window);
         if !self.interaction_enabled {
             let disabled_hitbox = hitbox.clone();
             window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
@@ -730,6 +740,8 @@ pub(crate) struct OpenGpuiMeasurementSink {
     activity: OpenGpuiNodeActivityRegistry,
     interactions: OpenGpuiInteractionCoordinator,
     host_port_listener: OpenGpuiHostPortListener,
+    host_port_hover_listener: OpenGpuiHostPortHoverListener,
+    hovered_port: Rc<Cell<Option<PortId>>>,
     mount: OpenGpuiMountCapability,
 }
 
@@ -748,6 +760,7 @@ impl OpenGpuiMeasurementSink {
         activity: OpenGpuiNodeActivityRegistry,
         interactions: OpenGpuiInteractionCoordinator,
         host_port_listener: OpenGpuiHostPortListener,
+        host_port_hover_listener: OpenGpuiHostPortHoverListener,
         mount: OpenGpuiMountCapability,
     ) -> Self {
         Self {
@@ -759,8 +772,31 @@ impl OpenGpuiMeasurementSink {
             activity,
             interactions,
             host_port_listener,
+            host_port_hover_listener,
+            hovered_port: Rc::new(Cell::new(None)),
             mount,
         }
+    }
+
+    fn track_port_hover(&self, port: PortId, hitbox: Hitbox, window: &mut Window) {
+        let hovered_port = self.hovered_port.clone();
+        let listener = self.host_port_hover_listener.clone();
+        let instance = self.instance.clone();
+        window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if hitbox.is_hovered(window) {
+                if hovered_port.get() == Some(port) {
+                    return;
+                }
+                hovered_port.set(Some(port));
+                listener(&instance, port, true, window, cx);
+            } else if hovered_port.get() == Some(port) {
+                hovered_port.set(None);
+                listener(&instance, port, false, window, cx);
+            }
+        });
     }
 
     pub(crate) fn activate(

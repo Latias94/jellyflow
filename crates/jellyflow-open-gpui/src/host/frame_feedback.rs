@@ -1,10 +1,11 @@
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use jellyflow::runtime::{
     CommandSettlement, FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt,
     FeedbackReceipt, FeedbackSubmissionError, GraphCommand, GraphCommandOutcome, LayoutNodeStatus,
-    ViewSession,
+    NodeGeometryEdit, ViewSession,
 };
 
 use crate::command_journal::{
@@ -170,76 +171,111 @@ impl OpenGpuiSceneHost {
             }
         }
 
-        let mut request_frame = false;
-        for (instance, update) in updates {
-            request_frame |= self.dispatch_node_size_update(instance, update);
-        }
-        request_frame
+        self.dispatch_node_size_updates(updates)
     }
 
-    fn dispatch_node_size_update(
+    fn dispatch_node_size_updates(
         &mut self,
-        instance: jellyflow::runtime::NodeInstanceKey,
-        mut update: OpenGpuiNodeSizeUpdate,
+        mut updates: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)>,
     ) -> bool {
         loop {
-            if let Some(diagnostic) = update.diagnostic() {
-                self.record_command_diagnostic(format!(
-                    "content size convergence froze for node {:?}: reason={:?}, attempts={}, last_applied={:?}, suppressed={:?}",
-                    instance.node(),
-                    diagnostic.reason(),
-                    diagnostic.attempts(),
-                    diagnostic.last_applied_size(),
-                    diagnostic.suppressed_size(),
-                ));
-            }
-            let Some(size_command) = update.command() else {
-                return false;
-            };
-
-            let current_instance = self.view.node_incarnation(instance.node()).ok().flatten();
-            let command = self.view.graph_snapshot().ok().and_then(|snapshot| {
-                (current_instance == Some(instance.incarnation())
-                    && snapshot.graph().node(&instance.node()).is_some())
-                .then(|| {
-                    GraphCommand::set_node_size(
-                        snapshot.revision(),
+            let snapshot = self.view.graph_snapshot().ok();
+            let mut commands = Vec::new();
+            let mut retry_updates = Vec::new();
+            let mut pending_updates = VecDeque::from(updates);
+            while let Some((instance, update)) = pending_updates.pop_front() {
+                if let Some(diagnostic) = update.diagnostic() {
+                    self.record_command_diagnostic(format!(
+                        "content size convergence froze for node {:?}: reason={:?}, attempts={}, last_applied={:?}, suppressed={:?}",
                         instance.node(),
-                        Some(size_command.size()),
-                    )
-                    .without_history()
-                })
-            });
-            if let Some(command) = command {
-                match self.commands.enqueue_detached(
-                    command,
-                    OpenGpuiCommandOrigin::NodeSize {
-                        instance: instance.clone(),
-                        ticket: size_command.ticket(),
+                        diagnostic.reason(),
+                        diagnostic.attempts(),
+                        diagnostic.last_applied_size(),
+                        diagnostic.suppressed_size(),
+                    ));
+                }
+                let Some(size_command) = update.command() else {
+                    continue;
+                };
+
+                let current_instance = self.view.node_incarnation(instance.node()).ok().flatten();
+                let valid = snapshot.as_ref().is_some_and(|snapshot| {
+                    current_instance == Some(instance.incarnation())
+                        && snapshot.graph().node(&instance.node()).is_some()
+                });
+                if valid {
+                    commands.push((instance, size_command));
+                    continue;
+                }
+
+                let Some(mounted) = self.mounts.get_mut(&instance) else {
+                    continue;
+                };
+                let update = mounted.size_state.settle(
+                    mounted.registration_policy.size_policy(),
+                    size_command.ticket(),
+                    if current_instance == Some(instance.incarnation()) {
+                        OpenGpuiNodeSizeSettlement::Rejected
+                    } else {
+                        OpenGpuiNodeSizeSettlement::Retired
                     },
-                ) {
-                    Ok(()) => return true,
-                    Err(error) => {
-                        self.record_command_diagnostic(format!(
-                            "failed to enqueue content size for node {:?}: {error}",
-                            instance.node()
-                        ));
-                    }
+                );
+                if !update.is_idle() {
+                    pending_updates.push_back((instance, update));
                 }
             }
 
-            let Some(mounted) = self.mounts.get_mut(&instance) else {
+            if commands.is_empty() {
+                return false;
+            }
+
+            let snapshot = snapshot.expect("validated size commands require a graph snapshot");
+            let command = GraphCommand::set_node_geometry(
+                snapshot.revision(),
+                commands.iter().map(|(instance, size_command)| {
+                    NodeGeometryEdit::new(instance.node()).with_size(Some(size_command.size()))
+                }),
+            )
+            .without_history();
+            let tickets = commands
+                .iter()
+                .map(|(instance, size_command)| (instance.clone(), size_command.ticket()))
+                .collect();
+            match self
+                .commands
+                .enqueue_detached(command, OpenGpuiCommandOrigin::NodeSizes { tickets })
+            {
+                Ok(()) => return true,
+                Err(error) => {
+                    self.record_command_diagnostic(format!(
+                        "failed to enqueue content sizes for {} nodes: {error}",
+                        commands.len()
+                    ));
+                }
+            }
+
+            for (instance, size_command) in commands {
+                let current_instance = self.view.node_incarnation(instance.node()).ok().flatten();
+                let Some(mounted) = self.mounts.get_mut(&instance) else {
+                    continue;
+                };
+                let update = mounted.size_state.settle(
+                    mounted.registration_policy.size_policy(),
+                    size_command.ticket(),
+                    if current_instance == Some(instance.incarnation()) {
+                        OpenGpuiNodeSizeSettlement::Rejected
+                    } else {
+                        OpenGpuiNodeSizeSettlement::Retired
+                    },
+                );
+                if !update.is_idle() {
+                    retry_updates.push((instance, update));
+                }
+            }
+            if retry_updates.is_empty() {
                 return false;
             };
-            update = mounted.size_state.settle(
-                mounted.registration_policy.size_policy(),
-                size_command.ticket(),
-                if current_instance == Some(instance.incarnation()) {
-                    OpenGpuiNodeSizeSettlement::Rejected
-                } else {
-                    OpenGpuiNodeSizeSettlement::Retired
-                },
-            );
+            updates = retry_updates;
         }
     }
 
@@ -248,18 +284,14 @@ impl OpenGpuiSceneHost {
         instance: jellyflow::runtime::NodeInstanceKey,
         ticket: OpenGpuiNodeSizeTicket,
         settlement: OpenGpuiNodeSizeSettlement,
-    ) {
-        let Some(mounted) = self.mounts.get_mut(&instance) else {
-            return;
-        };
+    ) -> Option<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)> {
+        let mounted = self.mounts.get_mut(&instance)?;
         let update = mounted.size_state.settle(
             mounted.registration_policy.size_policy(),
             ticket,
             settlement,
         );
-        if !update.is_idle() {
-            self.dispatch_node_size_update(instance, update);
-        }
+        (!update.is_idle()).then_some((instance, update))
     }
 
     pub(super) fn handle_feedback_receipt(&mut self, receipt: &FeedbackReceipt) -> bool {
@@ -345,11 +377,11 @@ impl OpenGpuiSceneHost {
                         self.settle_interaction_command(ticket, settlement);
                     }
                 }
-                OpenGpuiCommandOrigin::NodeSize { instance, ticket } => {
+                OpenGpuiCommandOrigin::NodeSizes { tickets } => {
                     let Ok(result) = command.into_detached_result() else {
                         self.record_command_diagnostic(format!(
-                            "content size command for node {:?} unexpectedly owned a public ticket",
-                            instance.node()
+                            "content size command for {} nodes unexpectedly owned a public ticket",
+                            tickets.len()
                         ));
                         continue;
                     };
@@ -374,7 +406,13 @@ impl OpenGpuiSceneHost {
                             OpenGpuiNodeSizeSettlement::Rejected
                         }
                     };
-                    self.settle_node_size_command(instance, ticket, settlement);
+                    let updates = tickets
+                        .into_iter()
+                        .filter_map(|(instance, ticket)| {
+                            self.settle_node_size_command(instance, ticket, settlement)
+                        })
+                        .collect();
+                    self.dispatch_node_size_updates(updates);
                 }
             }
         }

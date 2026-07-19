@@ -400,6 +400,7 @@ impl OpenGpuiSceneHost {
             activity.clone(),
             self.interactions.clone(),
             Self::host_port_listener(cx, mount.clone()),
+            Self::host_port_hover_listener(cx, mount.clone()),
             mount.clone(),
         );
         let command_sink = OpenGpuiCommandSink::new(Rc::downgrade(&self.commands), cx.entity_id());

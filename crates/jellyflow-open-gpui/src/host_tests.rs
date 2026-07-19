@@ -1472,6 +1472,79 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
 }
 
 #[open_gpui::test]
+fn binding_presentation_tracks_real_port_hit_bounds_hover(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+    let binding = cx.read_entity(&host, |host, _| {
+        host.mounts
+            .active_in_order()
+            .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
+            .and_then(|(_, mounted)| mounted.binding.clone())
+            .expect("source node binding")
+    });
+    let marker = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("source output marker");
+
+    cx.simulate_mouse_move(marker.center(), None, Default::default());
+    draw(cx);
+    cx.read_entity(&binding, |binding, _| {
+        assert!(binding.presentation().node().hovered());
+        assert!(
+            binding
+                .presentation()
+                .port(PortId::from_u128(20))
+                .expect("source output presentation")
+                .hovered()
+        );
+    });
+
+    cx.simulate_mouse_move(point(px(700.0), px(500.0)), None, Default::default());
+    draw(cx);
+    cx.read_entity(&binding, |binding, _| {
+        assert!(!binding.presentation().node().hovered());
+        assert!(
+            !binding
+                .presentation()
+                .port(PortId::from_u128(20))
+                .expect("source output presentation")
+                .hovered()
+        );
+    });
+}
+
+#[open_gpui::test]
+fn measured_port_wrapper_tracks_the_same_hover_presentation(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_gesture_scene_for_graph(cx, routed_graph());
+    draw(cx);
+    draw(cx);
+    let binding = cx.read_entity(&host, |host, _| {
+        host.mounts
+            .active_in_order()
+            .find(|(instance, _)| instance.node() == NodeId::from_u128(10))
+            .and_then(|(_, mounted)| mounted.binding.clone())
+            .expect("source node binding")
+    });
+    let marker = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("source output marker");
+
+    cx.simulate_mouse_move(marker.center(), None, Default::default());
+    draw(cx);
+
+    cx.read_entity(&binding, |binding, _| {
+        assert!(
+            binding
+                .presentation()
+                .port(PortId::from_u128(20))
+                .expect("measured output presentation")
+                .hovered()
+        );
+    });
+}
+
+#[open_gpui::test]
 fn focused_edge_delete_uses_native_key_semantics_and_falls_back_in_graph_order(
     cx: &mut open_gpui::TestAppContext,
 ) {

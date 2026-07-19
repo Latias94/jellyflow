@@ -17,6 +17,7 @@ impl OpenGpuiSceneHost {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<(), ViewSessionError> {
+        let graph = self.view.graph_snapshot()?;
         if self.hovered_node.is_some_and(|hovered| {
             !self
                 .mounts
@@ -24,8 +25,21 @@ impl OpenGpuiSceneHost {
                 .any(|(instance, _)| instance.node() == hovered)
         }) {
             self.hovered_node = None;
+            self.hovered_port = None;
         }
-        let graph = self.view.graph_snapshot()?;
+        if self.hovered_port.is_some_and(|hovered| {
+            graph
+                .graph()
+                .port(&hovered)
+                .is_none_or(|port| Some(port.node) != self.hovered_node)
+                || self
+                    .view
+                    .geometry_snapshot()
+                    .ok()
+                    .is_none_or(|geometry| geometry.port(hovered).is_none())
+        }) {
+            self.hovered_port = None;
+        }
         let interaction = self.canvas_interaction.presentation();
         let connection = interaction.connection().cloned();
         let node_drag = interaction.node_drag().cloned();
@@ -100,6 +114,11 @@ impl OpenGpuiSceneHost {
                         Some((
                             *port,
                             OpenGpuiPortInteractionState::idle()
+                                .with_hovered(
+                                    interaction.phase()
+                                        == jellyflow::runtime::CanvasInteractionPhase::Idle
+                                        && self.hovered_port == Some(*port),
+                                )
                                 .with_connected(facts.is_connected())
                                 .with_disabled(disabled)
                                 .with_focused(

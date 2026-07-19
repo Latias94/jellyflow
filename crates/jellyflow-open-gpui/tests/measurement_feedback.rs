@@ -448,6 +448,52 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
 }
 
 #[open_gpui::test]
+fn content_sizes_from_one_frame_commit_as_one_atomic_geometry_revision(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_content_sibling())
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let height = Rc::new(Cell::new(176.0));
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(80.0, 320.0).expect("valid content-height bounds"),
+        ),
+    );
+
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
+        cx.new(|_| ContentMeasuredNode {
+            binding,
+            height: height.clone(),
+        })
+    });
+    let (_host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            viewport(),
+        )
+    });
+
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("atomically resized graph");
+    assert_eq!(snapshot.revision(), 1);
+    for node in [NodeId::from_u128(10), NodeId::from_u128(11)] {
+        assert_eq!(
+            snapshot.graph().node(&node).expect("content node").size,
+            Some(CanvasSize {
+                width: 220.0,
+                height: 176.0,
+            })
+        );
+    }
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+}
+
+#[open_gpui::test]
 fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -1128,6 +1174,35 @@ fn graph_with_valid_sibling() -> jellyflow::core::Graph {
             collapsed: false,
             ports: Vec::new(),
             data: serde_json::Value::Null,
+        },
+    );
+    graph.build().unwrap()
+}
+
+fn graph_with_content_sibling() -> jellyflow::core::Graph {
+    let mut graph = GraphBuilder::from_detached_graph(graph());
+    graph.insert_node(
+        NodeId::from_u128(11),
+        Node {
+            kind: NodeKindKey::new(KIND),
+            kind_version: 1,
+            pos: CanvasPoint { x: 300.0, y: 20.0 },
+            origin: None,
+            selectable: None,
+            draggable: None,
+            connectable: None,
+            deletable: None,
+            parent: None,
+            extent: None,
+            expand_parent: None,
+            size: Some(CanvasSize {
+                width: 220.0,
+                height: 120.0,
+            }),
+            hidden: false,
+            collapsed: false,
+            ports: Vec::new(),
+            data: serde_json::json!({ "label": "content sibling" }),
         },
     );
     graph.build().unwrap()

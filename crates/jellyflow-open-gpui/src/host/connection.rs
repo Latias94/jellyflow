@@ -22,7 +22,7 @@ use crate::interaction::{
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
     OpenGpuiPortFocusExit, OpenGpuiSceneGestureCancelReason,
 };
-use crate::port_handle::OpenGpuiHostPortListener;
+use crate::port_handle::{OpenGpuiHostPortHoverListener, OpenGpuiHostPortListener};
 
 use super::OpenGpuiSceneHost;
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
@@ -321,6 +321,39 @@ impl OpenGpuiSceneHost {
                 host.update(cx, |host, cx| {
                     host.handle_port_event_for_mount(event, &mount, window, cx);
                 });
+            });
+        })
+    }
+
+    pub(super) fn host_port_hover_listener(
+        cx: &Context<Self>,
+        mount: OpenGpuiMountCapability,
+    ) -> OpenGpuiHostPortHoverListener {
+        let host = cx.weak_entity();
+        Rc::new(move |instance, port, hovered, _window, cx| {
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.update(cx, |host, cx| {
+                let owner = crate::interaction::port_drag_owner(instance.clone(), port);
+                if !host.port_event_owner_is_current(&owner, &mount) {
+                    return;
+                }
+                let changed = if hovered {
+                    let changed = host.hovered_node != Some(instance.node())
+                        || host.hovered_port != Some(port);
+                    host.hovered_node = Some(instance.node());
+                    host.hovered_port = Some(port);
+                    changed
+                } else if host.hovered_port == Some(port) {
+                    host.hovered_port = None;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    cx.notify();
+                }
             });
         })
     }

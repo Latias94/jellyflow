@@ -40,7 +40,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode};
+use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
@@ -145,6 +145,7 @@ pub struct OpenGpuiSceneHost {
     interaction_focus: Option<FocusHandle>,
     graph_focus: OpenGpuiGraphFocusCoordinator,
     hovered_node: Option<jellyflow::core::NodeId>,
+    hovered_port: Option<PortId>,
     document_epoch: Option<jellyflow::runtime::DocumentEpoch>,
     adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
@@ -239,6 +240,7 @@ impl OpenGpuiSceneHost {
             interaction_focus: None,
             graph_focus: OpenGpuiGraphFocusCoordinator::default(),
             hovered_node: None,
+            hovered_port: None,
             document_epoch: None,
             adapter_environment_epoch: 0,
             terminal_reason: None,

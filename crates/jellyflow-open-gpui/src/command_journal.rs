@@ -303,9 +303,8 @@ pub(crate) enum OpenGpuiCommandOrigin {
     Interaction {
         ticket: InteractionTicketId,
     },
-    NodeSize {
-        instance: NodeInstanceKey,
-        ticket: OpenGpuiNodeSizeTicket,
+    NodeSizes {
+        tickets: Vec<(NodeInstanceKey, OpenGpuiNodeSizeTicket)>,
     },
 }
 
