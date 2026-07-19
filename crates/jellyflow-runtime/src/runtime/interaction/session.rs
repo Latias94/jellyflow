@@ -26,6 +26,8 @@ use super::presentation::{
 use super::{ConnectionGestureIntent, ConnectionProbe};
 
 const MAX_AUTO_PAN_ELAPSED_SECONDS: f32 = 0.05;
+// A mutable view may invalidate a cursor, but one logical query must still terminate.
+const MAX_STALE_QUERY_RESTARTS: u8 = 8;
 
 /// Screen-pixel acquire/release bands for hysteretic node alignment.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -759,6 +761,7 @@ struct ConnectionDragInteraction {
     pointer: InteractionPosition,
     probe: ConnectionProbe,
     pending_query: Option<InteractionQueryId>,
+    stale_query_restarts: u8,
     release_pending: bool,
 }
 
@@ -789,6 +792,7 @@ struct ConnectionCommitInteraction {
     return_to_search: bool,
     topology: ConnectionTopology,
     freshness: ConnectionCommitFreshness,
+    stale_query_restarts: u8,
 }
 
 #[derive(Debug, Default)]
@@ -825,6 +829,7 @@ struct EdgeInteraction {
 struct PendingHoverEdgePick {
     id: InteractionQueryId,
     position: InteractionPosition,
+    stale_query_restarts: u8,
 }
 
 #[derive(Debug)]
@@ -835,6 +840,7 @@ struct CanvasEdgePickInteraction {
     pointer: InteractionPosition,
     max_view_distance_squared: f32,
     fallback: CanvasPressFallback,
+    stale_query_restarts: u8,
     release_pending: bool,
 }
 
@@ -1053,6 +1059,7 @@ impl CanvasInteractionSession {
                     pointer: position,
                     max_view_distance_squared: 0.0,
                     fallback,
+                    stale_query_restarts: 0,
                     release_pending: false,
                 });
             }
@@ -1216,7 +1223,11 @@ impl CanvasInteractionSession {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return Ok(CanvasInteractionUpdate::default());
         };
-        self.pending_edge_pick = Some(PendingHoverEdgePick { id, position });
+        self.pending_edge_pick = Some(PendingHoverEdgePick {
+            id,
+            position,
+            stale_query_restarts: 0,
+        });
         let mut update = CanvasInteractionUpdate::default();
         update.queries.push(CanvasInteractionQuery::EdgePick {
             id,
@@ -1470,6 +1481,13 @@ impl CanvasInteractionSession {
             let InteractionState::EdgePickPending(mut pending) = state else {
                 unreachable!("the exact edge-pick state was matched immediately before mutation");
             };
+            if !reserve_stale_query_restart(&mut pending.stale_query_restarts) {
+                self.hovered_edge = None;
+                self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
+                return Ok(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
+                );
+            }
             let Some(next) = self.allocate_query() else {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
@@ -1499,6 +1517,14 @@ impl CanvasInteractionSession {
                 .pending_edge_pick
                 .take()
                 .expect("the matching edge-pick request remains pending");
+            let mut stale_query_restarts = pending.stale_query_restarts;
+            if !reserve_stale_query_restart(&mut stale_query_restarts) {
+                self.hovered_edge = None;
+                self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
+                return Ok(
+                    CanvasInteractionUpdate::default().with_damage(edge_pick_terminal_damage())
+                );
+            }
             let Some(next) = self.allocate_query() else {
                 self.hovered_edge = None;
                 self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
@@ -1513,6 +1539,7 @@ impl CanvasInteractionSession {
             self.pending_edge_pick = Some(PendingHoverEdgePick {
                 id: next,
                 position: pending.position,
+                stale_query_restarts,
             });
             let mut update = CanvasInteractionUpdate::default();
             update.queries.push(CanvasInteractionQuery::EdgePick {
@@ -1532,38 +1559,51 @@ impl CanvasInteractionSession {
             InteractionState::Connection(ConnectionInteraction::Dragging(mut drag))
                 if drag.pending_query == Some(id) =>
             {
-                drag.pending_query = None;
-                self.start_connection_probe(&mut drag, &mut update)?;
-                if drag.pending_query.is_none() {
+                if !reserve_stale_query_restart(&mut drag.stale_query_restarts) {
+                    self.terminal = Some(InteractionTerminalReason::BudgetExhausted);
                     update.damage.merge(InteractionDamage::connection());
-                    return Ok(update);
+                    InteractionState::Idle
+                } else {
+                    drag.pending_query = None;
+                    self.queue_connection_probe(&mut drag, &mut update)?;
+                    if drag.pending_query.is_none() {
+                        update.damage.merge(InteractionDamage::connection());
+                        return Ok(update);
+                    }
+                    InteractionState::Connection(ConnectionInteraction::Dragging(drag))
                 }
-                InteractionState::Connection(ConnectionInteraction::Dragging(drag))
             }
-            InteractionState::Committing(CommitInteraction::Connection(mut commit)) if matches!(commit.freshness, ConnectionCommitFreshness::Probing(pending) if pending == id) =>
-            {
-                let Some(next) = self.allocate_query() else {
+            InteractionState::Committing(CommitInteraction::Connection(mut commit)) if matches!(commit.freshness, ConnectionCommitFreshness::Probing(pending) if pending == id) => {
+                if !reserve_stale_query_restart(&mut commit.stale_query_restarts) {
                     update.damage.merge(InteractionDamage::connection());
-                    self.state = self.reject_connection_commit(
+                    self.reject_connection_commit(
                         commit,
-                        InteractionTerminalReason::IdentityExhausted,
-                    );
-                    return Ok(update);
-                };
-                commit.freshness = ConnectionCommitFreshness::Probing(next);
-                update
-                    .queries
-                    .push(CanvasInteractionQuery::ConnectionProbe {
-                        id: next,
-                        generation: commit.generation,
-                        query: ConnectionProbeQuery::new(
-                            commit.start.intent,
-                            commit.pointer.view(),
-                            self.config.connection_radius_in_view,
-                            self.config.query_entry_budget,
-                        ),
-                    });
-                InteractionState::Committing(CommitInteraction::Connection(commit))
+                        InteractionTerminalReason::BudgetExhausted,
+                    )
+                } else {
+                    let Some(next) = self.allocate_query() else {
+                        update.damage.merge(InteractionDamage::connection());
+                        self.state = self.reject_connection_commit(
+                            commit,
+                            InteractionTerminalReason::IdentityExhausted,
+                        );
+                        return Ok(update);
+                    };
+                    commit.freshness = ConnectionCommitFreshness::Probing(next);
+                    update
+                        .queries
+                        .push(CanvasInteractionQuery::ConnectionProbe {
+                            id: next,
+                            generation: commit.generation,
+                            query: ConnectionProbeQuery::new(
+                                commit.start.intent,
+                                commit.pointer.view(),
+                                self.config.connection_radius_in_view,
+                                self.config.query_entry_budget,
+                            ),
+                        });
+                    InteractionState::Committing(CommitInteraction::Connection(commit))
+                }
             }
             other => other,
         };
@@ -1969,6 +2009,7 @@ impl CanvasInteractionSession {
                 } else if !matches!(commit.freshness, ConnectionCommitFreshness::Initial) {
                     InteractionState::Committing(CommitInteraction::Connection(commit))
                 } else if let Some(id) = self.allocate_query() {
+                    commit.stale_query_restarts = 0;
                     commit.freshness = ConnectionCommitFreshness::Probing(id);
                     update
                         .queries
@@ -2357,6 +2398,7 @@ impl CanvasInteractionSession {
                     pointer: position,
                     probe: ConnectionProbe::None,
                     pending_query: None,
+                    stale_query_restarts: 0,
                     release_pending: false,
                 };
                 self.start_connection_probe(&mut drag, update)?;
@@ -2475,6 +2517,15 @@ impl CanvasInteractionSession {
         drag: &mut ConnectionDragInteraction,
         update: &mut CanvasInteractionUpdate,
     ) -> Result<(), CanvasInteractionError> {
+        drag.stale_query_restarts = 0;
+        self.queue_connection_probe(drag, update)
+    }
+
+    fn queue_connection_probe(
+        &mut self,
+        drag: &mut ConnectionDragInteraction,
+        update: &mut CanvasInteractionUpdate,
+    ) -> Result<(), CanvasInteractionError> {
         let Some(id) = self.allocate_query() else {
             self.terminal = Some(InteractionTerminalReason::IdentityExhausted);
             return Ok(());
@@ -2574,6 +2625,7 @@ impl CanvasInteractionSession {
             return_to_search,
             topology,
             freshness: ConnectionCommitFreshness::Initial,
+            stale_query_restarts: 0,
         }))
     }
 
@@ -2847,6 +2899,14 @@ fn state_generation(state: &InteractionState) -> Option<InteractionGeneration> {
         InteractionState::EdgeActive(edge) => Some(edge.generation),
         InteractionState::EdgePickPending(pending) => Some(pending.generation),
     }
+}
+
+fn reserve_stale_query_restart(restarts: &mut u8) -> bool {
+    if *restarts >= MAX_STALE_QUERY_RESTARTS {
+        return false;
+    }
+    *restarts = (*restarts).saturating_add(1);
+    true
 }
 
 fn state_needs_tick(state: &InteractionState) -> bool {
@@ -3418,6 +3478,75 @@ mod tests {
             )
             .unwrap();
         assert!(exhausted.effects().is_empty());
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn repeated_stale_drag_probe_restarts_are_bounded_per_pointer_query() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        session
+            .press(connection_target(false), position(0.0, 0.0))
+            .unwrap();
+        let started = session.move_to(position(12.0, 4.0)).unwrap();
+        let mut current = connection_query_id(&started);
+
+        for _ in 0..MAX_STALE_QUERY_RESTARTS {
+            let restarted = session.restart_stale_query(current).unwrap();
+            current = connection_query_id(&restarted);
+        }
+        let exhausted = session.restart_stale_query(current).unwrap();
+
+        assert!(exhausted.queries().is_empty());
+        assert!(exhausted.effects().is_empty());
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn repeated_stale_hover_edge_picks_are_bounded() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let requested = session.request_edge_pick(position(20.0, 10.0)).unwrap();
+        let mut current = edge_query_id(&requested);
+
+        for _ in 0..MAX_STALE_QUERY_RESTARTS {
+            let restarted = session.restart_stale_query(current).unwrap();
+            current = edge_query_id(&restarted);
+        }
+        let exhausted = session.restart_stale_query(current).unwrap();
+
+        assert!(exhausted.queries().is_empty());
+        assert!(exhausted.effects().is_empty());
+        assert_eq!(session.presentation().hovered_edge(), None);
+        assert_eq!(
+            session.presentation().terminal(),
+            Some(InteractionTerminalReason::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn repeated_stale_commit_revalidation_rejects_without_graph_mutation() {
+        let mut session = test_session(CanvasInteractionConfig::default());
+        let ticket = begin_direct_connection_commit(&mut session);
+        let requested = session
+            .request_connection_commit_revalidation(ticket)
+            .unwrap();
+        let mut current = connection_query_id(&requested);
+
+        for _ in 0..MAX_STALE_QUERY_RESTARTS {
+            let restarted = session.restart_stale_query(current).unwrap();
+            current = connection_query_id(&restarted);
+        }
+        let exhausted = session.restart_stale_query(current).unwrap();
+
+        assert!(exhausted.queries().is_empty());
+        assert!(exhausted.effects().is_empty());
+        assert_eq!(session.presentation().phase(), CanvasInteractionPhase::Idle);
         assert_eq!(
             session.presentation().terminal(),
             Some(InteractionTerminalReason::BudgetExhausted)
