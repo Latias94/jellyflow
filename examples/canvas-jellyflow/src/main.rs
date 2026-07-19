@@ -25,8 +25,9 @@ mod real_window_smoke;
 
 use demo_fixture::shader_demo_graph;
 use real_window_smoke::{
-    SharedSmokeState, configure_smoke_document, fail_smoke, finish_smoke_after_run,
-    install_smoke_quit_guard, new_smoke_state, start_smoke_probe, start_smoke_timeout,
+    SMOKE_WINDOW_HEIGHT, SMOKE_WINDOW_WIDTH, SharedSmokeState, configure_smoke_document,
+    fail_smoke, finish_smoke_after_run, install_smoke_quit_guard, new_smoke_state,
+    start_smoke_probe, start_smoke_timeout,
 };
 
 const WINDOW_WIDTH: f32 = 1_180.0;
@@ -231,7 +232,12 @@ fn launch_native_graph(
     let resources =
         NativeNodeResources::ready_default(cx).with_draft_stores(workflow_drafts, shader_drafts);
     let registry = native_node_registry(resources);
-    let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
+    let (window_width, window_height) = if options.smoke {
+        (SMOKE_WINDOW_WIDTH, SMOKE_WINDOW_HEIGHT)
+    } else {
+        (WINDOW_WIDTH, WINDOW_HEIGHT)
+    };
+    let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
 
     cx.open_window(
         WindowOptions {

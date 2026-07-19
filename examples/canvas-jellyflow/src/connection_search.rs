@@ -225,6 +225,16 @@ impl NativeGraphSurface {
         &self.host
     }
 
+    #[must_use]
+    pub fn graph_has_focus(&self, window: &Window, cx: &open_gpui::App) -> bool {
+        self.surface_focus.contains_focused(window, cx)
+    }
+
+    #[must_use]
+    pub fn connection_search_has_focus(&self, window: &Window, cx: &open_gpui::App) -> bool {
+        self.query_controller.focus_handle(cx).is_focused(window)
+    }
+
     fn sync_host_state(&mut self, cx: &mut Context<Self>) -> bool {
         self.sync_search(cx)
     }
@@ -714,9 +724,20 @@ impl Render for NativeGraphSurface {
             );
         }
         if self.focus_search_on_next_render && self.search.is_some() {
-            self.previous_focus = window.focused(cx).map(|focus| focus.downgrade());
-            window.focus(&self.query_controller.focus_handle(cx), cx);
-            self.focus_search_on_next_render = false;
+            let focus = self.query_controller.focus_handle(cx);
+            if focus.is_focused(window) {
+                self.focus_search_on_next_render = false;
+            } else {
+                if self.previous_focus.is_none() {
+                    self.previous_focus = window.focused(cx).map(|focus| focus.downgrade());
+                }
+                focus.focus(window, cx);
+                if focus.is_focused(window) {
+                    self.focus_search_on_next_render = false;
+                } else {
+                    window.defer(cx, move |window, cx| focus.focus(window, cx));
+                }
+            }
         }
         div()
             .debug_selector(|| NATIVE_GRAPH_SURFACE_SELECTOR.to_owned())
@@ -841,6 +862,24 @@ mod tests {
             restore_search_focus(previous.upgrade(), &fixture.surface, window, cx);
 
             assert_eq!(window.focused(cx), Some(fixture.surface.clone()));
+        });
+    }
+
+    #[open_gpui::test]
+    fn graph_focus_domain_contains_descendant_focus(cx: &mut open_gpui::TestAppContext) {
+        let (fixture, cx) = cx.add_window_view(|_, cx| FocusRestorationFixture {
+            surface: cx.focus_handle(),
+            hidden_search_input: cx.focus_handle(),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        cx.update_window_entity(&fixture, |fixture, window, cx| {
+            window.focus(&fixture.hidden_search_input, cx);
+
+            assert!(fixture.surface.contains_focused(window, cx));
+            assert!(!fixture.surface.is_focused(window));
         });
     }
 }

@@ -16,13 +16,14 @@ use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{GeometrySnapshot, PublishedPortOutcome};
 use jellyflow::runtime::{ViewSize, WeakViewSession};
 use open_gpui::{AnyWindowHandle, App, Entity};
-#[cfg(feature = "real-window-smoke")]
-use open_gpui::{
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Window, point, px,
-};
 #[cfg(any(test, feature = "real-window-smoke"))]
 use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
+
+#[cfg(feature = "real-window-smoke")]
+mod input_probe;
+#[cfg(feature = "real-window-smoke")]
+use input_probe::RealWindowSmokeProbe;
 
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const SMOKE_PROBE_INTERVAL: Duration = Duration::from_millis(16);
@@ -38,7 +39,9 @@ const NODE_SAMPLE_INSET_RATIO: f32 = 0.12;
 const MIN_NODE_NON_BACKGROUND_PIXELS: usize = 16;
 #[cfg(any(test, feature = "real-window-smoke"))]
 const MIN_NODE_NON_BACKGROUND_RATIO: f32 = 0.08;
-const SMOKE_INPUT_EVENT_COUNT: u8 = 3;
+const SMOKE_INPUT_EVENT_COUNT: u16 = 27;
+pub(super) const SMOKE_WINDOW_WIDTH: f32 = 960.0;
+pub(super) const SMOKE_WINDOW_HEIGHT: f32 = 640.0;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SmokeExpectations {
@@ -215,10 +218,51 @@ impl SmokePaintEvidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SmokeInputEvidence {
-    dispatched_events: u8,
-    viewport_changed: bool,
+    dispatched_events: u16,
+    node_dragged: bool,
+    viewport_panned: bool,
+    viewport_zoomed: bool,
+    connection_created: bool,
+    keyboard_edge_deleted: bool,
+    reconnect_applied: bool,
+    search_opened: bool,
+    search_focus_moved: bool,
+    search_cancelled: bool,
+    search_focus_restored: bool,
+    final_frame_validated: bool,
+    compact_layout: bool,
+}
+
+impl SmokeInputEvidence {
+    fn failure_reason(self) -> Option<&'static str> {
+        if self.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
+            return Some("input_dispatch_incomplete");
+        }
+        for (complete, reason) in [
+            (self.node_dragged, "input_node_unchanged"),
+            (self.viewport_panned, "input_viewport_unpanned"),
+            (self.viewport_zoomed, "input_viewport_unzoomed"),
+            (self.connection_created, "input_connection_missing"),
+            (self.keyboard_edge_deleted, "input_keyboard_delete_missing"),
+            (self.reconnect_applied, "input_reconnect_missing"),
+            (self.search_opened, "input_search_missing"),
+            (self.search_focus_moved, "input_search_focus_missing"),
+            (self.search_cancelled, "input_search_not_cancelled"),
+            (
+                self.search_focus_restored,
+                "input_search_focus_not_restored",
+            ),
+            (self.final_frame_validated, "input_final_frame_invalid"),
+            (self.compact_layout, "input_compact_layout_missing"),
+        ] {
+            if !complete {
+                return Some(reason);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -303,11 +347,8 @@ impl SmokeObservation {
         let Some(input) = self.input else {
             return SmokeProbeDecision::Wait;
         };
-        if input.dispatched_events != SMOKE_INPUT_EVENT_COUNT {
-            return SmokeProbeDecision::Fail("input_dispatch_incomplete");
-        }
-        if !input.viewport_changed {
-            return SmokeProbeDecision::Fail("input_viewport_unchanged");
+        if let Some(reason) = input.failure_reason() {
+            return SmokeProbeDecision::Fail(reason);
         }
         SmokeProbeDecision::Pass
     }
@@ -393,7 +434,9 @@ impl SmokeState {
             .unwrap_or("none");
         let geometry = observation.and_then(|observation| observation.geometry.as_ref());
         let paint = observation.and_then(|observation| observation.paint.as_ref());
-        let input = observation.and_then(|observation| observation.input);
+        let input = observation
+            .and_then(|observation| observation.input)
+            .unwrap_or_default();
         let expected_node_ids = expectations.map_or_else(
             || "none".to_owned(),
             |expected| {
@@ -473,7 +516,12 @@ impl SmokeState {
              geometry_fresh_nodes={} geometry_rendered_ports={} geometry_routed_edges={} \
              geometry_nodes={geometry_nodes} paint_image_width={} paint_image_height={} \
              paint_canvas_width={} paint_non_background_pixels={} paint_distinct_colors={} \
-             paint_nodes={paint_nodes} input_dispatched_events={} input_viewport_changed={} \
+             paint_nodes={paint_nodes} input_dispatched_events={} input_node_dragged={} \
+             input_viewport_panned={} input_viewport_zoomed={} input_connection_created={} \
+             input_keyboard_edge_deleted={} input_reconnect_applied={} input_search_opened={} \
+             input_search_focus_moved={} input_search_cancelled={} \
+             input_search_focus_restored={} input_final_frame_validated={} \
+             input_compact_layout={} \
              native_probe_failure={} diagnostic={diagnostic:?}",
             self.demo,
             expectations.map_or(0, SmokeExpectations::node_count),
@@ -495,8 +543,19 @@ impl SmokeState {
             paint.map_or(0, |paint| paint.canvas_width),
             paint.map_or(0, |paint| paint.non_background_pixels),
             paint.map_or(0, |paint| paint.distinct_colors),
-            input.map_or(0, |input| input.dispatched_events),
-            input.is_some_and(|input| input.viewport_changed),
+            input.dispatched_events,
+            input.node_dragged,
+            input.viewport_panned,
+            input.viewport_zoomed,
+            input.connection_created,
+            input.keyboard_edge_deleted,
+            input.reconnect_applied,
+            input.search_opened,
+            input.search_focus_moved,
+            input.search_cancelled,
+            input.search_focus_restored,
+            input.final_frame_validated,
+            input.compact_layout,
             observation
                 .and_then(|observation| observation.native_probe_failure)
                 .unwrap_or("none"),
@@ -549,27 +608,37 @@ pub(super) fn start_smoke_probe(
         return;
     };
     cx.spawn(async move |cx| {
+        #[cfg(feature = "real-window-smoke")]
+        let mut native_probe = RealWindowSmokeProbe::default();
         loop {
             cx.background_executor().timer(SMOKE_PROBE_INTERVAL).await;
             let mut observation = cx.update(|cx| observe_smoke_surface(&graph, cx));
             if observation.structural_decision(&expectations) == SmokeProbeDecision::Pass {
                 #[cfg(feature = "real-window-smoke")]
                 match observation.surface_size {
-                    Some(surface_size) => match cx.update(|cx| {
-                        window_handle.update(cx, |_, window, cx| {
-                            run_real_window_probe(window, cx, &view, &expectations, surface_size)
-                        })
-                    }) {
-                        Ok(Ok((geometry, paint, input))) => {
-                            observation.geometry = Some(geometry);
-                            observation.paint = Some(paint);
-                            observation.input = Some(input);
+                    Some(surface_size) => {
+                        let advance = cx.update(|cx| {
+                            window_handle.update(cx, |_, window, cx| {
+                                native_probe.advance(
+                                    window,
+                                    cx,
+                                    &graph,
+                                    &view,
+                                    &expectations,
+                                    surface_size,
+                                )
+                            })
+                        });
+                        observation.geometry = native_probe.geometry().cloned();
+                        observation.paint = native_probe.paint().cloned();
+                        match advance {
+                            Ok(Ok(input)) => observation.input = input,
+                            Ok(Err(reason)) => observation.native_probe_failure = Some(reason),
+                            Err(_) => {
+                                observation.native_probe_failure = Some("smoke_window_unavailable");
+                            }
                         }
-                        Ok(Err(reason)) => observation.native_probe_failure = Some(reason),
-                        Err(_) => {
-                            observation.native_probe_failure = Some("smoke_window_unavailable");
-                        }
-                    },
+                    }
                     None => observation.native_probe_failure = Some("invalid_surface"),
                 }
                 #[cfg(not(feature = "real-window-smoke"))]
@@ -598,79 +667,6 @@ pub(super) fn start_smoke_probe(
         }
     })
     .detach();
-}
-
-#[cfg(feature = "real-window-smoke")]
-fn run_real_window_probe(
-    window: &mut Window,
-    cx: &mut App,
-    view: &WeakViewSession,
-    expectations: &SmokeExpectations,
-    surface_size: ViewSize,
-) -> Result<
-    (
-        SmokeGeometryEvidence,
-        SmokePaintEvidence,
-        SmokeInputEvidence,
-    ),
-    &'static str,
-> {
-    let snapshot = view
-        .geometry_snapshot()
-        .map_err(|_| "geometry_snapshot_read_failed")?;
-    let viewport_before = view
-        .viewport_transform()
-        .map_err(|_| "input_viewport_read_failed")?;
-    let image = window
-        .render_to_image()
-        .map_err(|_| "paint_capture_failed")?;
-    let canvas_width = canvas_pixel_width(image.width(), surface_size)?;
-    let geometry_input = SmokeGeometryInput::from_snapshot(expectations, &snapshot);
-    let geometry = inspect_geometry(
-        expectations,
-        &geometry_input,
-        viewport_before,
-        surface_size,
-        image.width(),
-        image.height(),
-        canvas_width,
-    )?;
-    let paint = inspect_canvas_paint(image.width(), image.height(), image.as_raw(), &geometry)?;
-
-    let pan_start = point(px(700.0), px(500.0));
-    let pan_end = point(px(740.0), px(530.0));
-    let events = [
-        PlatformInput::MouseDown(MouseDownEvent {
-            button: MouseButton::Middle,
-            position: pan_start,
-            ..MouseDownEvent::default()
-        }),
-        PlatformInput::MouseMove(MouseMoveEvent {
-            position: pan_end,
-            pressed_button: Some(MouseButton::Middle),
-            ..MouseMoveEvent::default()
-        }),
-        PlatformInput::MouseUp(MouseUpEvent {
-            button: MouseButton::Middle,
-            position: pan_end,
-            ..MouseUpEvent::default()
-        }),
-    ];
-    for event in events {
-        window.dispatch_event(event, cx);
-    }
-    let viewport_after = view
-        .viewport_transform()
-        .map_err(|_| "input_viewport_read_failed")?;
-
-    Ok((
-        geometry,
-        paint,
-        SmokeInputEvidence {
-            dispatched_events: SMOKE_INPUT_EVENT_COUNT,
-            viewport_changed: viewport_after != viewport_before,
-        },
-    ))
 }
 
 #[cfg(any(test, feature = "real-window-smoke"))]
@@ -1152,11 +1148,26 @@ mod tests {
             host_closed: false,
             geometry: Some(geometry),
             paint: Some(paint),
-            input: Some(SmokeInputEvidence {
-                dispatched_events: SMOKE_INPUT_EVENT_COUNT,
-                viewport_changed: true,
-            }),
+            input: Some(complete_input_evidence()),
             native_probe_failure: None,
+        }
+    }
+
+    fn complete_input_evidence() -> SmokeInputEvidence {
+        SmokeInputEvidence {
+            dispatched_events: SMOKE_INPUT_EVENT_COUNT,
+            node_dragged: true,
+            viewport_panned: true,
+            viewport_zoomed: true,
+            connection_created: true,
+            keyboard_edge_deleted: true,
+            reconnect_applied: true,
+            search_opened: true,
+            search_focus_moved: true,
+            search_cancelled: true,
+            search_focus_restored: true,
+            final_frame_validated: true,
+            compact_layout: true,
         }
     }
 
@@ -1472,22 +1483,47 @@ mod tests {
             (
                 "incomplete input dispatch",
                 |value| {
-                    value.input = Some(SmokeInputEvidence {
-                        dispatched_events: SMOKE_INPUT_EVENT_COUNT - 1,
-                        viewport_changed: true,
-                    });
+                    let mut input = complete_input_evidence();
+                    input.dispatched_events = SMOKE_INPUT_EVENT_COUNT - 1;
+                    value.input = Some(input);
                 },
                 "input_dispatch_incomplete",
             ),
             (
-                "unchanged viewport",
+                "unchanged node",
                 |value| {
-                    value.input = Some(SmokeInputEvidence {
-                        dispatched_events: SMOKE_INPUT_EVENT_COUNT,
-                        viewport_changed: false,
-                    });
+                    let mut input = complete_input_evidence();
+                    input.node_dragged = false;
+                    value.input = Some(input);
                 },
-                "input_viewport_unchanged",
+                "input_node_unchanged",
+            ),
+            (
+                "unzoomed viewport",
+                |value| {
+                    let mut input = complete_input_evidence();
+                    input.viewport_zoomed = false;
+                    value.input = Some(input);
+                },
+                "input_viewport_unzoomed",
+            ),
+            (
+                "missing reconnect",
+                |value| {
+                    let mut input = complete_input_evidence();
+                    input.reconnect_applied = false;
+                    value.input = Some(input);
+                },
+                "input_reconnect_missing",
+            ),
+            (
+                "non-compact window",
+                |value| {
+                    let mut input = complete_input_evidence();
+                    input.compact_layout = false;
+                    value.input = Some(input);
+                },
+                "input_compact_layout_missing",
             ),
         ];
 
@@ -1525,8 +1561,21 @@ mod tests {
         assert!(marker.contains("geometry_routed_edges=1"));
         assert!(marker.contains("geometry_nodes="));
         assert!(marker.contains("paint_nodes="));
-        assert!(marker.contains("input_dispatched_events=3"));
-        assert!(marker.contains("input_viewport_changed=true"));
+        assert!(marker.contains(&format!(
+            "input_dispatched_events={SMOKE_INPUT_EVENT_COUNT}"
+        )));
+        assert!(marker.contains("input_node_dragged=true"));
+        assert!(marker.contains("input_viewport_panned=true"));
+        assert!(marker.contains("input_viewport_zoomed=true"));
+        assert!(marker.contains("input_connection_created=true"));
+        assert!(marker.contains("input_keyboard_edge_deleted=true"));
+        assert!(marker.contains("input_reconnect_applied=true"));
+        assert!(marker.contains("input_search_opened=true"));
+        assert!(marker.contains("input_search_focus_moved=true"));
+        assert!(marker.contains("input_search_cancelled=true"));
+        assert!(marker.contains("input_search_focus_restored=true"));
+        assert!(marker.contains("input_final_frame_validated=true"));
+        assert!(marker.contains("input_compact_layout=true"));
         assert!(state.marker().is_none());
     }
 
