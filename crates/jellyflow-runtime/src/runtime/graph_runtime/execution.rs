@@ -1,12 +1,12 @@
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::graph_kernel::{
-    GraphHistory, GraphMutationError, GraphMutationFootprint, GraphOp, GraphTransaction,
+    GraphHistory, GraphMutationError, GraphMutationFootprint, GraphTransaction,
 };
-use jellyflow_core::core::{Graph, NodeId, validate_graph_structural};
+use jellyflow_core::core::{Graph, validate_graph_structural};
 
 use crate::profile::{ApplyPipelineError, validate_profile_graph};
 use crate::rules::{Diagnostic, DiagnosticTarget};
@@ -20,6 +20,7 @@ use crate::runtime::transaction_gate::GraphTransactionGate;
 use crate::runtime::view_session::{ViewGeneration, ViewShared};
 use crate::schema::NodeCatalog;
 
+use super::impact::InstalledTransactionImpact;
 use super::{
     GraphRuntimeError, GraphSnapshot, HistoryState, NodeIncarnation, RuntimePatch, RuntimeShared,
     RuntimeState,
@@ -408,33 +409,36 @@ pub(super) fn install_incremental(
         .checked_add(1)
         .ok_or(GraphRuntimeError::RevisionExhausted)?;
     let before = state.graph.clone();
+    let InstalledTransactionImpact {
+        facts,
+        session,
+        index,
+        identities,
+    } = InstalledTransactionImpact::derive(&before, &graph, &state.index, &committed);
     let mut next_incarnation = state.next_incarnation;
     let mut incarnation_delta = BTreeMap::new();
-    let (retired, added) = node_incarnation_changes(&before, &graph, &committed);
-    for node in &retired {
+    for node in &identities.retired {
         incarnation_delta.insert(*node, None);
     }
-    for node in &added {
+    for node in &identities.added {
         incarnation_delta.insert(*node, Some(allocate_incarnation(&mut next_incarnation)?));
     }
 
     let graph = Arc::new(graph);
     let snapshot = GraphSnapshot::new(graph.clone(), to_revision, state.document_epoch);
     let patch = RuntimePatch::incremental(
-        &before,
-        &graph,
-        &state.index,
-        &committed,
         state.revision,
         to_revision,
         state.document_epoch,
         snapshot,
+        facts,
+        session,
         incarnation_delta.clone(),
     );
-    state.index.apply_transaction(&graph, &committed);
+    state.index.apply_impact(&graph, &index);
     state.graph = graph;
     state.revision = to_revision;
-    for node in retired {
+    for node in identities.retired {
         state.incarnations.remove(&node);
     }
     for (node, incarnation) in incarnation_delta {
@@ -453,42 +457,6 @@ pub(super) fn install_incremental(
         .patch_deliveries
         .saturating_add(sessions.len() as u64);
     Ok((patch, sessions))
-}
-
-fn node_incarnation_changes(
-    before: &Graph,
-    after: &Graph,
-    transaction: &GraphTransaction,
-) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
-    let (mut retired, mut added) = node_incarnation_candidates(transaction);
-    retired.retain(|node| before.node(node).is_some());
-    added.retain(|node| after.node(node).is_some());
-    (retired, added)
-}
-
-fn node_incarnation_candidates(
-    transaction: &GraphTransaction,
-) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
-    let mut retired = BTreeSet::new();
-    let mut added = BTreeSet::new();
-    for operation in transaction.ops() {
-        match operation {
-            GraphOp::AddNode { id, .. } => {
-                added.insert(*id);
-            }
-            GraphOp::RemoveNode { id, .. } => {
-                retired.insert(*id);
-            }
-            GraphOp::SetNodeKind { id, .. } | GraphOp::SetNodeKindVersion { id, .. } => {
-                // The current graph model carries a kind rather than a runtime renderer identity.
-                // Treat a kind change as hard retirement until the view protocol carries renderer keys.
-                retired.insert(*id);
-                added.insert(*id);
-            }
-            _ => {}
-        }
-    }
-    (retired, added)
 }
 
 pub(super) fn collect_live_sessions(

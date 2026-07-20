@@ -17,6 +17,7 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
         .applied()
         .expect("first command applies");
     let stats = runtime.stats().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
 
     let outcome = runtime
         .execute(GraphCommand::set_node_data(
@@ -42,6 +43,11 @@ fn stale_command_returns_current_snapshot_and_zero_side_effects() {
     );
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     assert_eq!(runtime.stats().unwrap(), stats);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "conflicting commands must not update indexes or node identities"
+    );
 }
 
 #[test]
@@ -90,6 +96,7 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
     let before = runtime.snapshot().unwrap();
     let history_before = runtime.history_state().unwrap();
     let stats_before = runtime.stats().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
     let event_count = Rc::new(Cell::new(0));
     let callback_count = event_count.clone();
     runtime
@@ -157,6 +164,11 @@ fn stale_topology_and_connection_conflicts_include_current_dependencies() {
     assert!(before.ptr_eq(&runtime.snapshot().unwrap()));
     assert_eq!(runtime.history_state().unwrap(), history_before);
     assert_eq!(runtime.stats().unwrap(), stats_before);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "conflicting commands must not update indexes or node identities"
+    );
     assert_eq!(event_count.get(), 0);
 }
 

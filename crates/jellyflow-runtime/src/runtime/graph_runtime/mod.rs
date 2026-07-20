@@ -2,6 +2,7 @@
 
 mod create_from_wire;
 mod execution;
+mod impact;
 mod index;
 mod patch;
 mod port_connection_facts;
@@ -538,6 +539,18 @@ impl GraphRuntime {
     #[cfg(test)]
     pub(crate) fn set_next_incarnation_for_test(&self, next: u64) {
         self.shared.state.borrow_mut().next_incarnation = next;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn installed_impact_state_for_test(
+        &self,
+    ) -> (GraphIndex, BTreeMap<NodeId, NodeIncarnation>, u64) {
+        let state = self.shared.state.borrow();
+        (
+            state.index.clone(),
+            state.incarnations.clone(),
+            state.next_incarnation,
+        )
     }
 
     #[cfg(test)]

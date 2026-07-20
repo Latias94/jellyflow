@@ -6,8 +6,26 @@ impl GraphOp {
     /// Appends this operation's touched ids to an existing footprint.
     pub fn append_footprint(&self, footprint: &mut GraphMutationFootprint) {
         match self {
-            Self::AddNode { id, node } | Self::RemoveNode { id, node, .. } => {
+            Self::AddNode { id, node } => {
                 footprint.touch_node_snapshot(*id, node);
+            }
+            Self::RemoveNode {
+                id,
+                node,
+                ports,
+                edges,
+                bindings,
+            } => {
+                footprint.touch_node_snapshot(*id, node);
+                for (port_id, port) in ports {
+                    footprint.touch_port_snapshot(*port_id, port);
+                }
+                for (edge_id, edge) in edges {
+                    footprint.touch_edge_snapshot(*edge_id, edge);
+                }
+                for (binding_id, binding) in bindings {
+                    footprint.touch_binding_snapshot(*binding_id, binding);
+                }
             }
             Self::SetNodePos { id, .. }
             | Self::SetNodeOrigin { id, .. }
@@ -40,8 +58,22 @@ impl GraphOp {
                 footprint.ports.extend(to.iter().copied());
             }
 
-            Self::AddPort { id, port } | Self::RemovePort { id, port, .. } => {
+            Self::AddPort { id, port } => {
                 footprint.touch_port_snapshot(*id, port);
+            }
+            Self::RemovePort {
+                id,
+                port,
+                edges,
+                bindings,
+            } => {
+                footprint.touch_port_snapshot(*id, port);
+                for (edge_id, edge) in edges {
+                    footprint.touch_edge_snapshot(*edge_id, edge);
+                }
+                for (binding_id, binding) in bindings {
+                    footprint.touch_binding_snapshot(*binding_id, binding);
+                }
             }
             Self::SetPortConnectable { id, .. }
             | Self::SetPortConnectableStart { id, .. }
@@ -51,8 +83,14 @@ impl GraphOp {
                 footprint.touch_port(*id);
             }
 
-            Self::AddEdge { id, edge } | Self::RemoveEdge { id, edge, .. } => {
+            Self::AddEdge { id, edge } => {
                 footprint.touch_edge_snapshot(*id, edge);
+            }
+            Self::RemoveEdge { id, edge, bindings } => {
+                footprint.touch_edge_snapshot(*id, edge);
+                for (binding_id, binding) in bindings {
+                    footprint.touch_binding_snapshot(*binding_id, binding);
+                }
             }
             Self::SetEdgeKind { id, .. }
             | Self::SetEdgeSelectable { id, .. }
@@ -133,45 +171,6 @@ impl GraphOp {
             Self::SetBindingKind { id, .. } | Self::SetBindingMeta { id, .. } => {
                 footprint.touch_binding(*id);
             }
-        }
-
-        self.append_cascaded_footprint(footprint);
-    }
-
-    fn append_cascaded_footprint(&self, footprint: &mut GraphMutationFootprint) {
-        match self {
-            Self::RemoveNode {
-                ports,
-                edges,
-                bindings,
-                ..
-            } => {
-                for (port_id, port) in ports {
-                    footprint.touch_port_snapshot(*port_id, port);
-                }
-                for (edge_id, edge) in edges {
-                    footprint.touch_edge_snapshot(*edge_id, edge);
-                }
-                for (binding_id, binding) in bindings {
-                    footprint.touch_binding_snapshot(*binding_id, binding);
-                }
-            }
-            Self::RemovePort {
-                edges, bindings, ..
-            } => {
-                for (edge_id, edge) in edges {
-                    footprint.touch_edge_snapshot(*edge_id, edge);
-                }
-                for (binding_id, binding) in bindings {
-                    footprint.touch_binding_snapshot(*binding_id, binding);
-                }
-            }
-            Self::RemoveEdge { bindings, .. } => {
-                for (binding_id, binding) in bindings {
-                    footprint.touch_binding_snapshot(*binding_id, binding);
-                }
-            }
-            _ => {}
         }
     }
 }

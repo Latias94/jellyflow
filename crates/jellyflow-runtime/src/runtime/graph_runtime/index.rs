@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::graph_kernel::{GraphOp, GraphTransaction};
 use jellyflow_core::core::{
     Binding, BindingId, EdgeId, Graph, GraphLocalBindingTarget, Node, NodeId, PortId, SymbolId,
     symbol_ref_target_symbol_id,
 };
+
+use super::impact::IndexImpact;
 
 #[derive(Debug, Default)]
 pub(crate) struct IncidentNodeQuery {
@@ -15,7 +16,7 @@ pub(crate) struct IncidentNodeQuery {
     pub(crate) truncated: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GraphIndex {
     port_owners: BTreeMap<PortId, NodeId>,
     edge_endpoints: BTreeMap<EdgeId, (PortId, PortId)>,
@@ -178,35 +179,13 @@ impl GraphIndex {
             .flat_map(|nodes| nodes.iter().copied())
     }
 
-    pub(super) fn apply_transaction(&mut self, graph: &Graph, tx: &GraphTransaction) {
-        let mut edges = BTreeSet::new();
-        let mut ports = BTreeSet::new();
-        let mut bindings = BTreeSet::new();
-        let mut symbol_ref_nodes = BTreeSet::new();
-        let mut reset_incident_nodes = BTreeSet::new();
-        let mut incident_nodes = BTreeSet::new();
+    pub(super) fn apply_impact(&mut self, graph: &Graph, impact: &IndexImpact) {
+        let edges = &impact.edges;
+        let ports = &impact.ports;
+        let bindings = &impact.bindings;
+        let mut incident_nodes = impact.refresh_incident_nodes.clone();
 
-        for op in tx.ops() {
-            collect_index_changes(
-                op,
-                &mut ports,
-                &mut edges,
-                &mut bindings,
-                &mut symbol_ref_nodes,
-            );
-            match op {
-                GraphOp::AddNode { id, .. } | GraphOp::RemoveNode { id, .. } => {
-                    reset_incident_nodes.insert(*id);
-                    incident_nodes.insert(*id);
-                }
-                GraphOp::SetNodePorts { id, .. } => {
-                    incident_nodes.insert(*id);
-                }
-                _ => {}
-            }
-        }
-
-        for edge in &edges {
+        for edge in edges {
             if let Some((from, to)) = self.edge_endpoints.get(edge).copied() {
                 incident_nodes.extend(
                     [from, to]
@@ -223,30 +202,30 @@ impl GraphIndex {
             }
         }
 
-        for port in &ports {
+        for port in ports {
             incident_nodes.extend(self.port_owners.get(port).copied());
             incident_nodes.extend(graph.port(port).map(|port| port.node));
         }
 
-        for edge in &edges {
+        for edge in edges {
             self.remove_edge(*edge);
         }
 
-        for port in &ports {
+        for port in ports {
             self.port_owners.remove(port);
             if let Some(current) = graph.port(port) {
                 self.port_owners.insert(*port, current.node);
             }
         }
 
-        for binding in &bindings {
+        for binding in bindings {
             self.remove_binding(*binding);
             if let Some(current) = graph.binding(binding) {
                 self.insert_binding(*binding, current);
             }
         }
 
-        for node in symbol_ref_nodes {
+        for node in impact.symbol_ref_nodes.iter().copied() {
             self.remove_symbol_ref(node);
             if let Some(current) = graph.node(&node) {
                 self.insert_symbol_ref(node, current);
@@ -254,13 +233,17 @@ impl GraphIndex {
         }
 
         for edge in edges {
-            if let Some(current) = graph.edge(&edge) {
-                self.insert_edge(edge, current.from, current.to);
+            if let Some(current) = graph.edge(edge) {
+                self.insert_edge(*edge, current.from, current.to);
             }
         }
 
         for node in incident_nodes {
-            self.refresh_incident_edge_snapshot(graph, node, reset_incident_nodes.contains(&node));
+            self.refresh_incident_edge_snapshot(
+                graph,
+                node,
+                impact.reset_incident_nodes.contains(&node),
+            );
         }
     }
 
@@ -359,78 +342,6 @@ impl GraphIndex {
         if referrers.is_empty() {
             self.symbol_referrers.remove(&symbol);
         }
-    }
-}
-
-fn collect_index_changes(
-    op: &GraphOp,
-    ports: &mut BTreeSet<PortId>,
-    edges: &mut BTreeSet<EdgeId>,
-    bindings: &mut BTreeSet<BindingId>,
-    symbol_ref_nodes: &mut BTreeSet<NodeId>,
-) {
-    match op {
-        GraphOp::AddNode { id, .. } => {
-            symbol_ref_nodes.insert(*id);
-        }
-        GraphOp::SetNodeData { id, .. } | GraphOp::SetNodeKind { id, .. } => {
-            symbol_ref_nodes.insert(*id);
-        }
-        GraphOp::RemoveNode {
-            id,
-            ports: removed_ports,
-            edges: removed_edges,
-            bindings: removed_bindings,
-            ..
-        } => {
-            symbol_ref_nodes.insert(*id);
-            ports.extend(removed_ports.iter().map(|(id, _)| *id));
-            edges.extend(removed_edges.iter().map(|(id, _)| *id));
-            bindings.extend(removed_bindings.iter().map(|(id, _)| *id));
-        }
-        GraphOp::AddPort { id, .. } => {
-            ports.insert(*id);
-        }
-        GraphOp::RemovePort {
-            id,
-            edges: removed_edges,
-            bindings: removed_bindings,
-            ..
-        } => {
-            ports.insert(*id);
-            edges.extend(removed_edges.iter().map(|(id, _)| *id));
-            bindings.extend(removed_bindings.iter().map(|(id, _)| *id));
-        }
-        GraphOp::AddEdge { id, .. } | GraphOp::SetEdgeEndpoints { id, .. } => {
-            edges.insert(*id);
-        }
-        GraphOp::RemoveEdge {
-            id,
-            bindings: removed_bindings,
-            ..
-        } => {
-            edges.insert(*id);
-            bindings.extend(removed_bindings.iter().map(|(id, _)| *id));
-        }
-        GraphOp::RemoveGroup {
-            bindings: removed_bindings,
-            ..
-        } => {
-            bindings.extend(removed_bindings.iter().map(|(id, _)| *id));
-        }
-        GraphOp::RemoveStickyNote {
-            bindings: removed_bindings,
-            ..
-        } => {
-            bindings.extend(removed_bindings.iter().map(|(id, _)| *id));
-        }
-        GraphOp::AddBinding { id, .. }
-        | GraphOp::RemoveBinding { id, .. }
-        | GraphOp::SetBindingSubject { id, .. }
-        | GraphOp::SetBindingTarget { id, .. } => {
-            bindings.insert(*id);
-        }
-        _ => {}
     }
 }
 

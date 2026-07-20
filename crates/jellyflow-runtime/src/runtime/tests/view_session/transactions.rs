@@ -102,6 +102,7 @@ fn net_noop_does_not_build_or_deliver_a_patch() {
         .build(graph)
         .expect("runtime");
     let before = runtime.snapshot().unwrap();
+    let installed_impact_before = runtime.installed_impact_state_for_test();
     let outcome = runtime
         .execute(GraphCommand::set_node_position(
             0,
@@ -114,6 +115,11 @@ fn net_noop_does_not_build_or_deliver_a_patch() {
     assert!(runtime.snapshot().unwrap().ptr_eq(&before));
     assert_eq!(runtime.stats().unwrap().patch_builds, 0);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    assert_eq!(
+        runtime.installed_impact_state_for_test(),
+        installed_impact_before,
+        "normalized no-op commands must not update indexes or node identities"
+    );
 }
 
 #[test]
