@@ -73,6 +73,7 @@ impl Render for RoutedNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
+        let node = binding.snapshot().node_id();
         let read = binding.snapshot().read().expect("live node binding");
         let port = read
             .ports()
@@ -104,7 +105,14 @@ impl Render for RoutedNode {
             PortDirection::Out => port.right(px(0.0)),
         };
 
-        drag_handle.wrap(div().relative().size_full().child(handle.measure(port)))
+        let node_selector = test_node_selector(node);
+        drag_handle.wrap(
+            div()
+                .debug_selector(move || node_selector)
+                .relative()
+                .size_full()
+                .child(handle.measure(port)),
+        )
     }
 }
 
@@ -2269,6 +2277,29 @@ fn explicit_node_drag_handle_additive_modifiers_preserve_selection_and_release_c
             viewport_before,
         );
     });
+}
+
+#[open_gpui::test]
+fn selected_node_chrome_matches_native_node_bounds(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    let selected = NodeId::from_u128(10);
+    cx.read_entity(&host, |host, _| {
+        host.view
+            .set_selection(vec![selected], Vec::new(), Vec::new())
+            .expect("select native node");
+    });
+
+    draw(cx);
+
+    let node_bounds = cx
+        .debug_bounds(&test_node_selector(selected))
+        .expect("selected native node bounds");
+    let chrome_bounds = cx
+        .debug_bounds(&super::scene_render::open_gpui_node_chrome_selector(
+            selected,
+        ))
+        .expect("selected native node chrome bounds");
+    assert_eq!(chrome_bounds, node_bounds);
 }
 
 #[open_gpui::test]
@@ -5988,6 +6019,10 @@ fn test_port_selector(port: PortId, direction: PortDirection) -> String {
         (_, PortDirection::In) => "jellyflow-test-extra-input-port".to_owned(),
         (_, PortDirection::Out) => "jellyflow-test-extra-output-port".to_owned(),
     }
+}
+
+fn test_node_selector(node: NodeId) -> String {
+    format!("jellyflow-test-node-{node:?}")
 }
 
 fn node(position: CanvasPoint, port: PortId) -> Node {

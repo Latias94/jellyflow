@@ -63,6 +63,10 @@ pub(super) const OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR: &str = "jellyflow-selec
 pub(super) const OPEN_GPUI_GRID_SELECTOR: &str = "jellyflow-grid";
 pub(super) const OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR: &str = "jellyflow-alignment-guide";
 
+pub(super) fn open_gpui_node_chrome_selector(node: NodeId) -> String {
+    format!("jellyflow-node-chrome-{node:?}")
+}
+
 const OPEN_GPUI_MIN_GRID_SPACING_IN_VIEW: f32 = 12.0;
 const OPEN_GPUI_MAX_GRID_LINES_PER_AXIS: usize = 512;
 const OPEN_GPUI_MAJOR_GRID_INTERVAL: i64 = 4;
@@ -1323,10 +1327,12 @@ impl OpenGpuiSceneHost {
                 })
                 .child(content)
                 .when(dragging || focused || mounted.selected, |node| {
+                    let chrome_node = key.node();
                     node.child(
                         div()
+                            .debug_selector(move || open_gpui_node_chrome_selector(chrome_node))
                             .absolute()
-                            .size_full()
+                            .inset_0()
                             .border_1()
                             .border_color(chrome_color),
                     )
