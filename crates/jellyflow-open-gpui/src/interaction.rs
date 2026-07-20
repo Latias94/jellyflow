@@ -765,6 +765,7 @@ impl OpenGpuiNativeInteractionHandle {
             }
             let active = self.state.borrow_mut().capture.take_active();
             if let Some(active) = active {
+                let generation = active.generation();
                 self.finish_native_capture(
                     active,
                     NativeCaptureExit::Release,
@@ -773,8 +774,8 @@ impl OpenGpuiNativeInteractionHandle {
                     window,
                     cx,
                 );
+                self.set_release_suppression_for_generation(generation, None);
             }
-            self.state.borrow_mut().capture.set_suppression(None);
             return true;
         }
 
@@ -807,10 +808,11 @@ impl OpenGpuiNativeInteractionHandle {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        if !event.keystroke.key.eq_ignore_ascii_case("escape") {
+        if self.cancel_replaced_capture_deferred(window, cx) {
             return false;
         }
-        if self.cancel_replaced_capture_deferred(window, cx) {
+        self.release_suppression_for_window(window);
+        if !event.keystroke.key.eq_ignore_ascii_case("escape") {
             return false;
         }
         self.drain_pending(window, cx);
@@ -819,6 +821,7 @@ impl OpenGpuiNativeInteractionHandle {
             let position = active.position();
             let modifiers = active.modifiers();
             let suppression = active.release_suppression();
+            let generation = active.generation();
             self.finish_native_capture(
                 active,
                 NativeCaptureExit::Escape,
@@ -827,10 +830,7 @@ impl OpenGpuiNativeInteractionHandle {
                 window,
                 cx,
             );
-            self.state
-                .borrow_mut()
-                .capture
-                .set_suppression(Some(suppression));
+            self.set_release_suppression_for_generation(generation, Some(suppression));
             return true;
         }
         self.release_suppression_for_window(window).is_some()
@@ -1612,6 +1612,19 @@ impl OpenGpuiNativeInteractionHandle {
         None
     }
 
+    fn set_release_suppression_for_generation(
+        &self,
+        generation: u64,
+        suppression: Option<NativeReleaseSuppression>,
+    ) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.terminal || state.capture.latest_generation() != generation {
+            return false;
+        }
+        state.capture.set_suppression(suppression);
+        true
+    }
+
     fn finish_native_capture(
         &self,
         active: NativeCapture,
@@ -2168,6 +2181,64 @@ mod capture_bookkeeping_tests {
         }
     }
 
+    fn draw_non_placeholder_hitbox(cx: &mut open_gpui::VisualTestContext) -> HitboxId {
+        let _ = cx.draw(
+            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
+            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
+            |_, _| {
+                OpenGpuiOverlayInteractionElement::new(
+                    OpenGpuiNativeInteractionHandle::new(),
+                    open_gpui::div().size_full(),
+                )
+            },
+        );
+        let (_, hitbox) = cx.draw(
+            open_gpui::point(open_gpui::px(0.0), open_gpui::px(0.0)),
+            open_gpui::size(open_gpui::px(10.0), open_gpui::px(10.0)),
+            |_, _| {
+                OpenGpuiOverlayInteractionElement::new(
+                    OpenGpuiNativeInteractionHandle::new(),
+                    open_gpui::div().size_full(),
+                )
+            },
+        );
+        assert_ne!(hitbox.id, HitboxId::placeholder());
+        hitbox.id
+    }
+
+    fn start_and_escape_successor_listener(
+        handle: OpenGpuiNativeInteractionHandle,
+        position: Point<Pixels>,
+    ) -> OpenGpuiSceneGestureListener {
+        Rc::new(move |_, window, cx| {
+            let start = MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            };
+            assert!(handle.begin(
+                OpenGpuiSceneGestureKind::Selection,
+                MouseButton::Left,
+                Rc::new(|_, _, _| {}),
+                None,
+                &start,
+                window,
+                cx,
+            ));
+            assert!(handle.handle_key_down(
+                &KeyDownEvent {
+                    keystroke: open_gpui::Keystroke::parse("escape").expect("valid keystroke"),
+                    is_held: false,
+                    prefer_character_input: false,
+                },
+                window,
+                cx,
+            ));
+        })
+    }
+
     impl CaptureGeneration for TestActive {
         fn generation(&self) -> u64 {
             self.generation
@@ -2466,6 +2537,153 @@ mod capture_bookkeeping_tests {
             assert_eq!(window.captured_hitbox(), Some(successor));
             assert!(handle.state.borrow().capture.suppression().is_none());
             window.release_pointer();
+        });
+    }
+
+    #[open_gpui::test]
+    fn non_escape_key_invalidates_a_replaced_release_suppression(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let handle = OpenGpuiNativeInteractionHandle::new();
+        let owner = HitboxId::placeholder();
+        let successor = draw_non_placeholder_hitbox(cx);
+        let generation = handle.allocate_generation().expect("native generation");
+        let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
+        handle
+            .state
+            .borrow_mut()
+            .capture
+            .set_suppression(Some(NativeReleaseSuppression::new(
+                MouseButton::Left,
+                generation,
+                owner,
+            )));
+
+        cx.update(|window, cx| {
+            window.capture_pointer(successor);
+            assert!(!handle.handle_key_down(
+                &KeyDownEvent {
+                    keystroke: open_gpui::Keystroke::parse("a").expect("valid keystroke"),
+                    is_held: false,
+                    prefer_character_input: false,
+                },
+                window,
+                cx,
+            ));
+            assert!(handle.state.borrow().capture.suppression().is_none());
+
+            window.release_pointer();
+            assert!(!handle.handle_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    modifiers: Default::default(),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ));
+        });
+    }
+
+    #[open_gpui::test]
+    fn older_terminal_stack_cannot_replace_a_successor_generations_suppression(
+        cx: &mut open_gpui::TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, _| FocusTestView);
+        let handle = OpenGpuiNativeInteractionHandle::new();
+        let hitbox = HitboxId::placeholder();
+        let position = open_gpui::point(open_gpui::px(20.0), open_gpui::px(30.0));
+        handle.state.borrow_mut().root_hitbox = Some(hitbox);
+
+        let install_outer = |listener| {
+            let generation = handle.allocate_generation().expect("outer generation");
+            handle
+                .state
+                .borrow_mut()
+                .capture
+                .activate(NativeCapture::Scene(ActiveSceneInteraction {
+                    generation,
+                    kind: OpenGpuiSceneGestureKind::Selection,
+                    button: MouseButton::Left,
+                    listener,
+                    lease: None,
+                    hitbox,
+                    previous_focus: None,
+                    position,
+                    modifiers: Default::default(),
+                }));
+            generation
+        };
+
+        let release_generation = install_outer(start_and_escape_successor_listener(
+            handle.clone(),
+            position,
+        ));
+        cx.update(|window, cx| {
+            window.capture_pointer(hitbox);
+            assert!(handle.handle_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    modifiers: Default::default(),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ));
+            let suppression = handle
+                .state
+                .borrow()
+                .capture
+                .suppression()
+                .expect("successor suppression survives outer release");
+            assert_eq!(suppression.generation, release_generation + 1);
+            assert!(handle.handle_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    modifiers: Default::default(),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ));
+        });
+
+        let escape_generation = install_outer(start_and_escape_successor_listener(
+            handle.clone(),
+            position,
+        ));
+        cx.update(|window, cx| {
+            window.capture_pointer(hitbox);
+            assert!(handle.handle_key_down(
+                &KeyDownEvent {
+                    keystroke: open_gpui::Keystroke::parse("escape").expect("valid keystroke"),
+                    is_held: false,
+                    prefer_character_input: false,
+                },
+                window,
+                cx,
+            ));
+            let suppression = handle
+                .state
+                .borrow()
+                .capture
+                .suppression()
+                .expect("successor suppression survives outer escape");
+            assert_eq!(suppression.generation, escape_generation + 1);
+            assert!(handle.handle_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    modifiers: Default::default(),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ));
         });
     }
 
