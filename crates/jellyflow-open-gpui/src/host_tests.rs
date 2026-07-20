@@ -16,14 +16,16 @@ use jellyflow::runtime::{
 };
 use open_gpui::{
     AppContext, Context, Entity, HitboxId, InteractiveElement, KeyUpEvent, Keystroke, Modifiers,
-    MouseButton, ParentElement, Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase,
-    VisualContext, Window, div, point, px,
+    MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, ScrollDelta,
+    ScrollWheelEvent, Styled, TouchPhase, VisualContext, Window, div, point, px,
 };
 
 use crate::chrome::OpenGpuiEdgeVisualState;
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
 use crate::interaction::{
-    OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortEvent, port_drag_owner,
+    OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason,
+    OpenGpuiPortDragEvent, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneGestureKind,
+    port_drag_owner,
 };
 use crate::size_policy::{OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeUpdate};
 use crate::{
@@ -1378,7 +1380,7 @@ fn forbidden_edge_delete_and_endpoint_reconnect_have_zero_side_effects(
                 host.edge_reconnect_press_target(edge, EdgeEndpoint::To)
                     .is_some()
             );
-            host.connection_owner = None;
+            host.interaction_owner.clear_connection();
         });
     });
     draw(cx);
@@ -1411,7 +1413,7 @@ fn explicit_reconnect_handle_keeps_scene_owned_connection_armed_during_native_sy
                 .interaction_position(pointer)
                 .expect("reconnect interaction position");
             let pressed = host
-                .canvas_interaction
+                .interaction_owner
                 .press(target, position)
                 .expect("arm reconnect handle");
             host.apply_canvas_interaction_update(pressed, window, cx);
@@ -1419,10 +1421,10 @@ fn explicit_reconnect_handle_keeps_scene_owned_connection_armed_during_native_sy
                 host.interaction_presentation().phase(),
                 CanvasInteractionPhase::Armed
             );
-            assert!(host.connection_owner.is_some());
+            assert!(host.interaction_owner.has_connection());
 
             let moved = host
-                .canvas_interaction
+                .interaction_owner
                 .move_to(
                     host.interaction_position(point(pointer.x + px(24.0), pointer.y))
                         .expect("moved reconnect interaction position"),
@@ -1433,7 +1435,7 @@ fn explicit_reconnect_handle_keeps_scene_owned_connection_armed_during_native_sy
                 host.interaction_presentation().phase(),
                 CanvasInteractionPhase::ConnectionDrag
             );
-            assert!(host.connection_owner.is_some());
+            assert!(host.interaction_owner.has_connection());
         });
     });
 }
@@ -1490,7 +1492,7 @@ fn removing_the_authoritative_edge_retires_an_active_reconnect_without_a_blank_f
             Some(InteractionTerminalReason::OwnerRetired)
         );
         assert!(presentation.connection().is_none());
-        assert!(host.connection_owner.is_none());
+        assert!(!host.interaction_owner.has_connection());
         assert_eq!(host.scene_evidence.last_connection_preview.get(), None);
         assert_eq!(
             host.scene_evidence
@@ -1514,7 +1516,7 @@ fn binding_presentation_projects_real_node_and_port_focus(cx: &mut open_gpui::Te
             .and_then(|(_, mounted)| mounted.binding.clone())
             .expect("first mounted node binding");
         (
-            host.interaction_focus.clone().expect("canvas focus"),
+            host.interaction_owner.focus_handle().expect("canvas focus"),
             binding,
         )
     });
@@ -1637,7 +1639,7 @@ fn focused_edge_delete_uses_native_key_semantics_and_falls_back_in_graph_order(
     draw(cx);
     draw(cx);
     let root_focus = cx.read_entity(&host, |host, _| {
-        host.interaction_focus.clone().expect("canvas focus")
+        host.interaction_owner.focus_handle().expect("canvas focus")
     });
     cx.update(|window, cx| window.focus(&root_focus, cx));
 
@@ -1874,6 +1876,93 @@ fn explicit_drag_handle_snaps_against_active_nodes_and_paints_alignment_guides(
 }
 
 #[open_gpui::test]
+fn pending_native_cancellation_cannot_strand_the_semantic_gesture(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+
+    let position = point(px(700.0), px(500.0));
+    cx.simulate_mouse_down(position, MouseButton::Left, Default::default());
+    let first_generation = cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        presentation.generation().expect("G1 semantic generation")
+    });
+
+    let (native, listener) = cx.update_entity(&host, |host, cx| {
+        (
+            host.interaction_owner.native_capability(),
+            OpenGpuiSceneHost::host_scene_listener(cx),
+        )
+    });
+    let mouse_down = MouseDownEvent {
+        button: MouseButton::Left,
+        position,
+        modifiers: Default::default(),
+        click_count: 1,
+        first_mouse: false,
+    };
+
+    cx.update(|window, cx| {
+        assert!(native.cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::Escape,));
+        assert!(native.begin(
+            OpenGpuiSceneGestureKind::Selection,
+            MouseButton::Left,
+            listener.clone(),
+            None,
+            &mouse_down,
+            window,
+            cx,
+        ));
+    });
+    cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        assert_eq!(presentation.generation(), Some(first_generation));
+    });
+
+    cx.update(|window, cx| assert!(native.drain_pending(window, cx)));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+            "draining G1 must deliver its semantic terminal callback",
+        );
+    });
+
+    cx.update(|window, cx| {
+        assert!(native.begin(
+            OpenGpuiSceneGestureKind::Selection,
+            MouseButton::Left,
+            listener,
+            None,
+            &mouse_down,
+            window,
+            cx,
+        ));
+    });
+    cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        assert_ne!(presentation.generation(), Some(first_generation));
+    });
+
+    cx.update(|window, cx| {
+        assert!(native.handle_mouse_up(
+            &MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            },
+            window,
+            cx,
+        ));
+    });
+}
+
+#[open_gpui::test]
 fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -1925,6 +2014,14 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         .clone();
     let (initial_source, initial_target) =
         edge_path_endpoints(&initial_route).expect("initial route endpoints");
+    let position_before = runtime
+        .snapshot()
+        .expect("graph before routed drag")
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("source before routed drag")
+        .pos;
+    let history_before = runtime.history_state().expect("history before routed drag");
 
     let drag_start = point(px(100.0), px(100.0));
     let drag_end = point(px(150.0), px(140.0));
@@ -1977,32 +2074,74 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         host.scene_evidence.painted_wire_counts.borrow_mut().clear();
     });
 
+    let prefix_hold = cx.read_entity(&host, |host, _| host.commands.hold_prefix_resolutions());
     cx.simulate_mouse_up(drag_end, MouseButton::Left, Default::default());
     cx.read_entity(&host, |host, _| {
-        let visual_delta = host.interaction_node_drag_delta(NodeId::from_u128(10));
-        let authoritative_position = runtime
-            .snapshot()
-            .expect("snapshot at release")
-            .graph()
-            .node(&NodeId::from_u128(10))
-            .expect("source at release")
-            .pos;
-        assert!(
-            visual_delta == Some(CanvasPoint { x: 50.0, y: 40.0 })
-                || authoritative_position == CanvasPoint { x: 90.0, y: 120.0 },
-            "release must retain the visual delta until the authoritative position takes over",
+        assert_eq!(
+            host.interaction_node_drag_delta(NodeId::from_u128(10)),
+            Some(CanvasPoint { x: 50.0, y: 40.0 }),
+            "the optimistic drag delta must remain authoritative while its prefix is held",
         );
+        assert!(host.has_pending_interaction_prefix_task());
     });
-    draw_once(cx);
-    let output_on_release = cx
-        .debug_bounds("jellyflow-test-output-port")
-        .expect("source output on release frame");
-    assert_eq!(
-        output_on_release, output_during_drag,
-        "releasing the pointer must not paint the node at its pre-drag position",
-    );
+
+    for frame in 0..3 {
+        draw_once(cx);
+        assert_eq!(
+            cx.debug_bounds("jellyflow-test-output-port")
+                .expect("source output during held prefix"),
+            output_during_drag,
+            "frame {frame}: the node must not flash back while the prefix is pending",
+        );
+        cx.update_entity(&host, |host, _| {
+            assert_eq!(
+                host.interaction_node_drag_delta(NodeId::from_u128(10)),
+                Some(CanvasPoint { x: 50.0, y: 40.0 }),
+                "frame {frame}: the optimistic delta must remain continuous",
+            );
+            let wires = host.scene_wires().expect("held-prefix scene wires");
+            assert_eq!(wires.published.len(), 1, "frame {frame}: one routed edge");
+            assert_eq!(
+                wires.published[0].drag_path.as_ref(),
+                Some(&dragged_path),
+                "frame {frame}: the incident route must keep the same optimistic path",
+            );
+        });
+        assert_eq!(
+            runtime
+                .snapshot()
+                .expect("graph while routed drag prefix is held")
+                .graph()
+                .node(&NodeId::from_u128(10))
+                .expect("source while prefix is held")
+                .pos,
+            position_before,
+            "frame {frame}: a held prefix cannot mutate the authoritative graph",
+        );
+        assert_eq!(
+            runtime
+                .history_state()
+                .expect("history while routed drag prefix is held"),
+            history_before,
+            "frame {frame}: no history boundary exists before prefix release",
+        );
+        assert_eq!(
+            weak_view
+                .geometry_snapshot()
+                .expect("geometry while prefix is held")
+                .route(EdgeId::from_u128(30))
+                .expect("route while prefix is held")
+                .facts()
+                .path,
+            initial_route,
+            "frame {frame}: published geometry remains authoritative",
+        );
+    }
+
+    prefix_hold.release();
 
     cx.run_until_parked();
+    draw(cx);
     cx.read_entity(&host, |host, _| {
         assert!(
             !host.scene_evidence.painted_wire_counts.borrow().is_empty(),
@@ -2026,12 +2165,272 @@ fn routed_node_drag_keeps_release_position_and_published_route_until_commit(
         1,
         "a command frame must not withdraw the route using pre-command measurements",
     );
-    draw(cx);
+    let final_position = runtime
+        .snapshot()
+        .expect("graph after routed drag")
+        .graph()
+        .node(&NodeId::from_u128(10))
+        .expect("source after routed drag")
+        .pos;
+    assert_eq!(
+        final_position,
+        CanvasPoint {
+            x: position_before.x + 50.0,
+            y: position_before.y + 40.0,
+        },
+    );
+    assert_eq!(
+        runtime
+            .history_state()
+            .expect("history after routed drag")
+            .undo_len(),
+        history_before.undo_len() + 1,
+        "one routed drag must create exactly one history boundary",
+    );
     assert_eq!(
         cx.debug_bounds("jellyflow-test-output-port")
             .expect("source output after drag"),
         output_during_drag,
     );
+}
+
+#[open_gpui::test]
+fn late_scheduled_tick_after_close_cannot_revive_or_mutate_a_node_drag(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+
+    let graph_before = runtime.snapshot().expect("graph before late tick");
+    let history_before = runtime.history_state().expect("history before late tick");
+    cx.simulate_mouse_down(
+        point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    cx.simulate_mouse_move(
+        point(px(150.0), px(140.0)),
+        Some(MouseButton::Left),
+        Default::default(),
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::NodeDrag,
+        );
+        assert!(host.interaction_owner.test_tick_scheduled());
+        assert_eq!(host.interaction_owner.test_tick_callback_attempts(), 0);
+    });
+
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.close_in_window(window, cx)
+                .expect("close before the scheduled tick enters GPUI");
+            assert_eq!(
+                host.interaction_presentation().phase(),
+                CanvasInteractionPhase::Closed,
+            );
+            assert!(host.interaction_owner.test_pending_work_empty());
+            assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
+            assert!(!host.interaction_owner.has_focus_state());
+        });
+    });
+    assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph immediately after close")));
+    assert_eq!(
+        runtime
+            .history_state()
+            .expect("history immediately after close"),
+        history_before,
+    );
+
+    let frame_delivered = cx.simulate_frame(open_gpui::RequestFrameOptions::default());
+    assert!(
+        frame_delivered,
+        "the test platform must deliver the requested interaction frame",
+    );
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_owner.test_tick_callback_attempts(),
+            1,
+            "the already scheduled window callback must enter exactly once after close",
+        );
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Closed,
+        );
+        assert!(host.interaction_owner.test_pending_work_empty());
+        assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
+        assert!(!host.interaction_owner.has_focus_state());
+        assert!(!host.interaction_owner.test_native_requires_window_cleanup());
+    });
+    assert!(graph_before.ptr_eq(&runtime.snapshot().expect("graph after late tick")));
+    assert_eq!(
+        runtime.history_state().expect("history after late tick"),
+        history_before,
+    );
+}
+
+#[open_gpui::test]
+fn terminal_finish_does_not_release_successor_pointer_or_focus(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+    cx.simulate_mouse_down(
+        point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    let jellyflow_capture = cx
+        .update(|window, _| window.captured_hitbox())
+        .expect("Jellyflow owns the active gesture capture");
+
+    let successor_capture = HitboxId::placeholder();
+    assert_ne!(successor_capture, jellyflow_capture);
+    let successor_focus = cx.update(|window, cx| {
+        let focus = cx.focus_handle();
+        host.update(cx, |host, cx| {
+            host.enter_terminal(ViewCloseReason::HostClosed);
+            assert_eq!(host.interaction_owner.terminal_window_transition_count(), 0);
+
+            window.capture_pointer(successor_capture);
+            window.focus(&focus, cx);
+            assert!(
+                host.interaction_owner
+                    .finish_terminal_window_transition(window, cx)
+            );
+        });
+        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(window.focused(cx), Some(focus.clone()));
+        focus
+    });
+
+    cx.update(|window, cx| {
+        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(window.focused(cx), Some(successor_focus.clone()));
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        assert_eq!(window.captured_hitbox(), Some(successor_capture));
+        assert_eq!(window.focused(cx), Some(successor_focus));
+        window.release_pointer();
+        window.blur();
+    });
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1);
+        assert!(!host.interaction_owner.has_focus_state());
+        assert!(!host.interaction_owner.test_native_requires_window_cleanup());
+    });
+}
+
+#[open_gpui::test]
+fn port_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_interactive_gesture_scene(cx);
+    draw(cx);
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output port bounds");
+    let graph_before = runtime
+        .snapshot()
+        .expect("graph before capture replacement");
+    let history_before = runtime
+        .history_state()
+        .expect("history before capture replacement");
+
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    let jellyflow_capture = cx
+        .update(|window, _| window.captured_hitbox())
+        .expect("port drag owns pointer capture");
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed,
+        );
+    });
+
+    let successor = HitboxId::placeholder();
+    assert_ne!(successor, jellyflow_capture);
+    cx.update(|window, _| window.capture_pointer(successor));
+    draw_once(cx);
+    assert_eq!(
+        cx.update(|window, _| window.captured_hitbox()),
+        Some(successor),
+        "port rebind must not reclaim another component's capture",
+    );
+    cx.run_until_parked();
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+        assert!(host.active_port_drag().is_none());
+    });
+    assert!(
+        graph_before.ptr_eq(&runtime.snapshot().expect("graph after capture loss")),
+        "capture loss must not commit a connection",
+    );
+    assert_eq!(
+        runtime.history_state().expect("history after capture loss"),
+        history_before,
+    );
+    cx.update(|window, _| window.release_pointer());
+}
+
+#[open_gpui::test]
+fn scene_redraw_cancels_instead_of_reclaiming_replacement_pointer_capture(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+    let graph_before = runtime
+        .snapshot()
+        .expect("graph before capture replacement");
+    let history_before = runtime
+        .history_state()
+        .expect("history before capture replacement");
+
+    cx.simulate_mouse_down(
+        point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    let jellyflow_capture = cx
+        .update(|window, _| window.captured_hitbox())
+        .expect("scene gesture owns pointer capture");
+    assert_ne!(
+        cx.read_entity(&host, |host, _| { host.interaction_presentation().phase() }),
+        CanvasInteractionPhase::Idle,
+    );
+
+    let successor = HitboxId::placeholder();
+    assert_ne!(successor, jellyflow_capture);
+    cx.update(|window, _| window.capture_pointer(successor));
+    draw_once(cx);
+    assert_eq!(
+        cx.update(|window, _| window.captured_hitbox()),
+        Some(successor),
+        "scene rebind must not reclaim another component's capture",
+    );
+    cx.run_until_parked();
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+    });
+    assert!(
+        graph_before.ptr_eq(&runtime.snapshot().expect("graph after capture loss")),
+        "capture loss must not commit a scene gesture",
+    );
+    assert_eq!(
+        runtime.history_state().expect("history after capture loss"),
+        history_before,
+    );
+    cx.update(|window, _| window.release_pointer());
 }
 
 #[open_gpui::test]
@@ -3424,6 +3823,49 @@ fn windowless_close_rejects_active_pointer_ownership_before_closing_the_view(
 }
 
 #[open_gpui::test]
+fn rendered_idle_host_requires_window_aware_close(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+
+    assert!(matches!(
+        cx.update_entity(&host, |host, _| host.close()),
+        Err(super::OpenGpuiSceneHostCloseError::WindowCleanupRequired)
+    ));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.close_reason(), None);
+        assert!(!host.interaction_owner.terminal());
+    });
+
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| host.close_in_window(window, cx))
+            .expect("rendered host closes through the window-aware API");
+    });
+}
+
+#[test]
+fn never_rendered_host_closes_windowlessly_without_pending_cleanup() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(unconnected_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal()
+            .expect("valid empty test registry"),
+        viewport(),
+    );
+
+    host.close().expect("unrendered host has no window state");
+    assert!(host.interaction_owner.terminal());
+    assert!(!host.interaction_owner.test_terminal_cleanup_pending());
+    assert!(!host.interaction_owner.requires_window_cleanup());
+    assert!(!host.interaction_owner.has_focus_state());
+}
+
+#[open_gpui::test]
 fn windowless_close_rejects_keyboard_connection_search_before_closing_the_view(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -3447,7 +3889,7 @@ fn windowless_close_rejects_keyboard_connection_search_before_closing_the_view(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
         );
-        assert!(host.connection_owner.is_some());
+        assert!(host.interaction_owner.has_connection());
     });
 
     assert!(matches!(
@@ -3463,7 +3905,7 @@ fn windowless_close_rejects_keyboard_connection_search_before_closing_the_view(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Closed
         );
-        assert!(host.connection_owner.is_none());
+        assert!(!host.interaction_owner.has_connection());
         assert_eq!(host.stats().protected_instances(), 0);
     });
 }
@@ -3990,6 +4432,203 @@ fn dropping_a_real_wire_on_empty_space_requests_search_without_mutating_the_grap
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionSearch
+        );
+    });
+}
+
+#[open_gpui::test]
+fn stale_native_port_generation_cannot_settle_a_reused_mount_and_owner(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_gesture_scene(cx);
+    draw(cx);
+
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output bounds");
+    let owner = cx.read_entity(&host, |host, _| {
+        let instance = host
+            .mounts
+            .retained_instance(NodeId::from_u128(10))
+            .cloned()
+            .expect("source instance");
+        port_drag_owner(instance, PortId::from_u128(20))
+    });
+    let dispatch = |event: OpenGpuiPortDragEvent, cx: &mut open_gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.handle_port_event(OpenGpuiPortEvent::Pointer(event), window, cx);
+            });
+        });
+    };
+
+    dispatch(
+        OpenGpuiPortDragEvent::for_test(
+            owner.clone(),
+            1,
+            OpenGpuiPortDragPhase::Start,
+            output.center(),
+        ),
+        cx,
+    );
+    assert_eq!(
+        cx.read_entity(&host, |host, _| host.interaction_presentation().phase()),
+        CanvasInteractionPhase::Armed,
+    );
+    dispatch(
+        OpenGpuiPortDragEvent::for_test(
+            owner.clone(),
+            1,
+            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::Escape),
+            output.center(),
+        ),
+        cx,
+    );
+    assert_eq!(
+        cx.read_entity(&host, |host, _| host.interaction_presentation().phase()),
+        CanvasInteractionPhase::Idle,
+    );
+
+    dispatch(
+        OpenGpuiPortDragEvent::for_test(
+            owner.clone(),
+            2,
+            OpenGpuiPortDragPhase::Start,
+            output.center(),
+        ),
+        cx,
+    );
+    let second_generation = cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        presentation.generation().expect("G2 semantic generation")
+    });
+
+    for phase in [
+        OpenGpuiPortDragPhase::Move,
+        OpenGpuiPortDragPhase::Release,
+        OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::Escape),
+    ] {
+        dispatch(
+            OpenGpuiPortDragEvent::for_test(owner.clone(), 1, phase, point(px(700.0), px(500.0))),
+            cx,
+        );
+        cx.read_entity(&host, |host, _| {
+            let presentation = host.interaction_presentation();
+            assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+            assert_eq!(presentation.generation(), Some(second_generation));
+        });
+    }
+
+    dispatch(
+        OpenGpuiPortDragEvent::for_test(
+            owner.clone(),
+            2,
+            OpenGpuiPortDragPhase::Move,
+            point(px(700.0), px(500.0)),
+        ),
+        cx,
+    );
+    assert_eq!(
+        cx.read_entity(&host, |host, _| host.interaction_presentation().phase()),
+        CanvasInteractionPhase::ConnectionDrag,
+    );
+    dispatch(
+        OpenGpuiPortDragEvent::for_test(
+            owner,
+            2,
+            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::Escape),
+            point(px(700.0), px(500.0)),
+        ),
+        cx,
+    );
+}
+
+#[open_gpui::test]
+fn deferred_real_port_terminal_event_cannot_settle_the_next_native_generation(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_interactive_gesture_scene(cx);
+    draw(cx);
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output bounds");
+
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    let (owner, first_native_generation, first_generation) = cx.read_entity(&host, |host, _| {
+        let owner = host.active_port_drag().expect("G1 native port owner");
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed,
+        );
+        (
+            owner,
+            host.interaction_owner
+                .test_connection_native_generation()
+                .expect("G1 native generation"),
+            host.interaction_presentation()
+                .generation()
+                .expect("G1 semantic generation"),
+        )
+    });
+
+    cx.update(|window, cx| {
+        assert!(window.dispatch_keystroke(Keystroke::parse("escape").unwrap(), cx));
+        assert!(window.captured_hitbox().is_none());
+    });
+    draw(cx);
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+
+    let second_generation = cx.read_entity(&host, |host, _| {
+        assert_eq!(host.active_port_drag(), Some(owner.clone()));
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        let generation = presentation.generation().expect("G2 semantic generation");
+        assert_ne!(generation, first_generation);
+        assert_ne!(
+            host.interaction_owner
+                .test_connection_native_generation()
+                .expect("G2 native generation"),
+            first_native_generation,
+        );
+        generation
+    });
+
+    cx.update(|window, cx| {
+        let host = host.clone();
+        let owner = owner.clone();
+        window.defer(cx, move |window, cx| {
+            let event = OpenGpuiPortDragEvent::for_test(
+                owner,
+                first_native_generation,
+                OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::Escape),
+                output.center(),
+            );
+            host.update(cx, |host, cx| {
+                host.handle_port_event(OpenGpuiPortEvent::Pointer(event), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        let presentation = host.interaction_presentation();
+        assert_eq!(presentation.phase(), CanvasInteractionPhase::Armed);
+        assert_eq!(presentation.generation(), Some(second_generation));
+        assert!(host.active_port_drag().is_some());
+    });
+
+    let outside = point(px(700.0), px(500.0));
+    cx.simulate_mouse_move(outside, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert!(host.active_port_drag().is_none());
+        assert_ne!(
+            host.interaction_presentation().terminal(),
+            Some(InteractionTerminalReason::Cancelled),
         );
     });
 }
@@ -4600,7 +5239,7 @@ fn rejected_port_start_cannot_cancel_an_existing_search_or_commit(
         let phase = host.interaction_presentation().phase();
         assert!(
             (phase == CanvasInteractionPhase::Committing
-                && host.pending_interaction_submission.is_some())
+                && host.interaction_owner.test_has_pending_submission())
                 || (phase == CanvasInteractionPhase::Idle && committed_early),
             "a rejected native start must leave the old transaction pending or successfully settled",
         );
@@ -4670,7 +5309,7 @@ fn cancelling_a_pending_interaction_releases_its_prefix_task_reservation(
             .expect("selection waits behind prefix");
         assert!(host.has_pending_interaction_prefix_task());
 
-        let cancelled = host.canvas_interaction.cancel();
+        let cancelled = host.interaction_owner.cancel();
         host.discard_pending_interaction_submission();
         host.apply_canvas_interaction_update(cancelled, window, cx);
         assert_eq!(host.commands.capacity_usage(), (1, 0, 0));
@@ -5148,9 +5787,7 @@ fn runtime_drop_during_input_reconnect_retires_the_preview_without_mutating_the_
 }
 
 #[open_gpui::test]
-fn runtime_drop_releases_third_party_pointer_capture_on_terminal_render(
-    cx: &mut open_gpui::TestAppContext,
-) {
+fn runtime_drop_does_not_guess_third_party_pointer_ownership(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog())
         .build(routed_graph())
         .expect("valid routed graph");
@@ -5196,19 +5833,33 @@ fn runtime_drop_releases_third_party_pointer_capture_on_terminal_render(
     drop(runtime);
     cx.run_until_parked();
 
-    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert_eq!(
+        cx.update(|window, _| window.captured_hitbox()),
+        Some(HitboxId::placeholder()),
+        "an activity lease keeps a component resident but does not identify its capture hitbox",
+    );
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.close_reason(), Some(ViewCloseReason::RuntimeDropped));
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().strong_instances(), 0);
+        assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1,);
+        assert!(!host.interaction_owner.has_focus_state());
     });
 
-    cx.update(|window, _| window.capture_pointer(HitboxId::placeholder()));
+    cx.update(|window, _| {
+        window.release_pointer();
+        window.capture_pointer(HitboxId::placeholder());
+    });
     draw_once(cx);
     assert!(
         cx.update(|window, _| window.captured_hitbox()).is_some(),
         "a later terminal redraw must not release another component's pointer capture",
     );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.interaction_owner.terminal_window_transition_count(), 1,);
+        assert!(host.interaction_owner.terminal());
+        assert!(!host.interaction_owner.has_focus_state());
+    });
     cx.update(|window, _| window.release_pointer());
 }
 
@@ -5300,7 +5951,7 @@ fn create_from_wire_overlay_capacity_failure_aborts_then_retries_after_release(
             CanvasInteractionPhase::Idle
         );
         assert!(host.connection_search_request().is_none());
-        assert!(host.connection_owner.is_none());
+        assert!(!host.interaction_owner.has_connection());
         assert_eq!(host.stats().protected_overflows(), overflows_before + 1);
         assert_eq!(
             host.stats().protected_instances(),
@@ -5376,6 +6027,43 @@ fn mount_gesture_scene(
     &mut open_gpui::VisualTestContext,
 ) {
     mount_gesture_scene_for_graph(cx, unconnected_graph())
+}
+
+fn mount_interactive_gesture_scene(
+    cx: &mut open_gpui::TestAppContext,
+) -> (
+    GraphRuntime,
+    Entity<OpenGpuiSceneHost>,
+    &mut open_gpui::VisualTestContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(unconnected_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        cx.new(|_| InteractiveRoutedNode {
+            binding,
+            events: std::rc::Rc::new(std::cell::Cell::new(0)),
+        })
+    });
+    let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let scene_host = captured_host.clone();
+    let (_scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                viewport(),
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        InteractiveScene { host }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    (runtime, host, cx)
 }
 
 fn mount_gesture_scene_for_graph(
@@ -5550,8 +6238,13 @@ fn close_active_scene_gesture(
 
     cx.run_until_parked();
     cx.read_entity(host, |host, _| {
-        assert_eq!(host.scene_evidence.host_closed_scene_cancellations.get(), 1);
+        assert_eq!(
+            host.scene_evidence.host_closed_scene_cancellations.get(),
+            0,
+            "terminal Host listeners must not record late native cancellation evidence",
+        );
         assert!(!host.active_scene_gesture());
+        assert!(!host.interaction_owner.test_native_requires_window_cleanup());
         assert_eq!(host.stats().protected_instances(), 0);
         assert_eq!(host.stats().strong_instances(), 0);
     });

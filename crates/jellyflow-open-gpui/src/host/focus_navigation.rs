@@ -184,10 +184,9 @@ impl OpenGpuiGraphFocusCoordinator {
             })
     }
 
-    pub(super) fn close(&mut self, window: &mut Window) {
+    pub(super) fn retire(&mut self) {
         self.actions.clear();
         self.previous.clear();
         self.return_target = None;
-        window.blur();
     }
 }

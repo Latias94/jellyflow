@@ -189,8 +189,8 @@ impl OpenGpuiSceneHost {
             .document_epoch
             .is_some_and(|current| current != document_epoch)
         {
-            self.scene_interactions
-                .cancel_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
+            self.interaction_owner
+                .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
             self.hard_retire_all();
         }
         self.document_epoch = Some(document_epoch);
@@ -284,7 +284,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Vec<MountedNode> {
         self.cancel_connection_with_removed_source(changes);
-        if let Some(owner) = self.interactions.active_owner()
+        if let Some(owner) = self.interaction_owner.active_port_owner()
             && let Some(change) = changes.get(&owner.instance().node())
             && !change.is_stale_for(owner.instance())
             && !self
@@ -295,7 +295,7 @@ impl OpenGpuiSceneHost {
                 .unwrap_or(false)
             && let Some(mount) = self.mount_capability(owner.instance()).cloned()
         {
-            self.interactions.cancel_owner_deferred(
+            self.interaction_owner.cancel_port_owner_deferred(
                 &owner,
                 &mount,
                 OpenGpuiPortDragCancelReason::PortDisabled,
@@ -404,7 +404,7 @@ impl OpenGpuiSceneHost {
             cx.entity_id(),
             frame.instance().clone(),
             activity.clone(),
-            self.interactions.clone(),
+            self.interaction_owner.native_capability(),
             Self::host_port_listener(cx, mount.clone()),
             Self::host_port_hover_listener(cx, mount.clone()),
             mount.clone(),
@@ -413,7 +413,7 @@ impl OpenGpuiSceneHost {
         let drag_handle = OpenGpuiNodeDragHandle::new(
             frame.instance().clone(),
             activity.clone(),
-            self.scene_interactions.clone(),
+            self.interaction_owner.native_capability(),
             Self::host_scene_listener(cx),
             mount.clone(),
         );
@@ -615,17 +615,17 @@ impl OpenGpuiSceneHost {
     }
 
     fn settle_retirement(&mut self, retired: RetiredMount<MountedNode>) -> MountedNode {
-        self.scene_interactions.cancel_owner_deferred(
+        self.interaction_owner.cancel_scene_owner_deferred(
             &retired.instance,
             OpenGpuiSceneGestureCancelReason::OwnerRetired,
         );
         self.retire_canvas_interaction_owner(InteractionOwner::Node(retired.instance.node()));
-        self.retire_connection_owner(&retired.instance, &retired.value.mount);
+        self.retire_connection_context(&retired.instance, &retired.value.mount);
         retired.value
     }
 
     fn settle_eviction(&mut self, evicted: EvictedMount<MountedNode>) {
-        self.retire_connection_owner(&evicted.instance, &evicted.value.mount);
+        self.retire_connection_context(&evicted.instance, &evicted.value.mount);
         evicted.value.revoke();
     }
 
@@ -638,23 +638,19 @@ impl OpenGpuiSceneHost {
         for node in retired_nodes {
             self.retire_canvas_interaction_owner(InteractionOwner::Node(node));
         }
-        if let Some(edge) = self.canvas_interaction.presentation().active_edge() {
+        if let Some(edge) = self.interaction_owner.presentation().active_edge() {
             self.retire_canvas_interaction_owner(InteractionOwner::Edge(edge));
         }
         if !matches!(
-            self.canvas_interaction.presentation().phase(),
+            self.interaction_owner.presentation().phase(),
             CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed
         ) {
-            let update = self.canvas_interaction.cancel();
+            let update = self.interaction_owner.cancel();
             self.discard_pending_interaction_submission();
             self.queue_interaction_queries(update.into_dispatch().queries);
         }
-        if let Some((owner, mount)) = self
-            .connection_owner
-            .as_ref()
-            .map(|current| (current.owner.clone(), current.mount.clone()))
-        {
-            self.interactions.cancel_owner_deferred(
+        if let Some((owner, mount)) = self.interaction_owner.connection_identity() {
+            self.interaction_owner.cancel_port_owner_deferred(
                 &owner,
                 &mount,
                 OpenGpuiPortDragCancelReason::OwnerRetired,

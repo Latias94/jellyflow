@@ -10,8 +10,9 @@ use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeBindingReadError, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
-    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortHandle, OpenGpuiSceneHost,
+    OpenGpuiNodeBindingReadError, OpenGpuiNodeDragHandle, OpenGpuiNodeMountError,
+    OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortHandle,
+    OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -34,6 +35,15 @@ struct ExternalPortScene {
     host: Entity<OpenGpuiSceneHost>,
     stale_handle: Rc<RefCell<Option<OpenGpuiPortHandle>>>,
     callbacks: Rc<Cell<u32>>,
+}
+
+struct InteractiveDragProbeNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+}
+
+struct ExternalDragScene {
+    host: Entity<OpenGpuiSceneHost>,
+    stale_handle: Rc<RefCell<Option<OpenGpuiNodeDragHandle>>>,
 }
 
 impl Render for ProbeNode {
@@ -101,6 +111,46 @@ impl Render for ExternalPortScene {
                 .right(px(20.0))
                 .top(px(20.0))
                 .children(stale_port),
+        )
+    }
+}
+
+impl Render for InteractiveDragProbeNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        self.binding.read(cx).drag_handle().wrap(
+            div()
+                .debug_selector(|| "live-mount-drag".to_owned())
+                .size_full(),
+        )
+    }
+}
+
+impl Render for ExternalDragScene {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        let stale_drag = self.stale_handle.borrow().clone().map(|handle| {
+            handle
+                .wrap(
+                    div()
+                        .debug_selector(|| "stale-mount-drag".to_owned())
+                        .w(px(32.0))
+                        .h(px(32.0)),
+                )
+                .into_any_element()
+        });
+        div().relative().size_full().child(self.host.clone()).child(
+            div()
+                .absolute()
+                .right(px(20.0))
+                .top(px(80.0))
+                .children(stale_drag),
         )
     }
 }
@@ -299,6 +349,142 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
         assert_eq!(
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::Idle
+        );
+    });
+}
+
+#[open_gpui::test]
+fn old_node_drag_handle_is_inert_after_same_instance_retry_and_replacement_drag_succeeds(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph_with_nodes(1))
+        .unwrap();
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let weak_view = view.downgrade();
+    let attempts = Rc::new(Cell::new(0_u32));
+    let stale_handle = Rc::new(RefCell::new(None::<OpenGpuiNodeDragHandle>));
+    let factory_attempts = attempts.clone();
+    let factory_handle = stale_handle.clone();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.try_register(RENDERER, move |binding, _window, cx| {
+        factory_attempts.set(factory_attempts.get().saturating_add(1));
+        if factory_handle.borrow().is_none() {
+            *factory_handle.borrow_mut() = Some(binding.read(cx).drag_handle());
+        }
+        if factory_attempts.get() == 1 {
+            return Err(OpenGpuiNodeMountError::new("retry node drag fixture"));
+        }
+        Ok(cx.new(|_| InteractiveDragProbeNode { binding }))
+    });
+
+    let captured_host = Rc::new(RefCell::new(None::<Entity<OpenGpuiSceneHost>>));
+    let scene_host = captured_host.clone();
+    let scene_handle = stale_handle.clone();
+    let (scene, cx) = cx.add_window_view(move |_, cx| {
+        let host = cx.new(|_| {
+            OpenGpuiSceneHost::new(
+                view,
+                registry.seal().expect("valid test registry"),
+                visible_viewport(),
+            )
+        });
+        *scene_host.borrow_mut() = Some(host.clone());
+        ExternalDragScene {
+            host,
+            stale_handle: scene_handle,
+        }
+    });
+    let host = captured_host.borrow().clone().expect("captured host");
+    draw(cx);
+    cx.update_entity(&scene, |_, cx| cx.notify());
+    draw(cx);
+
+    assert!(cx.update_entity(&host, |host, cx| host.retry_mount(node_id(), cx)));
+    draw(cx);
+    assert_eq!(attempts.get(), 2);
+    assert!(
+        !stale_handle
+            .borrow()
+            .as_ref()
+            .expect("captured stale node drag handle")
+            .interaction_enabled(),
+        "retry must revoke the exact old mount capability",
+    );
+
+    let position_before = runtime
+        .snapshot()
+        .unwrap()
+        .graph()
+        .node(&node_id())
+        .expect("node before stale drag")
+        .pos;
+    let history_before = runtime.history_state().unwrap();
+    let selection_before = weak_view.selection().unwrap();
+    let stale_bounds = cx
+        .debug_bounds("stale-mount-drag")
+        .expect("external stale drag bounds");
+    let stale_start = stale_bounds.center();
+    let stale_end = open_gpui::point(stale_start.x - px(50.0), stale_start.y + px(35.0));
+    cx.simulate_mouse_down(stale_start, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(stale_end, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(stale_end, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id())
+            .expect("node after stale drag")
+            .pos,
+        position_before,
+    );
+    assert_eq!(runtime.history_state().unwrap(), history_before);
+    assert_eq!(weak_view.selection().unwrap(), selection_before);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+    });
+
+    draw(cx);
+    let live_bounds = cx
+        .debug_bounds("live-mount-drag")
+        .expect("replacement drag bounds");
+    let live_start = live_bounds.center();
+    let live_end = open_gpui::point(live_start.x + px(50.0), live_start.y + px(35.0));
+    cx.simulate_mouse_down(live_start, MouseButton::Left, Default::default());
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.simulate_mouse_move(live_end, Some(MouseButton::Left), Default::default());
+    cx.simulate_mouse_up(live_end, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+
+    assert_ne!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .node(&node_id())
+            .expect("node after replacement drag")
+            .pos,
+        position_before,
+        "the replacement handle must move its live mount",
+    );
+    assert_eq!(
+        runtime.history_state().unwrap().undo_len(),
+        history_before.undo_len() + 1,
+        "one replacement drag creates one graph history boundary",
+    );
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
         );
     });
 }

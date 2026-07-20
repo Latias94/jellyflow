@@ -486,8 +486,73 @@ fn resolve_prefix_barriers(
     }
 }
 
+#[cfg(test)]
+struct HeldPrefixResolution {
+    barriers: Vec<Rc<PrefixBarrierCompletion>>,
+    result: PrefixBarrierCompletionResult,
+}
+
+#[cfg(test)]
+struct PrefixResolutionHoldState {
+    held: Cell<bool>,
+    pending: RefCell<VecDeque<HeldPrefixResolution>>,
+}
+
+#[cfg(test)]
+impl PrefixResolutionHoldState {
+    fn resolve(
+        &self,
+        barriers: Vec<Rc<PrefixBarrierCompletion>>,
+        result: PrefixBarrierCompletionResult,
+    ) {
+        if barriers.is_empty() {
+            return;
+        }
+        if !self.held.get() {
+            resolve_prefix_barriers(barriers, result);
+            return;
+        }
+        let mut pending = self.pending.borrow_mut();
+        assert!(
+            pending.len() < OPEN_GPUI_COMMAND_JOURNAL_CAPACITY,
+            "the test-only prefix resolution hold must remain bounded",
+        );
+        pending.push_back(HeldPrefixResolution { barriers, result });
+    }
+
+    fn release(&self) {
+        if !self.held.replace(false) {
+            return;
+        }
+        for held in std::mem::take(&mut *self.pending.borrow_mut()) {
+            resolve_prefix_barriers(held.barriers, held.result);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct OpenGpuiPrefixResolutionHold {
+    state: Rc<PrefixResolutionHoldState>,
+}
+
+#[cfg(test)]
+impl OpenGpuiPrefixResolutionHold {
+    pub(crate) fn release(self) {
+        self.state.release();
+    }
+}
+
+#[cfg(test)]
+impl Drop for OpenGpuiPrefixResolutionHold {
+    fn drop(&mut self) {
+        self.state.release();
+    }
+}
+
 pub(crate) struct OpenGpuiCommandJournal {
     state: RefCell<JournalState>,
+    #[cfg(test)]
+    prefix_resolution_hold: Rc<PrefixResolutionHoldState>,
 }
 
 impl OpenGpuiCommandJournal {
@@ -506,7 +571,38 @@ impl OpenGpuiCommandJournal {
                 prefix_reservations: BTreeSet::new(),
                 prefix_barriers: Vec::new(),
             }),
+            #[cfg(test)]
+            prefix_resolution_hold: Rc::new(PrefixResolutionHoldState {
+                held: Cell::new(false),
+                pending: RefCell::new(VecDeque::new()),
+            }),
         })
+    }
+
+    fn resolve_prefix_barriers(
+        &self,
+        barriers: Vec<Rc<PrefixBarrierCompletion>>,
+        result: PrefixBarrierCompletionResult,
+    ) {
+        #[cfg(test)]
+        {
+            self.prefix_resolution_hold.resolve(barriers, result);
+        }
+        #[cfg(not(test))]
+        {
+            resolve_prefix_barriers(barriers, result);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_prefix_resolutions(&self) -> OpenGpuiPrefixResolutionHold {
+        assert!(
+            !self.prefix_resolution_hold.held.replace(true),
+            "prefix resolution holds cannot be nested",
+        );
+        OpenGpuiPrefixResolutionHold {
+            state: Rc::clone(&self.prefix_resolution_hold),
+        }
     }
 
     pub(crate) fn enqueue(
@@ -649,7 +745,7 @@ impl OpenGpuiCommandJournal {
             (target_exclusive, reservation_sequence, ready)
         };
         if ready {
-            completion.resolve(Ok(()));
+            self.resolve_prefix_barriers(vec![Rc::clone(&completion)], Ok(()));
         }
         Ok(OpenGpuiCommandPrefixBarrier {
             target_exclusive,
@@ -797,7 +893,7 @@ impl OpenGpuiCommandJournal {
             state.mark_sequence_terminal(sequence);
             state.take_ready_prefix_barriers()
         };
-        resolve_prefix_barriers(barriers, Ok(()));
+        self.resolve_prefix_barriers(barriers, Ok(()));
     }
 
     pub(crate) fn collect_next_batch(
@@ -969,7 +1065,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.terminate_prefixes();
             (drain.into_entries(), barriers)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
         );
@@ -1009,7 +1105,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.terminate_prefixes();
             (drain.into_entries(), barriers)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
         );
@@ -1041,7 +1137,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.terminate_prefixes();
             (drain.into_entries(), barriers)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::ClosePanicked { reason }),
         );
@@ -1076,7 +1172,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.terminate_prefixes();
             (entries, barriers)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostClosed { reason }),
         );
@@ -1108,7 +1204,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.terminate_prefixes();
             (entries, barriers)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostDropped),
         );
@@ -1143,7 +1239,7 @@ impl OpenGpuiCommandJournal {
             let barriers = state.advance_terminal_prefix(&entries);
             (entries, barriers)
         };
-        resolve_prefix_barriers(barriers, Ok(()));
+        self.resolve_prefix_barriers(barriers, Ok(()));
         Ok(entries)
     }
 }
@@ -1167,7 +1263,7 @@ impl Drop for OpenGpuiCommandJournal {
                 .collect::<Vec<_>>();
             (barriers, ticket_completions)
         };
-        resolve_prefix_barriers(
+        self.resolve_prefix_barriers(
             barriers,
             Err(OpenGpuiCommandPrefixBarrierError::HostDropped),
         );

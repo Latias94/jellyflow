@@ -14,7 +14,6 @@ use open_gpui::{Context, Task, Window};
 use crate::command_journal::{
     OpenGpuiCommandCloseError, OpenGpuiCompletedCommand, resolve_command_tickets,
 };
-use crate::interaction::{OpenGpuiPortDragCancelReason, OpenGpuiSceneGestureCancelReason};
 
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind};
@@ -245,7 +244,7 @@ fn command_close_error(error: OpenGpuiCommandCloseError) -> OpenGpuiSceneHostClo
 #[derive(Debug, thiserror::Error)]
 pub enum OpenGpuiSceneHostCloseError {
     #[error(
-        "native interactions or pending commands require close_in_window for synchronous cleanup"
+        "a rendered native focus domain, active window interaction, or pending command requires close_in_window"
     )]
     WindowCleanupRequired,
     #[error("native command batch is currently submitting")]
@@ -260,15 +259,14 @@ pub enum OpenGpuiSceneHostCloseError {
 
 impl OpenGpuiSceneHost {
     fn owns_window_resources(&self) -> bool {
-        self.interactions.requires_window_cleanup()
-            || self.scene_interactions.requires_window_cleanup()
-            || self.connection_owner.is_some()
+        self.interaction_owner.requires_window_cleanup()
             || self.activity_coordinator.requires_window_cleanup()
     }
 
-    /// Closes an idle view capability and releases all retained native state.
+    /// Closes a never-rendered view capability with no pending window-owned state.
     ///
-    /// Active or queued window-owned interaction must be closed through [`Self::close_in_window`].
+    /// A rendered native focus domain, active interaction, or queued command must be closed through
+    /// [`Self::close_in_window`].
     pub fn close(&mut self) -> Result<ViewCloseOutcome, OpenGpuiSceneHostCloseError> {
         self.close_with_request(ViewCloseRequest::default())
     }
@@ -288,10 +286,6 @@ impl OpenGpuiSceneHost {
             Ok(outcome) => outcome,
             Err(payload) => {
                 if let Some(reason) = self.view.close_reason() {
-                    self.interactions
-                        .cancel_deferred(OpenGpuiPortDragCancelReason::HostClosed);
-                    self.scene_interactions
-                        .cancel_deferred(OpenGpuiSceneGestureCancelReason::HostClosed);
                     let _ = catch_host_cleanup(|| self.enter_terminal(reason));
                 }
                 suppress_host_panic(Some(payload));
@@ -301,17 +295,9 @@ impl OpenGpuiSceneHost {
         let mut cleanup_panicked = false;
         match &outcome {
             Ok(outcome) => {
-                self.interactions
-                    .cancel_deferred(OpenGpuiPortDragCancelReason::HostClosed);
-                self.scene_interactions
-                    .cancel_deferred(OpenGpuiSceneGestureCancelReason::HostClosed);
                 cleanup_panicked |= catch_host_cleanup(|| self.enter_terminal(outcome.reason()));
             }
             Err(ViewSessionError::Closed { reason }) => {
-                self.interactions
-                    .cancel_deferred(OpenGpuiPortDragCancelReason::HostClosed);
-                self.scene_interactions
-                    .cancel_deferred(OpenGpuiSceneGestureCancelReason::HostClosed);
                 cleanup_panicked |= catch_host_cleanup(|| self.enter_terminal(*reason));
             }
             Err(_) => {}
@@ -406,21 +392,11 @@ impl OpenGpuiSceneHost {
     ) -> bool {
         let mut panicked = false;
         let resolutions = self.handle_completed_commands(completed);
-        panicked |= catch_host_cleanup(|| {
-            self.interactions
-                .cancel_now(OpenGpuiPortDragCancelReason::HostClosed, window, cx);
-            self.interactions.settle_port_focus_for_host_close(window);
-        });
-        panicked |= catch_host_cleanup(|| {
-            self.canvas_interaction.close();
-            self.discard_pending_interaction_submission();
-        });
-        panicked |= catch_host_cleanup(|| {
-            self.scene_interactions.cancel_for_host_close(window, cx);
-        });
-        window.release_pointer();
         panicked |= catch_host_cleanup(|| self.enter_terminal(reason));
-        self.terminal_window_cleanup_pending = false;
+        panicked |= catch_host_cleanup(|| {
+            self.interaction_owner
+                .finish_terminal_window_transition(window, cx);
+        });
         window.defer(cx, move |_, _| resolve_command_tickets(resolutions));
         panicked
     }
@@ -431,20 +407,12 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let needs_window_cleanup = self.terminal_window_cleanup_pending
-            || (self.terminal_reason.is_none() && self.owns_window_resources());
-        if needs_window_cleanup {
-            self.interactions.settle_port_focus_for_host_close(window);
-            self.graph_focus.close(window);
-            window.release_pointer();
-        }
         let completed = self.commands.terminate(reason);
         let resolutions = self.handle_completed_commands(completed);
         self.enter_terminal(reason);
-        self.terminal_window_cleanup_pending = false;
+        self.interaction_owner
+            .finish_terminal_window_transition(window, cx);
         cx.defer(move |_| resolve_command_tickets(resolutions));
-        self.interactions.schedule_pending_drain(window, cx);
-        self.scene_interactions.schedule_pending_drain(window, cx);
     }
 
     #[must_use]
@@ -523,17 +491,11 @@ impl OpenGpuiSceneHost {
         if self.terminal_reason.is_some() {
             return Vec::new();
         }
-        self.terminal_window_cleanup_pending =
-            self.owns_window_resources() || self.graph_focus.has_entries();
-        self.interactions
-            .cancel_deferred(OpenGpuiPortDragCancelReason::HostClosed);
-        self.scene_interactions
-            .cancel_deferred(OpenGpuiSceneGestureCancelReason::HostClosed);
-        self.canvas_interaction.close();
-        self.discard_pending_interaction_submission();
+        let window_cleanup_required = self.owns_window_resources();
+        self.interaction_owner
+            .prepare_terminal(window_cleanup_required);
         self.discard_pending_node_size_submission();
         self.discard_frame_transaction();
-        self.connection_owner = None;
         self.scene_origin = None;
         self.scene_transform = None;
         self.terminal_reason = Some(reason);

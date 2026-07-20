@@ -36,10 +36,7 @@ use crate::chrome::{
 use crate::command_journal::{
     OpenGpuiCommandTicketError, OpenGpuiPendingCommandResolution, resolve_command_tickets,
 };
-use crate::interaction::{
-    OpenGpuiGraphKeyListener, OpenGpuiOverlayInteractionBoundary, OpenGpuiSceneGestureKind,
-    interaction_root,
-};
+use crate::interaction::{OpenGpuiGraphKeyListener, OpenGpuiSceneGestureKind, interaction_root};
 use crate::semantic_zoom::OpenGpuiNodePresentation;
 
 #[cfg(test)]
@@ -318,8 +315,8 @@ impl OpenGpuiSceneHost {
             )?;
             identities.into()
         };
-        let hovered = self.canvas_interaction.presentation().hovered_edge();
-        let active = self.canvas_interaction.presentation().active_edge();
+        let hovered = self.interaction_owner.presentation().hovered_edge();
+        let active = self.interaction_owner.presentation().active_edge();
         let cache_key = presentation_offsets
             .is_empty()
             .then_some(OpenGpuiPreparedEdgeCacheKey {
@@ -888,7 +885,7 @@ impl OpenGpuiSceneHost {
         let host_id = cx.entity_id();
         let view_id = self.view.id();
         let host = cx.weak_entity();
-        let scene_interactions = self.scene_interactions.clone();
+        let native_interactions = self.interaction_owner.native_capability();
         let scene_listener = Self::host_scene_listener(cx);
         let mut edge_controls = div().absolute().size_full();
         let mut reconnect_controls = div().absolute().size_full();
@@ -921,8 +918,8 @@ impl OpenGpuiSceneHost {
             let selected = interaction.selected;
             let deletable = interaction.deletable;
             let edge_focus = self
-                .graph_focus
-                .action_handle(OpenGpuiGraphFocusTarget::Edge(edge), cx);
+                .interaction_owner
+                .graph_focus_action_handle(OpenGpuiGraphFocusTarget::Edge(edge), cx);
             focus_entries.push(OpenGpuiGraphFocusEntry::new(
                 OpenGpuiGraphFocusTarget::Edge(edge),
                 edge_focus.clone(),
@@ -1052,7 +1049,7 @@ impl OpenGpuiSceneHost {
                 let Some(position) = transform.screen_point_for_canvas(sample.point) else {
                     continue;
                 };
-                let coordinator = scene_interactions.clone();
+                let interaction_handle = native_interactions.clone();
                 let listener = scene_listener.clone();
                 let keyboard_host = host.clone();
                 let accessibility_host = host.clone();
@@ -1060,7 +1057,7 @@ impl OpenGpuiSceneHost {
                 let marker = self.graph_theme.metrics.reconnect_handle_diameter;
                 let hit = self.graph_theme.metrics.reconnect_hit_diameter.max(marker);
                 let target = OpenGpuiGraphFocusTarget::reconnect(edge, endpoint);
-                let reconnect_focus = self.graph_focus.action_handle(target, cx);
+                let reconnect_focus = self.interaction_owner.graph_focus_action_handle(target, cx);
                 focus_entries.push(OpenGpuiGraphFocusEntry::new(
                     target,
                     reconnect_focus.clone(),
@@ -1090,7 +1087,7 @@ impl OpenGpuiSceneHost {
                     .border_color(focus.opacity(0.0))
                     .focus_visible(move |style| style.border_2().border_color(focus))
                     .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                        if coordinator.begin(
+                        if interaction_handle.begin(
                             OpenGpuiSceneGestureKind::EdgeReconnect(edge, endpoint),
                             MouseButton::Left,
                             listener.clone(),
@@ -1241,7 +1238,7 @@ impl OpenGpuiSceneHost {
                 let pointer_focus = node_focus.clone();
                 let focused = node_focus.contains_focused(window, cx);
                 let dragging = self
-                    .canvas_interaction
+                    .interaction_owner
                     .presentation()
                     .node_drag()
                     .is_some_and(|drag| drag.nodes().contains(&key.node()));
@@ -1375,9 +1372,11 @@ impl OpenGpuiSceneHost {
                     .top(px(origin.y))
                     .w(px(size.width))
                     .h(px(size.height))
-                    .child(OpenGpuiOverlayInteractionBoundary::wrap(
-                        mounted.view.clone(),
-                    )),
+                    .child(
+                        self.interaction_owner
+                            .overlay_boundary()
+                            .wrap(mounted.view.clone()),
+                    ),
             );
         }
         nodes.into_any_element()
@@ -1532,7 +1531,7 @@ impl OpenGpuiSceneHost {
 
     fn render_overlay_layer(&self, transform: ViewportTransform) -> AnyElement {
         let mut overlay = div().absolute().size_full();
-        if let Some(drag) = self.canvas_interaction.presentation().node_drag() {
+        if let Some(drag) = self.interaction_owner.presentation().node_drag() {
             let guide_width = self.graph_theme.metrics.guide_width;
             for guide in drag.guides() {
                 let line = match guide.axis() {
@@ -1705,9 +1704,14 @@ impl OpenGpuiSceneHost {
         let (edge_interaction_layer, interaction_chrome_layer) =
             self.render_interaction_chrome_layer(&wires, transform, &mut focus_entries, cx);
         let allow_focus_return =
-            self.canvas_interaction.presentation().phase() == CanvasInteractionPhase::Idle;
-        self.graph_focus
-            .reconcile(focus_entries, &focus_handle, allow_focus_return, window, cx);
+            self.interaction_owner.presentation().phase() == CanvasInteractionPhase::Idle;
+        self.interaction_owner.reconcile_graph_focus(
+            focus_entries,
+            &focus_handle,
+            allow_focus_return,
+            window,
+            cx,
+        );
         let overlay_layer = self.render_overlay_layer(transform);
         let edge_interaction_layer = div()
             .absolute()
@@ -1747,13 +1751,13 @@ impl OpenGpuiSceneHost {
         ];
         #[cfg(test)]
         let mut recorded_layers = [OpenGpuiSceneLayer::Overlay; 7];
-        let scene_interactions = self.scene_interactions.clone();
+        let native_interactions = self.interaction_owner.native_capability();
         let selection_listener = Self::host_scene_listener(cx);
         let pan_listener = selection_listener.clone();
         let right_pan_listener = selection_listener.clone();
         let right_button_pans = self.navigation.profile().right_button_pans();
         let scene_cursor =
-            if self.canvas_interaction.presentation().phase() == CanvasInteractionPhase::Pan {
+            if self.interaction_owner.presentation().phase() == CanvasInteractionPhase::Pan {
                 CursorStyle::ClosedHand
             } else if right_button_pans {
                 CursorStyle::Crosshair
@@ -1804,13 +1808,13 @@ impl OpenGpuiSceneHost {
             });
         })
         .on_mouse_down(MouseButton::Left, {
-            let coordinator = scene_interactions.clone();
+            let interaction_handle = native_interactions.clone();
             move |event, window, cx| {
                 if window.default_prevented() {
                     cx.stop_propagation();
                     return;
                 }
-                if coordinator.begin(
+                if interaction_handle.begin(
                     OpenGpuiSceneGestureKind::Selection,
                     MouseButton::Left,
                     selection_listener.clone(),
@@ -1824,9 +1828,9 @@ impl OpenGpuiSceneHost {
             }
         })
         .on_mouse_down(MouseButton::Middle, {
-            let coordinator = scene_interactions.clone();
+            let interaction_handle = native_interactions.clone();
             move |event, window, cx| {
-                if coordinator.begin(
+                if interaction_handle.begin(
                     OpenGpuiSceneGestureKind::Pan,
                     MouseButton::Middle,
                     pan_listener.clone(),
@@ -1840,9 +1844,9 @@ impl OpenGpuiSceneHost {
             }
         })
         .when(right_button_pans, |scene| {
-            let coordinator = scene_interactions.clone();
+            let interaction_handle = native_interactions.clone();
             scene.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                if coordinator.begin(
+                if interaction_handle.begin(
                     OpenGpuiSceneGestureKind::Pan,
                     MouseButton::Right,
                     right_pan_listener.clone(),
@@ -1951,8 +1955,7 @@ impl OpenGpuiSceneHost {
         );
         interaction_root(
             open_gpui_interaction_element_id(host_id, self.view.id()),
-            self.interactions.clone(),
-            self.scene_interactions.clone(),
+            self.interaction_owner.native_capability(),
             focus_handle,
             Some(graph_key_listener),
             scene,
@@ -1960,23 +1963,12 @@ impl OpenGpuiSceneHost {
         .into_any_element()
     }
 
-    pub(super) fn terminal_scene(
-        &self,
-        host_id: EntityId,
-        focus_handle: FocusHandle,
-    ) -> AnyElement {
-        interaction_root(
-            open_gpui_interaction_element_id(host_id, self.view.id()),
-            self.interactions.clone(),
-            self.scene_interactions.clone(),
-            focus_handle,
-            None,
-            scene_semantic_element(
-                div().id(open_gpui_scene_element_id(host_id, self.view.id())),
-                "Closed node graph",
-            )
-            .size_full(),
+    pub(super) fn terminal_scene(&self, host_id: EntityId) -> AnyElement {
+        scene_semantic_element(
+            div().id(open_gpui_scene_element_id(host_id, self.view.id())),
+            "Closed node graph",
         )
+        .size_full()
         .into_any_element()
     }
 }

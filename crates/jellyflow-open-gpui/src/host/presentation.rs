@@ -40,7 +40,7 @@ impl OpenGpuiSceneHost {
         }) {
             self.hovered_port = None;
         }
-        let interaction = self.canvas_interaction.presentation();
+        let interaction = self.interaction_owner.presentation();
         let connection = interaction.connection().cloned();
         let node_drag = interaction.node_drag().cloned();
         let updates = self

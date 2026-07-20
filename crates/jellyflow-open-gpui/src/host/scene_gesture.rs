@@ -29,7 +29,7 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.canvas_interaction.presentation().phase() != CanvasInteractionPhase::Idle {
+        if self.interaction_owner.presentation().phase() != CanvasInteractionPhase::Idle {
             return;
         }
         let Some(position) = self.interaction_position(event.position) else {
@@ -68,9 +68,9 @@ impl OpenGpuiSceneHost {
             cx.notify();
         }
         let result = if hovered_node.is_some() {
-            self.canvas_interaction.clear_edge_hover()
+            self.interaction_owner.clear_edge_hover()
         } else {
-            self.canvas_interaction.request_edge_pick(position)
+            self.interaction_owner.request_edge_pick(position)
         };
         self.apply_scene_interaction_result(result, window, cx);
     }
@@ -85,7 +85,7 @@ impl OpenGpuiSceneHost {
         if had_hovered_node || had_hovered_port {
             cx.notify();
         }
-        if let Ok(update) = self.canvas_interaction.clear_edge_hover() {
+        if let Ok(update) = self.interaction_owner.clear_edge_hover() {
             self.apply_canvas_interaction_update(update, window, cx);
         }
     }
@@ -93,7 +93,7 @@ impl OpenGpuiSceneHost {
     #[cfg(test)]
     pub(super) fn active_scene_gesture(&self) -> bool {
         matches!(
-            self.canvas_interaction.presentation().phase(),
+            self.interaction_owner.presentation().phase(),
             CanvasInteractionPhase::Armed
                 | CanvasInteractionPhase::NodeDrag
                 | CanvasInteractionPhase::Pan
@@ -119,14 +119,18 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.interaction_owner.terminal() {
+            return;
+        }
         #[cfg(test)]
         self.scene_evidence.record_scene_event(&event);
 
         match event.phase() {
             OpenGpuiSceneGesturePhase::Start => {
                 if !self.start_scene_gesture(&event, window, cx) {
-                    self.scene_interactions
-                        .cancel_deferred(OpenGpuiSceneGestureCancelReason::InteractionUnavailable);
+                    self.interaction_owner.cancel_scene_deferred(
+                        OpenGpuiSceneGestureCancelReason::InteractionUnavailable,
+                    );
                     cx.notify();
                 }
             }
@@ -154,9 +158,9 @@ impl OpenGpuiSceneHost {
         let Some(target) = self.scene_press_target(event) else {
             return false;
         };
-        let result = self.canvas_interaction.press(target, position);
+        let result = self.interaction_owner.press(target, position);
         if result.is_err() && matches!(event.kind(), OpenGpuiSceneGestureKind::EdgeReconnect(..)) {
-            self.connection_owner = None;
+            self.interaction_owner.clear_connection();
         }
         self.apply_scene_interaction_result(result, window, cx)
     }
@@ -169,18 +173,18 @@ impl OpenGpuiSceneHost {
     ) {
         if !self.scene_event_owner_is_current(event.kind()) {
             self.cancel_scene_gesture(window, cx);
-            self.scene_interactions
-                .cancel_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
+            self.interaction_owner
+                .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
             return;
         }
         let Some(position) = self.interaction_position(event.position()) else {
             return;
         };
-        let result = self.canvas_interaction.move_to(position);
+        let result = self.interaction_owner.move_to(position);
         if !self.apply_scene_interaction_result(result, window, cx) {
             self.cancel_scene_gesture(window, cx);
-            self.scene_interactions
-                .cancel_deferred(OpenGpuiSceneGestureCancelReason::InteractionUnavailable);
+            self.interaction_owner
+                .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::InteractionUnavailable);
         }
     }
 
@@ -201,19 +205,19 @@ impl OpenGpuiSceneHost {
 
         // The final native pointer position may arrive only with mouse-up. Feed it through the
         // move transition before release so node delta, marquee bounds, and pan stay continuous.
-        let moved = self.canvas_interaction.move_to(position);
+        let moved = self.interaction_owner.move_to(position);
         if !self.apply_scene_interaction_result(moved, window, cx) {
             self.cancel_scene_gesture(window, cx);
             return;
         }
-        let released = self.canvas_interaction.release(position);
+        let released = self.interaction_owner.release(position);
         if !self.apply_scene_interaction_result(released, window, cx) {
             self.cancel_scene_gesture(window, cx);
         }
     }
 
     fn cancel_scene_gesture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let update = self.canvas_interaction.cancel();
+        let update = self.interaction_owner.cancel();
         self.discard_pending_interaction_submission();
         self.apply_canvas_interaction_update(update, window, cx);
     }
@@ -230,7 +234,7 @@ impl OpenGpuiSceneHost {
                 OpenGpuiSceneGestureCancelReason::OwnerRetired,
                 OpenGpuiSceneGestureKind::Node(instance),
             ) if self.scene_node_owner_is_current(instance) => (
-                self.canvas_interaction
+                self.interaction_owner
                     .owner_retired(InteractionOwner::Node(instance.node())),
                 true,
             ),
@@ -238,14 +242,14 @@ impl OpenGpuiSceneHost {
                 (CanvasInteractionUpdate::default(), false)
             }
             (OpenGpuiSceneGestureCancelReason::HostClosed, _) => {
-                (self.canvas_interaction.close(), true)
+                (self.interaction_owner.close_semantic(), true)
             }
             (
                 OpenGpuiSceneGestureCancelReason::InteractionUnavailable
                 | OpenGpuiSceneGestureCancelReason::ProtectedCapacityExceeded,
                 _,
             ) => (CanvasInteractionUpdate::default(), false),
-            _ => (self.canvas_interaction.cancel(), true),
+            _ => (self.interaction_owner.cancel(), true),
         };
         if settle_pending {
             self.discard_pending_interaction_submission();

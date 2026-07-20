@@ -454,7 +454,7 @@ impl CanonicalDriver {
 
         let ticket = cx.update_entity(&self.host, |host, _| {
             assert!(
-                host.pending_interaction_submission.is_some(),
+                host.interaction_owner.test_has_pending_submission(),
                 "a native release must reach the command prefix boundary"
             );
             let presentation = host.interaction_presentation();

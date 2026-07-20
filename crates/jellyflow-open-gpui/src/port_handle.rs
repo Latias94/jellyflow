@@ -25,7 +25,7 @@ use crate::accessibility::{
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::OpenGpuiMountCapability;
 use crate::interaction::{
-    OpenGpuiInteractionCoordinator, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
+    OpenGpuiNativeInteractionHandle, OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
     OpenGpuiPortListener, port_drag_owner,
 };
@@ -358,7 +358,7 @@ impl OpenGpuiPortHandle {
             source: self.source,
             sink: self.sink.clone(),
             activity: self.sink.activity.clone(),
-            coordinator: self.sink.interactions.clone(),
+            interactions: self.sink.interactions.clone(),
             listener,
         }
         .into_any_element()
@@ -529,7 +529,7 @@ struct OpenGpuiPortInteractionElement {
     source: OpenGpuiGraphPresentationSource,
     sink: OpenGpuiMeasurementSink,
     activity: OpenGpuiNodeActivityRegistry,
-    coordinator: OpenGpuiInteractionCoordinator,
+    interactions: OpenGpuiNativeInteractionHandle,
     listener: OpenGpuiPortListener,
 }
 
@@ -582,10 +582,10 @@ impl Element for OpenGpuiPortInteractionElement {
         );
         if self.sink.mount.is_live() {
             if self.interaction_enabled {
-                self.coordinator
-                    .rebind_port(&self.owner, &self.sink.mount, hitbox.id, window);
+                self.interactions
+                    .rebind_port(&self.owner, &self.sink.mount, hitbox.id, window, cx);
             } else {
-                self.coordinator
+                self.interactions
                     .disable_port_deferred(&self.owner, &self.sink.mount, window, cx);
             }
         }
@@ -629,12 +629,12 @@ impl Element for OpenGpuiPortInteractionElement {
         let listener = self.listener.clone();
         let activity = self.activity.clone();
         let mount = self.sink.mount.clone();
-        let coordinator = self.coordinator.clone();
+        let interactions = self.interactions.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
                 && hitbox.is_hovered(window)
-                && coordinator.begin_port_drag(
+                && interactions.begin_port_drag(
                     owner.clone(),
                     mount.clone(),
                     listener.clone(),
@@ -750,7 +750,7 @@ pub(crate) struct OpenGpuiMeasurementSink {
     errors: Rc<RefCell<Vec<OpenGpuiMeasurementError>>>,
     error_queue_busy: Rc<Cell<bool>>,
     activity: OpenGpuiNodeActivityRegistry,
-    interactions: OpenGpuiInteractionCoordinator,
+    interactions: OpenGpuiNativeInteractionHandle,
     host_port_listener: OpenGpuiHostPortListener,
     host_port_hover_listener: OpenGpuiHostPortHoverListener,
     hovered_port: Rc<Cell<Option<PortId>>>,
@@ -771,7 +771,7 @@ impl OpenGpuiMeasurementSink {
         host: EntityId,
         instance: NodeInstanceKey,
         activity: OpenGpuiNodeActivityRegistry,
-        interactions: OpenGpuiInteractionCoordinator,
+        interactions: OpenGpuiNativeInteractionHandle,
         host_port_listener: OpenGpuiHostPortListener,
         host_port_hover_listener: OpenGpuiHostPortHoverListener,
         mount: OpenGpuiMountCapability,

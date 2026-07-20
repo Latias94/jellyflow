@@ -11,7 +11,8 @@ use open_gpui::{
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::OpenGpuiMountCapability;
 use crate::interaction::{
-    OpenGpuiSceneGestureKind, OpenGpuiSceneGestureListener, OpenGpuiSceneInteractionCoordinator,
+    OpenGpuiNativeInteractionHandle, OpenGpuiOverlayInteractionBoundary, OpenGpuiSceneGestureKind,
+    OpenGpuiSceneGestureListener,
 };
 
 /// Explicit native drag surface for one retained graph-node instance.
@@ -25,7 +26,7 @@ pub struct OpenGpuiNodeDragHandle {
     instance: NodeInstanceKey,
     availability: Rc<Cell<OpenGpuiNodeDragAvailability>>,
     activity: OpenGpuiNodeActivityRegistry,
-    coordinator: OpenGpuiSceneInteractionCoordinator,
+    interactions: OpenGpuiNativeInteractionHandle,
     listener: OpenGpuiSceneGestureListener,
     mount: OpenGpuiMountCapability,
     scope: OpenGpuiNodeDragScope,
@@ -58,7 +59,7 @@ impl OpenGpuiNodeDragHandle {
     pub(crate) fn new(
         instance: NodeInstanceKey,
         activity: OpenGpuiNodeActivityRegistry,
-        coordinator: OpenGpuiSceneInteractionCoordinator,
+        interactions: OpenGpuiNativeInteractionHandle,
         listener: OpenGpuiSceneGestureListener,
         mount: OpenGpuiMountCapability,
     ) -> Self {
@@ -70,7 +71,7 @@ impl OpenGpuiNodeDragHandle {
                 dragging: false,
             })),
             activity,
-            coordinator,
+            interactions,
             listener,
             mount,
             scope: OpenGpuiNodeDragScope::Native,
@@ -115,6 +116,10 @@ impl OpenGpuiNodeDragHandle {
         let mut handle = self.clone();
         handle.scope = OpenGpuiNodeDragScope::HostPresentation;
         handle
+    }
+
+    pub(crate) fn overlay_boundary(&self) -> OpenGpuiOverlayInteractionBoundary {
+        OpenGpuiOverlayInteractionBoundary::new(self.interactions.clone())
     }
 
     /// Wraps an ordinary Open GPUI element as the only pointer surface that may drag this node.
@@ -197,10 +202,11 @@ impl Element for OpenGpuiNodeDragHandleElement {
                     || event.button != MouseButton::Left
                     || !hitbox.is_hovered(window)
                     || window.default_prevented()
+                    || !handle.interaction_enabled()
                 {
                     return;
                 }
-                if handle.coordinator.begin(
+                if handle.interactions.begin(
                     OpenGpuiSceneGestureKind::Node(handle.instance.clone()),
                     MouseButton::Left,
                     handle.listener.clone(),

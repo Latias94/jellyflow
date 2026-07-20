@@ -6,9 +6,9 @@ use jellyflow::core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow::runtime::{CanvasInteractionPhase, GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiOverlayInteractionBoundary,
+    OpenGpuiConnectionOptions, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
     OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
@@ -18,6 +18,7 @@ use open_gpui::{
 
 const KIND: &str = "test.overlay-owner";
 const RENDERER: &str = "test.native.overlay-owner";
+const NODE_SELECTOR: &str = "jellyflow-test-overlay-underlay-node";
 const PORT_SELECTOR: &str = "jellyflow-test-overlay-underlay-port";
 const OVERLAY_SELECTOR: &str = "jellyflow-test-owned-overlay";
 const OVERLAY_CONTROL_SELECTOR: &str = "jellyflow-test-owned-overlay-control";
@@ -54,41 +55,48 @@ impl Render for UnderlayNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let port = self.binding.read(cx).port_handle(output_id());
+        let binding = self.binding.read(cx);
+        let port = binding.port_handle(output_id());
+        let drag_handle = binding.drag_handle();
         let node_down = self.events.clone();
         let node_up = self.events.clone();
         let port_events = self.events.clone();
 
-        div()
-            .relative()
-            .size_full()
-            .on_any_mouse_down(move |_, _, _| node_down.borrow_mut().push(ObservedEvent::NodeDown))
-            .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                node_up.borrow_mut().push(ObservedEvent::NodeUp)
-            })
-            .children(port.map(|handle| {
-                div()
-                    .absolute()
-                    .right(px(8.0))
-                    .top(px(43.0))
-                    .child(
-                        handle.interactive(
-                            div()
-                                .debug_selector(|| PORT_SELECTOR.to_owned())
-                                .w(px(14.0))
-                                .h(px(14.0)),
-                            move |event, _, _| {
-                                let OpenGpuiPortEvent::Pointer(event) = event else {
-                                    return;
-                                };
-                                port_events
-                                    .borrow_mut()
-                                    .push(ObservedEvent::Port(event.phase()));
-                            },
-                        ),
-                    )
-                    .into_any_element()
-            }))
+        drag_handle.wrap(
+            div()
+                .debug_selector(|| NODE_SELECTOR.to_owned())
+                .relative()
+                .size_full()
+                .on_any_mouse_down(move |_, _, _| {
+                    node_down.borrow_mut().push(ObservedEvent::NodeDown)
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    node_up.borrow_mut().push(ObservedEvent::NodeUp)
+                })
+                .children(port.map(|handle| {
+                    div()
+                        .absolute()
+                        .right(px(8.0))
+                        .top(px(43.0))
+                        .child(
+                            handle.interactive(
+                                div()
+                                    .debug_selector(|| PORT_SELECTOR.to_owned())
+                                    .w(px(14.0))
+                                    .h(px(14.0)),
+                                move |event, _, _| {
+                                    let OpenGpuiPortEvent::Pointer(event) = event else {
+                                        return;
+                                    };
+                                    port_events
+                                        .borrow_mut()
+                                        .push(ObservedEvent::Port(event.phase()));
+                                },
+                            ),
+                        )
+                        .into_any_element()
+                })),
+        )
     }
 }
 
@@ -96,7 +104,7 @@ impl Render for OverlayScene {
     fn render(
         &mut self,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let canvas_down = self.events.clone();
         let canvas_up = self.events.clone();
@@ -106,40 +114,42 @@ impl Render for OverlayScene {
             let control_down = self.events.clone();
             let control_up = self.events.clone();
 
-            deferred(OpenGpuiOverlayInteractionBoundary::wrap(
-                div()
-                    .debug_selector(|| OVERLAY_SELECTOR.to_owned())
-                    .absolute()
-                    .left(px(0.0))
-                    .top(px(0.0))
-                    .w(px(800.0))
-                    .h(px(600.0))
-                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                        overlay_down.borrow_mut().push(ObservedEvent::OverlayDown)
-                    })
-                    .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                        overlay_up.borrow_mut().push(ObservedEvent::OverlayUp)
-                    })
-                    .child(
-                        div()
-                            .debug_selector(|| OVERLAY_CONTROL_SELECTOR.to_owned())
-                            .absolute()
-                            .left(px(280.0))
-                            .top(px(120.0))
-                            .w(px(120.0))
-                            .h(px(36.0))
-                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                                control_down
-                                    .borrow_mut()
-                                    .push(ObservedEvent::OverlayControlDown)
-                            })
-                            .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                                control_up
-                                    .borrow_mut()
-                                    .push(ObservedEvent::OverlayControlUp)
-                            }),
-                    ),
-            ))
+            deferred(
+                self.host.read(cx).overlay_boundary().wrap(
+                    div()
+                        .debug_selector(|| OVERLAY_SELECTOR.to_owned())
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w(px(800.0))
+                        .h(px(600.0))
+                        .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                            overlay_down.borrow_mut().push(ObservedEvent::OverlayDown)
+                        })
+                        .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                            overlay_up.borrow_mut().push(ObservedEvent::OverlayUp)
+                        })
+                        .child(
+                            div()
+                                .debug_selector(|| OVERLAY_CONTROL_SELECTOR.to_owned())
+                                .absolute()
+                                .left(px(280.0))
+                                .top(px(120.0))
+                                .w(px(120.0))
+                                .h(px(36.0))
+                                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                    control_down
+                                        .borrow_mut()
+                                        .push(ObservedEvent::OverlayControlDown)
+                                })
+                                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                                    control_up
+                                        .borrow_mut()
+                                        .push(ObservedEvent::OverlayControlUp)
+                                }),
+                        ),
+                ),
+            )
             .with_priority(100)
         });
 
@@ -161,11 +171,74 @@ impl Render for OverlayScene {
 fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let (_runtime, host, scene, cx, overlay_open, events) = mount_scene(cx);
+    let (runtime, host, scene, cx, overlay_open, events) = mount_scene(cx);
     draw(cx);
+    let node = cx
+        .debug_bounds(NODE_SELECTOR)
+        .expect("underlay node drag bounds");
     let port = cx
         .debug_bounds(PORT_SELECTOR)
         .expect("underlay port bounds");
+    let graph_before = runtime
+        .snapshot()
+        .expect("graph before overlay interactions");
+    let position_before = graph_before
+        .graph()
+        .node(&node_id())
+        .expect("underlay node before overlay interactions")
+        .pos;
+    let history_before = runtime
+        .history_state()
+        .expect("history before overlay interactions");
+    let view = cx.read_entity(&host, |host, _| host.view_handle());
+    let selection_before = view
+        .selection()
+        .expect("selection before overlay interactions");
+
+    let assert_underlay_unchanged = |cx: &mut open_gpui::VisualTestContext| {
+        assert!(
+            cx.update(|window, _| window.captured_hitbox()).is_none(),
+            "an overlay-owned pointer phase must not leave native capture behind",
+        );
+        cx.read_entity(&host, |host, _| {
+            assert_eq!(
+                host.interaction_presentation().phase(),
+                CanvasInteractionPhase::Idle,
+                "an overlay-owned pointer phase must not arm the graph host",
+            );
+            assert!(host.active_port_drag().is_none());
+            assert_eq!(host.stats().protected_instances(), 0);
+        });
+        assert!(
+            graph_before.ptr_eq(
+                &runtime
+                    .snapshot()
+                    .expect("graph after overlay-owned pointer phase"),
+            ),
+            "overlay-owned input must not replace the graph root",
+        );
+        assert_eq!(
+            runtime
+                .snapshot()
+                .expect("graph position after overlay-owned pointer phase")
+                .graph()
+                .node(&node_id())
+                .expect("underlay node after overlay-owned pointer phase")
+                .pos,
+            position_before,
+        );
+        assert_eq!(
+            runtime
+                .history_state()
+                .expect("history after overlay-owned pointer phase"),
+            history_before,
+        );
+        assert_eq!(
+            view.selection()
+                .expect("selection after overlay-owned pointer phase"),
+            selection_before,
+        );
+    };
 
     open_overlay(&scene, &overlay_open, cx);
     let overlay = cx.debug_bounds(OVERLAY_SELECTOR).expect("overlay bounds");
@@ -173,9 +246,13 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
         .debug_bounds(OVERLAY_CONTROL_SELECTOR)
         .expect("overlay control bounds");
     assert!(overlay.contains(&port.center()));
+    assert!(overlay.contains(&node.center()));
     assert!(overlay.contains(&control.center()));
 
-    cx.simulate_click(control.center(), Default::default());
+    cx.simulate_mouse_down(control.center(), MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_up(control.center(), MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
     assert_eq!(
         events.borrow().as_slice(),
         [
@@ -187,33 +264,236 @@ fn overlay_control_and_blank_space_own_events_before_port_node_and_canvas(
     );
 
     events.borrow_mut().clear();
-    cx.simulate_click(port.center(), Default::default());
+    let port_drag_end = point(port.center().x - px(48.0), port.center().y + px(32.0));
+    cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_move(port_drag_end, Some(MouseButton::Left), Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_up(port_drag_end, MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
     assert_eq!(
         events.borrow().as_slice(),
         [ObservedEvent::OverlayDown, ObservedEvent::OverlayUp]
     );
 
     events.borrow_mut().clear();
-    cx.simulate_mouse_down(
-        point(px(500.0), px(400.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
-    cx.simulate_mouse_move(
-        point(px(560.0), px(460.0)),
-        Some(MouseButton::Left),
-        Default::default(),
-    );
-    cx.simulate_mouse_up(
-        point(px(560.0), px(460.0)),
-        MouseButton::Left,
-        Default::default(),
-    );
+    let node_drag_end = point(node.center().x + px(52.0), node.center().y + px(36.0));
+    cx.simulate_mouse_down(node.center(), MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_move(node_drag_end, Some(MouseButton::Left), Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_up(node_drag_end, MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
     assert_eq!(
         events.borrow().as_slice(),
         [ObservedEvent::OverlayDown, ObservedEvent::OverlayUp]
     );
-    cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_none()));
+
+    events.borrow_mut().clear();
+    let blank_start = point(px(500.0), px(400.0));
+    let blank_end = point(px(560.0), px(460.0));
+    assert!(overlay.contains(&blank_start));
+    cx.simulate_mouse_down(blank_start, MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_move(blank_end, Some(MouseButton::Left), Default::default());
+    assert_underlay_unchanged(cx);
+    cx.simulate_mouse_up(blank_end, MouseButton::Left, Default::default());
+    assert_underlay_unchanged(cx);
+    assert_eq!(
+        events.borrow().as_slice(),
+        [ObservedEvent::OverlayDown, ObservedEvent::OverlayUp]
+    );
+    close_overlay(&scene, &overlay_open, cx);
+    events.borrow_mut().clear();
+    let live_node = cx
+        .debug_bounds(NODE_SELECTOR)
+        .expect("live node drag bounds after closing overlay");
+    let node_drag_start = live_node.center();
+    let node_drag_end = point(node_drag_start.x + px(52.0), node_drag_start.y + px(36.0));
+    let position_before_node_drag = runtime
+        .snapshot()
+        .expect("graph before live node drag")
+        .graph()
+        .node(&node_id())
+        .expect("node before live node drag")
+        .pos;
+    let history_before_node_drag = runtime
+        .history_state()
+        .expect("history before live node drag");
+
+    cx.simulate_mouse_down(node_drag_start, MouseButton::Left, Default::default());
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed,
+        );
+        assert!(host.active_port_drag().is_none());
+        assert_eq!(host.stats().protected_instances(), 1);
+    });
+    cx.simulate_mouse_move(node_drag_end, Some(MouseButton::Left), Default::default());
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::NodeDrag,
+        );
+        assert!(host.active_port_drag().is_none());
+        assert_eq!(host.stats().protected_instances(), 1);
+    });
+    cx.simulate_mouse_up(node_drag_end, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+
+    let position_after_node_drag = runtime
+        .snapshot()
+        .expect("graph after live node drag")
+        .graph()
+        .node(&node_id())
+        .expect("node after live node drag")
+        .pos;
+    assert_ne!(position_after_node_drag, position_before_node_drag);
+    assert_eq!(
+        runtime
+            .history_state()
+            .expect("history after live node drag")
+            .undo_len(),
+        history_before_node_drag.undo_len() + 1,
+        "one live node drag must create exactly one history boundary",
+    );
+    assert_eq!(
+        view.selection()
+            .expect("selection after live node drag")
+            .nodes(),
+        [node_id()],
+    );
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+        assert!(host.active_port_drag().is_none());
+        assert_eq!(host.stats().protected_instances(), 0);
+    });
+
+    events.borrow_mut().clear();
+    let live_port = cx
+        .debug_bounds(PORT_SELECTOR)
+        .expect("live port bounds after node drag");
+    let port_drag_start = live_port.center();
+    let port_drag_end = point(px(500.0), px(400.0));
+    let graph_before_port_drag = runtime.snapshot().expect("graph before live port drag");
+    let history_before_port_drag = runtime
+        .history_state()
+        .expect("history before live port drag");
+    let selection_before_port_drag = view.selection().expect("selection before live port drag");
+
+    cx.simulate_mouse_down(port_drag_start, MouseButton::Left, Default::default());
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    let port_owner = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Armed,
+        );
+        assert_eq!(host.stats().protected_instances(), 1);
+        host.active_port_drag().expect("one live port owner")
+    });
+    assert_eq!(port_owner.instance().node(), node_id());
+    assert_eq!(port_owner.port(), output_id());
+    cx.simulate_mouse_move(port_drag_end, Some(MouseButton::Left), Default::default());
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_some());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionDrag,
+        );
+        assert_eq!(host.active_port_drag(), Some(port_owner.clone()));
+        assert_eq!(host.stats().protected_instances(), 1);
+    });
+    cx.simulate_mouse_up(port_drag_end, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        events.borrow().as_slice(),
+        [
+            ObservedEvent::Port(OpenGpuiPortDragPhase::Start),
+            ObservedEvent::Port(OpenGpuiPortDragPhase::Move),
+            ObservedEvent::Port(OpenGpuiPortDragPhase::Release),
+        ],
+        "one live port drag must emit one ordered pointer lifecycle",
+    );
+    assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::Idle,
+        );
+        assert!(host.active_port_drag().is_none());
+        assert_eq!(host.stats().protected_instances(), 0);
+    });
+    assert!(
+        graph_before_port_drag.ptr_eq(
+            &runtime
+                .snapshot()
+                .expect("graph after live port drag without a target"),
+        ),
+        "an unmatched live port drag must not mutate the graph",
+    );
+    assert_eq!(
+        runtime
+            .history_state()
+            .expect("history after live port drag"),
+        history_before_port_drag,
+    );
+    assert_eq!(
+        view.selection().expect("selection after live port drag"),
+        selection_before_port_drag,
+    );
+}
+
+#[open_gpui::test]
+fn open_overlay_blocks_graph_shortcuts_until_its_owner_leaves_the_frame(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, scene, cx, overlay_open, _events) = mount_scene(cx);
+    draw(cx);
+    let node = cx
+        .debug_bounds(NODE_SELECTOR)
+        .expect("underlay node drag bounds");
+    cx.simulate_click(node.center(), Default::default());
+
+    let view = cx.read_entity(&host, |host, _| host.view_handle());
+    view.set_viewport(
+        CanvasPoint {
+            x: 240.0,
+            y: -160.0,
+        },
+        2.0,
+    )
+    .expect("set a non-fit viewport");
+    draw(cx);
+    let before = view
+        .viewport_transform()
+        .expect("viewport before overlay shortcut");
+
+    open_overlay(&scene, &overlay_open, cx);
+    cx.simulate_keystrokes("f");
+    assert_eq!(
+        view.viewport_transform()
+            .expect("viewport while overlay owns input"),
+        before,
+        "the graph fit shortcut must not leak through an open overlay",
+    );
+
+    close_overlay(&scene, &overlay_open, cx);
+    cx.simulate_keystrokes("f");
+    assert_ne!(
+        view.viewport_transform()
+            .expect("viewport after overlay closes"),
+        before,
+        "the graph shortcut becomes live again after the boundary leaves the frame",
+    );
 }
 
 #[open_gpui::test]
@@ -346,6 +626,10 @@ fn mount_scene(
                 registry.seal().expect("valid test registry"),
                 viewport(),
             )
+            .with_connection_options(OpenGpuiConnectionOptions {
+                allow_create_from_wire: false,
+                ..OpenGpuiConnectionOptions::default()
+            })
         });
         *scene_host.borrow_mut() = Some(host.clone());
         OverlayScene {
@@ -364,6 +648,16 @@ fn open_overlay(
     cx: &mut open_gpui::VisualTestContext,
 ) {
     overlay_open.set(true);
+    cx.update_entity(scene, |_, cx| cx.notify());
+    draw(cx);
+}
+
+fn close_overlay(
+    scene: &Entity<OverlayScene>,
+    overlay_open: &Cell<bool>,
+    cx: &mut open_gpui::VisualTestContext,
+) {
+    overlay_open.set(false);
     cx.update_entity(scene, |_, cx| cx.notify());
     draw(cx);
 }

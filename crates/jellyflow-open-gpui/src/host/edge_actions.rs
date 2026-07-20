@@ -9,7 +9,6 @@ use open_gpui::{Context, KeyDownEvent, Window};
 use crate::interaction::port_drag_owner;
 
 use super::OpenGpuiSceneHost;
-use super::connection::MountedConnectionOwner;
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 
 impl OpenGpuiSceneHost {
@@ -34,7 +33,7 @@ impl OpenGpuiSceneHost {
         if !selectable {
             return false;
         }
-        match self.canvas_interaction.activate_node(node, selection_mode) {
+        match self.interaction_owner.activate_node(node, selection_mode) {
             Ok(update) => {
                 self.apply_canvas_interaction_update(update, window, cx);
                 true
@@ -57,7 +56,7 @@ impl OpenGpuiSceneHost {
         let Some(position) = position else {
             return false;
         };
-        let pressed = self.canvas_interaction.press(
+        let pressed = self.interaction_owner.press(
             CanvasPressTarget::Edge {
                 edge,
                 selection_mode,
@@ -68,7 +67,7 @@ impl OpenGpuiSceneHost {
             return false;
         };
         self.apply_canvas_interaction_update(pressed, window, cx);
-        let released = self.canvas_interaction.release(position);
+        let released = self.interaction_owner.release(position);
         let Ok(released) = released else {
             return false;
         };
@@ -84,8 +83,8 @@ impl OpenGpuiSceneHost {
     ) -> bool {
         if event.keystroke.modifiers.modified()
             || !self
-                .interaction_focus
-                .as_ref()
+                .interaction_owner
+                .focus_handle()
                 .is_some_and(|focus| focus.is_focused(window))
         {
             return false;
@@ -128,7 +127,7 @@ impl OpenGpuiSceneHost {
         let Some(route) = geometry.route(edge) else {
             return false;
         };
-        let update = self.canvas_interaction.delete_edge(route);
+        let update = self.interaction_owner.delete_edge(route);
         match update {
             Ok(update) if !update.effects().is_empty() => {
                 self.apply_canvas_interaction_update(update, window, cx);
@@ -165,10 +164,8 @@ impl OpenGpuiSceneHost {
         let detached_port = start.intent().detached_port()?;
         let instance = self.mounts.retained_instance(owner_node)?.clone();
         let mount = self.mount_capability(&instance)?.clone();
-        self.connection_owner = Some(MountedConnectionOwner::new(
-            port_drag_owner(instance, detached_port),
-            mount,
-        ));
+        self.interaction_owner
+            .begin_activation_connection(port_drag_owner(instance, detached_port), mount);
         Some(CanvasPressTarget::Connection(start))
     }
 
@@ -197,20 +194,21 @@ impl OpenGpuiSceneHost {
             return false;
         };
         match self
-            .canvas_interaction
+            .interaction_owner
             .activate_connection_search(start, position)
         {
             Ok(update) => {
-                self.graph_focus
-                    .remember_return_target(OpenGpuiGraphFocusTarget::reconnect(edge, endpoint));
-                if let Some(focus) = &self.interaction_focus {
-                    window.focus(focus, cx);
+                self.interaction_owner.remember_graph_focus_return(
+                    OpenGpuiGraphFocusTarget::reconnect(edge, endpoint),
+                );
+                if let Some(focus) = self.interaction_owner.focus_handle() {
+                    window.focus(&focus, cx);
                 }
                 self.apply_canvas_interaction_update(update, window, cx);
                 true
             }
             Err(error) => {
-                self.connection_owner = None;
+                self.interaction_owner.clear_connection();
                 self.record_command_diagnostic(error.to_string());
                 false
             }

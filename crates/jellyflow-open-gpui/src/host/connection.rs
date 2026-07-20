@@ -16,11 +16,12 @@ use jellyflow::runtime::{
 };
 use open_gpui::{Context, Pixels, Window};
 
-use crate::activity::{OpenGpuiActivityKind, OpenGpuiActivityLease};
+use crate::activity::OpenGpuiActivityKind;
 use crate::binding::OpenGpuiMountCapability;
 use crate::interaction::{
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner, OpenGpuiPortDragPhase, OpenGpuiPortEvent,
-    OpenGpuiPortFocusExit, OpenGpuiSceneGestureCancelReason,
+    NativeInteractionGeneration, OpenGpuiPortDragCancelReason, OpenGpuiPortDragOwner,
+    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortFocusExit,
+    OpenGpuiSceneGestureCancelReason,
 };
 use crate::port_handle::{OpenGpuiHostPortHoverListener, OpenGpuiHostPortListener};
 
@@ -77,56 +78,27 @@ impl OpenGpuiConnectionSearchSubmission {
     }
 }
 
-pub(super) struct MountedConnectionOwner {
-    pub(super) owner: OpenGpuiPortDragOwner,
-    pub(super) mount: OpenGpuiMountCapability,
-    continuation_lease: Option<OpenGpuiActivityLease>,
-}
-
-impl MountedConnectionOwner {
-    pub(super) fn new(owner: OpenGpuiPortDragOwner, mount: OpenGpuiMountCapability) -> Self {
-        Self {
-            owner,
-            mount,
-            continuation_lease: None,
-        }
-    }
-
-    fn matches(&self, owner: &OpenGpuiPortDragOwner, mount: &OpenGpuiMountCapability) -> bool {
-        self.owner == *owner && self.mount.is_same_mount(mount)
-    }
-
-    fn retain_connection(&mut self, lease: OpenGpuiActivityLease) {
-        self.continuation_lease = Some(lease);
-    }
-
-    fn retains_connection(&self) -> bool {
-        self.continuation_lease.is_some()
-    }
-}
-
 impl OpenGpuiSceneHost {
     /// Returns the owner of the current native port pointer capture, if any.
     #[must_use]
     pub fn active_port_drag(&self) -> Option<OpenGpuiPortDragOwner> {
-        self.interactions.active_owner()
+        self.interaction_owner.active_port_owner()
     }
 
     /// Returns the renderer-neutral interaction presentation for native application UI.
     #[must_use]
     pub fn interaction_presentation(&self) -> CanvasInteractionPresentation {
-        self.canvas_interaction.presentation()
+        self.interaction_owner.presentation()
     }
 
     /// Returns the current create-from-wire request, including its interaction generation.
     #[must_use]
     pub fn connection_search_request(&self) -> Option<ConnectionSearchRequest> {
-        if self.canvas_interaction.presentation().phase()
-            != CanvasInteractionPhase::ConnectionSearch
+        if self.interaction_owner.presentation().phase() != CanvasInteractionPhase::ConnectionSearch
         {
             return None;
         }
-        self.canvas_interaction.search_request()
+        self.interaction_owner.search_request()
     }
 
     /// Queries semantic candidates and publishes the resulting search status to the session.
@@ -143,15 +115,13 @@ impl OpenGpuiSceneHost {
         match result {
             Ok(candidates) => {
                 let update = self
-                    .canvas_interaction
+                    .interaction_owner
                     .search_ready(request.generation(), candidates.candidates().len())?;
                 self.apply_canvas_interaction_update(update, window, cx);
                 Ok(candidates)
             }
             Err(error) => {
-                let update = self
-                    .canvas_interaction
-                    .search_failed(request.generation())?;
+                let update = self.interaction_owner.search_failed(request.generation())?;
                 self.apply_canvas_interaction_update(update, window, cx);
                 Err(error.into())
             }
@@ -166,7 +136,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Result<(), OpenGpuiConnectionSearchError> {
         self.validate_connection_search_request(request)?;
-        let update = self.canvas_interaction.retry_search(request.generation())?;
+        let update = self.interaction_owner.retry_search(request.generation())?;
         self.apply_canvas_interaction_update(update, window, cx);
         Ok(())
     }
@@ -179,7 +149,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> Result<(), OpenGpuiConnectionSearchError> {
         self.validate_connection_search_request(request)?;
-        let update = self.canvas_interaction.cancel();
+        let update = self.interaction_owner.cancel();
         self.discard_pending_interaction_submission();
         self.apply_canvas_interaction_update(update, window, cx);
         Ok(())
@@ -229,10 +199,10 @@ impl OpenGpuiSceneHost {
         )
         .ok_or(OpenGpuiConnectionSearchError::InvalidSelection)?;
         let update = self
-            .canvas_interaction
+            .interaction_owner
             .select_search_result(request.generation(), selection)?;
         let ticket = self
-            .canvas_interaction
+            .interaction_owner
             .presentation()
             .connection()
             .and_then(|connection| connection.ticket())
@@ -258,34 +228,26 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn cancel_connection_with_removed_source(&mut self, changes: &NodeChanges) {
-        let source_is_current = self.connection_owner.as_ref().is_none_or(|current| {
-            let instance = current.owner.instance();
-            let Some(change) = changes.get(&instance.node()) else {
-                return true;
-            };
+        let Some((owner, mount)) = self.interaction_owner.connection_identity() else {
+            return;
+        };
+        let instance = owner.instance();
+        let source_is_current = changes.get(&instance.node()).is_none_or(|change| {
             if change.is_stale_for(instance)
                 || !self
                     .mount_capability(instance)
-                    .is_some_and(|mount| mount.is_same_mount(&current.mount))
+                    .is_some_and(|current| current.is_same_mount(&mount))
             {
                 return false;
             }
-            self.view.graph_snapshot().ok().and_then(|snapshot| {
-                snapshot
-                    .graph()
-                    .port(&current.owner.port())
-                    .map(|port| port.node)
-            }) == Some(instance.node())
+            self.view
+                .graph_snapshot()
+                .ok()
+                .and_then(|snapshot| snapshot.graph().port(&owner.port()).map(|port| port.node))
+                == Some(instance.node())
         });
         if !source_is_current {
-            let Some(node) = self
-                .connection_owner
-                .as_ref()
-                .map(|current| current.owner.instance().node())
-            else {
-                return;
-            };
-            self.retire_canvas_interaction_owner(InteractionOwner::Node(node));
+            self.retire_canvas_interaction_owner(InteractionOwner::Node(instance.node()));
         }
     }
 
@@ -335,6 +297,9 @@ impl OpenGpuiSceneHost {
                 return;
             };
             host.update(cx, |host, cx| {
+                if host.interaction_owner.terminal() {
+                    return;
+                }
                 let owner = crate::interaction::port_drag_owner(instance.clone(), port);
                 if !host.port_event_owner_is_current(&owner, &mount) {
                     return;
@@ -382,6 +347,9 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.interaction_owner.terminal() {
+            return;
+        }
         let owner = match &event {
             OpenGpuiPortEvent::Pointer(event) => event.owner(),
             OpenGpuiPortEvent::Activation(event) => event.owner(),
@@ -398,10 +366,12 @@ impl OpenGpuiSceneHost {
                 OpenGpuiPortEvent::Activation(_) => None,
             };
             if let Some(reason) = retirement_cancellation
-                && self
-                    .connection_owner
-                    .as_ref()
-                    .is_some_and(|current| current.matches(owner, mount))
+                && let OpenGpuiPortEvent::Pointer(event) = &event
+                && self.interaction_owner.connection_matches_pointer(
+                    owner,
+                    mount,
+                    event.native_generation(),
+                )
             {
                 self.cancel_connection_for_drag(reason, window, cx);
             }
@@ -410,24 +380,43 @@ impl OpenGpuiSceneHost {
 
         match event {
             OpenGpuiPortEvent::Pointer(event) => match event.phase() {
-                OpenGpuiPortDragPhase::Start => {
-                    self.begin_connection_drag(event.owner(), mount, event.position(), window, cx)
-                }
-                OpenGpuiPortDragPhase::Move => {
-                    self.move_connection_drag(event.owner(), mount, event.position(), window, cx)
-                }
-                OpenGpuiPortDragPhase::Release => {
-                    self.release_connection_drag(event.owner(), mount, event.position(), window, cx)
-                }
+                OpenGpuiPortDragPhase::Start => match event.native_generation() {
+                    Some(native_generation) => self.begin_connection_drag(
+                        event.owner(),
+                        mount,
+                        native_generation,
+                        event.position(),
+                        window,
+                        cx,
+                    ),
+                    None => self.reject_native_connection_start(event.owner(), mount, window, cx),
+                },
+                OpenGpuiPortDragPhase::Move => self.move_connection_drag(
+                    event.owner(),
+                    mount,
+                    event.native_generation(),
+                    event.position(),
+                    window,
+                    cx,
+                ),
+                OpenGpuiPortDragPhase::Release => self.release_connection_drag(
+                    event.owner(),
+                    mount,
+                    event.native_generation(),
+                    event.position(),
+                    window,
+                    cx,
+                ),
                 OpenGpuiPortDragPhase::Cancel(
                     OpenGpuiPortDragCancelReason::InteractionUnavailable
                     | OpenGpuiPortDragCancelReason::ProtectedCapacityExceeded,
                 ) => {}
                 OpenGpuiPortDragPhase::Cancel(reason)
-                    if self
-                        .connection_owner
-                        .as_ref()
-                        .is_some_and(|current| current.matches(event.owner(), mount)) =>
+                    if self.interaction_owner.connection_matches_pointer(
+                        event.owner(),
+                        mount,
+                        event.native_generation(),
+                    ) =>
                 {
                     self.cancel_connection_for_drag(reason, window, cx);
                 }
@@ -492,14 +481,15 @@ impl OpenGpuiSceneHost {
             return;
         };
         let Ok(update) = self
-            .canvas_interaction
+            .interaction_owner
             .activate_connection_search(start, position)
         else {
             return;
         };
-        self.connection_owner = Some(MountedConnectionOwner::new(owner.clone(), mount.clone()));
-        self.graph_focus
-            .remember_return_target(OpenGpuiGraphFocusTarget::Port {
+        self.interaction_owner
+            .begin_activation_connection(owner.clone(), mount.clone());
+        self.interaction_owner
+            .remember_graph_focus_return(OpenGpuiGraphFocusTarget::Port {
                 node: owner.instance().node(),
                 port: owner.port(),
             });
@@ -510,6 +500,7 @@ impl OpenGpuiSceneHost {
         &mut self,
         owner: &OpenGpuiPortDragOwner,
         mount: &OpenGpuiMountCapability,
+        native_generation: NativeInteractionGeneration,
         position: open_gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -532,13 +523,17 @@ impl OpenGpuiSceneHost {
             return;
         };
         let Ok(update) = self
-            .canvas_interaction
+            .interaction_owner
             .press(CanvasPressTarget::Connection(start), position)
         else {
             self.reject_native_connection_start(owner, mount, window, cx);
             return;
         };
-        self.connection_owner = Some(MountedConnectionOwner::new(owner.clone(), mount.clone()));
+        self.interaction_owner.begin_pointer_connection(
+            owner.clone(),
+            mount.clone(),
+            native_generation,
+        );
         self.apply_canvas_interaction_update(update, window, cx);
     }
 
@@ -549,7 +544,7 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.interactions.reject_port_start(
+        self.interaction_owner.reject_port_start(
             owner,
             mount,
             OpenGpuiPortDragCancelReason::InteractionUnavailable,
@@ -562,21 +557,21 @@ impl OpenGpuiSceneHost {
         &mut self,
         owner: &OpenGpuiPortDragOwner,
         mount: &OpenGpuiMountCapability,
+        native_generation: Option<NativeInteractionGeneration>,
         position: open_gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self
-            .connection_owner
-            .as_ref()
-            .is_some_and(|current| current.matches(owner, mount))
+            .interaction_owner
+            .connection_matches_pointer(owner, mount, native_generation)
         {
             return;
         }
         let Some(position) = self.interaction_position(position) else {
             return;
         };
-        if let Ok(update) = self.canvas_interaction.move_to(position) {
+        if let Ok(update) = self.interaction_owner.move_to(position) {
             self.apply_canvas_interaction_update(update, window, cx);
         }
     }
@@ -585,14 +580,14 @@ impl OpenGpuiSceneHost {
         &mut self,
         owner: &OpenGpuiPortDragOwner,
         mount: &OpenGpuiMountCapability,
+        native_generation: Option<NativeInteractionGeneration>,
         position: open_gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self
-            .connection_owner
-            .as_ref()
-            .is_some_and(|current| current.matches(owner, mount))
+            .interaction_owner
+            .connection_matches_pointer(owner, mount, native_generation)
         {
             return;
         }
@@ -604,8 +599,8 @@ impl OpenGpuiSceneHost {
             );
             return;
         };
-        if self.canvas_interaction.presentation().phase() == CanvasInteractionPhase::Armed {
-            let Ok(moved) = self.canvas_interaction.move_to(position) else {
+        if self.interaction_owner.presentation().phase() == CanvasInteractionPhase::Armed {
+            let Ok(moved) = self.interaction_owner.move_to(position) else {
                 self.cancel_connection_for_drag(
                     OpenGpuiPortDragCancelReason::InteractionUnavailable,
                     window,
@@ -615,7 +610,7 @@ impl OpenGpuiSceneHost {
             };
             self.apply_canvas_interaction_update(moved, window, cx);
         }
-        if let Ok(update) = self.canvas_interaction.release(position) {
+        if let Ok(update) = self.interaction_owner.release(position) {
             self.apply_canvas_interaction_update(update, window, cx);
         }
     }
@@ -708,38 +703,29 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(owner) = self
-            .connection_owner
-            .as_ref()
-            .map(|current| current.owner.clone())
-        else {
+        let Some((owner, _)) = self.interaction_owner.connection_identity() else {
             return;
         };
         let update = if reason == OpenGpuiPortDragCancelReason::OwnerRetired {
-            self.canvas_interaction
+            self.interaction_owner
                 .owner_retired(InteractionOwner::Node(owner.instance().node()))
         } else {
-            self.canvas_interaction.cancel()
+            self.interaction_owner.cancel()
         };
         self.discard_pending_interaction_submission();
         self.apply_canvas_interaction_update(update, window, cx);
     }
 
-    pub(super) fn retire_connection_owner(
+    pub(super) fn retire_connection_context(
         &mut self,
         instance: &NodeInstanceKey,
         mount: &OpenGpuiMountCapability,
     ) {
-        let owns_connection = self.connection_owner.as_ref().is_some_and(|current| {
-            current.owner.instance() == instance && current.mount.is_same_mount(mount)
-        });
-        if owns_connection
-            && let Some(owner) = self
-                .connection_owner
-                .as_ref()
-                .map(|current| current.owner.clone())
+        if let Some((owner, current_mount)) = self.interaction_owner.connection_identity()
+            && owner.instance() == instance
+            && current_mount.is_same_mount(mount)
         {
-            self.interactions.cancel_owner_deferred(
+            self.interaction_owner.cancel_port_owner_deferred(
                 &owner,
                 mount,
                 OpenGpuiPortDragCancelReason::OwnerRetired,
@@ -752,13 +738,15 @@ impl OpenGpuiSceneHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(owner) = self.stale_connection_owner() {
-            self.scene_interactions
-                .cancel_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
-            if let Some(current) = self.connection_owner.as_ref() {
-                self.interactions.cancel_owner_deferred(
-                    &current.owner,
-                    &current.mount,
+        if let Some(owner) = self.stale_connection_context_owner() {
+            self.interaction_owner
+                .cancel_scene_deferred(OpenGpuiSceneGestureCancelReason::OwnerRetired);
+            if let Some((current_owner, current_mount)) =
+                self.interaction_owner.connection_identity()
+            {
+                self.interaction_owner.cancel_port_owner_deferred(
+                    &current_owner,
+                    &current_mount,
                     OpenGpuiPortDragCancelReason::OwnerRetired,
                 );
             }
@@ -766,14 +754,17 @@ impl OpenGpuiSceneHost {
             cx.notify();
         }
 
-        let presentation = self.canvas_interaction.presentation();
+        let presentation = self.interaction_owner.presentation();
         let native_armed = presentation.phase() == CanvasInteractionPhase::Armed
-            && self.connection_owner.as_ref().is_some_and(|current| {
-                self.canvas_interaction
-                    .uses_owner(InteractionOwner::Port(current.owner.port()))
-            });
+            && self
+                .interaction_owner
+                .connection_identity()
+                .is_some_and(|(owner, _)| {
+                    self.interaction_owner
+                        .uses_owner(InteractionOwner::Port(owner.port()))
+                });
         if presentation.connection().is_none() && !native_armed {
-            if let Some(current) = self.connection_owner.as_ref() {
+            if let Some((owner, mount)) = self.interaction_owner.connection_identity() {
                 let exit = match presentation.terminal() {
                     Some(InteractionTerminalReason::OwnerRetired) => {
                         OpenGpuiPortFocusExit::OwnerRetired
@@ -783,58 +774,47 @@ impl OpenGpuiSceneHost {
                     }
                     _ => OpenGpuiPortFocusExit::Restore,
                 };
-                self.interactions.settle_port_focus(
-                    &current.owner,
-                    &current.mount,
-                    exit,
-                    window,
-                    cx,
-                );
+                self.interaction_owner
+                    .settle_port_focus(&owner, &mount, exit, window, cx);
             }
-            self.connection_owner = None;
+            self.interaction_owner.clear_connection();
             return;
         }
         if presentation.connection().is_none() {
             return;
         }
 
-        let owner_is_current = self.connection_owner.as_ref().is_some_and(|current| {
-            current.mount.is_live()
+        let owner_identity = self.interaction_owner.connection_identity();
+        let owner_is_current = owner_identity.as_ref().is_some_and(|(owner, mount)| {
+            mount.is_live()
                 && self
-                    .mount_capability(current.owner.instance())
-                    .is_some_and(|mount| mount.is_same_mount(&current.mount))
+                    .mount_capability(owner.instance())
+                    .is_some_and(|current| current.is_same_mount(mount))
         });
         if !owner_is_current {
-            let retired_node = self
-                .connection_owner
-                .as_ref()
-                .map(|current| current.owner.instance().node());
+            let retired_node = owner_identity.map(|(owner, _)| owner.instance().node());
             let update = match retired_node {
                 Some(node) => self
-                    .canvas_interaction
+                    .interaction_owner
                     .owner_retired(InteractionOwner::Node(node)),
-                None => self.canvas_interaction.cancel(),
+                None => self.interaction_owner.cancel(),
             };
             self.discard_pending_interaction_submission();
             self.apply_canvas_interaction_update(update, window, cx);
             return;
         }
 
-        if self
-            .connection_owner
-            .as_ref()
-            .is_some_and(MountedConnectionOwner::retains_connection)
-        {
+        if self.interaction_owner.connection_retains_activity() {
             return;
         }
 
-        let owner_data = self.connection_owner.as_ref().map(|current| {
-            (
-                current.owner.clone(),
-                current.mount.clone(),
-                current.owner.instance().clone(),
-            )
-        });
+        let owner_data = self
+            .interaction_owner
+            .connection_identity()
+            .map(|(owner, mount)| {
+                let instance = owner.instance().clone();
+                (owner, mount, instance)
+            });
         let lease = owner_data.as_ref().and_then(|(_, mount, instance)| {
             self.mounts.get(instance).and_then(|mounted| {
                 mounted
@@ -850,26 +830,19 @@ impl OpenGpuiSceneHost {
         });
         let retained = match (owner_data, lease) {
             (Some((owner, mount, _)), Some(lease)) => self
-                .connection_owner
-                .as_mut()
-                .filter(|current| current.matches(&owner, &mount))
-                .map(|current| current.retain_connection(lease))
-                .is_some(),
+                .interaction_owner
+                .retain_connection_activity(&owner, &mount, lease),
             _ => false,
         };
         if !retained {
-            let update = self.canvas_interaction.cancel();
+            let update = self.interaction_owner.cancel();
             self.discard_pending_interaction_submission();
             self.apply_canvas_interaction_update(update, window, cx);
         }
     }
 
-    fn stale_connection_owner(&self) -> Option<InteractionOwner> {
-        let intent = self
-            .canvas_interaction
-            .presentation()
-            .connection()?
-            .intent();
+    fn stale_connection_context_owner(&self) -> Option<InteractionOwner> {
+        let intent = self.interaction_owner.presentation().connection()?.intent();
         let snapshot = self.view.graph_snapshot().ok()?;
         let graph = snapshot.graph();
         match intent {
@@ -903,7 +876,7 @@ impl OpenGpuiSceneHost {
         &self,
         geometry: &GeometrySnapshot,
     ) -> Option<OpenGpuiConnectionPreviewPlan> {
-        let presentation = self.canvas_interaction.presentation();
+        let presentation = self.interaction_owner.presentation();
         let connection = presentation.connection()?;
         let snapshot = self.view.graph_snapshot().ok()?;
         let graph = snapshot.graph();

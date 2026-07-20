@@ -660,7 +660,7 @@ impl OpenGpuiSceneHost {
         match result {
             Ok(()) => resolutions,
             Err(error) => {
-                self.canvas_interaction.cancel();
+                self.interaction_owner.cancel();
                 self.discard_pending_interaction_submission();
                 self.record_feedback_failure(
                     None,

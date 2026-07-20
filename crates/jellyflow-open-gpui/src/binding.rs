@@ -15,6 +15,7 @@ use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::command_journal::{
     OpenGpuiCommandEnqueueError, OpenGpuiCommandSink, OpenGpuiCommandTicket,
 };
+use crate::interaction::OpenGpuiOverlayInteractionBoundary;
 use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
 use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteractionState};
@@ -359,6 +360,12 @@ impl OpenGpuiNodeBinding {
     #[must_use]
     pub fn drag_handle(&self) -> OpenGpuiNodeDragHandle {
         self.drag_handle.clone()
+    }
+
+    /// Returns the host-owned interaction boundary for a popup rendered outside node bounds.
+    #[must_use]
+    pub fn overlay_boundary(&self) -> OpenGpuiOverlayInteractionBoundary {
+        self.drag_handle.overlay_boundary()
     }
 
     /// Measures one native content root for a content-authoritative registration policy.

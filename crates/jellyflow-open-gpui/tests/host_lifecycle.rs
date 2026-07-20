@@ -13,7 +13,7 @@ use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeBinding, OpenGpuiNodeMountError,
     OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
 };
-use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
+use open_gpui::{AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div};
 
 const KIND: &str = "test.workflow-node";
 const RENDERER: &str = "test.native.workflow-node";
@@ -234,14 +234,16 @@ fn explicit_close_drains_final_command_once_then_retires_native_state(
     draw(cx);
 
     let outcome = cx
-        .update_entity(&host, |host, _| {
-            host.close_with_request(ViewCloseRequest::new().with_command(
-                GraphCommand::set_node_data(
+        .update_window_entity(&host, |host, window, cx| {
+            host.close_with_request_in_window(
+                ViewCloseRequest::new().with_command(GraphCommand::set_node_data(
                     0,
                     NodeId::from_u128(10),
                     serde_json::json!({ "prompt": "saved on close" }),
-                ),
-            ))
+                )),
+                window,
+                cx,
+            )
         })
         .unwrap();
 
