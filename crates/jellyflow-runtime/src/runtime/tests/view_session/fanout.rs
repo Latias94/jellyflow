@@ -26,7 +26,6 @@ fn subscriber_panics_do_not_truncate_committed_patch_fanout() {
         .build(graph)
         .expect("runtime");
     let view = runtime.attach_view(Default::default()).expect("view");
-    view.seed_all_node_facts_for_test();
 
     runtime
         .subscribe(|_| panic!("first runtime observer panic"))
@@ -420,7 +419,6 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
                 )),
             ))
             .expect("view");
-        view.seed_all_node_facts_for_test();
         let counters: Vec<_> = ids.iter().map(|_| Rc::new(Cell::new(0))).collect();
         for (node, counter) in ids.iter().copied().zip(&counters) {
             let counter = counter.clone();
@@ -476,7 +474,6 @@ fn one_node_change_has_bounded_four_view_fanout_in_ten_thousand_node_graph() {
         assert_eq!(stats.route_invalidations, 0);
         assert_eq!(stats.view_state_sanitizations, 0);
         assert_eq!(view.export_seed().unwrap().stacking().nodes().len(), 10_000);
-        assert_eq!(view.derived_fact_counts_for_test().nodes, 10_000);
         assert_eq!(patches.borrow().len(), 1);
         assert_eq!(patches.borrow()[0].affected_nodes().len(), 1);
         for (index, counter) in counters.iter().enumerate() {

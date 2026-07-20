@@ -15,7 +15,7 @@ use crate::runtime::view_session::{
     ViewCloseReason, ViewSession, ViewSessionEvent, ViewSessionOptions,
 };
 
-use super::fixtures::graph_with_nodes;
+use super::fixtures::{graph_with_nodes, publish_graph_layouts};
 
 fn one_node_frame(session: &ViewSession) -> AdapterFrame {
     session
@@ -81,7 +81,7 @@ fn feedback_body_panic_wins_after_both_subscription_layers_finish() {
         .unwrap()
         .with_middleware(PanicAfterFeedbackCommand);
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    session.seed_all_node_facts_for_test();
+    publish_graph_layouts(&session);
 
     runtime
         .subscribe(|event| {

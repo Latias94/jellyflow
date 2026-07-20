@@ -8,7 +8,7 @@ use crate::runtime::commands::GraphCommand;
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::view_session::ViewSessionEvent;
 
-use super::fixtures::{graph_with_nodes, view_options};
+use super::fixtures::{graph_with_nodes, publish_node_layouts, view_options};
 
 #[test]
 fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
@@ -23,22 +23,21 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
     let view_b = runtime
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view B");
-    let incarnation = runtime
-        .node_incarnation(ids[0])
-        .unwrap()
-        .expect("incarnation");
-    view_a.seed_node_geometry_for_test(
-        ids[0],
-        incarnation,
-        CanvasRect {
-            origin: CanvasPoint { x: 1.0, y: 2.0 },
-            size: CanvasSize {
-                width: 100.0,
-                height: 80.0,
+    publish_node_layouts(
+        &view_a,
+        [(
+            ids[0],
+            CanvasRect {
+                origin: CanvasPoint { x: 1.0, y: 2.0 },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 80.0,
+                },
             },
-        },
+        )],
     );
-    assert!(!view_b.has_node_geometry_for_test(ids[0]));
+    assert!(view_b.geometry_snapshot().unwrap().node(ids[0]).is_none());
+    let stats_before = view_a.stats().unwrap();
 
     let a_events = Rc::new(Cell::new(0));
     let a_events_observer = a_events.clone();
@@ -74,10 +73,23 @@ fn graph_commit_fans_out_one_shared_patch_while_view_facts_stay_isolated() {
     assert_eq!(a_events.get(), 1);
     assert_eq!(b_events.get(), 1);
     assert_eq!(
-        view_a.node_geometry_for_test(ids[0]).unwrap().origin,
+        view_a
+            .geometry_snapshot()
+            .unwrap()
+            .node(ids[0])
+            .unwrap()
+            .bounds()
+            .origin,
         CanvasPoint { x: 33.0, y: 50.0 }
     );
-    assert!(!view_b.has_node_geometry_for_test(ids[0]));
-    assert_eq!(view_a.stats().unwrap().spatial_updates, 1);
-    assert_eq!(view_a.stats().unwrap().route_invalidations, 0);
+    assert!(view_b.geometry_snapshot().unwrap().node(ids[0]).is_none());
+    let stats_after = view_a.stats().unwrap();
+    assert_eq!(
+        stats_after.spatial_updates - stats_before.spatial_updates,
+        1
+    );
+    assert_eq!(
+        stats_after.route_invalidations - stats_before.route_invalidations,
+        0
+    );
 }

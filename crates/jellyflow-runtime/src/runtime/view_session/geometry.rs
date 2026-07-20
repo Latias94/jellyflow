@@ -3,29 +3,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use jellyflow_core::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, Node, NodeId, NodeKindKey,
-};
+use jellyflow_core::core::{CanvasPoint, CanvasRect, CanvasSize, Graph, Node, NodeId, NodeKindKey};
 
 use crate::runtime::adapter_protocol::{
-    FeedbackOperationReceipt, FrameBoundsSource, FrameRequest, GeometrySnapshot, LayoutNodeStatus,
-    LayoutPublicationReceipt, PortLayoutOutcome, PublishedEdgeRoute, PublishedNodeGeometry,
-    PublishedPortGeometry, PublishedPortOutcome, RendererStamp, SharedGeometryMap,
+    FeedbackOperationReceipt, FrameRequest, GeometrySnapshot, LayoutNodeStatus,
+    LayoutPublicationReceipt, PortLayoutOutcome, PublishedNodeGeometry, PublishedPortGeometry,
+    PublishedPortOutcome,
 };
-use crate::runtime::geometry::{
-    CanvasBounds, EdgeEndpointPosition, EdgeInteractionFacts, EdgePosition, resolve_edge_route_path,
-};
+use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
     GeometryImpact, GraphSnapshot, IncidentEdgeSnapshot, IncidentSnapshotWork, NodeIncarnation,
 };
 use crate::runtime::interaction::{
     AlignmentSnapQuery, AlignmentSnapQueryOutcome, AlignmentSnapWork, resolve_alignment_snap,
 };
-use crate::runtime::policy::resolve_edge_policy;
 use crate::runtime::viewport::ViewportTransform;
 
-#[cfg(test)]
-use super::DerivedFactCounts;
+use super::derived_geometry::LayoutWithdrawal;
 use super::protocol::{ExpectedNodeLayout, PendingFrame, PendingLayout};
 use super::{ViewSession, ViewSessionError, ViewShared, ViewState, WeakViewSession, ensure_open};
 
@@ -44,7 +38,7 @@ impl ViewSession {
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
         Ok(state
-            .spatial
+            .derived
             .nodes_intersecting(bounds)
             .nodes
             .into_iter()
@@ -61,108 +55,8 @@ impl ViewSession {
     }
 
     #[cfg(test)]
-    pub(crate) fn seed_node_geometry_for_test(
-        &self,
-        node: NodeId,
-        incarnation: NodeIncarnation,
-        rect: CanvasRect,
-    ) {
-        let mut state = self.shared.state.borrow_mut();
-        state.spatial.upsert(node, rect);
-        state.upsert_node_geometry(
-            node,
-            PublishedNodeGeometry::new(
-                node,
-                incarnation,
-                crate::runtime::adapter_protocol::RendererStamp::new("test.seed", 1),
-                0,
-                rect,
-                BTreeMap::new(),
-            ),
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn seed_all_node_facts_for_test(&self) {
-        let runtime = self.runtime().expect("open test session");
-        let (snapshot, incarnations) = runtime
-            .snapshot_with_incarnations()
-            .expect("runtime snapshot");
-        let geometry: BTreeMap<NodeId, PublishedNodeGeometry> = snapshot
-            .graph()
-            .nodes()
-            .iter()
-            .filter_map(|(node_id, node)| {
-                let incarnation = incarnations.get(node_id).copied()?;
-                Some((
-                    *node_id,
-                    PublishedNodeGeometry::new(
-                        *node_id,
-                        incarnation,
-                        crate::runtime::adapter_protocol::RendererStamp::new("test.seed", 1),
-                        0,
-                        CanvasRect {
-                            origin: node.pos,
-                            size: node.size.unwrap_or(CanvasSize {
-                                width: 160.0,
-                                height: 96.0,
-                            }),
-                        },
-                        BTreeMap::new(),
-                    ),
-                ))
-            })
-            .collect();
-        let mut state = self.shared.state.borrow_mut();
-        state.spatial.clear();
-        for (node, geometry) in &geometry {
-            state.spatial.upsert(*node, geometry.bounds());
-        }
-        state.clear_node_geometry();
-        for (node, geometry) in geometry {
-            state.upsert_node_geometry(node, geometry);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_node_geometry_for_test(&self, node: NodeId) -> bool {
-        self.shared.state.borrow().geometry.contains_key(&node)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn node_geometry_for_test(&self, node: NodeId) -> Option<CanvasRect> {
-        self.shared
-            .state
-            .borrow()
-            .geometry
-            .get(&node)
-            .map(|geometry| geometry.bounds())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn derived_fact_counts_for_test(&self) -> DerivedFactCounts {
-        let state = self.shared.state.borrow();
-        debug_assert_eq!(state.geometry.size(), state.spatial.len());
-        debug_assert_eq!(
-            state
-                .geometry
-                .values()
-                .map(|geometry| geometry.ports().len())
-                .sum::<usize>(),
-            state.geometry_ports.size()
-        );
-        debug_assert_eq!(
-            state
-                .geometry
-                .values()
-                .map(|geometry| geometry.port_outcomes().len())
-                .sum::<usize>(),
-            state.geometry_port_outcomes.size()
-        );
-        DerivedFactCounts {
-            nodes: state.geometry.size(),
-            routes: state.unresolved_routes.len(),
-        }
+    pub(crate) fn retired_geometry_is_empty_for_test(&self) -> bool {
+        self.shared.state.borrow().derived.is_empty_for_test()
     }
 }
 
@@ -189,20 +83,7 @@ impl ViewShared {
             .try_borrow_mut()
             .map_err(|_| ViewSessionError::Busy)?;
         ensure_open(state.status)?;
-        if let Some(snapshot) = &state.geometry_snapshot_cache {
-            return Ok(snapshot.clone());
-        }
-        let snapshot = GeometrySnapshot::new(
-            state.layout_revision,
-            state.geometry.clone(),
-            state.geometry_ports.clone(),
-            state.geometry_port_outcomes.clone(),
-            state.routes.clone(),
-        );
-        state.geometry_snapshot_cache = Some(snapshot.clone());
-        state.stats.geometry_snapshot_builds =
-            state.stats.geometry_snapshot_builds.saturating_add(1);
-        Ok(snapshot)
+        Ok(state.derived.snapshot())
     }
 
     fn alignment_snap(
@@ -231,19 +112,7 @@ impl ViewShared {
         {
             return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
         }
-        let geometry = state.geometry_snapshot_cache.clone().unwrap_or_else(|| {
-            let snapshot = GeometrySnapshot::new(
-                state.layout_revision,
-                state.geometry.clone(),
-                state.geometry_ports.clone(),
-                state.geometry_port_outcomes.clone(),
-                state.routes.clone(),
-            );
-            state.geometry_snapshot_cache = Some(snapshot.clone());
-            state.stats.geometry_snapshot_builds =
-                state.stats.geometry_snapshot_builds.saturating_add(1);
-            snapshot
-        });
+        let geometry = state.derived.snapshot();
         if query.moving_nodes().len() > query.entry_budget() {
             return Ok(AlignmentSnapQueryOutcome::BudgetExhausted(work(0)));
         }
@@ -266,7 +135,7 @@ impl ViewShared {
         else {
             return Ok(AlignmentSnapQueryOutcome::GeometryIndeterminate(work(0)));
         };
-        let candidates = state.spatial.nodes_near_alignment_with_limit(
+        let candidates = state.derived.nodes_near_alignment_with_limit(
             &moving_bounds,
             release_tolerance,
             query.entry_budget(),
@@ -542,8 +411,11 @@ impl ViewSpatialIndex {
     }
 
     #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.nodes.len()
+    pub(super) fn indexed_bounds_for_test(&self) -> BTreeMap<NodeId, CanvasRect> {
+        self.nodes
+            .iter()
+            .map(|(node, indexed)| (*node, indexed.bounds))
+            .collect()
     }
 }
 
@@ -755,84 +627,6 @@ fn spatial_cell_coordinate(value: f32) -> i32 {
     coordinate.clamp(i32::MIN as f32, i32::MAX as f32) as i32
 }
 
-pub(super) fn recompute_routes(
-    state: &mut ViewState,
-    snapshot: &GraphSnapshot,
-    edges: &BTreeSet<EdgeId>,
-) -> RouteRecomputation {
-    let mut changed = false;
-    for edge_id in edges {
-        let Some(edge) = snapshot.graph().edge(edge_id) else {
-            changed |= state.remove_route(*edge_id);
-            changed |= state.unresolved_routes.remove(edge_id);
-            continue;
-        };
-        if edge.hidden {
-            changed |= state.remove_route(*edge_id);
-            changed |= state.unresolved_routes.remove(edge_id);
-            continue;
-        }
-        let route = (|| {
-            let source = published_port(state, snapshot, edge.from)?;
-            let target = published_port(state, snapshot, edge.to)?;
-            let endpoints = EdgePosition {
-                source: absolute_port_endpoint(source)?,
-                target: absolute_port_endpoint(target)?,
-            };
-            let policy = resolve_edge_policy(edge, &state.policy);
-            resolve_edge_route_path(edge, endpoints)
-                .map(|facts| {
-                    facts.with_interaction(EdgeInteractionFacts {
-                        selectable: policy.can_select(),
-                        selected: state.selected_edge_membership.contains(edge_id),
-                        deletable: policy.can_delete(),
-                        reconnect_source: policy.can_reconnect_source(),
-                        reconnect_target: policy.can_reconnect_target(),
-                    })
-                })
-                .map(|facts| PublishedEdgeRoute::new(*edge_id, facts))
-        })();
-        if let Some(route) = route {
-            changed |= state.upsert_route(*edge_id, route);
-            changed |= state.unresolved_routes.remove(edge_id);
-        } else {
-            changed |= state.remove_route(*edge_id);
-            changed |= state.unresolved_routes.insert(*edge_id);
-        }
-    }
-    RouteRecomputation {
-        attempts: edges.len() as u64,
-        changed,
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct RouteRecomputation {
-    pub(super) attempts: u64,
-    pub(super) changed: bool,
-}
-
-fn published_port<'a>(
-    state: &'a ViewState,
-    snapshot: &GraphSnapshot,
-    port: jellyflow_core::core::PortId,
-) -> Option<&'a PublishedPortGeometry> {
-    let owner = snapshot.graph().port(&port)?.node;
-    let node = state.geometry.get(&owner)?;
-    node.is_fresh().then(|| node.ports().get(&port)).flatten()
-}
-
-fn absolute_port_endpoint(port: &PublishedPortGeometry) -> Option<EdgeEndpointPosition> {
-    let point = port.route_anchor();
-    if !point.is_finite() {
-        return None;
-    }
-    Some(EdgeEndpointPosition {
-        point,
-        position: port.outward(),
-    })
-}
-
 pub(super) fn expanded_bounds(viewport: CanvasRect, overscan: f32) -> Option<CanvasBounds> {
     let expanded = CanvasRect {
         origin: CanvasPoint {
@@ -845,33 +639,6 @@ pub(super) fn expanded_bounds(viewport: CanvasRect, overscan: f32) -> Option<Can
         },
     };
     CanvasBounds::from_rect(expanded).filter(|bounds| bounds.is_valid())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn admission_bounds(
-    node_id: NodeId,
-    node: &Node,
-    renderer: &RendererStamp,
-    layout_generation: u64,
-    geometry: &SharedGeometryMap<NodeId, PublishedNodeGeometry>,
-    request: &FrameRequest,
-) -> Option<(CanvasRect, FrameBoundsSource)> {
-    if let Some(published) = geometry.get(&node_id)
-        && published.is_fresh()
-        && published.renderer() == renderer
-        && published.layout_generation() == layout_generation
-        && published.bounds().is_positive_finite()
-    {
-        return Some((published.bounds(), FrameBoundsSource::Published));
-    }
-    let (size, source) = if let Some(size) = node.size.filter(|size| size.is_positive_finite()) {
-        (size, FrameBoundsSource::Persisted)
-    } else if let Some(size) = request.kind_default_sizes.get(&node.kind).copied() {
-        (size, FrameBoundsSource::KindDefault)
-    } else {
-        (request.fallback_size, FrameBoundsSource::ProtocolFallback)
-    };
-    node.bounds_for_size(size).map(|bounds| (bounds, source))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -897,15 +664,14 @@ pub(super) fn publish_layouts(
     let mut staged = Vec::new();
     let mut withdrawals = BTreeMap::<NodeId, IncidentEdgeSnapshot>::new();
     let mut request_refresh = false;
+    let mut impact_candidates_checked = 0_u64;
+    let mut impact_candidates_stale = 0_u64;
 
     for pending_layout in layouts {
         let node = pending_layout.layout.node();
         let expected = pending.nodes.get(&node);
         let impact_stale = expected.is_some_and(|expected| {
-            state.stats.layout_impact_candidates_checked = state
-                .stats
-                .layout_impact_candidates_checked
-                .saturating_add(1);
+            impact_candidates_checked = impact_candidates_checked.saturating_add(1);
             geometry_impact.affects_layout(
                 node,
                 expected.ports.iter().copied(),
@@ -946,8 +712,7 @@ pub(super) fn publish_layouts(
             (status, None)
         };
         if impact_stale && status == LayoutNodeStatus::Stale {
-            state.stats.layout_impact_candidates_stale =
-                state.stats.layout_impact_candidates_stale.saturating_add(1);
+            impact_candidates_stale = impact_candidates_stale.saturating_add(1);
         }
 
         request_refresh |= status == LayoutNodeStatus::Stale;
@@ -972,75 +737,36 @@ pub(super) fn publish_layouts(
         receipts[pending_layout.operation_index] =
             Some(FeedbackOperationReceipt::Layout { node, status });
     }
-
-    let mut published_nodes = Vec::new();
-    let mut withdrawn_nodes = Vec::new();
-    let mut route_edges = BTreeSet::new();
-    let mut spatial_updates = 0_u64;
-    let mut incident_work = IncidentSnapshotWork::default();
-    for (node, geometry, incident_edges) in staged {
-        spatial_updates = spatial_updates
-            .saturating_add(u64::from(state.spatial.upsert(node, geometry.bounds())));
-        state.upsert_node_geometry(node, geometry);
-        incident_work.materialize(&incident_edges);
-        route_edges.extend(incident_edges.iter().copied());
-        published_nodes.push(node);
-    }
-    let mut withdrew_geometry = false;
-    for (node, incident_edges) in withdrawals {
-        let expected_ports = pending
-            .nodes
-            .get(&node)
-            .map(|expected| expected.ports.iter().copied())
-            .into_iter()
-            .flatten();
-        if state.mark_node_geometry_stale(node, expected_ports) {
-            let mut affected_edges = incident_edges.as_ref().clone();
-            if let Some((_, current_incident_edges)) = current_node_facts.get(&node) {
-                affected_edges.extend(current_incident_edges.iter().copied());
-            }
-            incident_work.materialize(&affected_edges);
-            route_edges.extend(affected_edges);
-            withdrawn_nodes.push(node);
-            withdrew_geometry = true;
-        }
-    }
-    if withdrew_geometry && !geometry_impact.incident_edges().is_empty() {
-        incident_work.materialize(geometry_impact.incident_edges());
-        route_edges.extend(geometry_impact.incident_edges().iter().copied());
-    }
-
-    if request_refresh {
-        state.stats.refresh_requests = state.stats.refresh_requests.saturating_add(1);
-    }
-
-    if published_nodes.is_empty() && withdrawn_nodes.is_empty() {
-        return (None, incident_work);
-    }
-    let route_invalidations = route_edges.len() as u64;
-    let route_recomputations = recompute_routes(state, snapshot, &route_edges).attempts;
-    let before_revision = state.layout_revision;
-    state.advance_layout_revision();
-    state.stats.layout_publications = state.stats.layout_publications.saturating_add(1);
-    state.stats.spatial_updates = state.stats.spatial_updates.saturating_add(spatial_updates);
-    state.stats.route_invalidations = state
-        .stats
-        .route_invalidations
-        .saturating_add(route_invalidations);
-    state.stats.route_recomputations = state
-        .stats
-        .route_recomputations
-        .saturating_add(route_recomputations);
-    (
-        Some(LayoutPublicationReceipt::new(
-            before_revision,
-            state.layout_revision,
-            published_nodes,
-            withdrawn_nodes,
-            spatial_updates,
-            route_recomputations,
-        )),
-        incident_work,
+    let withdrawals = withdrawals
+        .into_iter()
+        .map(|(node, incident_edges)| {
+            LayoutWithdrawal::new(
+                node,
+                pending
+                    .nodes
+                    .get(&node)
+                    .map(|expected| expected.ports.clone())
+                    .unwrap_or_default(),
+                incident_edges,
+                current_node_facts
+                    .get(&node)
+                    .map(|(_, incident_edges)| incident_edges.clone()),
+            )
+        })
+        .collect();
+    let policy = state.policy;
+    let selected_edges = state.selected_edge_membership.clone();
+    state
+        .derived
+        .record_layout_candidate_impact(impact_candidates_checked, impact_candidates_stale);
+    state.derived.publish_complete_layout(
+        snapshot,
+        staged,
+        withdrawals,
+        geometry_impact.incident_edges(),
+        request_refresh,
+        policy,
+        &selected_edges,
     )
 }
 
@@ -1069,12 +795,7 @@ fn evaluate_layout_candidate(
         return (LayoutNodeStatus::MissingNode, None);
     };
     if *incarnation != expected.incarnation
-        || state
-            .layout_generations
-            .get(&node)
-            .copied()
-            .unwrap_or_default()
-            != expected.layout_generation
+        || state.derived.layout_generation(node) != expected.layout_generation
     {
         return (LayoutNodeStatus::Stale, None);
     }
@@ -1144,11 +865,7 @@ fn evaluate_layout_candidate(
         node_bounds,
         port_outcomes,
     );
-    if state
-        .geometry
-        .get(&node)
-        .is_some_and(|current| current.approximately_eq(&candidate, epsilon))
-    {
+    if state.derived.node_approximately_equals(&candidate, epsilon) {
         (LayoutNodeStatus::Unchanged, None)
     } else {
         (LayoutNodeStatus::Published, Some(candidate))

@@ -172,14 +172,14 @@ impl From<&PublishedPortGeometry> for IndexedPort {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PortProbeCandidate {
+pub(super) struct PortProbeCandidate {
     target: ConnectionProbeTarget,
     direct_hit: bool,
     opposite_direction: bool,
     paint_order: (bool, bool, usize, NodeId),
 }
 
-enum InternalProbeOutcome {
+pub(super) enum InternalProbeOutcome {
     Complete {
         intent: ConnectionGestureIntent,
         graph_revision: GraphRevision,
@@ -231,8 +231,22 @@ impl PortGeometryIndex {
         true
     }
 
+    pub(super) fn index_epoch(&self) -> u128 {
+        self.index_epoch
+    }
+
+    #[cfg(test)]
+    pub(super) fn indexed_ports_for_test(&self) -> BTreeSet<PortId> {
+        self.indexed.keys().copied().collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn matches_geometry_for_test(&self, geometry: &PublishedPortGeometry) -> bool {
+        self.indexed.get(&geometry.port()) == Some(&IndexedPort::from(geometry))
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn new_cursor(
+    pub(super) fn new_cursor(
         &self,
         view: ViewId,
         generation: ViewGeneration,
@@ -288,7 +302,7 @@ impl PortGeometryIndex {
         })
     }
 
-    fn query_page(
+    pub(super) fn query_page(
         &self,
         graph: &jellyflow_core::core::Graph,
         node_draw_order_ranks: &BTreeMap<NodeId, usize>,
@@ -410,8 +424,8 @@ impl ViewSession {
                     pointer,
                     radius_in_view,
                 } => state
-                    .port_geometry
-                    .new_cursor(
+                    .derived
+                    .new_connection_probe_cursor(
                         state.id,
                         state.generation,
                         state.transform_revision,
@@ -433,15 +447,14 @@ impl ViewSession {
                     ConnectionProbeCursorStaleReason::GraphRevision,
                 ));
             }
-            let outcome = state.port_geometry.query_page(
+            let state = &mut *state;
+            state.derived.query_connection_probe_page(
                 graph.graph(),
                 &state.node_draw_order_ranks,
                 &state.selected_node_membership,
                 cursor,
                 query.entry_budget,
-            );
-            record_probe_query_stats(&mut state.stats, &outcome);
-            outcome
+            )
         };
 
         match internal {
@@ -462,8 +475,8 @@ impl ViewSession {
                             .try_borrow_mut()
                             .map_err(|_| ViewSessionError::Busy)?;
                         ensure_open(state.status)?;
-                        state.stats.connection_probe_policy_evaluations = state
-                            .stats
+                        state.control_stats.connection_probe_policy_evaluations = state
+                            .control_stats
                             .connection_probe_policy_evaluations
                             .saturating_add(1);
                     }
@@ -514,7 +527,7 @@ fn validate_probe_cursor(
         Some(ConnectionProbeCursorStaleReason::ViewportTransform)
     } else if cursor.graph_revision != state.seen_revision {
         Some(ConnectionProbeCursorStaleReason::GraphRevision)
-    } else if cursor.index_epoch != state.port_geometry.index_epoch {
+    } else if cursor.index_epoch != state.derived.connection_probe_index_epoch() {
         Some(ConnectionProbeCursorStaleReason::PortGeometry)
     } else if cursor.order_revision != state.interaction_order_revision {
         Some(ConnectionProbeCursorStaleReason::PaintOrder)
@@ -526,7 +539,10 @@ fn validate_probe_cursor(
         .map_or(Ok(()), Err)
 }
 
-fn record_probe_query_stats(stats: &mut super::ViewSessionStats, outcome: &InternalProbeOutcome) {
+pub(super) fn record_probe_query_stats(
+    stats: &mut super::ViewSessionStats,
+    outcome: &InternalProbeOutcome,
+) {
     let work = match outcome {
         InternalProbeOutcome::Complete { work, .. }
         | InternalProbeOutcome::Incomplete { work, .. }

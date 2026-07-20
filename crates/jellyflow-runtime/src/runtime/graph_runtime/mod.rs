@@ -1127,18 +1127,4 @@ impl RuntimeShared {
             state.sessions.remove(&view);
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn snapshot_with_incarnations(
-        &self,
-    ) -> Result<(GraphSnapshot, BTreeMap<NodeId, NodeIncarnation>), GraphRuntimeError> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| GraphRuntimeError::Busy)?;
-        Ok((
-            GraphSnapshot::new(state.graph.clone(), state.revision, state.document_epoch),
-            state.incarnations.clone(),
-        ))
-    }
 }

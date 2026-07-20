@@ -10,7 +10,7 @@ use crate::runtime::interaction::{
 use crate::runtime::view_session::{ViewSession, ViewSessionOptions};
 use crate::runtime::viewport::ViewportTransform;
 
-use super::fixtures::graph_with_nodes;
+use super::fixtures::{graph_with_nodes, publish_node_layouts};
 
 #[test]
 fn alignment_tolerance_is_screen_pixel_invariant_across_zoom() {
@@ -49,21 +49,22 @@ fn alignment_uses_stable_node_order_for_equal_distance_candidates() {
 
 #[test]
 fn alignment_feature_index_finds_columns_across_large_perpendicular_distance() {
-    let (runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
-    let incarnation = runtime.node_incarnation(ids[1]).unwrap().unwrap();
-    view.seed_node_geometry_for_test(
-        ids[1],
-        incarnation,
-        CanvasRect {
-            origin: CanvasPoint {
-                x: 205.0,
-                y: 5_000.0,
+    let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
+    publish_node_layouts(
+        &view,
+        [(
+            ids[1],
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: 205.0,
+                    y: 5_000.0,
+                },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 80.0,
+                },
             },
-            size: CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        },
+        )],
     );
     let mut interaction = interaction_session(&view, 64);
     let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
@@ -77,21 +78,22 @@ fn alignment_feature_index_finds_columns_across_large_perpendicular_distance() {
 
 #[test]
 fn alignment_feature_index_removes_old_axis_membership_after_geometry_moves() {
-    let (runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
-    let incarnation = runtime.node_incarnation(ids[1]).unwrap().unwrap();
-    view.seed_node_geometry_for_test(
-        ids[1],
-        incarnation,
-        CanvasRect {
-            origin: CanvasPoint {
-                x: 1_000.0,
-                y: 5_000.0,
+    let (_runtime, view, ids) = alignment_view(2, 1.0, &[0.0, 205.0]);
+    publish_node_layouts(
+        &view,
+        [(
+            ids[1],
+            CanvasRect {
+                origin: CanvasPoint {
+                    x: 1_000.0,
+                    y: 5_000.0,
+                },
+                size: CanvasSize {
+                    width: 100.0,
+                    height: 80.0,
+                },
             },
-            size: CanvasSize {
-                width: 100.0,
-                height: 80.0,
-            },
-        },
+        )],
     );
     let mut interaction = interaction_session(&view, 64);
     let outcome = move_and_resolve(&view, &mut interaction, ids[0], 100.0, 1.0);
@@ -188,20 +190,24 @@ fn alignment_view(
         .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     view.set_viewport(CanvasPoint::default(), zoom).unwrap();
-    for (node, x) in ids.iter().copied().zip(x_positions.iter().copied()) {
-        let incarnation = runtime.node_incarnation(node).unwrap().unwrap();
-        view.seed_node_geometry_for_test(
-            node,
-            incarnation,
-            CanvasRect {
-                origin: CanvasPoint { x, y: 0.0 },
-                size: CanvasSize {
-                    width: 100.0,
-                    height: 80.0,
-                },
-            },
-        );
-    }
+    publish_node_layouts(
+        &view,
+        ids.iter()
+            .copied()
+            .zip(x_positions.iter().copied())
+            .map(|(node, x)| {
+                (
+                    node,
+                    CanvasRect {
+                        origin: CanvasPoint { x, y: 0.0 },
+                        size: CanvasSize {
+                            width: 100.0,
+                            height: 80.0,
+                        },
+                    },
+                )
+            }),
+    );
     assert_eq!(view.geometry_snapshot().unwrap().nodes().len(), count);
     (runtime, view, ids)
 }

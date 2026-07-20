@@ -9,7 +9,9 @@ use crate::rules::EdgeEndpoint;
 use crate::runtime::commands::{GraphCommand, IncidentEdgePolicy, TopologyEdit};
 use crate::runtime::graph_runtime::GraphRuntime;
 
-use super::fixtures::{graph_with_nodes, graph_with_routed_edge, view_options};
+use super::fixtures::{
+    graph_with_nodes, graph_with_routed_edge, publish_graph_layouts, view_options,
+};
 
 #[test]
 fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
@@ -28,8 +30,9 @@ fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
             ViewSelectionSeed::new(vec![ids[0], ids[1]], vec![], vec![]),
         )))
         .expect("view B");
-    view_a.seed_all_node_facts_for_test();
-    view_b.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view_a);
+    publish_graph_layouts(&view_b);
+    let stats_before = [view_a.stats().unwrap(), view_b.stats().unwrap()];
 
     runtime
         .execute(GraphCommand::topology(
@@ -40,11 +43,15 @@ fn removing_a_selected_measured_node_retires_only_affected_view_facts() {
         .applied()
         .expect("remove applies");
 
-    for view in [&view_a, &view_b] {
-        assert!(!view.has_node_geometry_for_test(ids[0]));
-        assert!(view.has_node_geometry_for_test(ids[1]));
-        assert_eq!(view.derived_fact_counts_for_test().nodes, 1);
-        assert_eq!(view.stats().unwrap().spatial_updates, 1);
+    for (view, before) in [&view_a, &view_b].into_iter().zip(stats_before) {
+        let geometry = view.geometry_snapshot().unwrap();
+        assert!(geometry.node(ids[0]).is_none());
+        assert!(geometry.node(ids[1]).is_some());
+        assert_eq!(geometry.nodes().len(), 1);
+        assert_eq!(
+            view.stats().unwrap().spatial_updates - before.spatial_updates,
+            1
+        );
     }
     assert!(view_a.export_seed().unwrap().selection().nodes().is_empty());
     assert_eq!(view_b.export_seed().unwrap().selection().nodes(), [ids[1]]);
@@ -65,7 +72,7 @@ fn authoritative_remove_and_readd_retires_old_geometry_and_node_subscription() {
         view.node_incarnation(ids[0]).unwrap(),
         Some(old_incarnation)
     );
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
     let old_calls = Rc::new(Cell::new(0));
     let callback_calls = old_calls.clone();
     view.subscribe_node(ids[0], move |_| {
@@ -100,7 +107,7 @@ fn authoritative_remove_and_readd_retires_old_geometry_and_node_subscription() {
 
     let new_incarnation = runtime.node_incarnation(ids[0]).unwrap().unwrap();
     assert!(new_incarnation > old_incarnation);
-    assert!(!view.has_node_geometry_for_test(ids[0]));
+    assert!(view.geometry_snapshot().unwrap().node(ids[0]).is_none());
     assert_eq!(old_calls.get(), 0);
 }
 
@@ -114,7 +121,8 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
     let view = runtime
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
+    let stats_before = view.stats().expect("view stats before removal");
 
     runtime
         .execute(GraphCommand::topology(
@@ -125,13 +133,17 @@ fn removing_a_node_withdraws_its_geometry_and_invalidates_only_its_incident_rout
         .applied()
         .expect("remove applies");
 
-    assert!(!view.has_node_geometry_for_test(ids.source));
-    assert!(view.has_node_geometry_for_test(ids.target));
-    assert!(view.has_node_geometry_for_test(ids.alternate_source));
-    assert_eq!(view.derived_fact_counts_for_test().routes, 0);
+    let geometry = view.geometry_snapshot().unwrap();
+    assert!(geometry.node(ids.source).is_none());
+    assert!(geometry.node(ids.target).is_some());
+    assert!(geometry.node(ids.alternate_source).is_some());
+    assert!(geometry.route(ids.edge).is_none());
     let stats = view.stats().expect("view stats");
-    assert_eq!(stats.spatial_updates, 1);
-    assert_eq!(stats.route_invalidations, 1);
+    assert_eq!(stats.spatial_updates - stats_before.spatial_updates, 1);
+    assert_eq!(
+        stats.route_invalidations - stats_before.route_invalidations,
+        1
+    );
 }
 
 #[test]
@@ -144,7 +156,8 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
     let view = runtime
         .attach_view(view_options(ViewSessionSeed::new(graph_id)))
         .expect("view");
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
+    let stats_before = view.stats().expect("view stats before resize");
 
     runtime
         .execute(GraphCommand::set_node_size(
@@ -159,13 +172,17 @@ fn changing_node_size_withdraws_old_geometry_and_invalidates_only_incident_route
         .applied()
         .expect("resize applies");
 
-    assert!(!view.has_node_geometry_for_test(ids.source));
-    assert!(view.has_node_geometry_for_test(ids.target));
-    assert!(view.has_node_geometry_for_test(ids.alternate_source));
-    assert_eq!(view.derived_fact_counts_for_test().routes, 1);
+    let geometry = view.geometry_snapshot().unwrap();
+    assert!(geometry.node(ids.source).is_none());
+    assert!(geometry.node(ids.target).is_some());
+    assert!(geometry.node(ids.alternate_source).is_some());
+    assert!(geometry.route(ids.edge).is_none());
     let stats = view.stats().expect("view stats");
-    assert_eq!(stats.spatial_updates, 1);
-    assert_eq!(stats.route_invalidations, 1);
+    assert_eq!(stats.spatial_updates - stats_before.spatial_updates, 1);
+    assert_eq!(
+        stats.route_invalidations - stats_before.route_invalidations,
+        1
+    );
 }
 
 #[test]
@@ -207,7 +224,6 @@ fn reconnecting_an_edge_notifies_nodes_at_both_old_and_new_endpoints() {
         &[ids.source, ids.target, ids.alternate_source]
     );
     assert_eq!(calls.map(|calls| calls.get()), [1, 1, 1]);
-    assert_eq!(view.derived_fact_counts_for_test().routes, 1);
 }
 
 #[test]

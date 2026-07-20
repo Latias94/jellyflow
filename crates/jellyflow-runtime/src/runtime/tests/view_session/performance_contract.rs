@@ -24,7 +24,10 @@ use crate::runtime::geometry::HandlePosition;
 use crate::runtime::graph_runtime::GraphRuntime;
 use crate::runtime::view_session::{ViewSessionEvent, ViewSessionOptions};
 
-use super::fixtures::{graph_with_nodes, graph_with_routed_edge, node, view_options};
+use super::fixtures::{
+    graph_with_nodes, graph_with_routed_edge, node, publish_graph_layouts, publish_node_layouts,
+    view_options,
+};
 
 #[test]
 fn opt_in_incident_routing_dependencies_materialize_the_other_edge_endpoint() {
@@ -120,7 +123,6 @@ fn incident_routing_ignores_broad_phase_candidates_that_fail_exact_admission() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let source_incarnation = runtime.node_incarnation(ids.source).unwrap().unwrap();
     let viewport = CanvasRect {
         origin: CanvasPoint { x: 1_000.0, y: 0.0 },
         size: CanvasSize {
@@ -128,7 +130,7 @@ fn incident_routing_ignores_broad_phase_candidates_that_fail_exact_admission() {
             height: 120.0,
         },
     };
-    session.seed_node_geometry_for_test(ids.source, source_incarnation, viewport);
+    publish_node_layouts(&session, [(ids.source, viewport)]);
     let before = runtime.stats().unwrap();
 
     let frame = session
@@ -1471,7 +1473,7 @@ fn one_node_change_structurally_shares_ten_thousand_node_geometry_snapshots() {
         .build(graph)
         .unwrap();
     let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    session.seed_all_node_facts_for_test();
+    publish_graph_layouts(&session);
 
     let changed = nodes[4_321];
     let unchanged = nodes[8_765];

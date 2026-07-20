@@ -302,7 +302,7 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
     );
     assert!(close.receipts().is_empty());
     assert_eq!(session.layout_revision_for_test(), 0);
-    assert!(!session.has_node_geometry_for_test(nodes[0]));
+    assert!(session.retired_geometry_is_empty_for_test());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
     assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
@@ -317,7 +317,7 @@ fn closed_session_rejects_originating_feedback_with_zero_side_effects() {
         })
     ));
     assert_eq!(session.layout_revision_for_test(), 0);
-    assert!(!session.has_node_geometry_for_test(nodes[0]));
+    assert!(session.retired_geometry_is_empty_for_test());
     assert_eq!(runtime.snapshot().unwrap().revision(), 0);
     assert_eq!(
         runtime
@@ -695,6 +695,7 @@ fn document_replacement_retires_frames_targets_and_geometry() {
         session.nodes_intersecting(measured_rect()).unwrap(),
         vec![nodes[0]]
     );
+    let geometry_revision_before_reset = session.geometry_snapshot().unwrap().layout_revision();
 
     let retired = session
         .frame(FrameRequest::new(
@@ -718,13 +719,12 @@ fn document_replacement_retires_frames_targets_and_geometry() {
     runtime.replace_document(replacement).unwrap();
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(runtime.snapshot().unwrap().document_epoch(), 1);
-    assert!(
-        session
-            .geometry_snapshot()
-            .unwrap()
-            .node(nodes[0])
-            .is_none()
+    let reset_geometry = session.geometry_snapshot().unwrap();
+    assert_eq!(
+        reset_geometry.layout_revision(),
+        geometry_revision_before_reset + 1
     );
+    assert!(reset_geometry.node(nodes[0]).is_none());
     assert!(
         session
             .nodes_intersecting(measured_rect())

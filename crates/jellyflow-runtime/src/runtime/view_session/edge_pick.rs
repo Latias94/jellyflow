@@ -205,7 +205,7 @@ struct EdgePickCandidate {
     paint_order: (bool, bool, usize, EdgeId),
 }
 
-enum InternalEdgePickOutcome {
+pub(super) enum InternalEdgePickOutcome {
     Complete {
         pick: Option<EdgePick>,
         work: EdgePickWork,
@@ -225,7 +225,7 @@ enum InternalEdgePickOutcome {
 
 impl RouteGeometryIndex {
     #[allow(clippy::too_many_arguments)]
-    fn new_pick_cursor(
+    pub(super) fn new_pick_cursor(
         &self,
         view: ViewId,
         generation: ViewGeneration,
@@ -268,7 +268,7 @@ impl RouteGeometryIndex {
         })
     }
 
-    fn query_pick_page(
+    pub(super) fn query_pick_page(
         &mut self,
         edge_draw_order_ranks: &BTreeMap<EdgeId, usize>,
         selected_edges: &HashSet<EdgeId>,
@@ -404,8 +404,8 @@ impl ViewSession {
                     pointer,
                     radius_in_view,
                 } => state
-                    .route_geometry
-                    .new_pick_cursor(
+                    .derived
+                    .new_edge_pick_cursor(
                         state.id,
                         state.generation,
                         state.transform_revision,
@@ -420,17 +420,15 @@ impl ViewSession {
                     *cursor
                 }
             };
-            let outcome = {
+            {
                 let state = &mut *state;
-                state.route_geometry.query_pick_page(
+                state.derived.query_edge_pick_page(
                     &state.edge_draw_order_ranks,
                     &state.selected_edge_membership,
                     cursor,
                     query.entry_budget,
                 )
-            };
-            record_edge_pick_stats(&mut state.stats, &outcome);
-            outcome
+            }
         };
 
         Ok(match outcome {
@@ -466,9 +464,9 @@ fn validate_edge_pick_cursor(
         Some(EdgePickCursorStaleReason::ViewGeneration)
     } else if cursor.transform_revision != state.transform_revision {
         Some(EdgePickCursorStaleReason::ViewportTransform)
-    } else if cursor.path_epoch != state.route_geometry.index_epoch() {
+    } else if cursor.path_epoch != state.derived.edge_pick_epochs().0 {
         Some(EdgePickCursorStaleReason::RouteGeometry)
-    } else if cursor.pick_epoch != state.route_geometry.pick_epoch() {
+    } else if cursor.pick_epoch != state.derived.edge_pick_epochs().1 {
         Some(EdgePickCursorStaleReason::EdgeInteraction)
     } else if cursor.order_revision != state.interaction_order_revision {
         Some(EdgePickCursorStaleReason::PaintOrder)
@@ -480,7 +478,10 @@ fn validate_edge_pick_cursor(
         .map_or(Ok(()), Err)
 }
 
-fn record_edge_pick_stats(stats: &mut super::ViewSessionStats, outcome: &InternalEdgePickOutcome) {
+pub(super) fn record_edge_pick_stats(
+    stats: &mut super::ViewSessionStats,
+    outcome: &InternalEdgePickOutcome,
+) {
     let work = match outcome {
         InternalEdgePickOutcome::Complete { work, .. }
         | InternalEdgePickOutcome::Incomplete { work, .. }

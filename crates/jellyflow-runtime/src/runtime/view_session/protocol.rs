@@ -1,6 +1,5 @@
 //! Owned frame materialization and one-shot feedback submission.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -10,7 +9,7 @@ use crate::runtime::adapter_protocol::{
     AdapterEnvironment, AdapterFrame, FeedbackOperation, FeedbackOperationReceipt, FeedbackReceipt,
     FeedbackSubmissionError, FrameBoundsSource, FrameFeedback, FrameMaterializationError,
     FrameMaterializationOverflow, FrameNode, FramePort, FrameRequest, FrameToken, NodeInstanceKey,
-    NodeLayout, NodeLayoutTarget, PublishedPortOutcome, RendererStamp, StaleFrameReason,
+    NodeLayout, NodeLayoutTarget, RendererStamp, StaleFrameReason,
 };
 use crate::runtime::geometry::CanvasBounds;
 use crate::runtime::graph_runtime::{
@@ -20,7 +19,7 @@ use crate::runtime::graph_runtime::{
 use crate::runtime::unwind::{PanicCollector, PanicPayload, resume};
 use crate::runtime::viewport::ViewportTransform;
 
-use super::geometry::{admission_bounds, expanded_bounds, publish_layouts, recompute_routes};
+use super::geometry::{expanded_bounds, publish_layouts};
 use super::order::sort_render_order;
 use super::{ViewSession, ViewSessionError, ViewSessionEvent, ensure_open};
 
@@ -124,24 +123,36 @@ impl ViewSession {
         let viewport = expanded_bounds(request.viewport, request.overscan)
             .ok_or(FrameMaterializationError::InvalidViewport)?;
 
-        let (view_id, mut candidates, candidate_ids, inactive_nodes, materialization_overflow) = {
+        let (
+            view_id,
+            mut candidates,
+            candidate_ids,
+            inactive_nodes,
+            materialization_overflow,
+            rebuild_visits,
+            query_cells_examined,
+            query_entries_examined,
+            rebuilt,
+            selection_membership_lookups,
+        ) = {
             let mut state = self
                 .shared
                 .state
                 .try_borrow_mut()
                 .map_err(|_| ViewSessionError::Busy)?;
             ensure_open(state.status)?;
-            let (rebuild_visits, rebuilt) = state.admission.prepare(snapshot.graph(), &request);
+            let (rebuild_visits, rebuilt) =
+                state.derived.prepare_admission(snapshot.graph(), &request);
             let viewport_rect = viewport.to_rect();
             let visible_scan_limit = request.materialization_budget.visible_node_scan_limit();
             let measured_query = state
-                .spatial
+                .derived
                 .nodes_intersecting_with_limit(viewport_rect, visible_scan_limit);
             let remaining_scan_limit =
                 visible_scan_limit.saturating_sub(measured_query.entries_examined as usize);
             let admission_query = state
-                .admission
-                .nodes_intersecting_with_limit(viewport_rect, remaining_scan_limit);
+                .derived
+                .admission_nodes_intersecting_with_limit(viewport_rect, remaining_scan_limit);
             let visible_scan_truncated = measured_query.truncated || admission_query.truncated;
             let query_cells_examined = admission_query
                 .cells_examined
@@ -158,24 +169,11 @@ impl ViewSession {
                         return None;
                     }
                     let renderer = request.renderer_for(node_id, &node.kind);
-                    let layout_generation = state
-                        .layout_generations
-                        .get(&node_id)
-                        .copied()
-                        .unwrap_or_default();
-                    let binding_revision = state
-                        .binding_revisions
-                        .get(&node_id)
-                        .copied()
-                        .unwrap_or_default();
-                    let (bounds, bounds_source) = admission_bounds(
-                        node_id,
-                        node,
-                        &renderer,
-                        layout_generation,
-                        &state.geometry,
-                        &request,
-                    )?;
+                    let layout_generation = state.derived.layout_generation(node_id);
+                    let binding_revision = state.derived.binding_revision(node_id);
+                    let (bounds, bounds_source) = state
+                        .derived
+                        .frame_bounds(node_id, node, &renderer, &request)?;
                     let is_visible = CanvasBounds::from_rect(bounds)
                         .is_some_and(|bounds| bounds.intersects(viewport));
                     (forced || is_visible).then(|| {
@@ -300,50 +298,18 @@ impl ViewSession {
                     selection_membership_lookups,
                 )
             };
-            let inactive_nodes = state
-                .active_frame_nodes
-                .difference(&candidate_ids)
-                .filter(|node| {
-                    state.geometry.get(node).is_some_and(|geometry| {
-                        geometry
-                            .port_outcomes()
-                            .values()
-                            .any(|outcome| !matches!(outcome, PublishedPortOutcome::Culled))
-                    })
-                })
-                .copied()
-                .collect::<BTreeSet<_>>();
-            state.active_frame_nodes = candidate_ids.clone();
-            state.stats.admission_nodes_visited = state
-                .stats
-                .admission_nodes_visited
-                .saturating_add(rebuild_visits);
-            state.stats.admission_query_cells_examined = state
-                .stats
-                .admission_query_cells_examined
-                .saturating_add(query_cells_examined);
-            state.stats.admission_query_entries_examined = state
-                .stats
-                .admission_query_entries_examined
-                .saturating_add(query_entries_examined);
-            state.stats.admission_index_rebuilds = state
-                .stats
-                .admission_index_rebuilds
-                .saturating_add(u64::from(rebuilt));
-            state.stats.frame_order_candidates_ranked = state
-                .stats
-                .frame_order_candidates_ranked
-                .saturating_add(candidates.len() as u64);
-            state.stats.frame_selection_membership_lookups = state
-                .stats
-                .frame_selection_membership_lookups
-                .saturating_add(selection_membership_lookups);
+            let inactive_nodes = state.derived.inactive_frame_nodes(&candidate_ids);
             (
                 state.id,
                 candidates,
                 candidate_ids,
                 inactive_nodes,
                 materialization_overflow,
+                rebuild_visits,
+                query_cells_examined,
+                query_entries_examined,
+                rebuilt,
+                selection_membership_lookups,
             )
         };
         let fact_nodes = candidate_ids
@@ -361,89 +327,34 @@ impl ViewSession {
                 .try_borrow_mut()
                 .map_err(|_| ViewSessionError::Busy)?;
             ensure_open(state.status)?;
-            let mut node_invalidations = 0_u64;
-            let mut invalidated_nodes = Vec::new();
-            let mut route_edges = BTreeSet::new();
-            let mut incident_work = IncidentSnapshotWork::default();
-            let mut geometry_changed = false;
-            let mut spatial_updates = 0_u64;
-            for FrameCandidate {
-                node,
-                renderer,
-                layout_generation,
-                ..
-            } in &mut candidates
-            {
-                let renderer_changed = match state.renderer_bindings.entry(*node) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(renderer.clone());
-                        false
-                    }
-                    Entry::Occupied(mut entry) if entry.get() != &*renderer => {
-                        entry.insert(renderer.clone());
-                        true
-                    }
-                    Entry::Occupied(_) => false,
-                };
-                if renderer_changed {
-                    let generation = state.layout_generations.entry(*node).or_default();
-                    *generation = generation.saturating_add(1);
-                    *layout_generation = *generation;
-                    geometry_changed |= state.remove_node_geometry(*node);
-                    spatial_updates =
-                        spatial_updates.saturating_add(u64::from(state.spatial.remove(*node)));
-                    if let Some((_, incident_edges)) = facts.get(node) {
-                        incident_work.materialize(incident_edges);
-                        route_edges.extend(incident_edges.iter().copied());
-                    }
-                    node_invalidations = node_invalidations.saturating_add(1);
-                    invalidated_nodes.push(*node);
+            let renderers = candidates
+                .iter()
+                .map(|candidate| (candidate.node, candidate.renderer.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let policy = state.policy;
+            let selected_edges = state.selected_edge_membership.clone();
+            let (publication, incident_work, generations) = state.derived.reconcile_frame_geometry(
+                &snapshot,
+                &renderers,
+                &candidate_ids,
+                &facts,
+                policy,
+                &selected_edges,
+            );
+            state.derived.record_frame_admission(
+                rebuild_visits,
+                query_cells_examined,
+                query_entries_examined,
+                rebuilt,
+                candidates.len() as u64,
+                selection_membership_lookups,
+            );
+            for candidate in &mut candidates {
+                if let Some(generation) = generations.get(&candidate.node) {
+                    candidate.layout_generation = *generation;
                 }
             }
-            for node_id in &inactive_nodes {
-                let ports = snapshot
-                    .graph()
-                    .node(node_id)
-                    .map(|node| node.ports.iter().copied())
-                    .into_iter()
-                    .flatten();
-                let ports_culled = state.mark_node_ports_culled(*node_id, ports);
-                if !ports_culled {
-                    continue;
-                }
-                geometry_changed = true;
-                node_invalidations = node_invalidations.saturating_add(1);
-                invalidated_nodes.push(*node_id);
-                if let Some((_, incident_edges)) = facts.get(node_id) {
-                    incident_work.materialize(incident_edges);
-                    route_edges.extend(incident_edges.iter().copied());
-                }
-            }
-            let route_invalidations = route_edges.len() as u64;
-            let route_recomputation = recompute_routes(&mut state, &snapshot, &route_edges);
-            let publication_changed = geometry_changed || route_recomputation.changed;
-            if publication_changed {
-                state.advance_layout_revision();
-                state.stats.layout_publications = state.stats.layout_publications.saturating_add(1);
-            }
-            state.stats.node_invalidations = state
-                .stats
-                .node_invalidations
-                .saturating_add(node_invalidations);
-            state.stats.spatial_updates =
-                state.stats.spatial_updates.saturating_add(spatial_updates);
-            state.stats.route_invalidations = state
-                .stats
-                .route_invalidations
-                .saturating_add(route_invalidations);
-            state.stats.route_recomputations = state
-                .stats
-                .route_recomputations
-                .saturating_add(route_recomputation.attempts);
-            (
-                publication_changed.then_some((state.layout_revision, invalidated_nodes)),
-                incident_work,
-            )
+            (publication, incident_work)
         };
         runtime
             .record_frame_incident_snapshot_work(frame_incident_work)
@@ -543,10 +454,9 @@ impl ViewSession {
                 state.last_superseded_frame = state.last_issued_frame;
             }
             state.last_issued_frame = sequence;
-            state.stats.frame_nodes_materialized = state
-                .stats
-                .frame_nodes_materialized
-                .saturating_add(materialized_count);
+            state
+                .derived
+                .record_frame_nodes_materialized(materialized_count);
             let token = FrameToken {
                 view: state.id,
                 generation: state.generation,
@@ -639,12 +549,7 @@ impl ViewSession {
             });
         }
         if pending.nodes.iter().any(|(node, expected)| {
-            state
-                .layout_generations
-                .get(node)
-                .copied()
-                .unwrap_or_default()
-                != expected.layout_generation
+            state.derived.layout_generation(*node) != expected.layout_generation
         }) {
             return Err(FrameMaterializationError::StaleFrame {
                 sequence: token.sequence,
@@ -742,14 +647,9 @@ impl ViewSession {
                     geometry_impact.make_global();
                     impact_global_fallbacks = impact_global_fallbacks.saturating_add(1);
                 }
-                state.stats.geometry_impact_patches_merged = state
-                    .stats
-                    .geometry_impact_patches_merged
-                    .saturating_add(impact_patches_merged);
-                state.stats.geometry_impact_global_fallbacks = state
-                    .stats
-                    .geometry_impact_global_fallbacks
-                    .saturating_add(impact_global_fallbacks);
+                state
+                    .derived
+                    .record_geometry_impact_merge(impact_patches_merged, impact_global_fallbacks);
                 let global_stale = current.document_epoch() != pending.document_epoch
                     || state.transform_revision != pending.transform_revision
                     || state.environment != pending.environment
@@ -866,12 +766,8 @@ impl ViewSession {
             });
         }
         if pending.nodes.iter().any(|(node, expected)| {
-            let generation_changed = state
-                .layout_generations
-                .get(node)
-                .copied()
-                .unwrap_or_default()
-                != expected.layout_generation;
+            let generation_changed =
+                state.derived.layout_generation(*node) != expected.layout_generation;
             generation_changed
                 && !pending.geometry_impact.affects_layout(
                     *node,
@@ -908,10 +804,8 @@ impl ViewSession {
             .state
             .try_borrow()
             .map_err(|_| ViewSessionError::Busy)?
-            .geometry
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
+            .derived
+            .node_ids();
         let facts = runtime.adapter_frame_node_facts(&nodes)?;
         let publication = {
             let mut state = self
@@ -924,10 +818,6 @@ impl ViewSession {
                 return Ok(false);
             }
             state.environment = environment;
-            for node in &nodes {
-                let generation = state.layout_generations.entry(*node).or_default();
-                *generation = generation.saturating_add(1);
-            }
             let ports_by_node = nodes
                 .iter()
                 .filter_map(|node| {
@@ -937,34 +827,22 @@ impl ViewSession {
                         .map(|record| (*node, record.ports.clone()))
                 })
                 .collect::<BTreeMap<_, _>>();
-            let stale_nodes = state.mark_all_node_geometry_stale(&ports_by_node);
             let route_edges = facts
                 .values()
                 .flat_map(|(_, incident_edges)| incident_edges.iter().copied())
                 .collect::<BTreeSet<_>>();
-            let route_invalidations = route_edges.len() as u64;
-            let route_recomputation = recompute_routes(&mut state, &snapshot, &route_edges);
-            let publication_changed = stale_nodes > 0 || route_recomputation.changed;
-            if publication_changed {
-                state.advance_layout_revision();
-                state.stats.layout_publications = state.stats.layout_publications.saturating_add(1);
-            }
-            state.stats.node_invalidations = state
-                .stats
-                .node_invalidations
-                .saturating_add(nodes.len() as u64);
-            state.stats.route_invalidations = state
-                .stats
-                .route_invalidations
-                .saturating_add(route_invalidations);
-            state.stats.route_recomputations = state
-                .stats
-                .route_recomputations
-                .saturating_add(route_recomputation.attempts);
-            publication_changed.then_some((
-                state.layout_revision,
-                nodes.iter().copied().collect::<Vec<_>>(),
-            ))
+            let policy = state.policy;
+            let selected_edges = state.selected_edge_membership.clone();
+            state
+                .derived
+                .mark_all_stale(
+                    &snapshot,
+                    &ports_by_node,
+                    &route_edges,
+                    policy,
+                    &selected_edges,
+                )
+                .map(|layout_revision| (layout_revision, nodes.iter().copied().collect::<Vec<_>>()))
         };
         if let Some((layout_revision, nodes)) = publication {
             self.publish_layout_event(layout_revision, nodes);
@@ -994,40 +872,35 @@ impl ViewSession {
             ensure_open(state.status)?;
             if instance.view() != state.id
                 || incarnation != instance.incarnation()
-                || state.renderer_bindings.get(&instance.node()) != Some(instance.renderer())
+                || !state
+                    .derived
+                    .renderer_matches(instance.node(), instance.renderer())
             {
                 return Ok(false);
             }
-            let generation = state.layout_generations.entry(instance.node()).or_default();
-            *generation = generation.saturating_add(1);
             let ports = snapshot
                 .graph()
                 .node(&instance.node())
                 .map(|node| node.ports.iter().copied())
                 .into_iter()
                 .flatten();
-            let geometry_changed = state.mark_node_geometry_stale(instance.node(), ports);
             let route_edges = facts
                 .get(&instance.node())
                 .map(|(_, incident_edges)| incident_edges.clone())
                 .unwrap_or_default();
-            let route_invalidations = route_edges.len() as u64;
-            let route_recomputation = recompute_routes(&mut state, &snapshot, &route_edges);
-            let publication_changed = geometry_changed || route_recomputation.changed;
-            if publication_changed {
-                state.advance_layout_revision();
-                state.stats.layout_publications = state.stats.layout_publications.saturating_add(1);
-            }
-            state.stats.node_invalidations = state.stats.node_invalidations.saturating_add(1);
-            state.stats.route_invalidations = state
-                .stats
-                .route_invalidations
-                .saturating_add(route_invalidations);
-            state.stats.route_recomputations = state
-                .stats
-                .route_recomputations
-                .saturating_add(route_recomputation.attempts);
-            publication_changed.then_some((state.layout_revision, vec![instance.node()]))
+            let policy = state.policy;
+            let selected_edges = state.selected_edge_membership.clone();
+            state
+                .derived
+                .mark_one_stale(
+                    &snapshot,
+                    instance.node(),
+                    ports,
+                    &route_edges,
+                    policy,
+                    &selected_edges,
+                )
+                .map(|layout_revision| (layout_revision, vec![instance.node()]))
         };
         if let Some((layout_revision, nodes)) = publication {
             resume(self.publish_layout_event(layout_revision, nodes));

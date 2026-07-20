@@ -14,7 +14,7 @@ use crate::runtime::view_session::{
     ViewCloseReason, ViewCloseRequest, ViewSessionError, ViewSessionEvent,
 };
 
-use super::fixtures::graph_with_nodes;
+use super::fixtures::{graph_with_nodes, publish_graph_layouts};
 
 struct TraceMiddleware {
     before_calls: Rc<Cell<usize>>,
@@ -221,7 +221,7 @@ fn panicking_after_middleware_is_restored_and_preserves_committed_state() {
             panic_on_call: 1,
         });
     let view = runtime.attach_view(Default::default()).unwrap();
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
     let runtime_revisions = Rc::new(RefCell::new(Vec::new()));
     let observed_runtime_revisions = runtime_revisions.clone();
     runtime
@@ -334,7 +334,7 @@ fn close_after_middleware_panic_fans_out_committed_patch_and_terminalizes_view()
         });
     let closing_view = runtime.attach_view(Default::default()).unwrap();
     let observer = runtime.attach_view(Default::default()).unwrap();
-    observer.seed_all_node_facts_for_test();
+    publish_graph_layouts(&observer);
 
     let runtime_revisions = Rc::new(RefCell::new(Vec::new()));
     let observed_runtime_revisions = runtime_revisions.clone();

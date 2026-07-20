@@ -8,7 +8,7 @@ use crate::runtime::view_session::{
     ViewCloseReason, ViewCloseRequest, ViewSessionError, ViewSessionEvent,
 };
 
-use super::fixtures::{graph_with_nodes, view_options};
+use super::fixtures::{graph_with_nodes, publish_graph_layouts, view_options};
 
 #[test]
 fn close_is_terminal_and_idempotent() {
@@ -54,7 +54,7 @@ fn explicit_close_publishes_one_terminal_event_after_retiring_view_facts() {
             .attach_view(view_options(ViewSessionSeed::new(graph_id)))
             .expect("view"),
     );
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
 
     let terminal_reasons = Rc::new(RefCell::new(Vec::new()));
     let callback_reasons = terminal_reasons.clone();
@@ -62,8 +62,7 @@ fn explicit_close_publishes_one_terminal_event_after_retiring_view_facts() {
     view.subscribe(move |event| {
         if let ViewSessionEvent::Closed { reason } = event {
             assert_eq!(callback_view.close_reason(), Some(reason));
-            let facts = callback_view.derived_fact_counts_for_test();
-            assert_eq!((facts.nodes, facts.routes), (0, 0));
+            assert!(callback_view.retired_geometry_is_empty_for_test());
             callback_reasons.borrow_mut().push(reason);
         }
     })
@@ -86,12 +85,12 @@ fn explicit_close_publishes_one_terminal_event_after_retiring_view_facts() {
     assert_eq!(&*terminal_reasons.borrow(), &[ViewCloseReason::HostClosed]);
     assert_eq!(Rc::strong_count(&view), 1);
     assert_eq!(Rc::strong_count(&node_subscription_owner), 1);
-    assert!(!view.has_node_geometry_for_test(ids[0]));
+    assert!(view.retired_geometry_is_empty_for_test());
 }
 
 #[test]
 fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
-    let (graph, ids) = graph_with_nodes(1);
+    let (graph, _) = graph_with_nodes(1);
     let graph_id = graph.graph_id();
     let runtime = GraphRuntime::builder(Default::default())
         .build(graph)
@@ -101,7 +100,7 @@ fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
             .attach_view(view_options(ViewSessionSeed::new(graph_id)))
             .expect("view"),
     );
-    view.seed_all_node_facts_for_test();
+    publish_graph_layouts(&view);
 
     let terminal_reasons = Rc::new(RefCell::new(Vec::new()));
     let callback_reasons = terminal_reasons.clone();
@@ -109,8 +108,7 @@ fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
     view.subscribe(move |event| {
         if let ViewSessionEvent::Closed { reason } = event {
             assert_eq!(callback_view.close_reason(), Some(reason));
-            let facts = callback_view.derived_fact_counts_for_test();
-            assert_eq!((facts.nodes, facts.routes), (0, 0));
+            assert!(callback_view.retired_geometry_is_empty_for_test());
             callback_reasons.borrow_mut().push(reason);
         }
     })
@@ -123,7 +121,7 @@ fn runtime_drop_publishes_one_terminal_event_after_retiring_view_facts() {
         &[ViewCloseReason::RuntimeDropped]
     );
     assert_eq!(Rc::strong_count(&view), 1);
-    assert!(!view.has_node_geometry_for_test(ids[0]));
+    assert!(view.retired_geometry_is_empty_for_test());
 }
 
 #[test]
@@ -137,13 +135,13 @@ fn dropping_runtime_revokes_live_sessions_and_retires_facts() {
         let view = runtime
             .attach_view(view_options(ViewSessionSeed::new(graph_id)))
             .expect("view");
-        view.seed_all_node_facts_for_test();
-        assert!(view.has_node_geometry_for_test(ids[0]));
+        publish_graph_layouts(&view);
+        assert!(view.geometry_snapshot().unwrap().node(ids[0]).is_some());
         view
     };
 
     assert_eq!(view.close_reason(), Some(ViewCloseReason::RuntimeDropped));
-    assert_eq!(view.derived_fact_counts_for_test().nodes, 0);
+    assert!(view.retired_geometry_is_empty_for_test());
     assert!(matches!(
         view.graph_snapshot(),
         Err(ViewSessionError::Closed { .. })

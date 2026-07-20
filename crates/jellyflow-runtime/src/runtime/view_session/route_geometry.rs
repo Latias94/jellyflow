@@ -403,10 +403,33 @@ impl RouteSpatialIndex {
 }
 
 impl RouteGeometryIndex {
-    fn geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
+    pub(super) fn geometry_revision(&self, edge: EdgeId) -> Option<RouteGeometryRevision> {
         self.indexed
             .get(&edge)
             .map(|route| RouteGeometryRevision(route.path_revision))
+    }
+
+    #[cfg(test)]
+    pub(super) fn indexed_edges_for_test(&self) -> BTreeSet<EdgeId> {
+        let indexed = self.indexed.keys().copied().collect::<BTreeSet<_>>();
+        assert_eq!(
+            indexed,
+            self.spatial.routes.keys().copied().collect::<BTreeSet<_>>()
+        );
+        indexed
+    }
+
+    #[cfg(test)]
+    pub(super) fn matches_route_for_test(&self, route: &PublishedEdgeRoute) -> bool {
+        self.indexed.get(&route.edge()).is_some_and(|indexed| {
+            indexed.path == route.facts().path
+                && indexed.pick == IndexedRoutePickFacts::from(route)
+                && edge_path_conservative_bounds(&route.facts().path)
+                    .ok()
+                    .flatten()
+                    .and_then(expand_route_bounds)
+                    == Some(indexed.bounds)
+        })
     }
 
     pub(super) fn upsert(
@@ -576,7 +599,7 @@ impl RouteGeometryIndex {
         self.insert_interaction_half_width(new);
     }
 
-    fn new_cursor(
+    pub(super) fn new_cursor(
         &self,
         view: ViewId,
         generation: ViewGeneration,
@@ -603,7 +626,7 @@ impl RouteGeometryIndex {
         }
     }
 
-    fn query_page(
+    pub(super) fn query_page(
         &mut self,
         mut cursor: VisibleRouteCursor,
         entry_budget: usize,
@@ -833,7 +856,7 @@ enum RouteIntersection {
     Overflow(EdgePathFlattenError),
 }
 
-enum InternalRouteQueryOutcome {
+pub(super) enum InternalRouteQueryOutcome {
     Complete {
         edges: BTreeSet<EdgeId>,
         overflows: BTreeMap<EdgeId, EdgePathFlattenError>,
@@ -848,7 +871,7 @@ enum InternalRouteQueryOutcome {
     },
 }
 
-fn record_route_query_stats(
+pub(super) fn record_route_query_stats(
     stats: &mut super::ViewSessionStats,
     outcome: &InternalRouteQueryOutcome,
 ) {
@@ -909,7 +932,7 @@ impl ViewSession {
             view: state.id,
             generation: state.generation,
             transform_revision: state.transform_revision,
-            route_facts_revision: state.route_facts_revision,
+            route_facts_revision: state.derived.route_facts_revision(),
             interaction_order_revision: state.interaction_order_revision,
         })
     }
@@ -933,7 +956,7 @@ impl ViewSession {
                     let bounds = expanded_view_rect(bounds, margin)
                         .and_then(|bounds| bounds.to_canvas_rect(transform))
                         .ok_or(VisibleRouteQueryError::InvalidQuery)?;
-                    state.route_geometry.new_cursor(
+                    state.derived.new_visible_route_cursor(
                         state.id,
                         state.generation,
                         state.transform_revision,
@@ -945,12 +968,9 @@ impl ViewSession {
                     *cursor
                 }
             };
-            let result =
-                state
-                    .route_geometry
-                    .query_page(cursor, query.entry_budget, transform.zoom);
-            record_route_query_stats(&mut state.stats, &result);
-            result
+            state
+                .derived
+                .query_visible_route_page(cursor, query.entry_budget, transform.zoom)
         };
 
         match result {
@@ -977,8 +997,8 @@ impl ViewSession {
                         .iter()
                         .filter_map(|edge| {
                             state
-                                .route_geometry
-                                .geometry_revision(*edge)
+                                .derived
+                                .route_geometry_revision(*edge)
                                 .map(|revision| (*edge, revision))
                         })
                         .collect()
@@ -1021,7 +1041,7 @@ fn validate_cursor(
         Some(VisibleRouteCursorStaleReason::ViewGeneration)
     } else if cursor.transform_revision != state.transform_revision {
         Some(VisibleRouteCursorStaleReason::ViewportTransform)
-    } else if cursor.index_epoch != state.route_geometry.index_epoch {
+    } else if cursor.index_epoch != state.derived.visible_route_index_epoch() {
         Some(VisibleRouteCursorStaleReason::RouteGeometry)
     } else {
         None
