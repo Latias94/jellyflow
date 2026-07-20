@@ -19,6 +19,7 @@ open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = fals
 thiserror.workspace = true
 
 [dev-dependencies]
+jellyflow-runtime = { workspace = true, features = ["adapter-conformance"] }
 open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }
 open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0" }
 serde_json.workspace = true

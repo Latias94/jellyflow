@@ -385,7 +385,10 @@ def external_cargo_toml(slug: str, dependencies: list[str]) -> str:
 def jellyflow_source_path_smoke_scenarios(repo_root: Path) -> list[SmokeScenario]:
     """Keep framework test-support coverage separate from the package gate."""
 
-    return [jellyflow_open_gpui_source_scenario(repo_root)]
+    return [
+        jellyflow_adapter_conformance_source_scenario(repo_root),
+        jellyflow_open_gpui_source_scenario(repo_root),
+    ]
 
 
 def jellyflow_package_consumer_scenario(versions: dict[str, str]) -> SmokeScenario:
@@ -423,6 +426,21 @@ def jellyflow_open_gpui_source_scenario(repo_root: Path) -> SmokeScenario:
             ],
         ),
         main_rs=_load_external_consumer_main_rs("open-gpui-source"),
+    )
+
+
+def jellyflow_adapter_conformance_source_scenario(repo_root: Path) -> SmokeScenario:
+    return SmokeScenario(
+        slug="jellyflow-adapter-conformance-external-smoke",
+        cargo_subcommand="test",
+        cargo_toml=external_cargo_toml(
+            "jellyflow-adapter-conformance-external-smoke",
+            [
+                f'jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}',
+                f'jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}", features = ["adapter-conformance"] }}',
+            ],
+        ),
+        main_rs=_load_external_consumer_main_rs("adapter-conformance"),
     )
 
 
@@ -692,6 +710,16 @@ def run_package_consumer_smoke(
             )
             return False
     print("package-derived Open GPUI consumer excludes default and test-support features")
+    runtime_features = resolved_package_features(
+        project_dir, manifest, "jellyflow-runtime", locked=True
+    )
+    if "adapter-conformance" in runtime_features:
+        print(
+            "package-derived Jellyflow consumer activated adapter-conformance",
+            file=sys.stderr,
+        )
+        return False
+    print("package-derived Jellyflow consumer excludes adapter-conformance")
     if not assert_packaged_crates_in_tree(tree, packaged) or not assert_no_fret_packages(
         tree
     ):

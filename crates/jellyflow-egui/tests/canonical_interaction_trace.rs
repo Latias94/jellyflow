@@ -1,6 +1,3 @@
-#[path = "../../jellyflow-runtime/tests/support/canonical_interaction_trace.rs"]
-mod trace;
-
 use egui::{
     Color32, Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2,
 };
@@ -20,36 +17,19 @@ use jellyflow::runtime::{
 use jellyflow_egui::{
     EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiInteractionQueryKind,
 };
-use trace::{
-    CanonicalInteractionTrace, TraceCancelReason, TraceCandidate, TraceEffect, TraceInput,
-    TracePhase, TraceReceipt, TraceReconnectEndpoint, TraceTarget, control_and_drag_handle_traces,
-    create_from_wire_trace, edge_pick_trace, new_connection_trace, reconnect_trace,
-    terminal_ownership_traces,
+use jellyflow_runtime::runtime::adapter_protocol::conformance::{
+    ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
+    ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
+    ConformanceGeometry as TraceGeometry, ConformanceOwnership as TraceOwnership,
+    ConformancePhase as TracePhase, ConformanceScenario as CanonicalInteractionTrace,
+    ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
+    ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket, NormalizedObservation,
+    canonical_scenarios, compare_observations,
 };
 
 #[test]
 fn egui_native_events_replay_every_canonical_interaction_trace() {
-    for receipt in [
-        TraceReceipt::Applied,
-        TraceReceipt::Noop,
-        TraceReceipt::Rejected,
-        TraceReceipt::Conflict,
-    ] {
-        EguiTraceRunner::new().replay(&new_connection_trace(receipt));
-        EguiTraceRunner::new().replay(&create_from_wire_trace(receipt));
-        for endpoint in [
-            TraceReconnectEndpoint::Source,
-            TraceReconnectEndpoint::Target,
-        ] {
-            EguiTraceRunner::new().replay(&reconnect_trace(endpoint, receipt));
-        }
-    }
-
-    for trace in control_and_drag_handle_traces() {
-        EguiTraceRunner::new().replay(&trace);
-    }
-    EguiTraceRunner::new().replay(&edge_pick_trace());
-    for trace in terminal_ownership_traces() {
+    for trace in canonical_scenarios() {
         EguiTraceRunner::new().replay(&trace);
     }
 }
@@ -57,7 +37,7 @@ fn egui_native_events_replay_every_canonical_interaction_trace() {
 #[test]
 fn stolen_egui_drag_ownership_cancels_the_semantic_session() {
     let mut runner = EguiTraceRunner::new();
-    runner.press(TraceTarget::Port(1));
+    runner.press(TraceTarget::SourcePort);
     runner.move_pointer(runner.state().anchors.empty);
     assert_eq!(runner.observed_phase(), TracePhase::ConnectionDrag);
 
@@ -78,14 +58,11 @@ fn egui_interaction_selection_remains_local_to_its_view() {
     let mut runner = EguiTraceRunner::new();
     let untouched = runner
         .state()
-        ._runtime
+        .runtime
         .attach_view(ViewSessionOptions::default())
         .expect("second view");
 
-    assert_eq!(
-        runner.press(TraceTarget::NodeDragHandle(1)),
-        TraceEffect::None
-    );
+    assert_eq!(runner.press(TraceTarget::NodeDragHandle), TraceEffect::None);
     assert_eq!(runner.release(), TraceEffect::None);
 
     assert_eq!(
@@ -100,10 +77,7 @@ fn egui_interaction_selection_remains_local_to_its_view() {
 fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
     let mut runner = EguiTraceRunner::new();
 
-    assert_eq!(
-        runner.press(TraceTarget::NodeDragHandle(1)),
-        TraceEffect::None
-    );
+    assert_eq!(runner.press(TraceTarget::NodeDragHandle), TraceEffect::None);
     assert_eq!(runner.observed_phase(), TracePhase::Armed);
 
     let effect = runner.release_at(runner.state().anchors.empty);
@@ -116,7 +90,7 @@ fn release_at_a_new_position_activates_and_commits_an_armed_drag() {
 fn foreign_closed_view_cannot_consume_the_owner_frame() {
     let mut state = EguiTraceState::new();
     let foreign = state
-        ._runtime
+        .runtime
         .attach_view(ViewSessionOptions::default())
         .expect("foreign view");
     foreign.close().expect("close foreign view");
@@ -142,6 +116,7 @@ struct EguiTraceRunner {
     harness: Harness<'static, EguiTraceState>,
     pointer: Pos2,
     ticket: Option<InteractionTicketId>,
+    mutation: Option<FreshGraphMutation>,
 }
 
 impl EguiTraceRunner {
@@ -155,55 +130,45 @@ impl EguiTraceRunner {
             harness,
             pointer,
             ticket: None,
+            mutation: None,
         }
     }
 
     fn replay(&mut self, trace: &CanonicalInteractionTrace) {
+        let mut observations = Vec::with_capacity(trace.steps.len());
         for step in &trace.steps {
-            let effect = self.apply(step.input);
-            assert_eq!(
-                self.observed_phase(),
-                step.phase,
-                "{} after {:?}",
-                trace.name,
-                step.input
-            );
-            assert_eq!(effect, step.effect, "{} after {:?}", trace.name, step.input);
+            let effect = self.apply(step.action);
+            observations.push(self.observation(effect));
         }
+        compare_observations(trace, &observations)
+            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name));
     }
 
     fn apply(&mut self, input: TraceInput) -> TraceEffect {
         match input {
-            TraceInput::Press { target } => self.press(target),
-            TraceInput::ThresholdCrossed => {
+            TraceInput::Press(target) => self.press(target),
+            TraceInput::CrossDragThreshold => {
                 let output = self.move_pointer(self.state().anchors.empty);
-                semantic_effect(&output, true, &mut self.ticket)
+                self.capture_semantic_effect(output, true)
             }
-            TraceInput::Move { .. } => {
-                let point = self.invalid_anchor();
-                let output = self.move_pointer(point);
-                semantic_effect(&output, true, &mut self.ticket)
-            }
-            TraceInput::Candidate(candidate) => {
-                if matches!(candidate, TraceCandidate::Valid { .. }) {
-                    let point = self.valid_anchor();
-                    self.move_pointer(point);
-                }
-                self.assert_candidate(candidate);
-                TraceEffect::None
-            }
+            TraceInput::MoveToCandidate(candidate) => self.move_to_candidate(candidate),
             TraceInput::Release => self.release(),
-            TraceInput::SearchSelected { .. } => self.select_search_result(),
-            TraceInput::Receipt(receipt) => self.settle(receipt),
+            TraceInput::SelectSearchCandidate => self.select_search_result(),
+            TraceInput::AdvanceFrame => {
+                self.harness.step();
+                let output = self.take_output();
+                self.capture_semantic_effect(output, false)
+            }
+            TraceInput::Settle(receipt) => self.settle(receipt),
             TraceInput::Cancel(reason) => self.cancel(reason),
-            TraceInput::Retire => {
+            TraceInput::RetireSource => {
                 self.state_mut().response_visible = false;
                 self.harness.step();
                 let output = self.take_output();
                 assert!(output.released_native_ownership());
                 TraceEffect::ReleaseNativeOwnership
             }
-            TraceInput::Close => {
+            TraceInput::CloseHost => {
                 let ctx = self.harness.ctx.clone();
                 let output = self.state_mut().interaction.close(&ctx);
                 assert!(output.released_native_ownership());
@@ -214,12 +179,16 @@ impl EguiTraceRunner {
 
     fn press(&mut self, target: TraceTarget) -> TraceEffect {
         let response = match target {
-            TraceTarget::NativeControl(_) => TraceResponse::NativeControl,
-            TraceTarget::NodeDragHandle(_) => TraceResponse::NodeDrag,
-            TraceTarget::Port(_) => TraceResponse::Connection,
-            TraceTarget::Edge(_) => TraceResponse::Edge,
-            TraceTarget::ReconnectHandle { endpoint, .. } => TraceResponse::Reconnect(endpoint),
-            TraceTarget::Canvas => panic!("canonical trace has no unresolved canvas press"),
+            TraceTarget::NativeControl => TraceResponse::NativeControl,
+            TraceTarget::NodeDragHandle => TraceResponse::NodeDrag,
+            TraceTarget::SourcePort => TraceResponse::Connection,
+            TraceTarget::Edge => TraceResponse::Edge,
+            TraceTarget::ReconnectSource => {
+                TraceResponse::Reconnect(TraceReconnectEndpoint::Source)
+            }
+            TraceTarget::ReconnectTarget => {
+                TraceResponse::Reconnect(TraceReconnectEndpoint::Target)
+            }
         };
         self.state_mut().response = Some(response);
         self.state_mut().response_visible = true;
@@ -230,7 +199,7 @@ impl EguiTraceRunner {
         self.harness.drag_at(self.pointer);
         self.harness.step();
         let output = self.take_output();
-        semantic_effect(&output, false, &mut self.ticket)
+        self.capture_semantic_effect(output, false)
     }
 
     fn move_pointer(&mut self, point: ViewPoint) -> EguiInteractionOutput {
@@ -250,7 +219,7 @@ impl EguiTraceRunner {
         self.harness.step();
         let output = self.take_output();
         assert!(output.released_native_ownership());
-        semantic_effect(&output, false, &mut self.ticket)
+        self.capture_semantic_effect(output, false)
     }
 
     fn release_at(&mut self, point: ViewPoint) -> TraceEffect {
@@ -264,7 +233,7 @@ impl EguiTraceRunner {
         self.harness.step();
         let output = self.take_output();
         assert!(output.released_native_ownership());
-        semantic_effect(&output, false, &mut self.ticket)
+        self.capture_semantic_effect(output, false)
     }
 
     fn select_search_result(&mut self) -> TraceEffect {
@@ -292,11 +261,29 @@ impl EguiTraceRunner {
             .interaction
             .select_search_result(&state.view, &ctx, generation, selection)
             .expect("search selection applies");
-        semantic_effect(&output, false, &mut self.ticket)
+        self.capture_semantic_effect(output, false)
     }
 
     fn settle(&mut self, receipt: TraceReceipt) -> TraceEffect {
         let ticket = self.ticket.take().expect("trace submitted one command");
+        let mutation = self.mutation.take().expect("trace captured one mutation");
+        if receipt == TraceReceipt::Applied {
+            let snapshot = self
+                .state()
+                .runtime
+                .snapshot()
+                .expect("fresh egui trace snapshot");
+            let command = mutation
+                .into_command(&snapshot)
+                .expect("egui trace mutation binds")
+                .expect("applied egui trace mutation is not a noop");
+            self.state()
+                .runtime
+                .execute(command)
+                .expect("egui trace command executes")
+                .applied()
+                .expect("applied settlement installs the mutation");
+        }
         let ctx = self.harness.ctx.clone();
         let state = self.harness.state_mut();
         state
@@ -305,7 +292,9 @@ impl EguiTraceRunner {
             .expect("receipt settles");
         match receipt {
             TraceReceipt::Applied | TraceReceipt::Noop => TraceEffect::None,
-            TraceReceipt::Rejected | TraceReceipt::Conflict => TraceEffect::RestorePresentation,
+            TraceReceipt::Rejected | TraceReceipt::Conflict | TraceReceipt::TransportFailure => {
+                TraceEffect::RestorePresentation
+            }
         }
     }
 
@@ -324,9 +313,6 @@ impl EguiTraceRunner {
                     .cancel(&state.view, &ctx)
                     .expect("outside click cancels")
             }
-            TraceCancelReason::SourceRetired | TraceCancelReason::HostClosed => {
-                panic!("retirement and close use dedicated trace inputs")
-            }
         };
         assert!(output.released_native_ownership());
         TraceEffect::ReleaseNativeOwnership
@@ -340,12 +326,69 @@ impl EguiTraceRunner {
             .probe();
         match (candidate, probe) {
             (TraceCandidate::None, ConnectionProbe::None) => {}
-            (TraceCandidate::Invalid { .. }, ConnectionProbe::Invalid { diagnostics, .. }) => {
+            (TraceCandidate::Invalid, ConnectionProbe::Invalid { diagnostics, .. }) => {
                 assert!(!diagnostics.is_empty())
             }
-            (TraceCandidate::Valid { .. }, ConnectionProbe::Valid { .. }) => {}
+            (TraceCandidate::Valid, ConnectionProbe::Valid { .. }) => {}
             (candidate, probe) => panic!("trace candidate {candidate:?} disagrees with {probe:?}"),
         }
+    }
+
+    fn move_to_candidate(&mut self, candidate: TraceCandidate) -> TraceEffect {
+        let point = match candidate {
+            TraceCandidate::None => self.state().anchors.empty,
+            TraceCandidate::Invalid => self.invalid_anchor(),
+            TraceCandidate::Valid => self.valid_anchor(),
+        };
+        let output = self.move_pointer(point);
+        let effect = self.capture_semantic_effect(output, true);
+        self.assert_candidate(candidate);
+        effect
+    }
+
+    fn capture_semantic_effect(
+        &mut self,
+        mut output: EguiInteractionOutput,
+        query_is_probe: bool,
+    ) -> TraceEffect {
+        let resolved_probe = output
+            .resolved_queries()
+            .contains(&EguiInteractionQueryKind::ConnectionProbe);
+        let resolved_edge = output
+            .resolved_queries()
+            .contains(&EguiInteractionQueryKind::EdgePick);
+        let mut effects = output.take_effects().into_iter();
+        if let Some(effect) = effects.next() {
+            assert!(
+                effects.next().is_none(),
+                "one interaction transition emitted unordered effects"
+            );
+            match effect {
+                CanvasInteractionEffect::Search(_) => return TraceEffect::OpenSearch,
+                CanvasInteractionEffect::SubmitGraph { ticket, mutation } => {
+                    self.ticket = Some(ticket);
+                    let effect = match &mutation {
+                        FreshGraphMutation::Connection { .. } => TraceEffect::SubmitConnection,
+                        FreshGraphMutation::MoveNodes(_) => TraceEffect::SubmitNodeMove,
+                        FreshGraphMutation::DeleteEdge(_) => {
+                            panic!("canonical traces do not delete an edge")
+                        }
+                    };
+                    self.mutation = Some(mutation);
+                    return effect;
+                }
+                CanvasInteractionEffect::Selection(_) | CanvasInteractionEffect::Viewport(_) => {
+                    panic!("view-local effects must be consumed inside the egui bridge")
+                }
+            }
+        }
+        if resolved_edge {
+            return TraceEffect::PickEdge;
+        }
+        if query_is_probe && resolved_probe {
+            return TraceEffect::ProbeConnection;
+        }
+        TraceEffect::None
     }
 
     fn observed_phase(&self) -> TracePhase {
@@ -369,6 +412,41 @@ impl EguiTraceRunner {
                 panic!("canonical fixture did not request this phase")
             }
         }
+    }
+
+    fn observation(&self, effect: TraceEffect) -> NormalizedObservation {
+        let presentation = self.state().interaction.presentation();
+        let ownership = if self.state().interaction.owns_native_pointer() {
+            TraceOwnership::Held
+        } else {
+            TraceOwnership::Released
+        };
+        let ticket = if self.ticket.is_some() {
+            TraceTicket::Pending
+        } else {
+            TraceTicket::None
+        };
+        let graph_revision_delta = self
+            .state()
+            .runtime
+            .snapshot()
+            .expect("egui trace runtime remains available")
+            .revision();
+        let geometry = if presentation.phase() == CanvasInteractionPhase::Closed {
+            TraceGeometry::Unavailable
+        } else {
+            TraceGeometry::Available
+        };
+        let mut observation = NormalizedObservation::new(
+            self.observed_phase(),
+            effect,
+            ownership,
+            ticket,
+            graph_revision_delta,
+            geometry,
+        );
+        observation.terminal = presentation.terminal().map(trace_terminal);
+        observation
     }
 
     fn invalid_anchor(&self) -> ViewPoint {
@@ -429,7 +507,7 @@ impl EguiTraceRunner {
 }
 
 struct EguiTraceState {
-    _runtime: GraphRuntime,
+    runtime: GraphRuntime,
     view: ViewSession,
     interaction: EguiCanvasInteraction,
     ids: TraceGraphIds,
@@ -486,7 +564,7 @@ impl EguiTraceState {
         let interaction = EguiCanvasInteraction::new(&view, CanvasInteractionConfig::default())
             .expect("egui interaction");
         Self {
-            _runtime: runtime,
+            runtime,
             view,
             interaction,
             ids,
@@ -521,6 +599,12 @@ enum TraceResponse {
     Connection,
     Reconnect(TraceReconnectEndpoint),
     Edge,
+}
+
+#[derive(Clone, Copy)]
+enum TraceReconnectEndpoint {
+    Source,
+    Target,
 }
 
 fn render_trace(ui: &mut Ui, state: &mut EguiTraceState) {
@@ -636,56 +720,31 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     }
 }
 
-fn semantic_effect(
-    output: &EguiInteractionOutput,
-    query_is_probe: bool,
-    ticket: &mut Option<InteractionTicketId>,
-) -> TraceEffect {
-    match output.effects() {
-        [] => {}
-        [effect] => match effect {
-            CanvasInteractionEffect::Search(_) => return TraceEffect::OpenSearch,
-            CanvasInteractionEffect::SubmitGraph {
-                ticket: emitted,
-                mutation,
-            } => {
-                *ticket = Some(*emitted);
-                return match mutation {
-                    FreshGraphMutation::Connection { .. } => TraceEffect::SubmitConnection,
-                    FreshGraphMutation::MoveNodes(_) => TraceEffect::SubmitNodeMove,
-                    FreshGraphMutation::DeleteEdge(_) => {
-                        panic!("canonical traces do not delete an edge")
-                    }
-                };
-            }
-            CanvasInteractionEffect::Selection(_) | CanvasInteractionEffect::Viewport(_) => {
-                panic!("view-local effects must be consumed inside the egui bridge")
-            }
-        },
-        effects => panic!("one interaction transition emitted unordered effects: {effects:?}"),
-    }
-    if output
-        .resolved_queries()
-        .contains(&EguiInteractionQueryKind::EdgePick)
-    {
-        return TraceEffect::PickEdge;
-    }
-    if query_is_probe
-        && output
-            .resolved_queries()
-            .contains(&EguiInteractionQueryKind::ConnectionProbe)
-    {
-        return TraceEffect::ProbeConnection;
-    }
-    TraceEffect::None
-}
-
 fn settlement(receipt: TraceReceipt) -> CommandSettlement {
     match receipt {
         TraceReceipt::Applied => CommandSettlement::Applied,
         TraceReceipt::Noop => CommandSettlement::Noop,
         TraceReceipt::Rejected => CommandSettlement::Rejected,
         TraceReceipt::Conflict => CommandSettlement::Conflict,
+        TraceReceipt::TransportFailure => CommandSettlement::TransportFailure,
+    }
+}
+
+fn trace_terminal(reason: InteractionTerminalReason) -> TraceTerminal {
+    match reason {
+        InteractionTerminalReason::Applied => TraceTerminal::Applied,
+        InteractionTerminalReason::Noop => TraceTerminal::Noop,
+        InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
+        InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
+        InteractionTerminalReason::TransportFailure => TraceTerminal::TransportFailure,
+        InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
+        InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
+        InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
+        reason @ (InteractionTerminalReason::BudgetExhausted
+        | InteractionTerminalReason::GeometryIndeterminate
+        | InteractionTerminalReason::IdentityExhausted) => {
+            panic!("canonical egui trace reached unsupported terminal reason {reason:?}")
+        }
     }
 }
 

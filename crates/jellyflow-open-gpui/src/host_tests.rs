@@ -42,6 +42,9 @@ use super::{
 #[path = "host/tests/interaction_characterization.rs"]
 mod interaction_characterization;
 
+#[path = "host/tests/canonical_conformance.rs"]
+mod canonical_conformance;
+
 const KIND: &str = "test.scene-layer-node";
 const RENDERER: &str = "test.native.scene-layer-node";
 

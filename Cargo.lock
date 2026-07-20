@@ -2215,6 +2215,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "jellyflow",
+ "jellyflow-runtime",
  "serde_json",
  "thiserror 2.0.18",
 ]
@@ -2236,6 +2237,7 @@ name = "jellyflow-open-gpui"
 version = "0.4.0"
 dependencies = [
  "jellyflow",
+ "jellyflow-runtime",
  "open-gpui",
  "open-gpui-ui-components",
  "serde_json",

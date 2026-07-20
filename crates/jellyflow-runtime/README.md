@@ -96,8 +96,31 @@ native adapter owns its framework component tree, input arbitration, accessibili
 implementation, and application services. Jellyflow only supplies graph semantics, stable IDs,
 revisioned commands, and geometry facts.
 
+## Native adapter conformance
+
+Adapter crates can enable the non-default `adapter-conformance` feature in their test dependency:
+
+```toml
+[dev-dependencies]
+jellyflow-runtime = { version = "0.4", features = ["adapter-conformance"] }
+```
+
+The feature exposes `runtime::adapter_protocol::conformance`: typed semantic scenarios,
+framework-independent observations, and a structured comparison function. It deliberately does not
+provide an adapter driver, raw-event abstraction, widget model, async dispatcher, or access to
+runtime internals. Each adapter must map the semantic target roles to real native controls, drive
+its own event and frame lifecycle, report observations after those paths run, and keep any failure
+injection private to its test build.
+
+Display names are diagnostic only. `ConformanceScenarioId` is the stable scenario identity, and
+`compare_observations` compares semantic phase, effect, terminal result, native ownership, pending
+ticket state, graph revision delta, and geometry availability. This lets an external adapter reuse
+the same behavioral contract without adopting another framework's lifecycle or a Jellyflow UI DSL.
+
 Run the focused runtime tests with:
 
 ```sh
 cargo nextest run -p jellyflow-runtime --cargo-quiet
+cargo nextest run -p jellyflow-runtime --features adapter-conformance \
+  --test canonical_interaction_trace --cargo-quiet
 ```

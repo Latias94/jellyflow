@@ -20,4 +20,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 egui_kittest = "0.34.3"
+jellyflow-runtime = { workspace = true, features = ["adapter-conformance"] }
 serde_json.workspace = true

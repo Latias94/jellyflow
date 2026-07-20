@@ -1,11 +1,23 @@
-#[path = "support/canonical_interaction_trace.rs"]
+#[cfg(not(feature = "adapter-conformance"))]
+#[path = "../src/runtime/adapter_protocol/conformance.rs"]
 mod trace;
+#[cfg(feature = "adapter-conformance")]
+use jellyflow_runtime::runtime::adapter_protocol::conformance as trace;
 
 use trace::{
-    CanonicalInteractionTrace, TraceCancelReason, TraceCandidate, TraceEffect, TraceInput,
-    TracePhase, TraceReceipt, TraceReconnectEndpoint, TraceTarget, control_and_drag_handle_traces,
-    create_from_wire_trace, edge_pick_trace, new_connection_trace, reconnect_trace,
-    terminal_ownership_traces,
+    ConformanceAction as TraceInput, ConformanceCancelReason as TraceCancelReason,
+    ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
+    ConformanceGeometry as TraceGeometry, ConformanceOwnership as TraceOwnership,
+    ConformancePhase as TracePhase, ConformanceReconnectEndpoint as TraceReconnectEndpoint,
+    ConformanceScenario as CanonicalInteractionTrace, ConformanceSettlement as TraceReceipt,
+    ConformanceTarget as TraceTarget, ConformanceTerminal as TraceTerminal,
+    ConformanceTicket as TraceTicket, NormalizedObservation, canonical_scenarios,
+    canonical_settlements, compare_observations,
+    create_from_wire_scenario as create_from_wire_trace, edge_pick_scenario as edge_pick_trace,
+    native_control_scenario as native_control_trace,
+    new_connection_scenario as new_connection_trace, node_drag_scenario as node_drag_trace,
+    reconnect_scenario as reconnect_trace,
+    terminal_ownership_scenarios as terminal_ownership_traces,
 };
 
 use jellyflow_core::core::{
@@ -28,23 +40,18 @@ use jellyflow_runtime::{
 
 #[test]
 fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
-    for receipt in [
-        TraceReceipt::Applied,
-        TraceReceipt::Noop,
-        TraceReceipt::Rejected,
-        TraceReceipt::Conflict,
-    ] {
+    for receipt in canonical_settlements() {
         let trace = new_connection_trace(receipt);
         assert_eq!(trace, new_connection_trace(receipt));
         assert_eq!(
-            trace.steps.last().expect("terminal step").phase,
+            trace.steps.last().expect("terminal step").expected.phase,
             TracePhase::Idle
         );
         assert_eq!(
             trace
                 .steps
                 .iter()
-                .filter(|step| step.effect == TraceEffect::SubmitConnection)
+                .filter(|step| step.expected.effect == TraceEffect::SubmitConnection)
                 .count(),
             1,
         );
@@ -58,7 +65,7 @@ fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
                 reconnect
                     .steps
                     .iter()
-                    .filter(|step| step.effect == TraceEffect::SubmitConnection)
+                    .filter(|step| step.expected.effect == TraceEffect::SubmitConnection)
                     .count(),
                 1,
             );
@@ -70,55 +77,56 @@ fn canonical_trace_vocabulary_is_deterministic_and_covers_terminal_receipts() {
 fn search_and_native_control_traces_keep_terminal_ownership_explicit() {
     let rejected = create_from_wire_trace(TraceReceipt::Rejected);
     assert_eq!(
-        rejected.steps.last().expect("terminal search step").phase,
+        rejected
+            .steps
+            .last()
+            .expect("terminal search step")
+            .expected
+            .phase,
         TracePhase::Searching,
     );
 
-    let [control, drag] = control_and_drag_handle_traces();
-    assert_eq!(control.steps[0].phase, TracePhase::Idle);
+    let control = native_control_trace();
+    let drag = node_drag_trace(TraceReceipt::Applied);
+    assert_eq!(control.steps[0].expected.phase, TracePhase::Idle);
     assert!(
         drag.steps
             .iter()
-            .any(|step| step.phase == TracePhase::NodeDrag)
+            .any(|step| step.expected.phase == TracePhase::NodeDrag)
     );
 
     let edge = edge_pick_trace();
-    assert_eq!(edge.steps[0].effect, TraceEffect::PickEdge);
+    assert_eq!(edge.steps[0].expected.effect, TraceEffect::PickEdge);
     assert_eq!(
-        edge.steps.last().expect("edge terminal").phase,
+        edge.steps.last().expect("edge terminal").expected.phase,
         TracePhase::Idle,
     );
 
     for trace in terminal_ownership_traces() {
         let terminal = trace.steps.last().expect("ownership terminal");
-        assert_eq!(terminal.phase, TracePhase::Idle);
-        assert_eq!(terminal.effect, TraceEffect::ReleaseNativeOwnership);
+        assert_eq!(terminal.expected.phase, TracePhase::Idle);
+        assert_eq!(
+            terminal.expected.effect,
+            TraceEffect::ReleaseNativeOwnership
+        );
     }
 }
 
 #[test]
-fn canonical_traces_drive_the_renderer_neutral_session_and_real_view_queries() {
-    for receipt in [
-        TraceReceipt::Applied,
-        TraceReceipt::Noop,
-        TraceReceipt::Rejected,
-        TraceReceipt::Conflict,
-    ] {
-        TraceHarness::new().replay(&new_connection_trace(receipt));
-        TraceHarness::new().replay(&create_from_wire_trace(receipt));
-        for endpoint in [
-            TraceReconnectEndpoint::Source,
-            TraceReconnectEndpoint::Target,
-        ] {
-            TraceHarness::new().replay(&reconnect_trace(endpoint, receipt));
-        }
-    }
+fn observation_comparison_fails_for_semantic_drift_not_display_names() {
+    let mut scenario = new_connection_trace(TraceReceipt::Applied);
+    let observations: Vec<_> = scenario.steps.iter().map(|step| step.expected).collect();
+    scenario.display_name = "renamed-for-diagnostics";
+    compare_observations(&scenario, &observations).expect("display names are not identity");
 
-    for trace in control_and_drag_handle_traces() {
-        TraceHarness::new().replay(&trace);
-    }
-    TraceHarness::new().replay(&edge_pick_trace());
-    for trace in terminal_ownership_traces() {
+    let mut divergent = observations;
+    divergent[1].phase = TracePhase::Idle;
+    assert!(compare_observations(&scenario, &divergent).is_err());
+}
+
+#[test]
+fn canonical_traces_drive_the_renderer_neutral_session_and_real_view_queries() {
+    for trace in canonical_scenarios() {
         TraceHarness::new().replay(&trace);
     }
 }
@@ -203,7 +211,7 @@ fn view_session_applies_renderer_neutral_selection_and_viewport_effects() {
 fn interaction_query_cursors_are_isolated_per_view() {
     let harness = TraceHarness::new();
     let other = harness
-        ._runtime
+        .runtime
         .attach_view(ViewSessionOptions::default())
         .unwrap();
     publish_trace_geometry(&other, harness.ids, harness.anchors);
@@ -490,9 +498,9 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
         .unwrap();
     let (_, revalidation_resume_query) =
         take_probe(revalidation_resume).expect("incomplete revalidation resumes");
-    let revision = harness._runtime.snapshot().unwrap().revision();
+    let revision = harness.runtime.snapshot().unwrap().revision();
     harness
-        ._runtime
+        .runtime
         .execute(GraphCommand::set_node_data(
             revision,
             harness.ids.invalid_node,
@@ -532,7 +540,7 @@ fn paged_connection_queries_restart_after_viewport_layout_and_graph_changes() {
 }
 
 struct TraceHarness {
-    _runtime: GraphRuntime,
+    runtime: GraphRuntime,
     view: ViewSession,
     session: CanvasInteractionSession,
     ids: TraceGraphIds,
@@ -543,6 +551,8 @@ struct TraceHarness {
         jellyflow_runtime::ConnectionProbeQuery,
     )>,
     ticket: Option<InteractionTicketId>,
+    mutation: Option<jellyflow_runtime::FreshGraphMutation>,
+    initial_revision: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -644,7 +654,7 @@ impl TraceHarness {
         .unwrap();
         let pointer = normalized_position(&view, anchors.source);
         Self {
-            _runtime: runtime,
+            runtime,
             view,
             session,
             ids,
@@ -652,39 +662,32 @@ impl TraceHarness {
             pointer,
             pending_probe: None,
             ticket: None,
+            mutation: None,
+            initial_revision: 0,
         }
     }
 
     fn replay(&mut self, trace: &CanonicalInteractionTrace) {
+        let mut observations = Vec::with_capacity(trace.steps.len());
         for step in &trace.steps {
-            let effect = self.apply(step.input);
-            assert_eq!(
-                self.observed_phase(),
-                step.phase,
-                "{} after {:?}",
-                trace.name,
-                step.input
-            );
-            assert_eq!(effect, step.effect, "{} after {:?}", trace.name, step.input);
+            let effect = self.apply(step.action);
+            observations.push(self.observation(effect));
         }
+        compare_observations(trace, &observations)
+            .unwrap_or_else(|error| panic!("{}: {error}", trace.display_name));
     }
 
     fn apply(&mut self, input: TraceInput) -> TraceEffect {
         match input {
-            TraceInput::Press { target } => self.press(target),
-            TraceInput::ThresholdCrossed => {
+            TraceInput::Press(target) => self.press(target),
+            TraceInput::CrossDragThreshold => {
                 self.pointer = normalized_position(&self.view, self.anchors.empty);
                 let update = self.session.move_to(self.pointer).unwrap();
                 self.capture_probe(update)
             }
-            TraceInput::Move { .. } => {
-                self.pointer = normalized_position(&self.view, self.invalid_anchor());
-                let update = self.session.move_to(self.pointer).unwrap();
-                self.capture_probe(update)
-            }
-            TraceInput::Candidate(candidate) => self.resolve_candidate(candidate),
+            TraceInput::MoveToCandidate(candidate) => self.resolve_candidate(candidate),
             TraceInput::Release => self.release(),
-            TraceInput::SearchSelected { .. } => {
+            TraceInput::SelectSearchCandidate => {
                 let generation = self.session.presentation().generation().unwrap();
                 self.session.search_ready(generation, 1).unwrap();
                 let update = self
@@ -704,14 +707,28 @@ impl TraceHarness {
                     .unwrap();
                 self.capture_submit(update)
             }
-            TraceInput::Receipt(receipt) => {
+            TraceInput::AdvanceFrame => TraceEffect::None,
+            TraceInput::Settle(receipt) => {
                 let ticket = self.ticket.take().expect("trace submitted one command");
+                let mutation = self.mutation.take().expect("trace captured one mutation");
+                if receipt == TraceReceipt::Applied {
+                    let snapshot = self.runtime.snapshot().expect("fresh trace snapshot");
+                    let command = mutation
+                        .into_command(&snapshot)
+                        .expect("trace mutation binds")
+                        .expect("applied trace mutation is not a noop");
+                    self.runtime
+                        .execute(command)
+                        .expect("trace command executes")
+                        .applied()
+                        .expect("applied settlement installs the mutation");
+                }
                 self.session.settle(ticket, settlement(receipt)).unwrap();
                 match receipt {
                     TraceReceipt::Applied | TraceReceipt::Noop => TraceEffect::None,
-                    TraceReceipt::Rejected | TraceReceipt::Conflict => {
-                        TraceEffect::RestorePresentation
-                    }
+                    TraceReceipt::Rejected
+                    | TraceReceipt::Conflict
+                    | TraceReceipt::TransportFailure => TraceEffect::RestorePresentation,
                 }
             }
             TraceInput::Cancel(reason) => {
@@ -722,12 +739,12 @@ impl TraceHarness {
                 self.session.cancel();
                 TraceEffect::ReleaseNativeOwnership
             }
-            TraceInput::Retire => {
+            TraceInput::RetireSource => {
                 self.session
                     .owner_retired(InteractionOwner::Node(self.active_owner_node()));
                 TraceEffect::ReleaseNativeOwnership
             }
-            TraceInput::Close => {
+            TraceInput::CloseHost => {
                 self.session.close();
                 TraceEffect::ReleaseNativeOwnership
             }
@@ -736,13 +753,13 @@ impl TraceHarness {
 
     fn press(&mut self, target: TraceTarget) -> TraceEffect {
         match target {
-            TraceTarget::NativeControl(_) => {
+            TraceTarget::NativeControl => {
                 self.session
                     .press(CanvasPressTarget::NativeControl, self.pointer)
                     .unwrap();
                 TraceEffect::None
             }
-            TraceTarget::NodeDragHandle(_) => {
+            TraceTarget::NodeDragHandle => {
                 let start = self
                     .view
                     .node_drag_start(self.ids.source_node, SelectionMode::Replace)
@@ -753,7 +770,7 @@ impl TraceHarness {
                     .unwrap();
                 TraceEffect::None
             }
-            TraceTarget::Port(_) => {
+            TraceTarget::SourcePort => {
                 let drag_intent = self
                     .view
                     .port_connection_drag_intent(self.ids.source_port)
@@ -773,14 +790,15 @@ impl TraceHarness {
                     .unwrap();
                 TraceEffect::None
             }
-            TraceTarget::ReconnectHandle { endpoint, .. } => {
+            endpoint @ (TraceTarget::ReconnectSource | TraceTarget::ReconnectTarget) => {
                 let (runtime_endpoint, fixed_anchor) = match endpoint {
-                    TraceReconnectEndpoint::Source => {
+                    TraceTarget::ReconnectSource => {
                         (EdgeEndpoint::From, self.anchors.reconnect_target)
                     }
-                    TraceReconnectEndpoint::Target => {
+                    TraceTarget::ReconnectTarget => {
                         (EdgeEndpoint::To, self.anchors.reconnect_source)
                     }
+                    _ => unreachable!(),
                 };
                 let graph = self.view.graph_snapshot().unwrap();
                 let geometry = self.view.geometry_snapshot().unwrap();
@@ -801,7 +819,7 @@ impl TraceHarness {
                     .unwrap();
                 TraceEffect::None
             }
-            TraceTarget::Edge(_) => {
+            TraceTarget::Edge => {
                 let midpoint = ViewPoint::new(400.0, 80.0);
                 let pointer = normalized_position(&self.view, midpoint);
                 let dispatch = self
@@ -834,20 +852,27 @@ impl TraceHarness {
                     .unwrap();
                 TraceEffect::PickEdge
             }
-            TraceTarget::Canvas => panic!("canonical trace has no unresolved canvas press"),
         }
     }
 
     fn resolve_candidate(&mut self, candidate: TraceCandidate) -> TraceEffect {
-        if matches!(candidate, TraceCandidate::Valid { .. }) {
-            self.pointer = normalized_position(&self.view, self.valid_anchor());
-            let update = self.session.move_to(self.pointer).unwrap();
-            self.capture_probe(update);
-        }
-        let (id, query) = self
-            .pending_probe
-            .take()
-            .expect("candidate follows a probe");
+        let queried = match candidate {
+            TraceCandidate::None => self.pending_probe.is_some(),
+            TraceCandidate::Invalid => {
+                self.pointer = normalized_position(&self.view, self.invalid_anchor());
+                let update = self.session.move_to(self.pointer).unwrap();
+                self.capture_probe(update) == TraceEffect::ProbeConnection
+            }
+            TraceCandidate::Valid => {
+                self.pointer = normalized_position(&self.view, self.valid_anchor());
+                let update = self.session.move_to(self.pointer).unwrap();
+                self.capture_probe(update) == TraceEffect::ProbeConnection
+            }
+        };
+        assert!(queried, "candidate action must issue a real view query");
+        let Some((id, query)) = self.pending_probe.take() else {
+            panic!("candidate follows a probe");
+        };
         let outcome = self.view.connection_probe(query).unwrap();
         match (&candidate, &outcome) {
             (
@@ -858,14 +883,14 @@ impl TraceHarness {
                 },
             ) => {}
             (
-                TraceCandidate::Invalid { .. },
+                TraceCandidate::Invalid,
                 jellyflow_runtime::ConnectionProbeQueryOutcome::Complete {
                     probe: ConnectionProbe::Invalid { .. },
                     ..
                 },
             ) => {}
             (
-                TraceCandidate::Valid { .. },
+                TraceCandidate::Valid,
                 jellyflow_runtime::ConnectionProbeQueryOutcome::Complete {
                     probe: ConnectionProbe::Valid { .. },
                     ..
@@ -874,7 +899,7 @@ impl TraceHarness {
             _ => panic!("trace candidate disagrees with the real view query: {outcome:?}"),
         }
         self.session.resolve_connection_probe(id, outcome).unwrap();
-        TraceEffect::None
+        TraceEffect::ProbeConnection
     }
 
     fn release(&mut self) -> TraceEffect {
@@ -918,7 +943,7 @@ impl TraceHarness {
         for effect in effects {
             if let CanvasInteractionEffect::SubmitGraph { ticket, mutation } = effect {
                 self.ticket = Some(ticket);
-                return match mutation {
+                let semantic_effect = match &mutation {
                     jellyflow_runtime::FreshGraphMutation::Connection { .. } => {
                         TraceEffect::SubmitConnection
                     }
@@ -929,6 +954,8 @@ impl TraceHarness {
                         panic!("canonical connection traces must not submit edge deletion")
                     }
                 };
+                self.mutation = Some(mutation);
+                return semantic_effect;
             }
         }
         TraceEffect::None
@@ -955,6 +982,49 @@ impl TraceHarness {
                 panic!("canonical fixture did not request this phase")
             }
         }
+    }
+
+    fn observation(&self, effect: TraceEffect) -> NormalizedObservation {
+        let presentation = self.session.presentation();
+        let phase = self.observed_phase();
+        let ownership = match presentation.phase() {
+            CanvasInteractionPhase::Armed
+            | CanvasInteractionPhase::NodeDrag
+            | CanvasInteractionPhase::ConnectionDrag
+            | CanvasInteractionPhase::EdgeActive => TraceOwnership::Held,
+            CanvasInteractionPhase::Idle
+            | CanvasInteractionPhase::Pan
+            | CanvasInteractionPhase::Marquee
+            | CanvasInteractionPhase::ConnectionSearch
+            | CanvasInteractionPhase::Committing
+            | CanvasInteractionPhase::Closed => TraceOwnership::Released,
+        };
+        let ticket = if self.ticket.is_some() {
+            TraceTicket::Pending
+        } else {
+            TraceTicket::None
+        };
+        let graph_revision_delta = self
+            .runtime
+            .snapshot()
+            .expect("trace runtime remains available")
+            .revision()
+            .saturating_sub(self.initial_revision);
+        let geometry = if presentation.phase() == CanvasInteractionPhase::Closed {
+            TraceGeometry::Unavailable
+        } else {
+            TraceGeometry::Available
+        };
+        let mut observation = NormalizedObservation::new(
+            phase,
+            effect,
+            ownership,
+            ticket,
+            graph_revision_delta,
+            geometry,
+        );
+        observation.terminal = presentation.terminal().map(trace_terminal);
+        observation
     }
 
     fn invalid_anchor(&self) -> ViewPoint {
@@ -1066,6 +1136,27 @@ fn settlement(receipt: TraceReceipt) -> CommandSettlement {
         TraceReceipt::Noop => CommandSettlement::Noop,
         TraceReceipt::Rejected => CommandSettlement::Rejected,
         TraceReceipt::Conflict => CommandSettlement::Conflict,
+        TraceReceipt::TransportFailure => CommandSettlement::TransportFailure,
+    }
+}
+
+fn trace_terminal(reason: jellyflow_runtime::InteractionTerminalReason) -> TraceTerminal {
+    match reason {
+        jellyflow_runtime::InteractionTerminalReason::Applied => TraceTerminal::Applied,
+        jellyflow_runtime::InteractionTerminalReason::Noop => TraceTerminal::Noop,
+        jellyflow_runtime::InteractionTerminalReason::Rejected => TraceTerminal::Rejected,
+        jellyflow_runtime::InteractionTerminalReason::Conflict => TraceTerminal::Conflict,
+        jellyflow_runtime::InteractionTerminalReason::TransportFailure => {
+            TraceTerminal::TransportFailure
+        }
+        jellyflow_runtime::InteractionTerminalReason::Cancelled => TraceTerminal::Cancelled,
+        jellyflow_runtime::InteractionTerminalReason::OwnerRetired => TraceTerminal::OwnerRetired,
+        jellyflow_runtime::InteractionTerminalReason::ViewClosed => TraceTerminal::HostClosed,
+        reason @ (jellyflow_runtime::InteractionTerminalReason::BudgetExhausted
+        | jellyflow_runtime::InteractionTerminalReason::GeometryIndeterminate
+        | jellyflow_runtime::InteractionTerminalReason::IdentityExhausted) => {
+            panic!("canonical trace reached unsupported terminal reason {reason:?}")
+        }
     }
 }
 

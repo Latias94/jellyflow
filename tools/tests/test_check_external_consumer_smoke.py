@@ -140,7 +140,11 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                         pass
 
     def test_fixture_loader_reads_checked_in_consumer_sources(self) -> None:
-        for fixture_name in ("package-derived", "open-gpui-source"):
+        for fixture_name in (
+            "adapter-conformance",
+            "package-derived",
+            "open-gpui-source",
+        ):
             with self.subTest(fixture_name=fixture_name):
                 expected = (FIXTURE_ROOT / fixture_name / "src/main.rs").read_text(
                     encoding="utf-8"
@@ -198,6 +202,11 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                     "assert module.jellyflow_open_gpui_source_scenario("
                     "pathlib.Path('/tmp/source')).main_rs "
                     "== module._load_external_consumer_main_rs('open-gpui-source')"
+                ),
+                (
+                    "assert module.jellyflow_adapter_conformance_source_scenario("
+                    "pathlib.Path('/tmp/source')).main_rs "
+                    "== module._load_external_consumer_main_rs('adapter-conformance')"
                 ),
             ]
         )
@@ -315,6 +324,41 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         self.assertIn(".with_edge_painter_registry(edge_painters)", scenario.main_rs)
         self.assertNotIn(".execute(", scenario.main_rs)
         self.assertNotIn(".detach()", scenario.main_rs)
+
+    def test_adapter_conformance_consumer_is_direct_and_framework_neutral(self) -> None:
+        scenario = external_smoke.jellyflow_adapter_conformance_source_scenario(
+            Path("/tmp/jellyflow-source")
+        )
+        source_scenarios = external_smoke.jellyflow_source_path_smoke_scenarios(
+            Path("/tmp/jellyflow-source")
+        )
+        manifest = tomllib.loads(scenario.cargo_toml)
+        dependencies = manifest["dependencies"]
+
+        self.assertEqual(scenario.cargo_subcommand, "test")
+        self.assertIn(scenario.slug, {candidate.slug for candidate in source_scenarios})
+        self.assertEqual(set(dependencies), {"jellyflow-core", "jellyflow-runtime"})
+        self.assertEqual(
+            dependencies["jellyflow-runtime"]["features"],
+            ["adapter-conformance"],
+        )
+        self.assertNotIn("jellyflow", dependencies)
+        self.assertNotIn("jellyflow-egui", dependencies)
+        self.assertNotIn("jellyflow-open-gpui", dependencies)
+
+        source = scenario.main_rs
+        self.assertIn("enum LocalNativeEvent", source)
+        self.assertIn("struct LocalNativeFrame", source)
+        self.assertIn("struct ExternalNativeDriver", source)
+        self.assertIn("compare_observations", source)
+        self.assertIn(".into_command(&snapshot)", source)
+        self.assertIn(".execute(command)", source)
+        self.assertIn("ConformanceScenarioId::Escape", source)
+        self.assertNotIn("step.expected", source)
+        self.assertNotIn("jellyflow::", source)
+        self.assertNotIn("jellyflow_egui", source)
+        self.assertNotIn("jellyflow_open_gpui", source)
+        self.assertNotIn("open_gpui", source)
 
 
 if __name__ == "__main__":

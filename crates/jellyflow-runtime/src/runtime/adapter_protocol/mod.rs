@@ -9,6 +9,9 @@ mod feedback;
 mod frame;
 mod geometry;
 
+#[cfg(feature = "adapter-conformance")]
+pub mod conformance;
+
 pub use coordinates::{ViewDelta, ViewPoint, ViewRect, ViewSize, side_anchor};
 pub use feedback::{
     FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt, FeedbackReceipt,
