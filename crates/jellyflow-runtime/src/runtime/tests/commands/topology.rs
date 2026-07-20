@@ -145,6 +145,137 @@ fn dynamic_port_replacement_is_one_undoable_command() {
 }
 
 #[test]
+fn late_failure_rolls_back_data_ports_and_incident_edges_atomically() {
+    let (mut graph, ids) = graph_with_routed_edge();
+    graph
+        .with_detached_builder(|builder| {
+            builder.node_mut(&ids.source).map(|node| {
+                node.data = serde_json::json!({ "cases": [{ "id": "case-a" }] });
+            })
+        })
+        .expect("source node");
+    let initial_graph = frozen_graph_value(&graph);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let replacement = PortId::from_u128(103);
+    let invalid_owner = PortId::from_u128(104);
+
+    assert_rejected_without_side_effects(
+        &runtime,
+        GraphCommand::topology(
+            0,
+            TopologyEdit::new()
+                .set_node_data(
+                    ids.source,
+                    serde_json::json!({ "cases": [{ "id": "case-b" }] }),
+                )
+                .replace_node_ports(
+                    ids.source,
+                    [TopologyPort::new(
+                        replacement,
+                        port(ids.source, "case-b", PortDirection::Out),
+                    )],
+                    IncidentEdgePolicy::Cascade,
+                )
+                .replace_node_ports(
+                    ids.target,
+                    [TopologyPort::new(
+                        invalid_owner,
+                        port(ids.source, "wrong-owner", PortDirection::In),
+                    )],
+                    IncidentEdgePolicy::Reject,
+                ),
+        ),
+        "topology.port_owner_mismatch",
+    );
+
+    let snapshot = runtime.snapshot().unwrap();
+    assert_eq!(frozen_graph_value(snapshot.graph()), initial_graph);
+    assert!(snapshot.graph().port(&replacement).is_none());
+    assert!(snapshot.graph().edge(&ids.edge).is_some());
+}
+
+#[test]
+fn data_ports_and_incident_edges_commit_undo_and_redo_as_one_topology_edit() {
+    let (mut graph, ids) = graph_with_routed_edge();
+    let initial_data = serde_json::json!({ "cases": [{ "id": "case-a" }] });
+    graph
+        .with_detached_builder(|builder| {
+            builder.node_mut(&ids.source).map(|node| {
+                node.data = initial_data.clone();
+            })
+        })
+        .expect("source node");
+    let initial_graph = frozen_graph_value(&graph);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let replacement = PortId::from_u128(105);
+    let replacement_port = port(ids.source, "case-b", PortDirection::Out);
+    let updated_data = serde_json::json!({ "cases": [{ "id": "case-b" }] });
+
+    runtime
+        .execute(GraphCommand::topology(
+            0,
+            TopologyEdit::new()
+                .set_node_data(ids.source, updated_data.clone())
+                .replace_node_ports(
+                    ids.source,
+                    [TopologyPort::new(replacement, replacement_port.clone())],
+                    IncidentEdgePolicy::Cascade,
+                ),
+        ))
+        .unwrap()
+        .applied()
+        .expect("atomic topology edit applies");
+
+    let applied = runtime.snapshot().unwrap();
+    assert_eq!(applied.revision(), 1);
+    assert_eq!(
+        applied.graph().node(&ids.source).unwrap().data,
+        updated_data
+    );
+    assert_eq!(
+        applied.graph().node(&ids.source).unwrap().ports,
+        [replacement]
+    );
+    let installed_port = applied
+        .graph()
+        .port(&replacement)
+        .expect("replacement port is installed");
+    assert_eq!(installed_port.node, replacement_port.node);
+    assert_eq!(installed_port.key, replacement_port.key);
+    assert_eq!(installed_port.dir, replacement_port.dir);
+    assert!(applied.graph().port(&ids.source_port).is_none());
+    assert!(applied.graph().edge(&ids.edge).is_none());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
+    let applied_graph = frozen_graph_value(applied.graph());
+
+    undo(&runtime);
+    let undone = runtime.snapshot().unwrap();
+    assert_eq!(undone.revision(), 2);
+    assert_eq!(frozen_graph_value(undone.graph()), initial_graph);
+    assert_eq!(undone.graph().node(&ids.source).unwrap().data, initial_data);
+    assert!(undone.graph().port(&ids.source_port).is_some());
+    assert!(undone.graph().port(&replacement).is_none());
+    assert!(undone.graph().edge(&ids.edge).is_some());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    assert_eq!(runtime.history_state().unwrap().redo_len(), 1);
+
+    redo(&runtime);
+    let redone = runtime.snapshot().unwrap();
+    assert_eq!(redone.revision(), 3);
+    assert_eq!(frozen_graph_value(redone.graph()), applied_graph);
+    assert!(redone.graph().port(&ids.source_port).is_none());
+    assert!(redone.graph().port(&replacement).is_some());
+    assert!(redone.graph().edge(&ids.edge).is_none());
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
+}
+
+#[test]
 fn stable_ports_can_reorder_and_update_payload_without_reallocation() {
     let (graph, nodes) = graph_with_nodes(1);
     let runtime = GraphRuntime::builder(Default::default())
