@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::graph_kernel::GraphMutationFootprint;
 use jellyflow_core::core::{
     BindingId, CanvasPoint, EdgeId, Graph, GraphId, GroupId, NodeId, PortId, StickyNoteId, SymbolId,
 };
@@ -106,16 +105,6 @@ pub struct GeometryImpact {
 }
 
 impl GeometryImpact {
-    pub(super) fn from_footprint(footprint: &GraphMutationFootprint) -> Self {
-        Self {
-            global: footprint.graph || !footprint.imports.is_empty(),
-            nodes: footprint.nodes.clone(),
-            ports: footprint.ports.clone(),
-            incident_edges: footprint.edges.clone(),
-            translation_only_nodes: BTreeSet::new(),
-        }
-    }
-
     /// Returns whether every layout candidate must be treated as affected.
     pub fn is_global(&self) -> bool {
         self.global
