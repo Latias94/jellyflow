@@ -22,9 +22,9 @@ pub use self::lifecycle::OpenGpuiSceneHostCloseError;
 use self::connection::MountedConnectionOwner;
 use self::edge_layer::{OpenGpuiEdgePathCache, OpenGpuiVisibleRouteCache};
 use self::focus_navigation::OpenGpuiGraphFocusCoordinator;
-use self::frame_feedback::{DeferredFrameFeedback, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::frame_feedback::{LayoutReceiptAction, layout_receipt_action};
+use self::frame_feedback::{OpenGpuiFrameTransaction, PendingNodeSizeSubmission};
 #[cfg(test)]
 use self::lifecycle::HostLifecycleSignal;
 use self::node_lifecycle::MountedNode;
@@ -58,8 +58,7 @@ use self::scene_render::OpenGpuiPreparedEdgeCache;
 use crate::activity::OpenGpuiActivityCoordinator;
 use crate::chrome::OpenGpuiEdgePainterRegistry;
 use crate::command_journal::{
-    OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, OpenGpuiCommandTicketError,
-    resolve_command_tickets,
+    OpenGpuiCommandJournal, OpenGpuiCommandPrefixBarrierResult, resolve_command_tickets,
 };
 use crate::interaction::{OpenGpuiInteractionCoordinator, OpenGpuiSceneInteractionCoordinator};
 use crate::navigation::OpenGpuiNavigationConfig;
@@ -110,6 +109,7 @@ const RENDERER_INCARNATION: u64 = 1;
 pub struct OpenGpuiSceneHost {
     view: ViewSession,
     commands: Rc<OpenGpuiCommandJournal>,
+    frame_transaction: Option<Rc<OpenGpuiFrameTransaction>>,
     catalog: Arc<NodeCatalog>,
     registry: OpenGpuiNodeRegistry,
     frame_request_template: FrameRequest,
@@ -157,6 +157,8 @@ pub struct OpenGpuiSceneHost {
     scene_evidence: Rc<OpenGpuiSceneEvidence>,
     #[cfg(test)]
     scene_wires_fault: Option<ViewSessionError>,
+    #[cfg(test)]
+    frame_submission_fault: bool,
     stats: OpenGpuiSceneHostStats,
     last_diagnostic: Option<OpenGpuiSceneHostDiagnostic>,
     last_frame_materialization_overflow: FrameMaterializationOverflow,
@@ -208,6 +210,7 @@ impl OpenGpuiSceneHost {
         Self {
             view,
             commands: OpenGpuiCommandJournal::new(),
+            frame_transaction: None,
             catalog,
             registry,
             frame_request_template,
@@ -254,6 +257,8 @@ impl OpenGpuiSceneHost {
             scene_evidence: Rc::new(OpenGpuiSceneEvidence::new()),
             #[cfg(test)]
             scene_wires_fault: None,
+            #[cfg(test)]
+            frame_submission_fault: false,
             stats: OpenGpuiSceneHostStats::default(),
             last_diagnostic: None,
             last_frame_materialization_overflow: FrameMaterializationOverflow::default(),
@@ -654,6 +659,11 @@ impl Render for OpenGpuiSceneHost {
             self.finish_terminal_render_cleanup(reason, window, cx);
             return self.terminal_scene(host_id, focus_handle);
         }
+        let superseded = self.abort_frame_transaction(
+            "native frame was superseded before prepaint submission".to_owned(),
+        );
+        let resolutions = self.settle_command_batch(superseded);
+        cx.defer(move |_| resolve_command_tickets(resolutions));
         self.process_one_ready_interaction_prefix(window, cx);
         self.process_one_interaction_query(window, cx);
         self.sync_native_connection_state(window, cx);
@@ -693,6 +703,13 @@ impl Render for OpenGpuiSceneHost {
                 );
             }
         };
+        let transaction = Rc::new(OpenGpuiFrameTransaction::new(
+            collector,
+            Rc::clone(&measurements),
+            Rc::clone(&self.commands),
+            command_batch,
+        ));
+        self.frame_transaction = Some(Rc::clone(&transaction));
         if let Err(error) = self.sync_binding_presentations(window, cx) {
             self.record_feedback_failure(None, error.to_string());
         }
@@ -705,20 +722,9 @@ impl Render for OpenGpuiSceneHost {
             }
             Err(error) => {
                 let message = error.to_string();
-                let mut resolutions = Vec::new();
-                let mut batch_failure = None;
-                if let Some(batch) = command_batch {
-                    match self.commands.fail_batch(batch, || {
-                        OpenGpuiCommandTicketError::FramePreparation {
-                            message: message.clone(),
-                        }
-                    }) {
-                        Ok(completed) => {
-                            resolutions.extend(self.handle_completed_commands(completed));
-                        }
-                        Err(error) => batch_failure = Some(error),
-                    }
-                }
+                let completed = self.abort_frame_transaction(message.clone());
+                let batch_failure = completed.as_ref().err().map(ToString::to_string);
+                let resolutions = self.settle_command_batch(completed);
                 cx.defer(move |_| resolve_command_tickets(resolutions));
                 let message = batch_failure.map_or(message.clone(), |error| {
                     format!("{message}; failed to settle native command batch: {error}")
@@ -732,12 +738,7 @@ impl Render for OpenGpuiSceneHost {
             window.refresh();
         }
         self.render_scene(
-            Rc::new(DeferredFrameFeedback::new(
-                collector,
-                measurements,
-                Rc::clone(&self.commands),
-                command_batch,
-            )),
+            transaction,
             frame.transform(),
             focus_handle,
             wires,

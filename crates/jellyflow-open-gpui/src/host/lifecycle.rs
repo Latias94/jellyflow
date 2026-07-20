@@ -405,6 +405,7 @@ impl OpenGpuiSceneHost {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut panicked = false;
+        let resolutions = self.handle_completed_commands(completed);
         panicked |= catch_host_cleanup(|| {
             self.interactions
                 .cancel_now(OpenGpuiPortDragCancelReason::HostClosed, window, cx);
@@ -420,7 +421,6 @@ impl OpenGpuiSceneHost {
         window.release_pointer();
         panicked |= catch_host_cleanup(|| self.enter_terminal(reason));
         self.terminal_window_cleanup_pending = false;
-        let resolutions = self.handle_completed_commands(completed);
         window.defer(cx, move |_, _| resolve_command_tickets(resolutions));
         panicked
     }
@@ -439,9 +439,9 @@ impl OpenGpuiSceneHost {
             window.release_pointer();
         }
         let completed = self.commands.terminate(reason);
+        let resolutions = self.handle_completed_commands(completed);
         self.enter_terminal(reason);
         self.terminal_window_cleanup_pending = false;
-        let resolutions = self.handle_completed_commands(completed);
         cx.defer(move |_| resolve_command_tickets(resolutions));
         self.interactions.schedule_pending_drain(window, cx);
         self.scene_interactions.schedule_pending_drain(window, cx);
@@ -466,8 +466,8 @@ impl OpenGpuiSceneHost {
             Ok(subscription) => subscription,
             Err(ViewSessionError::Closed { reason }) => {
                 let completed = self.commands.terminate(reason);
-                self.enter_terminal(reason);
                 let resolutions = self.handle_completed_commands(completed);
+                self.enter_terminal(reason);
                 cx.defer(move |_| resolve_command_tickets(resolutions));
                 return;
             }
@@ -498,9 +498,9 @@ impl OpenGpuiSceneHost {
                     }
                     HostLifecycleEvent::Closed(reason) => {
                         let completed = host.commands.terminate(reason);
+                        let resolutions = host.handle_completed_commands(completed);
                         let retired = host.detach_for_terminal(reason);
                         cx.notify();
-                        let resolutions = host.handle_completed_commands(completed);
                         (retired, resolutions)
                     }
                 });
@@ -532,6 +532,7 @@ impl OpenGpuiSceneHost {
         self.canvas_interaction.close();
         self.discard_pending_interaction_submission();
         self.discard_pending_node_size_submission();
+        self.discard_frame_transaction();
         self.connection_owner = None;
         self.scene_origin = None;
         self.scene_transform = None;
@@ -548,7 +549,9 @@ impl OpenGpuiSceneHost {
 
 impl Drop for OpenGpuiSceneHost {
     fn drop(&mut self) {
-        let resolutions = self.commands.terminate_dropped();
+        let completed = self.commands.terminate_dropped();
+        self.discard_frame_transaction();
+        let resolutions = self.handle_completed_commands(completed);
         let panic = revoke_mounted_nodes(self.detach_all_instances());
         suppress_host_panic(panic);
         if let Some(bridge) = self.lifecycle_bridge.take() {

@@ -1,7 +1,8 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use jellyflow::core::NodeId;
 use jellyflow::runtime::{
     CommandSettlement, FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt,
     FeedbackReceipt, FeedbackSubmissionError, GraphCommand, GraphCommandOutcome, LayoutNodeStatus,
@@ -13,6 +14,7 @@ use crate::command_journal::{
     OpenGpuiCommandBatch, OpenGpuiCommandBatchStateError, OpenGpuiCommandJournal,
     OpenGpuiCommandOrigin, OpenGpuiCommandPrefixBarrierCancellation, OpenGpuiCommandPrefixPermit,
     OpenGpuiCommandTicketError, OpenGpuiCompletedCommand, OpenGpuiPendingCommandResolution,
+    resolve_command_tickets,
 };
 use crate::port_handle::{OpenGpuiMeasurementError, OpenGpuiPendingMeasurements};
 use crate::size_policy::{
@@ -47,6 +49,7 @@ pub(super) fn layout_receipt_action(status: LayoutNodeStatus) -> LayoutReceiptAc
 pub(super) struct OpenGpuiFrameReceiptDisposition {
     pub(super) request_next_frame: bool,
     pub(super) accepted_content_nodes: BTreeSet<jellyflow::core::NodeId>,
+    pub(super) rejected_layouts: Vec<(NodeId, LayoutNodeStatus)>,
 }
 
 pub(super) struct PendingNodeSizeSubmission {
@@ -67,15 +70,19 @@ impl PendingNodeSizeSubmission {
     }
 }
 
-pub(super) struct DeferredFrameFeedback {
-    collector: FeedbackCollector,
-    pub(super) measurements: Rc<OpenGpuiPendingMeasurements>,
+pub(super) struct OpenGpuiFrameTransaction {
+    state: RefCell<Option<OpenGpuiFrameTransactionState>>,
+    measurements: Rc<OpenGpuiPendingMeasurements>,
     commands: Rc<OpenGpuiCommandJournal>,
-    command_batch: Option<OpenGpuiCommandBatch>,
     scheduled: Cell<bool>,
 }
 
-impl DeferredFrameFeedback {
+struct OpenGpuiFrameTransactionState {
+    collector: FeedbackCollector,
+    command_batch: Option<OpenGpuiCommandBatch>,
+}
+
+impl OpenGpuiFrameTransaction {
     pub(super) fn new(
         collector: FeedbackCollector,
         measurements: Rc<OpenGpuiPendingMeasurements>,
@@ -83,89 +90,277 @@ impl DeferredFrameFeedback {
         command_batch: Option<OpenGpuiCommandBatch>,
     ) -> Self {
         Self {
-            collector,
+            state: RefCell::new(Some(OpenGpuiFrameTransactionState {
+                collector,
+                command_batch,
+            })),
             measurements,
             commands,
-            command_batch,
             scheduled: Cell::new(false),
         }
+    }
+
+    pub(super) fn measurements(&self) -> &OpenGpuiPendingMeasurements {
+        &self.measurements
+    }
+
+    pub(super) fn measurement_writer(&self) -> Rc<OpenGpuiPendingMeasurements> {
+        Rc::clone(&self.measurements)
     }
 
     pub(super) fn schedule_once(&self) -> bool {
         !self.scheduled.replace(true)
     }
 
-    pub(super) fn submit(&self, view: &ViewSession) -> DeferredFeedbackSubmission {
-        let feedback: Result<_, DeferredFeedbackError> = (|| {
-            for layout in self.measurements.layouts()? {
-                self.collector.layout(layout)?;
+    pub(super) fn requires_follow_up_frame(&self) -> bool {
+        self.state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.command_batch.is_some())
+    }
+
+    pub(super) fn submit(&self, view: &ViewSession) -> OpenGpuiFrameTransactionResult {
+        let Some(mut state) = self.state.borrow_mut().take() else {
+            return OpenGpuiFrameTransactionResult {
+                submission: OpenGpuiFrameTransactionSubmission::Failed(
+                    OpenGpuiFrameTransactionError::AlreadyConsumed,
+                ),
+                command_settlement: Ok(()),
+                measurement_errors: Vec::new(),
+                command_pairing_error: None,
+            };
+        };
+        let (layouts, measurement_errors) = self.measurements.seal_layouts().into_parts();
+        let feedback: Result<_, OpenGpuiFrameTransactionError> = (|| {
+            for layout in layouts {
+                state.collector.layout(layout)?;
             }
 
-            let feedback = self.collector.finish()?;
-            if let Some(batch) = self.command_batch {
+            let feedback = state.collector.finish()?;
+            if let Some(batch) = state.command_batch.as_ref() {
                 self.commands.mark_submitted(batch)?;
             }
             Ok(feedback)
         })();
         let feedback = match feedback {
             Ok(feedback) => feedback,
-            Err(error) => return DeferredFeedbackSubmission::Failed(error),
+            Err(error) => {
+                let message = error.to_string();
+                let commands = state.fail_commands(&self.commands, || {
+                    OpenGpuiCommandTicketError::FramePreparation {
+                        message: message.clone(),
+                    }
+                });
+                return OpenGpuiFrameTransactionResult {
+                    submission: OpenGpuiFrameTransactionSubmission::Failed(error),
+                    command_settlement: retain_command_completions(&self.commands, commands),
+                    measurement_errors,
+                    command_pairing_error: None,
+                };
+            }
         };
 
         // GPUI entity and window leases cannot safely restore themselves across this unwind.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             view.submit_feedback(feedback)
         })) {
-            Ok(Ok(receipt)) => DeferredFeedbackSubmission::Submitted(receipt),
-            Ok(Err(error)) => DeferredFeedbackSubmission::Failed(error.into()),
-            Err(payload) => DeferredFeedbackSubmission::Panicked(payload),
+            Ok(Ok(receipt)) => {
+                let disposition = frame_receipt_disposition(&receipt);
+                let (commands, command_pairing_error) =
+                    state.complete_commands(&self.commands, receipt);
+                OpenGpuiFrameTransactionResult {
+                    submission: OpenGpuiFrameTransactionSubmission::Submitted(disposition),
+                    command_settlement: retain_command_completions(&self.commands, commands),
+                    measurement_errors,
+                    command_pairing_error,
+                }
+            }
+            Ok(Err(error)) => {
+                let error = Rc::new(error);
+                let commands = state.fail_commands(&self.commands, || {
+                    OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(&error))
+                });
+                OpenGpuiFrameTransactionResult {
+                    submission: OpenGpuiFrameTransactionSubmission::Failed(
+                        OpenGpuiFrameTransactionError::Submission(error),
+                    ),
+                    command_settlement: retain_command_completions(&self.commands, commands),
+                    measurement_errors,
+                    command_pairing_error: None,
+                }
+            }
+            Err(payload) => OpenGpuiFrameTransactionResult {
+                submission: OpenGpuiFrameTransactionSubmission::Panicked(payload),
+                command_settlement: retain_command_completions(
+                    &self.commands,
+                    state.fail_commands(&self.commands, || {
+                        OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
+                    }),
+                ),
+                measurement_errors,
+                command_pairing_error: None,
+            },
         }
     }
 
-    pub(super) fn requires_follow_up_frame(&self) -> bool {
-        self.command_batch.is_some()
+    pub(super) fn abort_frame_preparation(
+        &self,
+        message: String,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
+        let Some(mut state) = self.state.borrow_mut().take() else {
+            return Ok(Vec::new());
+        };
+        state.fail_commands(&self.commands, || {
+            OpenGpuiCommandTicketError::FramePreparation {
+                message: message.clone(),
+            }
+        })
     }
 
-    pub(super) fn complete_commands(
-        &self,
-        receipt: FeedbackReceipt,
-    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
-        self.command_batch.map_or_else(
-            || Ok(Vec::new()),
-            |batch| self.commands.complete_submitted(batch, receipt),
-        )
-    }
-
-    pub(super) fn fail_commands(
-        &self,
-        error: impl FnMut() -> OpenGpuiCommandTicketError,
-    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
-        self.command_batch.map_or_else(
-            || Ok(Vec::new()),
-            |batch| self.commands.fail_batch(batch, error),
-        )
+    pub(super) fn discard_after_journal_terminal(&self) {
+        self.state.borrow_mut().take();
     }
 }
 
-pub(super) enum DeferredFeedbackSubmission {
-    Submitted(FeedbackReceipt),
-    Failed(DeferredFeedbackError),
+impl OpenGpuiFrameTransactionState {
+    fn complete_commands(
+        &mut self,
+        commands: &OpenGpuiCommandJournal,
+        receipt: FeedbackReceipt,
+    ) -> (
+        Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError>,
+        Option<String>,
+    ) {
+        let Some(batch) = self.command_batch.take() else {
+            return (Ok(Vec::new()), None);
+        };
+        match commands.complete_submitted(&batch, receipt) {
+            Ok(completed) => (Ok(completed), None),
+            Err(error) => {
+                let message = format!("failed to pair native command receipts: {error}");
+                let completed =
+                    commands.fail_batch(batch, || OpenGpuiCommandTicketError::FramePreparation {
+                        message: message.clone(),
+                    });
+                (completed, Some(message))
+            }
+        }
+    }
+
+    fn fail_commands(
+        &mut self,
+        commands: &OpenGpuiCommandJournal,
+        error: impl FnMut() -> OpenGpuiCommandTicketError,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
+        self.command_batch
+            .take()
+            .map_or_else(|| Ok(Vec::new()), |batch| commands.fail_batch(batch, error))
+    }
+}
+
+impl Drop for OpenGpuiFrameTransaction {
+    fn drop(&mut self) {
+        let Some(mut state) = self.state.get_mut().take() else {
+            return;
+        };
+        let Ok(completed) =
+            state.fail_commands(&self.commands, || OpenGpuiCommandTicketError::HostDropped)
+        else {
+            return;
+        };
+        resolve_command_tickets(self.commands.defer_completions(completed));
+    }
+}
+
+pub(super) struct OpenGpuiFrameTransactionResult {
+    pub(super) submission: OpenGpuiFrameTransactionSubmission,
+    command_settlement: Result<(), OpenGpuiCommandBatchStateError>,
+    pub(super) measurement_errors: Vec<OpenGpuiMeasurementError>,
+    pub(super) command_pairing_error: Option<String>,
+}
+
+impl OpenGpuiFrameTransactionResult {
+    pub(super) fn take_command_settlement(&mut self) -> Result<(), OpenGpuiCommandBatchStateError> {
+        std::mem::replace(&mut self.command_settlement, Ok(()))
+    }
+}
+
+fn retain_command_completions(
+    journal: &OpenGpuiCommandJournal,
+    completed: Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError>,
+) -> Result<(), OpenGpuiCommandBatchStateError> {
+    completed.map(|completed| journal.retain_completions_for_host(completed))
+}
+
+pub(super) enum OpenGpuiFrameTransactionSubmission {
+    Submitted(OpenGpuiFrameReceiptDisposition),
+    Failed(OpenGpuiFrameTransactionError),
     Panicked(Box<dyn std::any::Any + Send + 'static>),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum DeferredFeedbackError {
-    #[error(transparent)]
-    Measurement(#[from] OpenGpuiMeasurementError),
+pub(super) enum OpenGpuiFrameTransactionError {
+    #[error("native frame transaction was already consumed")]
+    AlreadyConsumed,
     #[error(transparent)]
     Collector(#[from] FeedbackCollectorError),
     #[error(transparent)]
     CommandBatch(#[from] OpenGpuiCommandBatchStateError),
-    #[error(transparent)]
-    Submission(#[from] FeedbackSubmissionError),
+    #[error("native feedback submission failed: {0}")]
+    Submission(Rc<FeedbackSubmissionError>),
+}
+
+fn frame_receipt_disposition(receipt: &FeedbackReceipt) -> OpenGpuiFrameReceiptDisposition {
+    let mut disposition = OpenGpuiFrameReceiptDisposition {
+        request_next_frame: receipt.request_next_frame(),
+        accepted_content_nodes: BTreeSet::new(),
+        rejected_layouts: Vec::new(),
+    };
+    for operation in receipt.operations() {
+        let FeedbackOperationReceipt::Layout { node, status } = operation else {
+            continue;
+        };
+        match layout_receipt_action(*status) {
+            LayoutReceiptAction::Benign => {
+                disposition.accepted_content_nodes.insert(*node);
+            }
+            LayoutReceiptAction::Refresh => {}
+            LayoutReceiptAction::Reject => disposition.rejected_layouts.push((*node, *status)),
+        }
+    }
+    disposition
 }
 
 impl OpenGpuiSceneHost {
+    pub(super) fn abort_frame_transaction(
+        &mut self,
+        message: String,
+    ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
+        let Some(transaction) = self.frame_transaction.take() else {
+            return Ok(Vec::new());
+        };
+        transaction.abort_frame_preparation(message)
+    }
+
+    pub(super) fn take_frame_transaction(
+        &mut self,
+        candidate: &Rc<OpenGpuiFrameTransaction>,
+    ) -> Option<Rc<OpenGpuiFrameTransaction>> {
+        let current = self.frame_transaction.take()?;
+        if Rc::ptr_eq(&current, candidate) {
+            Some(current)
+        } else {
+            self.frame_transaction = Some(current);
+            None
+        }
+    }
+
+    pub(super) fn discard_frame_transaction(&mut self) {
+        if let Some(transaction) = self.frame_transaction.take() {
+            transaction.discard_after_journal_terminal();
+        }
+    }
+
     pub(super) fn observe_content_measurements(
         &mut self,
         measurements: &OpenGpuiPendingMeasurements,
@@ -439,25 +634,12 @@ impl OpenGpuiSceneHost {
         (!update.is_idle()).then_some((instance, update))
     }
 
-    pub(super) fn handle_feedback_receipt(
+    pub(super) fn apply_frame_receipt_disposition(
         &mut self,
-        receipt: &FeedbackReceipt,
+        disposition: OpenGpuiFrameReceiptDisposition,
     ) -> OpenGpuiFrameReceiptDisposition {
-        let mut disposition = OpenGpuiFrameReceiptDisposition {
-            request_next_frame: receipt.request_next_frame(),
-            accepted_content_nodes: BTreeSet::new(),
-        };
-        for operation in receipt.operations() {
-            let FeedbackOperationReceipt::Layout { node, status } = operation else {
-                continue;
-            };
-            match layout_receipt_action(*status) {
-                LayoutReceiptAction::Benign => {
-                    disposition.accepted_content_nodes.insert(*node);
-                }
-                LayoutReceiptAction::Refresh => {}
-                LayoutReceiptAction::Reject => self.record_layout_rejection(*node, *status),
-            }
+        for (node, status) in &disposition.rejected_layouts {
+            self.record_layout_rejection(*node, *status);
         }
         disposition
     }
@@ -466,8 +648,17 @@ impl OpenGpuiSceneHost {
         &mut self,
         result: Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError>,
     ) -> Vec<OpenGpuiPendingCommandResolution> {
+        let result = retain_command_completions(&self.commands, result);
+        self.settle_retained_command_batch(result)
+    }
+
+    pub(super) fn settle_retained_command_batch(
+        &mut self,
+        result: Result<(), OpenGpuiCommandBatchStateError>,
+    ) -> Vec<OpenGpuiPendingCommandResolution> {
+        let resolutions = self.handle_completed_commands(Vec::new());
         match result {
-            Ok(completed) => self.handle_completed_commands(completed),
+            Ok(()) => resolutions,
             Err(error) => {
                 self.canvas_interaction.cancel();
                 self.discard_pending_interaction_submission();
@@ -475,7 +666,7 @@ impl OpenGpuiSceneHost {
                     None,
                     format!("failed to settle native command batch: {error}"),
                 );
-                Vec::new()
+                resolutions
             }
         }
     }
@@ -498,7 +689,8 @@ impl OpenGpuiSceneHost {
         completed: Vec<OpenGpuiCompletedCommand>,
     ) -> Vec<OpenGpuiPendingCommandResolution> {
         let mut resolutions = Vec::new();
-        for command in completed {
+        let deferred = self.commands.take_deferred_completions();
+        for command in deferred.into_iter().chain(completed) {
             match command.origin.clone() {
                 OpenGpuiCommandOrigin::Binding => {
                     if let Some(resolution) = command.into_resolution() {

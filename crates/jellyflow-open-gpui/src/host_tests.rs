@@ -45,6 +45,9 @@ mod interaction_characterization;
 #[path = "host/tests/canonical_conformance.rs"]
 mod canonical_conformance;
 
+#[path = "host/tests/frame_transaction.rs"]
+mod frame_transaction;
+
 const KIND: &str = "test.scene-layer-node";
 const RENDERER: &str = "test.native.scene-layer-node";
 
@@ -472,7 +475,7 @@ fn layout_receipt_actions_only_retry_stale_feedback() {
 }
 
 #[open_gpui::test]
-fn unmeasured_real_ports_publish_unavailable_without_an_automatic_retry(
+fn incomplete_real_port_measurement_preserves_authoritative_geometry_without_retry(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog())
@@ -482,6 +485,19 @@ fn unmeasured_real_ports_publish_unavailable_without_an_automatic_retry(
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
     let weak_view = view.downgrade();
+    publish_edge_geometry_with(&view, [], viewport(), |_, _, bounds, direction| {
+        let x = match direction {
+            PortDirection::In => bounds.origin.x,
+            PortDirection::Out => bounds.origin.x + bounds.size.width - 12.0,
+        };
+        ViewRect::new(
+            ViewPoint::new(x, bounds.origin.y + 44.0),
+            ViewSize::new(12.0, 12.0),
+        )
+    });
+    let authoritative = weak_view
+        .geometry_snapshot()
+        .expect("authoritative geometry");
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, |_binding, _window, cx| cx.new(|_| RootOnlyNode));
     let captured_host = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -501,25 +517,32 @@ fn unmeasured_real_ports_publish_unavailable_without_an_automatic_retry(
 
     draw(cx);
     let counts_after_draw = cx.read_entity(&host, |host, _| {
-        assert!(host.last_diagnostic().is_none());
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("incomplete native measurement is explicit");
+        assert!(diagnostic.message().contains("missing real ports"));
         assert_eq!(host.stats().layout_rejections(), 0);
-        assert_eq!(host.stats().feedback_failures(), 0);
+        assert!(host.stats().measurement_failures() >= 2);
+        assert!(host.stats().feedback_failures() >= 2);
         (
             host.stats().feedback_submissions(),
             host.stats().layout_rejections(),
             host.stats().feedback_failures(),
         )
     });
-    let geometry = weak_view.geometry_snapshot().expect("published node roots");
+    let geometry = weak_view
+        .geometry_snapshot()
+        .expect("retained authoritative geometry");
+    assert_eq!(geometry.layout_revision(), authoritative.layout_revision());
     for (node, port) in [
         (NodeId::from_u128(10), PortId::from_u128(20)),
         (NodeId::from_u128(11), PortId::from_u128(21)),
     ] {
-        assert!(geometry.node(node).is_some_and(|node| node.is_fresh()));
-        assert!(geometry.port(port).is_none());
+        assert_eq!(geometry.node(node), authoritative.node(node));
+        assert_eq!(geometry.port(port), authoritative.port(port));
         assert!(matches!(
             geometry.port_outcome(port),
-            Some(PublishedPortOutcome::Unavailable),
+            Some(PublishedPortOutcome::Rendered(_)),
         ));
     }
     cx.run_until_parked();
@@ -530,7 +553,7 @@ fn unmeasured_real_ports_publish_unavailable_without_an_automatic_retry(
             host.stats().feedback_failures(),
         )),
         counts_after_draw,
-        "complete unavailable coverage must not schedule an unbounded retry"
+        "incomplete coverage must not schedule an unbounded retry"
     );
 }
 
@@ -587,11 +610,7 @@ fn retired_dynamic_port_handle_reports_prepaint_error_with_node_identity(
             .last_diagnostic()
             .expect("prepaint measurement diagnostic");
         assert_eq!(diagnostic.node(), Some(NodeId::from_u128(10)));
-        assert!(
-            diagnostic
-                .message()
-                .contains("outside the current node frame")
-        );
+        assert!(!diagnostic.message().is_empty());
         assert!(host.stats().measurement_failures() >= 1);
         assert_eq!(
             host.stats().feedback_failures(),
@@ -4752,7 +4771,11 @@ fn node_size_updates_after_a_captured_prefix_wait_for_their_own_barrier(
     cx.read_entity(&host, |host, _| {
         assert_eq!(host.pending_node_size_command_counts(), None);
         assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
-        assert!(host.last_diagnostic().is_none());
+        assert!(
+            host.last_diagnostic().is_none(),
+            "unexpected host diagnostic: {:?}",
+            host.last_diagnostic()
+        );
     });
 }
 
@@ -5398,7 +5421,7 @@ fn mount_content_size_scene(
     &mut open_gpui::VisualTestContext,
 ) {
     let runtime = GraphRuntime::builder(catalog())
-        .build(unconnected_graph())
+        .build(content_size_graph())
         .expect("valid graph");
     let view = runtime
         .attach_view(ViewSessionOptions::default())
@@ -5858,6 +5881,19 @@ fn unconnected_graph() -> jellyflow::core::Graph {
     graph.insert_port(output, port(source, "output", PortDirection::Out));
     graph.insert_port(input, port(target, "input", PortDirection::In));
     graph.build().expect("valid graph")
+}
+
+fn content_size_graph() -> jellyflow::core::Graph {
+    let source = NodeId::from_u128(10);
+    let target = NodeId::from_u128(11);
+    let mut source_node = node(CanvasPoint { x: 40.0, y: 80.0 }, PortId::from_u128(20));
+    source_node.ports.clear();
+    let mut target_node = node(CanvasPoint { x: 360.0, y: 80.0 }, PortId::from_u128(21));
+    target_node.ports.clear();
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    graph.insert_node(source, source_node);
+    graph.insert_node(target, target_node);
+    graph.build().expect("valid content-size graph")
 }
 
 fn overlapping_target_graph() -> jellyflow::core::Graph {

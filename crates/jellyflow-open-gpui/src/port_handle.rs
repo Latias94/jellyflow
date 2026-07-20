@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::{Rc, Weak};
 
@@ -261,6 +262,7 @@ impl OpenGpuiPortHandle {
         OpenGpuiPortMeasurementElement {
             id: open_gpui_port_element_id(self.sink.host, &self.instance, self.port),
             child: Some(child),
+            wrapper: self.sink.allocate_port_wrapper(),
             port: self.port,
             side: self.side,
             anchor: self.anchor,
@@ -347,6 +349,7 @@ impl OpenGpuiPortHandle {
         OpenGpuiPortInteractionElement {
             id: measurement_id,
             child: Some(child.into_any_element()),
+            wrapper: self.sink.allocate_port_wrapper(),
             owner,
             side: self.side,
             anchor: self.anchor,
@@ -417,9 +420,13 @@ fn write_static_port_accessibility(node: &mut open_gpui::accesskit::Node, name: 
     node.set_label(name.to_owned());
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenGpuiPortWrapperId(u64);
+
 struct OpenGpuiPortMeasurementElement {
     id: ElementId,
     child: Option<AnyElement>,
+    wrapper: OpenGpuiPortWrapperId,
     port: PortId,
     side: OpenGpuiPortSide,
     anchor: OpenGpuiPortAnchor,
@@ -465,6 +472,7 @@ impl Element for OpenGpuiPortMeasurementElement {
         child.prepaint(window, cx);
         let _ = self.sink.record_port(
             self.source,
+            self.wrapper,
             self.port,
             bounds,
             self.side,
@@ -512,6 +520,7 @@ impl IntoElement for OpenGpuiPortMeasurementElement {
 struct OpenGpuiPortInteractionElement {
     id: ElementId,
     child: Option<AnyElement>,
+    wrapper: OpenGpuiPortWrapperId,
     owner: OpenGpuiPortDragOwner,
     side: OpenGpuiPortSide,
     anchor: OpenGpuiPortAnchor,
@@ -560,6 +569,7 @@ impl Element for OpenGpuiPortInteractionElement {
         child.prepaint(window, cx);
         let _ = self.sink.record_port(
             self.source,
+            self.wrapper,
             self.owner.port(),
             bounds,
             self.side,
@@ -744,6 +754,7 @@ pub(crate) struct OpenGpuiMeasurementSink {
     host_port_listener: OpenGpuiHostPortListener,
     host_port_hover_listener: OpenGpuiHostPortHoverListener,
     hovered_port: Rc<Cell<Option<PortId>>>,
+    next_port_wrapper: Rc<Cell<u64>>,
     mount: OpenGpuiMountCapability,
 }
 
@@ -776,8 +787,19 @@ impl OpenGpuiMeasurementSink {
             host_port_listener,
             host_port_hover_listener,
             hovered_port: Rc::new(Cell::new(None)),
+            next_port_wrapper: Rc::new(Cell::new(0)),
             mount,
         }
+    }
+
+    fn allocate_port_wrapper(&self) -> OpenGpuiPortWrapperId {
+        let current = self.next_port_wrapper.get();
+        self.next_port_wrapper.set(
+            current
+                .checked_add(1)
+                .expect("native port wrapper identity space exhausted"),
+        );
+        OpenGpuiPortWrapperId(current)
     }
 
     fn track_port_hover(&self, port: PortId, hitbox: Hitbox, window: &mut Window) {
@@ -818,6 +840,7 @@ impl OpenGpuiMeasurementSink {
                 .map_err(|_| OpenGpuiMeasurementError::Busy {
                     node: Some(self.instance.node()),
                 })?;
+        self.next_port_wrapper.set(0);
         pending.activate(&self.instance, source, content_epoch)?;
         *current = Some(Rc::downgrade(pending));
         Ok(())
@@ -880,6 +903,7 @@ impl OpenGpuiMeasurementSink {
     fn record_port(
         &self,
         source: OpenGpuiGraphPresentationSource,
+        wrapper: OpenGpuiPortWrapperId,
         port: PortId,
         bounds: Bounds<Pixels>,
         side: OpenGpuiPortSide,
@@ -914,6 +938,7 @@ impl OpenGpuiMeasurementSink {
             pending.record_port(
                 &self.instance,
                 source,
+                wrapper,
                 RawPortMeasurement {
                     port,
                     visual_bounds,
@@ -962,8 +987,10 @@ struct PendingNodeMeasurement {
     source: Option<OpenGpuiGraphPresentationSource>,
     content_epoch: u64,
     root: Option<ViewRect>,
-    ports: BTreeMap<PortId, RawPortMeasurement>,
+    ports: BTreeMap<PortId, RecordedPortMeasurement>,
+    duplicate_ports: BTreeSet<PortId>,
     content_size: Option<CanvasSize>,
+    has_foreign_port: bool,
 }
 
 struct RawPortMeasurement {
@@ -972,6 +999,11 @@ struct RawPortMeasurement {
     hit_bounds: ViewRect,
     route_anchor: ViewPoint,
     outward: HandlePosition,
+}
+
+struct RecordedPortMeasurement {
+    wrapper: OpenGpuiPortWrapperId,
+    measurement: RawPortMeasurement,
 }
 
 pub(crate) struct OpenGpuiPendingMeasurements {
@@ -983,6 +1015,17 @@ pub(crate) struct OpenGpuiPendingMeasurements {
     environment_epoch: u64,
     errors: RefCell<Vec<OpenGpuiMeasurementError>>,
     error_queue_busy: Cell<bool>,
+}
+
+pub(crate) struct OpenGpuiSealedMeasurements {
+    layouts: Vec<NodeLayout>,
+    errors: Vec<OpenGpuiMeasurementError>,
+}
+
+impl OpenGpuiSealedMeasurements {
+    pub(crate) fn into_parts(self) -> (Vec<NodeLayout>, Vec<OpenGpuiMeasurementError>) {
+        (self.layouts, self.errors)
+    }
 }
 
 impl OpenGpuiPendingMeasurements {
@@ -1005,7 +1048,9 @@ impl OpenGpuiPendingMeasurements {
                         content_epoch: 0,
                         root: None,
                         ports: BTreeMap::new(),
+                        duplicate_ports: BTreeSet::new(),
                         content_size: None,
+                        has_foreign_port: false,
                     },
                 )
             })
@@ -1069,6 +1114,7 @@ impl OpenGpuiPendingMeasurements {
         &self,
         instance: &NodeInstanceKey,
         source: OpenGpuiGraphPresentationSource,
+        wrapper: OpenGpuiPortWrapperId,
         measurement: RawPortMeasurement,
     ) -> Result<(), OpenGpuiMeasurementError> {
         let mut nodes =
@@ -1086,12 +1132,26 @@ impl OpenGpuiPendingMeasurements {
             return Ok(());
         }
         if !node.expected_ports.contains(&measurement.port) {
+            node.has_foreign_port = true;
             return Err(OpenGpuiMeasurementError::UnknownPort {
                 node: instance.node(),
                 port: measurement.port,
             });
         }
-        node.ports.insert(measurement.port, measurement);
+        match node.ports.entry(measurement.port) {
+            Entry::Vacant(entry) => {
+                entry.insert(RecordedPortMeasurement {
+                    wrapper,
+                    measurement,
+                });
+            }
+            Entry::Occupied(mut entry) if entry.get().wrapper == wrapper => {
+                entry.get_mut().measurement = measurement;
+            }
+            Entry::Occupied(_) => {
+                node.duplicate_ports.insert(measurement.port);
+            }
+        }
         Ok(())
     }
 
@@ -1169,22 +1229,61 @@ impl OpenGpuiPendingMeasurements {
             .collect()
     }
 
-    pub(crate) fn layouts(&self) -> Result<Vec<NodeLayout>, OpenGpuiMeasurementError> {
-        let scene_origin = self
-            .scene_origin
-            .get()
-            .ok_or(OpenGpuiMeasurementError::MissingSceneRoot)?;
-        let nodes = self
-            .nodes
-            .try_borrow()
-            .map_err(|_| OpenGpuiMeasurementError::Busy { node: None })?;
+    pub(crate) fn seal_layouts(&self) -> OpenGpuiSealedMeasurements {
+        let Some(scene_origin) = self.scene_origin.get() else {
+            return OpenGpuiSealedMeasurements {
+                layouts: Vec::new(),
+                errors: vec![OpenGpuiMeasurementError::MissingSceneRoot],
+            };
+        };
+        let Ok(nodes) = self.nodes.try_borrow() else {
+            return OpenGpuiSealedMeasurements {
+                layouts: Vec::new(),
+                errors: vec![OpenGpuiMeasurementError::Busy { node: None }],
+            };
+        };
         let mut layouts = Vec::with_capacity(self.order.len());
+        let mut errors = Vec::new();
         for instance in &self.order {
-            let node = nodes
-                .get(instance)
-                .ok_or(OpenGpuiMeasurementError::UnknownInstance {
+            let Some(node) = nodes.get(instance) else {
+                errors.push(OpenGpuiMeasurementError::UnknownInstance {
                     node: instance.node(),
-                })?;
+                });
+                continue;
+            };
+            if node.has_foreign_port {
+                errors.push(OpenGpuiMeasurementError::InvalidMeasuredPortSet {
+                    node: instance.node(),
+                });
+                continue;
+            }
+            if !node.duplicate_ports.is_empty() {
+                errors.push(OpenGpuiMeasurementError::DuplicatePortMeasurements {
+                    node: instance.node(),
+                    ports: node.duplicate_ports.iter().copied().collect(),
+                });
+                continue;
+            }
+            let Some(measured_root) = node.root.map(|root| relative_rect(root, scene_origin))
+            else {
+                errors.push(OpenGpuiMeasurementError::MissingNodeRoot {
+                    node: instance.node(),
+                });
+                continue;
+            };
+            let missing_ports = node
+                .expected_ports
+                .iter()
+                .filter(|port| !node.ports.contains_key(port))
+                .copied()
+                .collect::<Vec<_>>();
+            if !missing_ports.is_empty() {
+                errors.push(OpenGpuiMeasurementError::MissingPortMeasurements {
+                    node: instance.node(),
+                    ports: missing_ports,
+                });
+                continue;
+            }
             let presentation_offset = self
                 .presentation_offsets
                 .get(&instance.node())
@@ -1195,54 +1294,50 @@ impl OpenGpuiPendingMeasurements {
                     )
                 })
                 .unwrap_or_default();
-            let measured_root = node.root.map(|root| {
-                remove_presentation_offset(relative_rect(root, scene_origin), presentation_offset)
-            });
-            let root = match measured_root {
-                Some(root) => root,
-                None => projected_view_rect(node.frame_node.bounds(), self.transform).ok_or(
-                    OpenGpuiMeasurementError::UnprojectableRoot {
-                        node: instance.node(),
-                    },
-                )?,
-            };
+            let root = remove_presentation_offset(measured_root, presentation_offset);
             let mut layout = node.frame_node.begin_layout(root);
+            let mut invalid = None;
             for port in node.frame_node.ports() {
-                let result = if let Some(measurement) =
-                    measured_root.and_then(|_| node.ports.get(&port.id()))
-                {
-                    layout.port_rendered(
-                        port.layout_target(),
-                        remove_presentation_offset(
-                            relative_rect(measurement.visual_bounds, scene_origin),
-                            presentation_offset,
-                        ),
-                        remove_presentation_offset(
-                            relative_rect(measurement.hit_bounds, scene_origin),
-                            presentation_offset,
-                        ),
-                        remove_point_presentation_offset(
-                            relative_point(measurement.route_anchor, scene_origin),
-                            presentation_offset,
-                        ),
-                        measurement.outward,
-                    )
-                } else {
-                    layout.port_unavailable(port.layout_target())
+                let Some(measurement) = node.ports.get(&port.id()).map(|port| &port.measurement)
+                else {
+                    unreachable!("missing real ports are rejected before layout assembly")
                 };
-                result.map_err(|source| OpenGpuiMeasurementError::InvalidPortCoverage {
-                    node: instance.node(),
-                    source,
-                })?;
-            }
-            layouts.push(layout.finish().map_err(|source| {
-                OpenGpuiMeasurementError::InvalidPortCoverage {
-                    node: instance.node(),
-                    source,
+                if let Err(source) = layout.port_rendered(
+                    port.layout_target(),
+                    remove_presentation_offset(
+                        relative_rect(measurement.visual_bounds, scene_origin),
+                        presentation_offset,
+                    ),
+                    remove_presentation_offset(
+                        relative_rect(measurement.hit_bounds, scene_origin),
+                        presentation_offset,
+                    ),
+                    remove_point_presentation_offset(
+                        relative_point(measurement.route_anchor, scene_origin),
+                        presentation_offset,
+                    ),
+                    measurement.outward,
+                ) {
+                    invalid = Some(OpenGpuiMeasurementError::InvalidPortCoverage {
+                        node: instance.node(),
+                        source,
+                    });
+                    break;
                 }
-            })?);
+            }
+            if let Some(error) = invalid {
+                errors.push(error);
+                continue;
+            }
+            match layout.finish() {
+                Ok(layout) => layouts.push(layout),
+                Err(source) => errors.push(OpenGpuiMeasurementError::InvalidPortCoverage {
+                    node: instance.node(),
+                    source,
+                }),
+            }
         }
-        Ok(layouts)
+        OpenGpuiSealedMeasurements { layouts, errors }
     }
 
     pub(crate) fn take_errors(&self) -> Vec<OpenGpuiMeasurementError> {
@@ -1285,6 +1380,14 @@ pub(crate) enum OpenGpuiMeasurementError {
     Inactive { node: NodeId },
     #[error("native measurement frame has no measured scene root")]
     MissingSceneRoot,
+    #[error("native measurement frame has no measured root for node {node:?}")]
+    MissingNodeRoot { node: NodeId },
+    #[error("native measurement is missing real ports {ports:?} for node {node:?}")]
+    MissingPortMeasurements { node: NodeId, ports: Vec<PortId> },
+    #[error("native measurement contains duplicate real ports {ports:?} for node {node:?}")]
+    DuplicatePortMeasurements { node: NodeId, ports: Vec<PortId> },
+    #[error("native measurement contains a foreign real port for node {node:?}")]
+    InvalidMeasuredPortSet { node: NodeId },
     #[error("native measurement references an unknown node instance")]
     UnknownInstance { node: NodeId },
     #[error("native measurement references port {port:?} outside the current node frame")]
@@ -1293,8 +1396,6 @@ pub(crate) enum OpenGpuiMeasurementError {
     InvalidPortBounds { node: NodeId, port: PortId },
     #[error("native content measurement has invalid bounds for node {node:?}")]
     InvalidContentBounds { node: NodeId },
-    #[error("native measurement cannot project fallback bounds for node {node:?}")]
-    UnprojectableRoot { node: NodeId },
     #[error("native measurement has invalid port coverage for node {node:?}: {source}")]
     InvalidPortCoverage {
         node: NodeId,
@@ -1308,11 +1409,14 @@ impl OpenGpuiMeasurementError {
         match self {
             Self::Busy { node } => *node,
             Self::Inactive { node }
+            | Self::MissingNodeRoot { node }
+            | Self::MissingPortMeasurements { node, .. }
+            | Self::DuplicatePortMeasurements { node, .. }
+            | Self::InvalidMeasuredPortSet { node }
             | Self::UnknownInstance { node }
             | Self::UnknownPort { node, .. }
             | Self::InvalidPortBounds { node, .. }
             | Self::InvalidContentBounds { node }
-            | Self::UnprojectableRoot { node }
             | Self::InvalidPortCoverage { node, .. } => Some(*node),
             Self::MissingSceneRoot => None,
         }
@@ -1393,10 +1497,7 @@ mod tests {
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeKindKey, Port,
         PortCapacity, PortKey, PortKind,
     };
-    use jellyflow::runtime::{
-        FrameRequest, GraphRuntime, PortLayoutOutcome, PublishedPortOutcome, RendererStamp,
-        ViewSessionOptions,
-    };
+    use jellyflow::runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
     use open_gpui::accesskit::{Action, Node};
 
     use super::*;
@@ -1497,6 +1598,155 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_identity_allows_repeat_prepaint_and_rejects_duplicate_semantics() {
+        let node_id = NodeId::from_u128(0x21);
+        let port_id = PortId::from_u128(0x22);
+        let mut graph = GraphBuilder::new(GraphId::from_u128(0x23));
+        graph.insert_node(
+            node_id,
+            jellyflow::core::Node {
+                kind: NodeKindKey::new("test.wrapper-identity"),
+                kind_version: 1,
+                pos: CanvasPoint::default(),
+                origin: None,
+                selectable: None,
+                draggable: None,
+                connectable: None,
+                deletable: None,
+                parent: None,
+                extent: None,
+                expand_parent: None,
+                size: Some(CanvasSize {
+                    width: 180.0,
+                    height: 100.0,
+                }),
+                hidden: false,
+                collapsed: false,
+                ports: vec![port_id],
+                data: serde_json::Value::Null,
+            },
+        );
+        graph.insert_port(port_id, test_port(node_id, "output", PortDirection::Out));
+        let runtime = GraphRuntime::builder(Default::default())
+            .build(graph.build().expect("valid wrapper identity graph"))
+            .expect("wrapper identity runtime");
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("wrapper identity view");
+        let request = || {
+            FrameRequest::new(
+                CanvasRect {
+                    origin: CanvasPoint {
+                        x: -100.0,
+                        y: -100.0,
+                    },
+                    size: CanvasSize {
+                        width: 400.0,
+                        height: 300.0,
+                    },
+                },
+                RendererStamp::new("test.wrapper-identity", 1),
+            )
+        };
+
+        let repeated = view.frame(request()).expect("repeat-prepaint frame");
+        let instance = repeated.nodes()[0].instance().clone();
+        let measurements = OpenGpuiPendingMeasurements::new(
+            repeated.nodes(),
+            repeated.transform(),
+            BTreeMap::new(),
+            0,
+        );
+        measurements
+            .activate(&instance, OpenGpuiGraphPresentationSource::Detail, 0)
+            .expect("activate repeated measurement");
+        measurements.record_scene(pixel_bounds(0.0, 0.0, 400.0, 300.0));
+        measurements
+            .record_root(
+                &instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                pixel_bounds(10.0, 20.0, 180.0, 100.0),
+            )
+            .expect("record repeated root");
+        measurements
+            .record_port(
+                &instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                OpenGpuiPortWrapperId(7),
+                raw_port_measurement(port_id, 40.0),
+            )
+            .expect("record initial prepaint");
+        measurements
+            .record_port(
+                &instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                OpenGpuiPortWrapperId(7),
+                raw_port_measurement(port_id, 56.0),
+            )
+            .expect("record final prepaint");
+        let (layouts, errors) = measurements.seal_layouts().into_parts();
+        assert!(errors.is_empty());
+        assert_eq!(layouts.len(), 1);
+        let collector = repeated.collector();
+        collector
+            .layout(layouts.into_iter().next().unwrap())
+            .unwrap();
+        view.submit_feedback(collector.finish().unwrap()).unwrap();
+        assert_eq!(
+            view.geometry_snapshot()
+                .unwrap()
+                .port(port_id)
+                .unwrap()
+                .visual_bounds()
+                .origin
+                .y,
+            56.0
+        );
+
+        let duplicate = view.frame(request()).expect("duplicate-wrapper frame");
+        let instance = duplicate.nodes()[0].instance().clone();
+        let measurements = OpenGpuiPendingMeasurements::new(
+            duplicate.nodes(),
+            duplicate.transform(),
+            BTreeMap::new(),
+            0,
+        );
+        measurements
+            .activate(&instance, OpenGpuiGraphPresentationSource::Detail, 0)
+            .unwrap();
+        measurements.record_scene(pixel_bounds(0.0, 0.0, 400.0, 300.0));
+        measurements
+            .record_root(
+                &instance,
+                OpenGpuiGraphPresentationSource::Detail,
+                pixel_bounds(10.0, 20.0, 180.0, 100.0),
+            )
+            .unwrap();
+        for (wrapper, y) in [
+            (OpenGpuiPortWrapperId(8), 56.0),
+            (OpenGpuiPortWrapperId(9), 72.0),
+        ] {
+            measurements
+                .record_port(
+                    &instance,
+                    OpenGpuiGraphPresentationSource::Detail,
+                    wrapper,
+                    raw_port_measurement(port_id, y),
+                )
+                .unwrap();
+        }
+        let (layouts, errors) = measurements.seal_layouts().into_parts();
+        assert!(layouts.is_empty());
+        assert_eq!(
+            errors,
+            vec![OpenGpuiMeasurementError::DuplicatePortMeasurements {
+                node: node_id,
+                ports: vec![port_id],
+            }]
+        );
+    }
+
+    #[test]
     fn static_and_interactive_ports_expose_distinct_accesskit_contracts() {
         let mut static_node = Node::new(OPEN_GPUI_STATIC_PORT_ROLE);
         write_static_port_accessibility(&mut static_node, "Static value output");
@@ -1521,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_node_root_uses_frame_bounds_and_withdraws_previous_port_hits() {
+    fn missing_node_root_omits_layout_and_retains_previous_port_geometry() {
         let node_id = NodeId::from_u128(0x10);
         let input = PortId::from_u128(0x11);
         let output = PortId::from_u128(0x12);
@@ -1628,29 +1878,19 @@ mod tests {
             origin: point(px(100.0), px(200.0)),
             size: size(px(800.0), px(600.0)),
         });
-        let layouts = measurements.layouts().expect("fallback layout");
-        assert_eq!(layouts.len(), 1);
-        assert_eq!(layouts[0].bounds(), root);
-        assert!(
-            layouts[0]
-                .port_outcomes()
-                .iter()
-                .all(|outcome| matches!(outcome, PortLayoutOutcome::Unavailable { .. }))
+        let (layouts, errors) = measurements.seal_layouts().into_parts();
+        assert!(layouts.is_empty());
+        assert_eq!(
+            errors,
+            vec![OpenGpuiMeasurementError::MissingNodeRoot { node: node_id }]
         );
 
         let collector = fallback.collector();
-        collector
-            .layout(layouts.into_iter().next().expect("one fallback layout"))
-            .expect("collect fallback layout");
         view.submit_feedback(collector.finish().expect("fallback feedback"))
-            .expect("publish unavailable port coverage");
+            .expect("submit feedback without transient layout");
         let geometry = view.geometry_snapshot().expect("fallback geometry");
         for port in [input, output] {
-            assert!(geometry.port(port).is_none());
-            assert!(matches!(
-                geometry.port_outcome(port),
-                Some(PublishedPortOutcome::Unavailable),
-            ));
+            assert_eq!(geometry.port(port), initial_geometry.port(port));
         }
     }
 
@@ -1668,6 +1908,24 @@ mod tests {
         let mut node = Node::new(OPEN_GPUI_INTERACTIVE_PORT_ROLE);
         element.write_a11y_info(&mut node);
         node
+    }
+
+    fn pixel_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(width), px(height)),
+        }
+    }
+
+    fn raw_port_measurement(port: PortId, y: f32) -> RawPortMeasurement {
+        let visual_bounds = ViewRect::new(ViewPoint::new(176.0, y), ViewSize::new(14.0, 14.0));
+        RawPortMeasurement {
+            port,
+            visual_bounds,
+            hit_bounds: minimum_hit_bounds(visual_bounds, 22.0),
+            route_anchor: ViewPoint::new(183.0, y + 7.0),
+            outward: HandlePosition::Right,
+        }
     }
 
     fn test_port(node: NodeId, key: &str, direction: PortDirection) -> Port {

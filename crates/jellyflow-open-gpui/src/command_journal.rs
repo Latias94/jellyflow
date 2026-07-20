@@ -401,6 +401,7 @@ struct JournalState {
     status: JournalStatus,
     queue: VecDeque<JournalEntry>,
     in_flight: Option<InFlightBatch>,
+    deferred_completions: VecDeque<OpenGpuiCompletedCommand>,
     next_ticket_id: u64,
     next_batch_id: u64,
     next_entry_sequence: u64,
@@ -496,6 +497,7 @@ impl OpenGpuiCommandJournal {
                 status: JournalStatus::Open,
                 queue: VecDeque::new(),
                 in_flight: None,
+                deferred_completions: VecDeque::new(),
                 next_ticket_id: 0,
                 next_batch_id: 0,
                 next_entry_sequence: 0,
@@ -529,8 +531,46 @@ impl OpenGpuiCommandJournal {
         self.state.try_borrow().map_or(true, |state| {
             state.in_flight.is_some()
                 || !state.queue.is_empty()
+                || !state.deferred_completions.is_empty()
                 || !state.prefix_reservations.is_empty()
         })
+    }
+
+    pub(crate) fn defer_completions(
+        &self,
+        completed: Vec<OpenGpuiCompletedCommand>,
+    ) -> Vec<OpenGpuiPendingCommandResolution> {
+        let mut resolutions = Vec::new();
+        let mut deferred = VecDeque::new();
+        for command in completed {
+            if matches!(command.origin, OpenGpuiCommandOrigin::Binding) {
+                if let Some(resolution) = command.into_resolution() {
+                    resolutions.push(resolution);
+                }
+            } else {
+                deferred.push_back(command);
+            }
+        }
+        self.state
+            .borrow_mut()
+            .deferred_completions
+            .append(&mut deferred);
+        resolutions
+    }
+
+    pub(crate) fn retain_completions_for_host(&self, completed: Vec<OpenGpuiCompletedCommand>) {
+        self.state
+            .borrow_mut()
+            .deferred_completions
+            .extend(completed);
+    }
+
+    pub(crate) fn take_deferred_completions(&self) -> Vec<OpenGpuiCompletedCommand> {
+        self.state
+            .borrow_mut()
+            .deferred_completions
+            .drain(..)
+            .collect()
     }
 
     #[cfg(test)]
@@ -809,7 +849,7 @@ impl OpenGpuiCommandJournal {
 
     pub(crate) fn mark_submitted(
         &self,
-        batch: OpenGpuiCommandBatch,
+        batch: &OpenGpuiCommandBatch,
     ) -> Result<(), OpenGpuiCommandBatchStateError> {
         let mut state = self
             .state
@@ -829,10 +869,10 @@ impl OpenGpuiCommandJournal {
 
     pub(crate) fn complete_submitted(
         &self,
-        batch: OpenGpuiCommandBatch,
+        batch: &OpenGpuiCommandBatch,
         receipt: FeedbackReceipt,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
-        let entries = self.take_batch(batch, Some(InFlightPhase::Submitted))?;
+        let entries = self.take_batch(batch.id, Some(InFlightPhase::Submitted))?;
         let mut operations = receipt.into_operations().into_iter();
         Ok(entries
             .into_iter()
@@ -855,7 +895,7 @@ impl OpenGpuiCommandJournal {
         batch: OpenGpuiCommandBatch,
         mut error: impl FnMut() -> OpenGpuiCommandTicketError,
     ) -> Result<Vec<OpenGpuiCompletedCommand>, OpenGpuiCommandBatchStateError> {
-        let entries = self.take_batch(batch, None)?;
+        let entries = self.take_batch(batch.id, None)?;
         Ok(entries
             .into_iter()
             .map(|entry| OpenGpuiCompletedCommand::new(entry, Err(error())))
@@ -1018,9 +1058,7 @@ impl OpenGpuiCommandJournal {
 
     pub(crate) fn terminate(&self, reason: ViewCloseReason) -> Vec<OpenGpuiCompletedCommand> {
         let (entries, barriers) = {
-            let Ok(mut state) = self.state.try_borrow_mut() else {
-                return Vec::new();
-            };
+            let mut state = self.state.borrow_mut();
             if matches!(
                 state.status,
                 JournalStatus::Closed(_) | JournalStatus::Dropped
@@ -1053,11 +1091,9 @@ impl OpenGpuiCommandJournal {
             .collect()
     }
 
-    pub(crate) fn terminate_dropped(&self) -> Vec<OpenGpuiPendingCommandResolution> {
+    pub(crate) fn terminate_dropped(&self) -> Vec<OpenGpuiCompletedCommand> {
         let (entries, barriers) = {
-            let Ok(mut state) = self.state.try_borrow_mut() else {
-                return Vec::new();
-            };
+            let mut state = self.state.borrow_mut();
             if state.status == JournalStatus::Dropped {
                 return Vec::new();
             }
@@ -1078,16 +1114,15 @@ impl OpenGpuiCommandJournal {
         );
         entries
             .into_iter()
-            .filter_map(|entry| {
+            .map(|entry| {
                 OpenGpuiCompletedCommand::new(entry, Err(OpenGpuiCommandTicketError::HostDropped))
-                    .into_resolution()
             })
             .collect()
     }
 
     fn take_batch(
         &self,
-        batch: OpenGpuiCommandBatch,
+        batch_id: u64,
         required_phase: Option<InFlightPhase>,
     ) -> Result<Vec<JournalEntry>, OpenGpuiCommandBatchStateError> {
         let (entries, barriers) = {
@@ -1096,7 +1131,7 @@ impl OpenGpuiCommandJournal {
                 .try_borrow_mut()
                 .map_err(|_| OpenGpuiCommandBatchStateError::Busy)?;
             if !state.in_flight.as_ref().is_some_and(|current| {
-                current.id == batch.id && required_phase.is_none_or(|phase| current.phase == phase)
+                current.id == batch_id && required_phase.is_none_or(|phase| current.phase == phase)
             }) {
                 return Err(OpenGpuiCommandBatchStateError::UnknownBatch);
             }
@@ -1142,7 +1177,7 @@ impl Drop for OpenGpuiCommandJournal {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct OpenGpuiCommandBatch {
     id: u64,
 }
@@ -1396,12 +1431,12 @@ mod tests {
             .collect_next_batch(&collector)
             .expect("collect commands")
             .expect("command batch");
-        journal.mark_submitted(batch).expect("submitted batch");
+        journal.mark_submitted(&batch).expect("submitted batch");
         let receipt = view
             .submit_feedback(collector.finish().expect("finish feedback"))
             .expect("submit feedback");
         let completed = journal
-            .complete_submitted(batch, receipt)
+            .complete_submitted(&batch, receipt)
             .expect("pair command receipts");
         resolve_completed(completed);
 
@@ -1433,12 +1468,12 @@ mod tests {
             .collect_next_batch(&collector)
             .expect("collect commands")
             .expect("command batch");
-        journal.mark_submitted(batch).expect("submitted batch");
+        journal.mark_submitted(&batch).expect("submitted batch");
         let receipt = view
             .submit_feedback(collector.finish().expect("finish feedback"))
             .expect("submit feedback");
         let completed = journal
-            .complete_submitted(batch, receipt)
+            .complete_submitted(&batch, receipt)
             .expect("complete malformed receipt sequence");
         resolve_completed(completed);
 
@@ -1565,7 +1600,7 @@ mod tests {
             .expect("collect first prefix")
             .expect("first prefix batch");
         journal
-            .mark_submitted(first_batch)
+            .mark_submitted(&first_batch)
             .expect("submit first prefix");
         let mut second_ticket = journal
             .enqueue(command(1, 2), OpenGpuiCommandOrigin::Binding)
@@ -1586,7 +1621,7 @@ mod tests {
             .expect("submit first prefix feedback");
         resolve_completed(
             journal
-                .complete_submitted(first_batch, first_receipt)
+                .complete_submitted(&first_batch, first_receipt)
                 .expect("complete first prefix"),
         );
         assert!(
@@ -1966,7 +2001,7 @@ mod tests {
             .collect_next_batch(&collector)
             .expect("collect batch")
             .expect("command batch");
-        journal.mark_submitted(batch).expect("submit batch");
+        journal.mark_submitted(&batch).expect("submit batch");
 
         assert!(matches!(
             journal.begin_close(),
@@ -1983,9 +2018,34 @@ mod tests {
             .expect("pending ticket");
 
         assert!(matches!(poll_ticket(&mut ticket), Poll::Pending));
-        resolve_command_tickets(journal.terminate_dropped());
+        resolve_completed(journal.terminate_dropped());
         assert!(matches!(
             ready_ticket(&mut ticket),
+            Err(OpenGpuiCommandTicketError::HostDropped)
+        ));
+    }
+
+    #[test]
+    fn dropped_internal_origins_remain_available_for_host_settlement() {
+        let journal = OpenGpuiCommandJournal::new();
+        journal
+            .enqueue_detached(
+                command(0, 1),
+                OpenGpuiCommandOrigin::NodeSizes {
+                    tickets: Vec::new(),
+                },
+            )
+            .expect("queued internal command");
+
+        let completed = journal.terminate_dropped();
+
+        assert_eq!(completed.len(), 1);
+        assert!(matches!(
+            completed[0].origin,
+            OpenGpuiCommandOrigin::NodeSizes { .. }
+        ));
+        assert!(matches!(
+            completed[0].result,
             Err(OpenGpuiCommandTicketError::HostDropped)
         ));
     }
@@ -2007,12 +2067,12 @@ mod tests {
             .collect_next_batch(&collector)
             .expect("collect next batch")
             .expect("nonempty command batch");
-        journal.mark_submitted(batch).expect("submit next batch");
+        journal.mark_submitted(&batch).expect("submit next batch");
         let receipt = view
             .submit_feedback(collector.finish().expect("finish next feedback"))
             .expect("submit next feedback");
         journal
-            .complete_submitted(batch, receipt)
+            .complete_submitted(&batch, receipt)
             .expect("complete next batch")
     }
 

@@ -1,0 +1,407 @@
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use crate::command_journal::{
+    OpenGpuiCommandJournal, OpenGpuiCommandOrigin, OpenGpuiCompletedCommand,
+    resolve_command_tickets,
+};
+use crate::port_handle::OpenGpuiPendingMeasurements;
+
+use super::super::frame_feedback::{
+    OpenGpuiFrameTransaction, OpenGpuiFrameTransactionError, OpenGpuiFrameTransactionSubmission,
+};
+use super::*;
+
+#[test]
+fn frame_transaction_schedule_and_submit_are_one_shot() {
+    let (runtime, view, journal, mut ticket, transaction) = command_transaction("submit-once");
+
+    assert!(transaction.schedule_once());
+    assert!(!transaction.schedule_once());
+
+    let mut first = transaction.submit(&view);
+    assert!(matches!(
+        first.submission,
+        OpenGpuiFrameTransactionSubmission::Submitted(_)
+    ));
+    first
+        .take_command_settlement()
+        .expect("first submission settles its batch");
+    assert_command_ticket_pending_at(&mut ticket, "while its outcome is retained by the host");
+    let completed = journal.take_deferred_completions();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+
+    let mut repeated = transaction.submit(&view);
+    assert!(matches!(
+        repeated.submission,
+        OpenGpuiFrameTransactionSubmission::Failed(OpenGpuiFrameTransactionError::AlreadyConsumed)
+    ));
+    repeated
+        .take_command_settlement()
+        .expect("repeated submission has no batch failure");
+    assert!(journal.take_deferred_completions().is_empty());
+    assert_eq!(runtime.snapshot().expect("unchanged graph").revision(), 1);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+
+    resolve_binding_commands(completed);
+    assert_eq!(
+        poll_command_ticket(&mut ticket)
+            .expect("submitted command ticket")
+            .applied()
+            .expect("submitted command applied")
+            .revision(),
+        1
+    );
+    assert_command_ticket_pending_at(&mut ticket, "after its only terminal result was consumed");
+}
+
+#[test]
+fn aborting_frame_transaction_settles_collected_batch_once() {
+    let (runtime, _view, journal, mut ticket, transaction) = command_transaction("abort-once");
+
+    let completed = transaction
+        .abort_frame_preparation("injected frame abort".to_owned())
+        .expect("first abort settles the collected batch");
+    assert_eq!(completed.len(), 1);
+    assert!(
+        transaction
+            .abort_frame_preparation("repeated abort".to_owned())
+            .expect("repeated abort is benign")
+            .is_empty()
+    );
+    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+
+    resolve_binding_commands(completed);
+    assert!(matches!(
+        poll_command_ticket(&mut ticket),
+        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+    ));
+    assert_command_ticket_pending_at(&mut ticket, "after abort settled it once");
+}
+
+#[test]
+fn dropping_frame_transaction_resolves_collected_ticket_once() {
+    let (runtime, _view, journal, mut ticket, transaction) = command_transaction("drop-once");
+
+    drop(transaction);
+
+    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+    assert!(matches!(
+        poll_command_ticket(&mut ticket),
+        Err(crate::OpenGpuiCommandTicketError::HostDropped)
+    ));
+    assert_command_ticket_pending_at(&mut ticket, "after drop settled it once");
+}
+
+#[test]
+fn dropping_frame_transaction_defers_internal_origin_for_host_settlement() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(unconnected_graph())
+        .expect("valid transaction graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("transaction view");
+    let journal = OpenGpuiCommandJournal::new();
+    journal
+        .enqueue_detached(
+            GraphCommand::set_node_data(
+                0,
+                NodeId::from_u128(10),
+                serde_json::json!({ "transaction": "deferred-internal" }),
+            ),
+            OpenGpuiCommandOrigin::NodeSizes {
+                tickets: Vec::new(),
+            },
+        )
+        .expect("queued internal transaction command");
+    let frame = view
+        .frame(FrameRequest::new(
+            viewport(),
+            RendererStamp::new(RENDERER, 1),
+        ))
+        .expect("transaction frame");
+    let collector = frame.collector();
+    let batch = journal
+        .collect_next_batch(&collector)
+        .expect("collect internal transaction batch");
+    let transaction = OpenGpuiFrameTransaction::new(
+        collector,
+        Rc::new(OpenGpuiPendingMeasurements::new(
+            frame.nodes(),
+            frame.transform(),
+            BTreeMap::new(),
+            0,
+        )),
+        Rc::clone(&journal),
+        batch,
+    );
+
+    drop(transaction);
+
+    let completed = journal.take_deferred_completions();
+    assert_eq!(completed.len(), 1);
+    assert!(matches!(
+        completed[0].origin,
+        OpenGpuiCommandOrigin::NodeSizes { .. }
+    ));
+    assert!(matches!(
+        completed[0].result,
+        Err(crate::OpenGpuiCommandTicketError::HostDropped)
+    ));
+    assert!(journal.take_deferred_completions().is_empty());
+    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+}
+
+#[open_gpui::test]
+fn superseding_retained_frame_transaction_settles_batch_once(cx: &mut open_gpui::TestAppContext) {
+    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let (mut ticket, transaction) = cx.update_entity(&host, |host, cx| {
+        let pending = install_collected_transaction(host, 0, "superseded");
+        cx.notify();
+        pending
+    });
+
+    draw(cx);
+
+    assert!(matches!(
+        poll_command_ticket(&mut ticket),
+        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+    ));
+    assert_command_ticket_pending_at(&mut ticket, "after supersession settled it once");
+    assert_eq!(runtime.snapshot().expect("unmodified graph").revision(), 0);
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        let mut repeated = transaction.submit(&host.view);
+        assert!(matches!(
+            repeated.submission,
+            OpenGpuiFrameTransactionSubmission::Failed(
+                OpenGpuiFrameTransactionError::AlreadyConsumed
+            )
+        ));
+        repeated
+            .take_command_settlement()
+            .expect("superseded transaction has no remaining batch");
+    });
+}
+
+#[open_gpui::test]
+fn closing_retained_frame_transaction_executes_and_settles_batch_once(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let (mut ticket, transaction) = cx.update_window_entity(&host, |host, window, cx| {
+        let pending = install_collected_transaction(host, 0, "closed");
+        host.close_in_window(window, cx)
+            .expect("window close drains the retained transaction batch");
+        pending
+    });
+
+    cx.run_until_parked();
+
+    assert_eq!(
+        poll_command_ticket(&mut ticket)
+            .expect("close command ticket")
+            .applied()
+            .expect("close command applied")
+            .revision(),
+        1
+    );
+    assert_command_ticket_pending_at(&mut ticket, "after close settled it once");
+    let snapshot = runtime.snapshot().expect("closed runtime snapshot");
+    assert_eq!(snapshot.revision(), 1);
+    assert_eq!(
+        snapshot
+            .graph()
+            .node(&NodeId::from_u128(10))
+            .expect("closed command target")
+            .data,
+        serde_json::json!({ "transaction": "closed" })
+    );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.close_reason(), Some(ViewCloseReason::HostClosed));
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        let mut repeated = transaction.submit(&host.view);
+        assert!(matches!(
+            repeated.submission,
+            OpenGpuiFrameTransactionSubmission::Failed(
+                OpenGpuiFrameTransactionError::AlreadyConsumed
+            )
+        ));
+        repeated
+            .take_command_settlement()
+            .expect("closed transaction has no remaining batch");
+    });
+}
+
+#[open_gpui::test]
+fn unwind_after_runtime_submission_settles_ticket_and_keeps_host_usable(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (runtime, host, cx) = mount_gesture_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+    let mut submitted = cx.update_entity(&host, |host, cx| {
+        let ticket = host
+            .commands
+            .enqueue(
+                GraphCommand::set_node_data(
+                    0,
+                    NodeId::from_u128(10),
+                    serde_json::json!({ "transaction": "post-submit-unwind" }),
+                ),
+                OpenGpuiCommandOrigin::Binding,
+            )
+            .expect("queue command before injected host unwind");
+        host.frame_submission_fault = true;
+        cx.notify();
+        ticket
+    });
+
+    draw(cx);
+
+    assert_eq!(
+        poll_command_ticket(&mut submitted)
+            .expect("submitted command ticket")
+            .applied()
+            .expect("command committed before the injected unwind")
+            .revision(),
+        1
+    );
+    assert_command_ticket_pending_at(&mut submitted, "after unwind settled it once");
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.commands.capacity_usage(), (0, 0, 0));
+        let diagnostic = host.last_diagnostic().expect("host unwind diagnostic");
+        assert!(diagnostic.message().contains("host update panicked"));
+    });
+
+    let mut retry = cx.update_entity(&host, |host, cx| {
+        let ticket = host
+            .commands
+            .enqueue(
+                GraphCommand::set_node_data(
+                    1,
+                    NodeId::from_u128(10),
+                    serde_json::json!({ "transaction": "post-unwind-retry" }),
+                ),
+                OpenGpuiCommandOrigin::Binding,
+            )
+            .expect("host accepts a command after recovered unwind");
+        cx.notify();
+        ticket
+    });
+    draw(cx);
+    assert_eq!(
+        poll_command_ticket(&mut retry)
+            .expect("retry command ticket")
+            .applied()
+            .expect("retry command applied")
+            .revision(),
+        2
+    );
+    assert_eq!(
+        runtime.snapshot().expect("runtime after retry").revision(),
+        2
+    );
+}
+
+fn command_transaction(
+    label: &str,
+) -> (
+    GraphRuntime,
+    ViewSession,
+    Rc<OpenGpuiCommandJournal>,
+    crate::OpenGpuiCommandTicket,
+    OpenGpuiFrameTransaction,
+) {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(unconnected_graph())
+        .expect("valid transaction graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("transaction view");
+    let journal = OpenGpuiCommandJournal::new();
+    let ticket = journal
+        .enqueue(
+            GraphCommand::set_node_data(
+                0,
+                NodeId::from_u128(10),
+                serde_json::json!({ "transaction": label }),
+            ),
+            OpenGpuiCommandOrigin::Binding,
+        )
+        .expect("queued transaction command");
+    let frame = view
+        .frame(FrameRequest::new(
+            viewport(),
+            RendererStamp::new(RENDERER, 1),
+        ))
+        .expect("transaction frame");
+    let collector = frame.collector();
+    let batch = journal
+        .collect_next_batch(&collector)
+        .expect("collect transaction batch");
+    let measurements = Rc::new(OpenGpuiPendingMeasurements::new(
+        frame.nodes(),
+        frame.transform(),
+        BTreeMap::new(),
+        0,
+    ));
+    let transaction =
+        OpenGpuiFrameTransaction::new(collector, measurements, Rc::clone(&journal), batch);
+    (runtime, view, journal, ticket, transaction)
+}
+
+fn install_collected_transaction(
+    host: &mut OpenGpuiSceneHost,
+    revision: u64,
+    label: &str,
+) -> (crate::OpenGpuiCommandTicket, Rc<OpenGpuiFrameTransaction>) {
+    assert!(host.frame_transaction.is_none());
+    let ticket = host
+        .commands
+        .enqueue(
+            GraphCommand::set_node_data(
+                revision,
+                NodeId::from_u128(10),
+                serde_json::json!({ "transaction": label }),
+            ),
+            OpenGpuiCommandOrigin::Binding,
+        )
+        .expect("queued retained transaction command");
+    let frame = host
+        .view
+        .frame(host.frame_request())
+        .expect("retained transaction frame");
+    let collector = frame.collector();
+    let batch = host
+        .commands
+        .collect_next_batch(&collector)
+        .expect("collect retained transaction batch");
+    let measurements = Rc::new(OpenGpuiPendingMeasurements::new(
+        frame.nodes(),
+        frame.transform(),
+        BTreeMap::new(),
+        host.adapter_environment_epoch,
+    ));
+    let transaction = Rc::new(OpenGpuiFrameTransaction::new(
+        collector,
+        measurements,
+        Rc::clone(&host.commands),
+        batch,
+    ));
+    host.frame_transaction = Some(Rc::clone(&transaction));
+    (ticket, transaction)
+}
+
+fn resolve_binding_commands(completed: Vec<OpenGpuiCompletedCommand>) {
+    resolve_command_tickets(
+        completed
+            .into_iter()
+            .filter_map(OpenGpuiCompletedCommand::into_resolution),
+    );
+}

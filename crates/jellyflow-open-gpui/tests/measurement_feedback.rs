@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
-    PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
+    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
@@ -43,6 +43,13 @@ struct FixedIntrinsicChildNode {
 
 struct RepeatedPrepaintPortNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    duplicate_input: Rc<Cell<bool>>,
+}
+
+struct TransactionalMeasuredPortsNode {
+    binding: Entity<OpenGpuiNodeBinding>,
+    measure_output: Rc<Cell<bool>>,
+    output_top: Rc<Cell<f32>>,
 }
 
 struct ContentMeasuredNode {
@@ -144,16 +151,9 @@ impl Render for RepeatedPrepaintPortNode {
             .port_handle(output_id())
             .expect("output belongs to this node");
 
-        div()
+        let mut node = div()
             .relative()
             .size_full()
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.0))
-                    .top(px(40.0))
-                    .child(input.measure(div().w(px(14.0)).h(px(14.0)))),
-            )
             .child(
                 div()
                     .absolute()
@@ -167,7 +167,51 @@ impl Render for RepeatedPrepaintPortNode {
                     .right(px(0.0))
                     .top(px(53.0))
                     .child(output.measure(div().w(px(14.0)).h(px(14.0)))),
-            )
+            );
+        if self.duplicate_input.get() {
+            node = node.child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(40.0))
+                    .child(input.measure(div().w(px(14.0)).h(px(14.0)))),
+            );
+        }
+        node
+    }
+}
+
+impl Render for TransactionalMeasuredPortsNode {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl open_gpui::IntoElement {
+        let binding = self.binding.read(cx);
+        let input = binding
+            .port_handle(input_id())
+            .expect("input belongs to this node");
+        let output = binding
+            .port_handle(output_id())
+            .expect("output belongs to this node");
+
+        let mut node = div().relative().size_full().child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .top(px(40.0))
+                .child(input.measure(div().w(px(14.0)).h(px(14.0)))),
+        );
+        if self.measure_output.get() {
+            node = node.child(
+                div()
+                    .absolute()
+                    .right(px(0.0))
+                    .top(px(self.output_top.get()))
+                    .child(output.measure(div().w(px(14.0)).h(px(14.0)))),
+            );
+        }
+        node
     }
 }
 
@@ -454,18 +498,157 @@ fn native_port_handles_publish_complete_geometry_after_prepaint(
         .expect("measured node root remains published");
     assert!(node.is_fresh());
     assert!(geometry.port(input_id()).is_some());
-    assert!(geometry.port(output_id()).is_none());
+    assert_eq!(geometry.layout_revision(), settled_revision);
+    assert!(geometry.port(output_id()).is_some());
     assert!(matches!(
         geometry.port_outcome(output_id()),
-        Some(PublishedPortOutcome::Unavailable),
+        Some(PublishedPortOutcome::Rendered(_)),
     ));
+    cx.read_entity(&host, |host, _| {
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("incomplete port coverage is explicit");
+        assert!(diagnostic.message().contains("missing real ports"));
+    });
+}
+
+#[open_gpui::test]
+fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let mut node_catalog = catalog();
+    node_catalog
+        .register(
+            NodeKindSpec::builder(VALID_SIBLING_KIND, "Valid sibling", VALID_SIBLING_RENDERER)
+                .default_size(CanvasSize {
+                    width: 140.0,
+                    height: 80.0,
+                })
+                .build(),
+        )
+        .expect("unique sibling kind");
+    let runtime = GraphRuntime::builder(node_catalog)
+        .build(graph_with_route_and_valid_sibling())
+        .expect("valid routed graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("routed view");
+    let weak_view = view.downgrade();
+    let measure_output = Rc::new(Cell::new(true));
+    let output_top = Rc::new(Cell::new(40.0));
+    let sibling_binding = Rc::new(RefCell::new(None));
+
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    let factory_measure_output = Rc::clone(&measure_output);
+    let factory_output_top = Rc::clone(&output_top);
+    registry.register(RENDERER, move |binding, _window, cx| {
+        cx.new(|_| TransactionalMeasuredPortsNode {
+            binding,
+            measure_output: Rc::clone(&factory_measure_output),
+            output_top: Rc::clone(&factory_output_top),
+        })
+    });
+    let captured_sibling = Rc::clone(&sibling_binding);
+    registry.register(VALID_SIBLING_RENDERER, move |binding, _window, cx| {
+        *captured_sibling.borrow_mut() = Some(binding.clone());
+        cx.new(|_| ValidSiblingNode { _binding: binding })
+    });
+
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid routed registry"),
+            viewport(),
+        )
+    });
+    draw(cx);
+
+    let authoritative = weak_view
+        .geometry_snapshot()
+        .expect("initial authoritative geometry");
+    let node = NodeId::from_u128(10);
+    assert!(authoritative.node(node).is_some_and(|node| node.is_fresh()));
+    assert!(authoritative.port(input_id()).is_some());
+    assert!(authoritative.port(output_id()).is_some());
+    assert!(authoritative.route(edge_id()).is_some());
+
+    measure_output.set(false);
+    output_top.set(72.0);
+    let sibling = sibling_binding
+        .borrow()
+        .clone()
+        .expect("captured valid sibling binding");
+    let mut ticket = cx.update_entity(&sibling, |binding, cx| {
+        let snapshot = binding.snapshot().clone();
+        let read = snapshot.read().expect("live sibling binding");
+        read.enqueue_command(cx, |read| {
+            GraphCommand::set_node_data(
+                read.graph_revision(),
+                NodeId::from_u128(11),
+                serde_json::json!({ "same-frame": "applied" }),
+            )
+        })
+        .expect("queue command beside incomplete layout")
+    });
+    draw(cx);
+
+    assert_eq!(
+        poll_command_ticket(&mut ticket)
+            .expect("same-frame command ticket")
+            .applied()
+            .expect("same-frame command applied")
+            .revision(),
+        1
+    );
+    assert_command_ticket_pending(&mut ticket);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("graph after incomplete layout")
+            .graph()
+            .node(&NodeId::from_u128(11))
+            .expect("valid sibling")
+            .data,
+        serde_json::json!({ "same-frame": "applied" })
+    );
+    let incomplete = weak_view
+        .geometry_snapshot()
+        .expect("geometry after incomplete layout");
+    assert_eq!(incomplete.node(node), authoritative.node(node));
+    assert_eq!(incomplete.port(input_id()), authoritative.port(input_id()));
+    assert_eq!(
+        incomplete.port(output_id()),
+        authoritative.port(output_id())
+    );
+    assert_eq!(incomplete.route(edge_id()), authoritative.route(edge_id()));
+    cx.read_entity(&host, |host, _| {
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("incomplete layout diagnostic");
+        assert!(diagnostic.message().contains("missing real ports"));
+    });
+
+    measure_output.set(true);
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw(cx);
+
+    let refreshed = weak_view
+        .geometry_snapshot()
+        .expect("complete refreshed geometry");
+    assert!(refreshed.layout_revision() > incomplete.layout_revision());
+    assert!(refreshed.node(node).is_some_and(|node| node.is_fresh()));
+    assert_eq!(refreshed.port(input_id()), authoritative.port(input_id()));
+    assert_ne!(refreshed.port(output_id()), authoritative.port(output_id()));
+    assert_ne!(refreshed.route(edge_id()), authoritative.route(edge_id()));
 }
 
 #[open_gpui::test]
 fn content_height_policy_converges_through_revisioned_geometry_commands(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let runtime = GraphRuntime::builder(catalog())
+        .build(content_graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
     let height = Rc::new(Cell::new(176.0));
@@ -555,7 +738,9 @@ fn content_height_policy_converges_through_revisioned_geometry_commands(
 fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
     cx: &mut open_gpui::TestAppContext,
 ) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let runtime = GraphRuntime::builder(catalog())
+        .build(content_graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
@@ -600,7 +785,9 @@ fn content_size_waits_for_queued_prefix_and_binds_one_fresh_revision(
 
 #[open_gpui::test]
 fn host_alternating_content_freezes_after_exact_attempt_bound(cx: &mut open_gpui::TestAppContext) {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
+    let runtime = GraphRuntime::builder(catalog())
+        .build(content_graph())
+        .unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let convergence =
         OpenGpuiNodeSizeConvergence::new(0.5, 2, 4).expect("valid bounded convergence fixture");
@@ -733,7 +920,11 @@ fn stale_prepaint_feedback_refreshes_without_becoming_a_user_diagnostic(
 
 #[open_gpui::test]
 fn stale_same_node_measurement_does_not_emit_a_size_command(cx: &mut open_gpui::TestAppContext) {
-    let runtime = Rc::new(GraphRuntime::builder(catalog()).build(graph()).unwrap());
+    let runtime = Rc::new(
+        GraphRuntime::builder(catalog())
+            .build(content_graph())
+            .unwrap(),
+    );
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
         OpenGpuiNodeSizePolicy::ContentHeight(
@@ -968,16 +1159,21 @@ fn duplicate_renderer_fallback_is_local_non_retryable_and_keeps_ports_interactiv
 }
 
 #[open_gpui::test]
-fn repeated_prepaint_for_one_port_keeps_one_deterministic_measurement(
+fn duplicate_semantic_port_wrapper_preserves_authoritative_geometry(
     cx: &mut open_gpui::TestAppContext,
 ) {
     let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
     let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let weak_view = view.downgrade();
 
+    let duplicate_input = Rc::new(Cell::new(false));
+    let factory_duplicate_input = Rc::clone(&duplicate_input);
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        cx.new(|_| RepeatedPrepaintPortNode { binding })
+        cx.new(|_| RepeatedPrepaintPortNode {
+            binding,
+            duplicate_input: Rc::clone(&factory_duplicate_input),
+        })
     });
     let (host, cx) = cx.add_window_view(move |_, _| {
         OpenGpuiSceneHost::new(
@@ -988,18 +1184,26 @@ fn repeated_prepaint_for_one_port_keeps_one_deterministic_measurement(
     });
     draw(cx);
 
-    let geometry = weak_view.geometry_snapshot().unwrap();
-    let input = geometry
-        .port(input_id())
-        .expect("repeated prepaint keeps input geometry");
-    let node = geometry.node(NodeId::from_u128(10)).unwrap();
-    assert_close(
-        input.visual_bounds().origin.y,
-        node.bounds().origin.y + 53.0,
+    let authoritative = weak_view.geometry_snapshot().unwrap();
+    assert!(authoritative.port(input_id()).is_some());
+    assert!(authoritative.port(output_id()).is_some());
+
+    duplicate_input.set(true);
+    cx.update_entity(&host, |_, cx| cx.notify());
+    draw(cx);
+
+    let retained = weak_view.geometry_snapshot().unwrap();
+    assert_eq!(
+        retained.node(NodeId::from_u128(10)),
+        authoritative.node(NodeId::from_u128(10))
     );
-    assert!(geometry.port(output_id()).is_some());
+    assert_eq!(retained.port(input_id()), authoritative.port(input_id()));
+    assert_eq!(retained.port(output_id()), authoritative.port(output_id()));
     cx.read_entity(&host, |host, _| {
-        assert_eq!(host.stats().feedback_failures(), 0);
+        let diagnostic = host
+            .last_diagnostic()
+            .expect("duplicate semantic wrapper is explicit");
+        assert!(diagnostic.message().contains("duplicate real ports"));
     });
 }
 
@@ -1351,6 +1555,24 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
+fn poll_command_ticket(
+    ticket: &mut jellyflow_open_gpui::OpenGpuiCommandTicket,
+) -> jellyflow_open_gpui::OpenGpuiCommandTicketResult {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::future::Future::poll(std::pin::Pin::new(ticket), &mut context) {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => panic!("native command ticket is still pending"),
+    }
+}
+
+fn assert_command_ticket_pending(ticket: &mut jellyflow_open_gpui::OpenGpuiCommandTicket) {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(matches!(
+        std::future::Future::poll(std::pin::Pin::new(ticket), &mut context),
+        std::task::Poll::Pending
+    ));
+}
+
 fn assert_close(actual: f32, expected: f32) {
     assert_close_with(actual, expected, 1.0e-4);
 }
@@ -1428,8 +1650,17 @@ fn graph_with_valid_sibling() -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
+fn graph_with_route_and_valid_sibling() -> jellyflow::core::Graph {
+    let mut graph = GraphBuilder::from_detached_graph(graph_with_valid_sibling());
+    graph.insert_edge(
+        edge_id(),
+        Edge::new(EdgeKind::Data, output_id(), input_id()),
+    );
+    graph.build().expect("valid routed sibling graph")
+}
+
 fn graph_with_content_sibling() -> jellyflow::core::Graph {
-    let mut graph = GraphBuilder::from_detached_graph(graph());
+    let mut graph = GraphBuilder::from_detached_graph(content_graph());
     graph.insert_node(
         NodeId::from_u128(11),
         Node {
@@ -1457,6 +1688,18 @@ fn graph_with_content_sibling() -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
+fn content_graph() -> jellyflow::core::Graph {
+    let mut graph = GraphBuilder::from_detached_graph(graph());
+    graph.remove_port(&input_id());
+    graph.remove_port(&output_id());
+    graph
+        .node_mut(&NodeId::from_u128(10))
+        .expect("content node")
+        .ports
+        .clear();
+    graph.build().expect("valid portless content graph")
+}
+
 fn port(node: NodeId, key: &str, direction: PortDirection) -> Port {
     Port {
         node,
@@ -1478,6 +1721,10 @@ fn input_id() -> PortId {
 
 fn output_id() -> PortId {
     PortId::from_u128(21)
+}
+
+fn edge_id() -> EdgeId {
+    EdgeId::from_u128(30)
 }
 
 fn catalog() -> NodeCatalog {

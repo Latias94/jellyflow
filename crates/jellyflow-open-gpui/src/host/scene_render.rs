@@ -33,7 +33,9 @@ use crate::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePaintFallbacks,
     OpenGpuiEdgePainterBatchKey, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeVisualState,
 };
-use crate::command_journal::{OpenGpuiCommandTicketError, resolve_command_tickets};
+use crate::command_journal::{
+    OpenGpuiCommandTicketError, OpenGpuiPendingCommandResolution, resolve_command_tickets,
+};
 use crate::interaction::{
     OpenGpuiGraphKeyListener, OpenGpuiOverlayInteractionBoundary, OpenGpuiSceneGestureKind,
     interaction_root,
@@ -53,15 +55,19 @@ use super::edge_layer::{
     OpenGpuiEdgePaintPlanSegment, OpenGpuiEdgePathCacheKey, OpenGpuiVisibleRouteIdentity,
 };
 use super::focus_navigation::{OpenGpuiGraphFocusEntry, OpenGpuiGraphFocusTarget};
-use super::frame_feedback::{
-    DeferredFeedbackError, DeferredFeedbackSubmission, DeferredFrameFeedback,
-};
+use super::frame_feedback::{OpenGpuiFrameTransaction, OpenGpuiFrameTransactionSubmission};
 use super::node_lifecycle::suppress_host_panic;
 use super::scene_gesture::selection_mode_for_modifiers;
 
 pub(super) const OPEN_GPUI_SELECTION_RECTANGLE_SELECTOR: &str = "jellyflow-selection-rectangle";
 pub(super) const OPEN_GPUI_GRID_SELECTOR: &str = "jellyflow-grid";
 pub(super) const OPEN_GPUI_ALIGNMENT_GUIDE_SELECTOR: &str = "jellyflow-alignment-guide";
+
+type OpenGpuiPrepaintFrameOutcome = (
+    bool,
+    Vec<OpenGpuiPendingCommandResolution>,
+    Option<Box<dyn std::any::Any + Send + 'static>>,
+);
 
 pub(super) fn open_gpui_node_chrome_selector(node: NodeId) -> String {
     format!("jellyflow-node-chrome-{node:?}")
@@ -1145,7 +1151,7 @@ impl OpenGpuiSceneHost {
 
     fn render_node_layer(
         &self,
-        feedback: Rc<DeferredFrameFeedback>,
+        feedback: Rc<OpenGpuiFrameTransaction>,
         transform: ViewportTransform,
         window: &Window,
         focus_entries: &mut Vec<OpenGpuiGraphFocusEntry>,
@@ -1164,7 +1170,7 @@ impl OpenGpuiSceneHost {
                 }
 
                 let mut bounds = mounted.bounds;
-                if let Some(delta) = feedback.measurements.presentation_offset(key.node()) {
+                if let Some(delta) = feedback.measurements().presentation_offset(key.node()) {
                     bounds.origin.x += delta.x;
                     bounds.origin.y += delta.y;
                 }
@@ -1339,7 +1345,7 @@ impl OpenGpuiSceneHost {
                 });
                 let instance = key.clone();
                 let source = mounted.graph_measurement_source();
-                let measurements = feedback.measurements.clone();
+                let measurements = feedback.measurement_writer();
                 nodes = nodes.child(measured_element(
                     open_gpui_node_measurement_element_id(host_id, key),
                     child,
@@ -1354,7 +1360,7 @@ impl OpenGpuiSceneHost {
                 continue;
             }
             let mut bounds = mounted.bounds;
-            if let Some(delta) = feedback.measurements.presentation_offset(key.node()) {
+            if let Some(delta) = feedback.measurements().presentation_offset(key.node()) {
                 bounds.origin.x += delta.x;
                 bounds.origin.y += delta.y;
             }
@@ -1584,9 +1590,96 @@ impl OpenGpuiSceneHost {
         overlay.into_any_element()
     }
 
+    fn submit_prepaint_frame(
+        &mut self,
+        feedback: &Rc<OpenGpuiFrameTransaction>,
+        measured_origin: open_gpui::Point<Pixels>,
+        measured_size: ViewSize,
+        transform: ViewportTransform,
+        cx: &mut Context<Self>,
+    ) -> OpenGpuiPrepaintFrameOutcome {
+        let Some(feedback) = self.take_frame_transaction(feedback) else {
+            return (false, Vec::new(), None);
+        };
+        let mut resolutions = Vec::new();
+        self.scene_origin = Some(measured_origin);
+        self.scene_transform = Some(transform);
+        let viewport_changed = self.update_surface_viewport(measured_size, transform);
+        if let Some(reason) = self.close_reason() {
+            let completed = self.commands.terminate(reason);
+            feedback.discard_after_journal_terminal();
+            resolutions.extend(self.handle_completed_commands(completed));
+            self.enter_terminal(reason);
+            return (true, resolutions, None);
+        }
+        let measurement_errors = self.take_prepaint_measurement_errors(feedback.measurements());
+        for error in measurement_errors {
+            self.record_measurement_failure(error);
+        }
+        let mut request_next_frame = viewport_changed || feedback.requires_follow_up_frame();
+        let mut submission_panic = None;
+        let mut result = feedback.submit(&self.view);
+        #[cfg(test)]
+        if std::mem::take(&mut self.frame_submission_fault) {
+            panic!("injected panic after native frame submission");
+        }
+        for error in std::mem::take(&mut result.measurement_errors) {
+            self.record_measurement_failure(error);
+        }
+        if let Some(error) = result.command_pairing_error.take() {
+            self.record_feedback_failure(None, error);
+        }
+        resolutions.extend(self.settle_retained_command_batch(result.take_command_settlement()));
+        match result.submission {
+            OpenGpuiFrameTransactionSubmission::Submitted(disposition) => {
+                self.stats.feedback_submissions = self.stats.feedback_submissions.saturating_add(1);
+                let disposition = self.apply_frame_receipt_disposition(disposition);
+                request_next_frame |= disposition.request_next_frame;
+                request_next_frame |= self.observe_content_measurements(
+                    feedback.measurements(),
+                    &disposition.accepted_content_nodes,
+                );
+            }
+            OpenGpuiFrameTransactionSubmission::Failed(error) => match error {
+                super::frame_feedback::OpenGpuiFrameTransactionError::Submission(error) => {
+                    match error.as_ref() {
+                        FeedbackSubmissionError::StaleFrame { .. } => {
+                            request_next_frame = true;
+                        }
+                        FeedbackSubmissionError::ReplayedFrame { .. } => {}
+                        FeedbackSubmissionError::Session(ViewSessionError::Closed { reason }) => {
+                            let completed = self.commands.terminate(*reason);
+                            feedback.discard_after_journal_terminal();
+                            resolutions.extend(self.handle_completed_commands(completed));
+                            self.enter_terminal(*reason);
+                            request_next_frame = true;
+                        }
+                        error => self.record_feedback_failure(None, error.to_string()),
+                    }
+                }
+                error => self.record_feedback_failure(None, error.to_string()),
+            },
+            OpenGpuiFrameTransactionSubmission::Panicked(payload) => {
+                self.record_feedback_failure(
+                    None,
+                    OpenGpuiCommandTicketError::FeedbackOutcomeUnknown.to_string(),
+                );
+                request_next_frame = true;
+                submission_panic = Some(payload);
+            }
+        }
+        let measurement_errors = self.take_prepaint_measurement_errors(feedback.measurements());
+        for error in measurement_errors {
+            self.record_measurement_failure(error);
+        }
+        self.schedule_pending_node_size_prefix(cx);
+        request_next_frame |= self.node_size_submission_needs_frame();
+        (request_next_frame, resolutions, submission_panic)
+    }
+
     pub(super) fn render_scene(
         &mut self,
-        feedback: Rc<DeferredFrameFeedback>,
+        feedback: Rc<OpenGpuiFrameTransaction>,
         transform: ViewportTransform,
         focus_handle: FocusHandle,
         mut wires: OpenGpuiSceneWires,
@@ -1807,7 +1900,7 @@ impl OpenGpuiSceneHost {
             open_gpui_scene_measurement_element_id(host_id, self.view.id()),
             scene,
             move |_, bounds, _, window, cx| {
-                feedback.measurements.record_scene(bounds);
+                feedback.measurements().record_scene(bounds);
                 let measured_origin = bounds.origin;
                 let measured_size =
                     ViewSize::new(bounds.size.width.as_f32(), bounds.size.height.as_f32());
@@ -1821,131 +1914,29 @@ impl OpenGpuiSceneHost {
                         return;
                     };
                     let deferred = host.update(cx, |host, cx| {
-                        let mut resolutions = Vec::new();
-                        host.scene_origin = Some(measured_origin);
-                        host.scene_transform = Some(transform);
-                        let viewport_changed =
-                            host.update_surface_viewport(measured_size, transform);
-                        if let Some(reason) = host.close_reason() {
-                            let completed = host.commands.terminate(reason);
-                            host.enter_terminal(reason);
-                            resolutions.extend(host.handle_completed_commands(completed));
-                            return (true, resolutions, None);
-                        }
-                        let measurement_errors =
-                            host.take_prepaint_measurement_errors(&feedback.measurements);
-                        let mut request_next_frame =
-                            viewport_changed || feedback.requires_follow_up_frame();
-                        let mut submission_panic = None;
-                        match feedback.submit(&host.view) {
-                            DeferredFeedbackSubmission::Submitted(receipt) => {
-                                host.stats.feedback_submissions =
-                                    host.stats.feedback_submissions.saturating_add(1);
-                                let disposition = host.handle_feedback_receipt(&receipt);
-                                request_next_frame |= disposition.request_next_frame;
-                                let completed = match feedback.complete_commands(receipt) {
-                                    Ok(completed) => Ok(completed),
-                                    Err(error) => {
-                                        let message = format!(
-                                            "failed to pair native command receipts: {error}"
-                                        );
-                                        host.record_feedback_failure(None, message.clone());
-                                        feedback.fail_commands(|| {
-                                            OpenGpuiCommandTicketError::FramePreparation {
-                                                message: message.clone(),
-                                            }
-                                        })
-                                    }
-                                };
-                                resolutions.extend(host.settle_command_batch(completed));
-                                request_next_frame |= host.observe_content_measurements(
-                                    &feedback.measurements,
-                                    &disposition.accepted_content_nodes,
-                                );
-                            }
-                            DeferredFeedbackSubmission::Failed(
-                                DeferredFeedbackError::Measurement(error),
-                            ) => {
-                                let message = error.to_string();
-                                let completed = feedback.fail_commands(|| {
-                                    OpenGpuiCommandTicketError::FramePreparation {
-                                        message: message.clone(),
-                                    }
-                                });
-                                resolutions.extend(host.settle_command_batch(completed));
-                                host.record_measurement_failure(error);
-                            }
-                            DeferredFeedbackSubmission::Failed(
-                                DeferredFeedbackError::Collector(error),
-                            ) => {
-                                let message = error.to_string();
-                                let completed = feedback.fail_commands(|| {
-                                    OpenGpuiCommandTicketError::FramePreparation {
-                                        message: message.clone(),
-                                    }
-                                });
-                                resolutions.extend(host.settle_command_batch(completed));
-                                host.record_feedback_failure(None, error.to_string());
-                            }
-                            DeferredFeedbackSubmission::Failed(
-                                DeferredFeedbackError::CommandBatch(error),
-                            ) => {
-                                let message = error.to_string();
-                                let completed = feedback.fail_commands(|| {
-                                    OpenGpuiCommandTicketError::FramePreparation {
-                                        message: message.clone(),
-                                    }
-                                });
-                                resolutions.extend(host.settle_command_batch(completed));
-                                host.record_feedback_failure(None, message);
-                            }
-                            DeferredFeedbackSubmission::Failed(
-                                DeferredFeedbackError::Submission(error),
-                            ) => {
-                                let error = Rc::new(error);
-                                let completed = feedback.fail_commands(|| {
-                                    OpenGpuiCommandTicketError::FeedbackSubmission(Rc::clone(
-                                        &error,
-                                    ))
-                                });
-                                resolutions.extend(host.settle_command_batch(completed));
-                                match error.as_ref() {
-                                    FeedbackSubmissionError::StaleFrame { .. } => {
-                                        request_next_frame = true;
-                                    }
-                                    FeedbackSubmissionError::ReplayedFrame { .. } => {}
-                                    FeedbackSubmissionError::Session(
-                                        ViewSessionError::Closed { reason },
-                                    ) => {
-                                        let completed = host.commands.terminate(*reason);
-                                        host.enter_terminal(*reason);
-                                        resolutions
-                                            .extend(host.handle_completed_commands(completed));
-                                        request_next_frame = true;
-                                    }
-                                    error => {
-                                        host.record_feedback_failure(None, error.to_string());
-                                    }
-                                }
-                            }
-                            DeferredFeedbackSubmission::Panicked(payload) => {
+                        let transaction =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                host.submit_prepaint_frame(
+                                    &feedback,
+                                    measured_origin,
+                                    measured_size,
+                                    transform,
+                                    cx,
+                                )
+                            }));
+                        match transaction {
+                            Ok(deferred) => deferred,
+                            Err(payload) => {
+                                let _ = host.take_frame_transaction(&feedback);
                                 let message =
-                                    OpenGpuiCommandTicketError::FeedbackOutcomeUnknown.to_string();
-                                let completed = feedback.fail_commands(|| {
-                                    OpenGpuiCommandTicketError::FeedbackOutcomeUnknown
-                                });
-                                resolutions.extend(host.settle_command_batch(completed));
+                                    "native frame host update panicked after prepaint".to_owned();
+                                let completed = feedback.abort_frame_preparation(message.clone());
+                                let resolutions = host.settle_command_batch(completed);
                                 host.record_feedback_failure(None, message);
-                                request_next_frame = true;
-                                submission_panic = Some(payload);
+                                host.schedule_pending_node_size_prefix(cx);
+                                (true, resolutions, Some(payload))
                             }
                         }
-                        for error in measurement_errors {
-                            host.record_measurement_failure(error);
-                        }
-                        host.schedule_pending_node_size_prefix(cx);
-                        request_next_frame |= host.node_size_submission_needs_frame();
-                        (request_next_frame, resolutions, submission_panic)
                     });
                     let (request_next_frame, resolutions, submission_panic) = deferred;
                     suppress_host_panic(submission_panic);
