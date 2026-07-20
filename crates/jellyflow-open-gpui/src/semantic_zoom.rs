@@ -162,7 +162,7 @@ impl OpenGpuiSemanticZoomState {
                 .h(px(placement.diameter))
                 .rounded_full()
                 .bg(marker_color);
-            let interactive = handle.interactive(marker, |_, _, _| {});
+            let interactive = handle.interactive(marker);
             overview = overview.child(
                 div()
                     .absolute()

@@ -4,13 +4,14 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRevision, NodeInstanceKey};
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
 use jellyflow_open_gpui::{
     DraftAttempt, DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
     DraftReconcileDecision, DraftRecovery, DraftResolutionDecision, DraftSubmissionDecision,
     DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicketError,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingRead, OpenGpuiNodeRegistryBuilder, RevisionedDraft,
+    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistryBuilder,
+    RevisionedDraft,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
@@ -98,6 +99,7 @@ impl ShaderFactorCommandState {
 /// [`OpenGpuiSceneHost`]: jellyflow_open_gpui::OpenGpuiSceneHost
 pub struct ShaderMultiplyNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    instance: NodeInstanceKey,
     activity: OpenGpuiNodeActivityRegistry,
     draft_store: ShaderDraftStore,
     factor: RevisionedDraft<f32>,
@@ -112,6 +114,7 @@ pub struct ShaderMultiplyNode {
 impl ShaderMultiplyNode {
     fn new(
         binding: Entity<OpenGpuiNodeBinding>,
+        instance: NodeInstanceKey,
         activity: OpenGpuiNodeActivityRegistry,
         draft_store: ShaderDraftStore,
         factor: RevisionedDraft<f32>,
@@ -132,6 +135,7 @@ impl ShaderMultiplyNode {
         });
         Self {
             binding,
+            instance,
             activity,
             draft_store,
             factor,
@@ -163,8 +167,8 @@ impl ShaderMultiplyNode {
             cx.notify();
             return;
         }
-        let result = read_shader_binding(&self.binding, cx).and_then(|(facts, remote)| {
-            let revision = facts.graph_revision();
+        let result = read_shader_binding(&self.binding, cx).and_then(|(authoring, remote)| {
+            let revision = authoring.revision();
             self.factor.reconcile_remote(revision, remote);
             match self
                 .factor
@@ -202,15 +206,14 @@ impl ShaderMultiplyNode {
     }
 
     fn submit_dirty_factor(&mut self, cx: &mut Context<Self>) -> Result<(), ShaderNodeError> {
-        let node_id = self.binding.read(cx).snapshot().node_id();
-        let (facts, remote) = read_shader_binding(&self.binding, cx)?;
-        self.factor.reconcile_remote(facts.graph_revision(), remote);
-        let intent = match self.factor.plan_submission_at(facts.graph_revision()) {
+        let (authoring, remote) = read_shader_binding(&self.binding, cx)?;
+        self.factor.reconcile_remote(authoring.revision(), remote);
+        let intent = match self.factor.plan_submission_at(authoring.revision()) {
             DraftSubmissionDecision::Submit(intent) => intent,
             DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean) => return Ok(()),
             DraftSubmissionDecision::Rejected(_) => return Err(ShaderNodeError::DraftConflict),
         };
-        self.enqueue_factor_intent(facts, node_id, intent, cx)
+        self.enqueue_factor_intent(authoring, intent, cx)
     }
 
     fn finish_factor_acknowledgement(
@@ -242,9 +245,8 @@ impl ShaderMultiplyNode {
         saved_intent: Option<ShaderFactorIntent>,
         cx: &mut Context<Self>,
     ) -> Result<(), ShaderNodeError> {
-        let node_id = self.binding.read(cx).snapshot().node_id();
-        let (facts, remote) = read_shader_binding(&self.binding, cx)?;
-        let revision = facts.graph_revision();
+        let (authoring, remote) = read_shader_binding(&self.binding, cx)?;
+        let revision = authoring.revision();
         self.factor.reconcile_remote(revision, remote);
         if let Some(saved_intent) = saved_intent {
             self.factor.edit_local(saved_intent.value);
@@ -270,19 +272,22 @@ impl ShaderMultiplyNode {
                 }
             }
         };
-        self.enqueue_factor_intent(facts, node_id, intent, cx)
+        self.enqueue_factor_intent(authoring, intent, cx)
     }
 
     fn enqueue_factor_intent(
         &mut self,
-        facts: OpenGpuiNodeBindingRead,
-        node_id: NodeId,
+        authoring: OpenGpuiNodeAuthoring,
         intent: DraftSubmissionIntent<f32>,
         cx: &mut Context<Self>,
     ) -> Result<(), ShaderNodeError> {
+        let node_id = authoring.node_id();
         let retained_intent = ShaderFactorIntent::from(&intent);
-        let next_data = match shader_data_with_factor(node_id, facts.node(), retained_intent.value)
-        {
+        let next_data = match shader_data_with_factor(
+            node_id,
+            authoring.node(),
+            retained_intent.value,
+        ) {
             Ok(next_data) => next_data,
             Err(error) => {
                 self.factor.reject_submission(retained_intent.attempt);
@@ -290,10 +295,10 @@ impl ShaderMultiplyNode {
                 return Err(error);
             }
         };
-        let ticket = match facts.enqueue_command(cx, move |_| {
-            GraphCommand::set_node_data(retained_intent.expected_revision, node_id, next_data)
-                .with_label("edit shader factor")
-        }) {
+        let command =
+            GraphCommand::set_node_data(authoring.revision(), node_id, next_data)
+                .with_label("edit shader factor");
+        let ticket = match authoring.enqueue(command, cx) {
             Ok(ticket) => ticket,
             Err(error) => {
                 self.factor.reject_submission(retained_intent.attempt);
@@ -497,17 +502,15 @@ impl ShaderMultiplyNode {
             }
             self.diagnostic = Some(format!("shader activity lease failed: {error}"));
         } else if self.draft_capacity_overflowed {
-            let instance = self.binding.read(cx).snapshot().instance().clone();
             self.draft_store
-                .discard_externalized(&instance, SHADER_FACTOR_FIELD);
+                .discard_externalized(&self.instance, SHADER_FACTOR_FIELD);
             self.draft_capacity_overflowed = false;
         }
     }
 
-    fn externalize_overflow_draft(&mut self, cx: &mut Context<Self>) {
-        let instance = self.binding.read(cx).snapshot().instance().clone();
+    fn externalize_overflow_draft(&mut self, _cx: &mut Context<Self>) {
         self.draft_store
-            .externalize_overflow(&instance, SHADER_FACTOR_FIELD, &self.factor);
+            .externalize_overflow(&self.instance, SHADER_FACTOR_FIELD, &self.factor);
         self.draft_capacity_overflowed = true;
     }
 }
@@ -543,10 +546,10 @@ impl Render for ShaderMultiplyNode {
             ports,
         ) = {
             let binding = self.binding.read(cx);
-            let node_id = binding.snapshot().node_id();
-            let instance_scope = format!("{:?}", binding.snapshot().instance());
-            let facts = binding.snapshot().read().and_then(|facts| {
-                let data = &facts.node().data;
+            let node_id = self.instance.node();
+            let instance_scope = format!("{:?}", self.instance);
+            let facts = binding.authoring().map(|authoring| {
+                let data = &authoring.node().data;
                 let title = data
                     .get("title")
                     .and_then(serde_json::Value::as_str)
@@ -554,16 +557,16 @@ impl Render for ShaderMultiplyNode {
                     .to_owned();
                 let factor = finite_f32(data.get(SHADER_FACTOR_FIELD), 1.0);
                 let preview = finite_f32(data.get("preview"), factor);
-                let input_a_connected = facts
+                let input_a_connected = authoring
                     .ports()
-                    .find(|port| port.port().dir == PortDirection::In && port.port().key.0 == "a")
-                    .and_then(|port| facts.port_connection_facts(port.id()).ok().flatten())
-                    .is_some_and(|connection| !connection.incident().is_empty());
-                let ports = facts
+                    .find(|port| {
+                        port.facts().dir == PortDirection::In && port.facts().key.0 == "a"
+                    })
+                    .is_some_and(|port| port.connection().is_connected());
+                let ports = authoring
                     .ports()
-                    .zip(binding.port_handles(&facts)?)
-                    .map(|(port, handle)| {
-                        let key = port.port().key.clone();
+                    .map(|port| {
+                        let key = port.facts().key.clone();
                         let label = match key.0.as_str() {
                             "a" => "A".into(),
                             "b" => "B".into(),
@@ -573,20 +576,20 @@ impl Render for ShaderMultiplyNode {
                         ShaderPort {
                             id: port.id(),
                             key,
-                            direction: port.port().dir,
+                            direction: port.facts().dir,
                             label,
-                            handle,
+                            handle: port.handle().clone(),
                         }
                     })
                     .collect();
-                Ok((
-                    facts.graph_revision(),
+                (
+                    authoring.revision(),
                     title,
                     factor,
                     preview,
                     input_a_connected,
                     ports,
-                ))
+                )
             });
             match facts {
                 Ok((revision, title, factor, preview, input_a_connected, ports)) => (
@@ -992,17 +995,23 @@ fn mount_shader_multiply(
     cx: &mut App,
 ) -> Entity<ShaderMultiplyNode> {
     let activity = binding.read(cx).activity().clone();
-    let instance = binding.read(cx).snapshot().instance().clone();
-    let (factor, recovery) = match read_shader_binding(&binding, cx) {
-        Ok((facts, authoritative)) => restore_shader_factor_draft(
+    let initial = binding
+        .read(cx)
+        .authoring()
+        .expect("a shader node factory must receive a live authoring binding");
+    let instance = initial.instance().clone();
+    let (factor, recovery) = match shader_factor_from_authoring(&initial) {
+        Ok(authoritative) => restore_shader_factor_draft(
             &draft_store,
             &instance,
-            facts.graph_revision(),
+            initial.revision(),
             authoritative,
         ),
         Err(_) => (RevisionedDraft::new(0, 1.0), DraftRecovery::default()),
     };
-    cx.new(|_| ShaderMultiplyNode::new(binding, activity, draft_store, factor, recovery))
+    cx.new(|_| {
+        ShaderMultiplyNode::new(binding, instance, activity, draft_store, factor, recovery)
+    })
 }
 
 fn restore_shader_factor_draft(
@@ -1054,16 +1063,24 @@ pub fn shader_factor_reapply_selector(node: NodeId) -> String {
 fn read_shader_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &mut App,
-) -> Result<(OpenGpuiNodeBindingRead, f32), ShaderNodeError> {
-    let facts = binding.read(cx).snapshot().read().map_err(|error| {
+) -> Result<(OpenGpuiNodeAuthoring, f32), ShaderNodeError> {
+    let authoring = binding.read(cx).authoring().map_err(|error| {
         ShaderNodeError::BindingUnavailable {
             message: error.to_string(),
         }
     })?;
-    let node_id = binding.read(cx).snapshot().node_id();
-    ensure_shader_kind(node_id, facts.node())?;
-    let factor = finite_f32(facts.node().data.get(SHADER_FACTOR_FIELD), 1.0);
-    Ok((facts, factor))
+    let factor = shader_factor_from_authoring(&authoring)?;
+    Ok((authoring, factor))
+}
+
+fn shader_factor_from_authoring(
+    authoring: &OpenGpuiNodeAuthoring,
+) -> Result<f32, ShaderNodeError> {
+    ensure_shader_kind(authoring.node_id(), authoring.node())?;
+    Ok(finite_f32(
+        authoring.node().data.get(SHADER_FACTOR_FIELD),
+        1.0,
+    ))
 }
 
 fn shader_data_with_factor(

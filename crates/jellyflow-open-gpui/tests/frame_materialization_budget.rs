@@ -8,7 +8,8 @@ use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
     DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, GraphRuntime, ViewSessionOptions,
 };
-use jellyflow_open_gpui::{OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
 
 const NODE_COUNT: usize = 10_000;
@@ -25,7 +26,12 @@ impl Render for FrameBudgetNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let _ = self.binding.read(cx).snapshot().node_id();
+        let _ = self
+            .binding
+            .read(cx)
+            .authoring()
+            .expect("mounted binding opens authoring")
+            .node_id();
         div().child("frame budget probe")
     }
 }

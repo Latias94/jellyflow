@@ -13,11 +13,12 @@ use jellyflow::runtime::{
     IncidentEdgePolicy, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
     ViewSessionOptions, WeakViewSession,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+    OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
+    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -124,7 +125,11 @@ impl Render for CycleResourceNode {
         let owner_retirements = self.owner_retirements.clone();
         let host_closures = self.host_closures.clone();
         let binding = self.binding.read(cx);
-        let port = binding.port_handle(cycle_port_id());
+        let port = binding.authoring().ok().and_then(|authoring| {
+            authoring
+                .port(cycle_port_id())
+                .map(|port| port.handle().clone())
+        });
         let overlay_boundary = binding.overlay_boundary();
 
         div()
@@ -140,7 +145,7 @@ impl Render for CycleResourceNode {
             )
             .children(port.map(|handle| {
                 div().absolute().right(px(8.0)).top(px(43.0)).child(
-                    handle.interactive(
+                    handle.interactive_with_observer(
                         div()
                             .debug_selector(|| CYCLE_PORT_SELECTOR.to_owned())
                             .w(px(14.0))
@@ -181,10 +186,19 @@ impl Render for CapacityPortNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let events = self.events.clone();
-        let handle = self.binding.read(cx).port_handle(capacity_port_id());
+        let handle = self
+            .binding
+            .read(cx)
+            .authoring()
+            .ok()
+            .and_then(|authoring| {
+                authoring
+                    .port(capacity_port_id())
+                    .map(|port| port.handle().clone())
+            });
         div().relative().size_full().children(handle.map(|handle| {
             div().absolute().right(px(8.0)).top(px(43.0)).child(
-                handle.interactive(
+                handle.interactive_with_observer(
                     div()
                         .debug_selector(|| CAPACITY_PORT_SELECTOR.to_owned())
                         .w(px(14.0))
@@ -466,7 +480,7 @@ fn protected_instance_budget_is_distinct_bounded_and_reusable(cx: &mut open_gpui
     registry.register(RENDERER, move |binding, _window, cx| {
         let binding_entity = binding;
         let binding = binding_entity.read(cx);
-        let node = binding.snapshot().node_id();
+        let node = binding.authoring().expect("live authoring view").node_id();
         let activity = binding.activity().clone();
         factory_registries
             .borrow_mut()
@@ -569,7 +583,11 @@ fn sixty_fifth_real_port_drag_cancels_without_side_effects_then_retries_after_re
     let factory_events = events.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding.read(cx).snapshot().node_id();
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("live authoring view")
+            .node_id();
         if node != capacity_port_node_id() {
             let activity = binding.read(cx).activity().clone();
             let lease = activity.acquire(OpenGpuiActivityKind::Focus).unwrap();
@@ -678,7 +696,11 @@ fn eligible_lru_evicts_oldest_instances_and_keeps_strong_references_bounded(
 
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding.read(cx).snapshot().node_id();
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("live authoring view")
+            .node_id();
         let count = factory_mounts.borrow().get(&node).copied().unwrap_or(0);
         factory_mounts
             .borrow_mut()
@@ -823,7 +845,7 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
             .unwrap();
         draw(cx);
         assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
-        assert_eq!(owner_retirements.get(), cycle.saturating_mul(2) + 1);
+        assert_eq!(owner_retirements.get(), 0);
         assert_eq!(task_cancellations.get(), cycle.saturating_mul(3) + 1);
         assert_eq!(
             revocations.get(),
@@ -862,7 +884,7 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
         draw(cx);
         assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
         assert_eq!(runtime.snapshot().unwrap().document_epoch(), 1);
-        assert_eq!(owner_retirements.get(), cycle.saturating_mul(2) + 2);
+        assert_eq!(owner_retirements.get(), 0);
         assert_eq!(task_cancellations.get(), cycle.saturating_mul(3) + 2);
         assert_eq!(
             revocations.get(),
@@ -916,8 +938,8 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
             task_cancellations.get(),
             (cycle + 1).saturating_mul(MOUNTS_PER_CYCLE),
         );
-        assert_eq!(owner_retirements.get(), (cycle + 1).saturating_mul(2));
-        assert_eq!(host_closures.get(), cycle + 1);
+        assert_eq!(owner_retirements.get(), 0);
+        assert_eq!(host_closures.get(), 0);
         assert!(matches!(
             weak_view.geometry_snapshot(),
             Err(ViewSessionError::Closed {
@@ -961,8 +983,8 @@ fn thousand_lifecycle_cycles_return_native_resources_to_baseline(
     );
     assert_eq!(subscription_callbacks.get(), CYCLES);
     assert_eq!(pointer_starts.get(), CYCLES.saturating_mul(3));
-    assert_eq!(owner_retirements.get(), CYCLES.saturating_mul(2));
-    assert_eq!(host_closures.get(), CYCLES);
+    assert_eq!(owner_retirements.get(), 0);
+    assert_eq!(host_closures.get(), 0);
 }
 
 #[open_gpui::test]

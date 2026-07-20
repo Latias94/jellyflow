@@ -2,21 +2,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
-    Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
+    PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
-use jellyflow_open_gpui::{
+use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_open_gpui::accessibility::{
     OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_EDGE_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE,
     OPEN_GPUI_NODE_ROLE, OPEN_GPUI_RECONNECT_HANDLE_ROLE, OPEN_GPUI_SCENE_ROLE,
-    OPEN_GPUI_STATIC_PORT_ROLE, OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
-    open_gpui_edge_element_id, open_gpui_node_element_id, open_gpui_port_element_id,
-    open_gpui_reconnect_element_id, open_gpui_scene_element_id,
+    OPEN_GPUI_STATIC_PORT_ROLE,
 };
-use open_gpui::{
-    AppContext, Context, Entity, EntityId, ParentElement, Render, Role, Styled, Window, div,
-};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Role, Styled, Window, div};
 
 const KIND: &str = "test.accessible-node";
 const RENDERER: &str = "test.native.accessible-node";
@@ -34,7 +32,7 @@ impl Render for AccessibleProbeNode {
 }
 
 #[test]
-fn semantic_roles_and_element_ids_are_stable_and_host_scoped() {
+fn semantic_roles_match_their_native_interaction_contracts() {
     assert_eq!(OPEN_GPUI_SCENE_ROLE, Role::Group);
     assert_eq!(OPEN_GPUI_NODE_ROLE, Role::Group);
     assert_eq!(OPEN_GPUI_STATIC_PORT_ROLE, Role::Image);
@@ -42,80 +40,6 @@ fn semantic_roles_and_element_ids_are_stable_and_host_scoped() {
     assert_eq!(OPEN_GPUI_EDGE_ROLE, Role::Button);
     assert_eq!(OPEN_GPUI_RECONNECT_HANDLE_ROLE, Role::Button);
     assert_eq!(OPEN_GPUI_DIAGNOSTIC_ROLE, Role::Alert);
-
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
-    let first_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let second_view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let first_frame = first_view
-        .frame(FrameRequest::new(
-            viewport(),
-            RendererStamp::new(RENDERER, 1),
-        ))
-        .unwrap();
-    let second_frame = second_view
-        .frame(FrameRequest::new(
-            viewport(),
-            RendererStamp::new(RENDERER, 1),
-        ))
-        .unwrap();
-    let first_instance = first_frame.nodes()[0].instance();
-    let second_instance = second_frame.nodes()[0].instance();
-    let first_host = EntityId::from(1);
-    let second_host = EntityId::from(2);
-
-    let scene = open_gpui_scene_element_id(first_host, first_view.id());
-    assert_eq!(
-        scene,
-        open_gpui_scene_element_id(first_host, first_view.id())
-    );
-    assert_ne!(
-        scene,
-        open_gpui_scene_element_id(second_host, first_view.id())
-    );
-    assert_ne!(
-        scene,
-        open_gpui_scene_element_id(first_host, second_view.id())
-    );
-
-    let node = open_gpui_node_element_id(first_host, first_instance);
-    assert_eq!(node, open_gpui_node_element_id(first_host, first_instance));
-    assert_ne!(node, open_gpui_node_element_id(first_host, second_instance));
-
-    let port = open_gpui_port_element_id(first_host, first_instance, port_id());
-    assert_eq!(
-        port,
-        open_gpui_port_element_id(first_host, first_instance, port_id())
-    );
-    assert_ne!(
-        port,
-        open_gpui_port_element_id(second_host, first_instance, port_id())
-    );
-
-    let edge_id = EdgeId::from_u128(30);
-    let edge = open_gpui_edge_element_id(first_host, first_view.id(), edge_id);
-    assert_eq!(
-        edge,
-        open_gpui_edge_element_id(first_host, first_view.id(), edge_id)
-    );
-    assert_ne!(
-        edge,
-        open_gpui_edge_element_id(second_host, first_view.id(), edge_id)
-    );
-    assert_ne!(
-        edge,
-        open_gpui_edge_element_id(first_host, second_view.id(), edge_id)
-    );
-
-    let source_reconnect =
-        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "source");
-    assert_eq!(
-        source_reconnect,
-        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "source")
-    );
-    assert_ne!(
-        source_reconnect,
-        open_gpui_reconnect_element_id(first_host, first_view.id(), edge_id, "target")
-    );
 }
 
 #[open_gpui::test]
@@ -143,7 +67,11 @@ fn retained_binding_exposes_a_semantic_port_name_with_an_application_override(
 
     let binding = captured.borrow().clone().expect("mounted node binding");
     cx.read_entity(&binding, |binding, _| {
-        let handle = binding.port_handle(port_id()).expect("real output port");
+        let authoring = binding.authoring().expect("live authoring view");
+        let handle = authoring
+            .port(port_id())
+            .expect("real output port")
+            .handle();
         assert_eq!(handle.accessible_name(), "value output port");
         assert!(handle.interaction_enabled());
         assert!(
@@ -161,6 +89,7 @@ fn retained_binding_exposes_a_semantic_port_name_with_an_application_override(
         );
         assert_eq!(
             handle
+                .clone()
                 .with_accessible_name("Shader result")
                 .accessible_name(),
             "Shader result"

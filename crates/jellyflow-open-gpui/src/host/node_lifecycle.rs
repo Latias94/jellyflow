@@ -10,8 +10,7 @@ use open_gpui::{AnyView, AppContext, Context, Entity, FocusHandle, Window};
 
 use crate::activity::OpenGpuiNodeActivityRegistry;
 use crate::binding::{
-    OpenGpuiLayoutInvalidator, OpenGpuiMountCapability, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingSnapshot,
+    OpenGpuiBindingMount, OpenGpuiLayoutInvalidator, OpenGpuiMountCapability, OpenGpuiNodeBinding,
 };
 use crate::command_journal::OpenGpuiCommandSink;
 use crate::interaction::{OpenGpuiPortDragCancelReason, OpenGpuiSceneGestureCancelReason};
@@ -77,19 +76,19 @@ impl MountedNode {
             && self.activity.requires_interaction_island()
     }
 
-    pub(super) fn revoke(self) {
-        self.mount.revoke();
+    pub(super) fn retire(self) {
+        self.mount.retire();
         self.activity.revoke_all();
     }
 }
 
-pub(super) fn revoke_mounted_nodes(
+pub(super) fn retire_mounted_nodes(
     mounted_nodes: impl IntoIterator<Item = MountedNode>,
 ) -> Option<Box<dyn std::any::Any + Send + 'static>> {
     let mut first_panic = None;
     for mounted in mounted_nodes {
         let panic =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mounted.revoke())).err();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mounted.retire())).err();
         if first_panic.is_none() {
             first_panic = panic;
         } else if let Some(payload) = panic {
@@ -171,7 +170,7 @@ impl OpenGpuiSceneHost {
         let Some(mounted) = self.detach_instance(instance) else {
             return false;
         };
-        mounted.revoke();
+        mounted.retire();
         cx.notify();
         true
     }
@@ -417,7 +416,7 @@ impl OpenGpuiSceneHost {
             Self::host_scene_listener(cx),
             mount.clone(),
         );
-        let snapshot = OpenGpuiNodeBindingSnapshot::from_frame(
+        let binding_mount = OpenGpuiBindingMount::from_frame(
             frame,
             self.view.downgrade(),
             mount.clone(),
@@ -426,14 +425,14 @@ impl OpenGpuiSceneHost {
         let accessible_name = self.accessible_node_name(frame);
         let semantic_zoom = OpenGpuiSemanticZoomState::from_frame(frame, &self.catalog);
 
-        let (view, content_kind, binding, registration_policy) = match snapshot {
-            Ok(snapshot) => {
-                self.stats.binding_snapshot_builds =
-                    self.stats.binding_snapshot_builds.saturating_add(1);
+        let (view, content_kind, binding, registration_policy) = match binding_mount {
+            Ok(binding_mount) => {
+                self.stats.binding_mount_initializations =
+                    self.stats.binding_mount_initializations.saturating_add(1);
                 let layout_invalidator = Self::layout_invalidator(cx);
                 let binding = cx.new(|cx| {
                     OpenGpuiNodeBinding::new(
-                        snapshot,
+                        binding_mount,
                         activity.clone(),
                         drag_handle,
                         measurement.clone(),
@@ -577,7 +576,7 @@ impl OpenGpuiSceneHost {
             .collect::<Vec<_>>();
         for instance in retired {
             if let Some(retired) = self.mounts.retire(&instance) {
-                self.settle_retirement(retired).revoke();
+                self.settle_retirement(retired).retire();
             }
         }
     }
@@ -611,7 +610,7 @@ impl OpenGpuiSceneHost {
 
     fn hard_retire(&mut self, instance: &NodeInstanceKey, mounted: MountedNode) {
         let retired = self.mounts.retire_detached(instance.clone(), mounted);
-        self.settle_retirement(retired).revoke();
+        self.settle_retirement(retired).retire();
     }
 
     fn settle_retirement(&mut self, retired: RetiredMount<MountedNode>) -> MountedNode {
@@ -626,7 +625,7 @@ impl OpenGpuiSceneHost {
 
     fn settle_eviction(&mut self, evicted: EvictedMount<MountedNode>) {
         self.retire_connection_context(&evicted.instance, &evicted.value.mount);
-        evicted.value.revoke();
+        evicted.value.retire();
     }
 
     pub(super) fn detach_all_instances(&mut self) -> Vec<MountedNode> {
@@ -660,7 +659,7 @@ impl OpenGpuiSceneHost {
     }
 
     fn hard_retire_all(&mut self) {
-        let panic = revoke_mounted_nodes(self.detach_all_instances());
+        let panic = retire_mounted_nodes(self.detach_all_instances());
         resume_mounted_node_panic(panic);
     }
 }

@@ -256,7 +256,7 @@ impl OpenGpuiSceneHost {
         mount: OpenGpuiMountCapability,
     ) -> OpenGpuiHostPortListener {
         let host = cx.weak_entity();
-        Rc::new(move |event, window, cx| {
+        Rc::new(move |event, observer, window, cx| {
             let event = event.clone();
             let host = host.clone();
             let mount = mount.clone();
@@ -271,18 +271,30 @@ impl OpenGpuiSceneHost {
                 let Some(host) = host.upgrade() else {
                     return;
                 };
+                let observed_event = event.clone();
                 host.update(cx, |host, cx| {
                     host.handle_port_event_for_mount(event, &mount, window, cx);
                 });
+                if mount.is_live()
+                    && let Some(observer) = observer
+                {
+                    observer(observed_event, window, cx);
+                }
                 return;
             }
             window.defer(cx, move |window, cx| {
                 let Some(host) = host.upgrade() else {
                     return;
                 };
+                let observed_event = event.clone();
                 host.update(cx, |host, cx| {
                     host.handle_port_event_for_mount(event, &mount, window, cx);
                 });
+                if mount.is_live()
+                    && let Some(observer) = observer
+                {
+                    observer(observed_event, window, cx);
+                }
             });
         })
     }

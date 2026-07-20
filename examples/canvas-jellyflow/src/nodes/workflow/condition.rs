@@ -8,12 +8,12 @@ use jellyflow::runtime::{
     GraphCommand, GraphCommandOutcome, GraphRevision, GraphSnapshot, IncidentEdgePolicy,
     TopologyEdit, TopologyPort,
 };
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeBinding, OpenGpuiPortHandle};
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeBinding,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
-    OpenGpuiPortHandle,
+    OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeRegistrationPolicy,
+    OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
@@ -86,6 +86,7 @@ pub enum ConditionBranchAction {
 
 pub struct WorkflowConditionNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    node_id: NodeId,
     command_state: ConditionCommandState,
     _command_task: Option<Task<()>>,
     _command_task_lease: Option<OpenGpuiActivityLease>,
@@ -155,9 +156,10 @@ impl ConditionCommandState {
 }
 
 impl WorkflowConditionNode {
-    fn new(binding: Entity<OpenGpuiNodeBinding>) -> Self {
+    fn new(binding: Entity<OpenGpuiNodeBinding>, node_id: NodeId) -> Self {
         Self {
             binding,
+            node_id,
             command_state: ConditionCommandState::Idle,
             _command_task: None,
             _command_task_lease: None,
@@ -189,15 +191,15 @@ impl WorkflowConditionNode {
         if !matches!(&self.command_state, ConditionCommandState::Idle) {
             return;
         }
-        let node_id = self.binding.read(cx).snapshot().node_id();
         let port_id = PortId::new();
         let branch_count = self
             .binding
             .read(cx)
-            .snapshot()
-            .read()
+            .authoring()
             .ok()
-            .and_then(|facts| parse_condition_branches(node_id, &facts.node().data).ok())
+            .and_then(|authoring| {
+                parse_condition_branches(self.node_id, &authoring.node().data).ok()
+            })
             .map_or(0, |branches| branches.len());
         let branch = WorkflowBranch {
             id: format!("branch-{}", port_id.0),
@@ -267,26 +269,24 @@ impl WorkflowConditionNode {
         )>,
         WorkflowNodeError,
     > {
-        let node_id = self.binding.read(cx).snapshot().node_id();
-        let facts = self
+        let authoring = self
             .binding
             .read(cx)
-            .snapshot()
-            .read()
+            .authoring()
             .map_err(binding_error)?;
-        let branches = parse_condition_branches(node_id, &facts.node().data)?;
+        let branches = parse_condition_branches(self.node_id, &authoring.node().data)?;
         if condition_action_satisfied(&branches, &intent.action) {
             return Ok(None);
         }
-        let ports = facts
+        let ports = authoring
             .ports()
-            .map(|bound| (bound.id(), bound.port().clone()))
+            .map(|port| (port.id(), port.facts().clone()))
             .collect();
-        let expected_revision = facts.graph_revision();
+        let expected_revision = authoring.revision();
         let command = build_condition_branch_command(
             expected_revision,
-            node_id,
-            facts.node(),
+            self.node_id,
+            authoring.node(),
             &ports,
             intent.action.clone(),
             intent.incident_edges,
@@ -302,9 +302,7 @@ impl WorkflowConditionNode {
             .activity()
             .acquire(OpenGpuiActivityKind::Task)
             .map_err(binding_error)?;
-        let ticket = facts
-            .enqueue_command(cx, move |_| command)
-            .map_err(binding_error)?;
+        let ticket = authoring.enqueue(command, cx).map_err(binding_error)?;
         self.next_attempt = attempt.checked_add(1);
         Ok(Some((attempt, expected_revision, ticket, task_lease)))
     }
@@ -413,10 +411,8 @@ impl Render for WorkflowConditionNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let (node_id, drag_handle) = {
-            let binding = self.binding.read(cx);
-            (binding.snapshot().node_id(), binding.drag_handle())
-        };
+        let node_id = self.node_id;
+        let drag_handle = self.binding.read(cx).drag_handle();
         let data = match read_condition_binding(&self.binding, cx) {
             Ok(value) => {
                 let branches = value
@@ -473,7 +469,6 @@ impl Render for WorkflowConditionNode {
                         .items_center()
                         .justify_center()
                         .child(chrome),
-                    |_, _, _| {},
                 );
             let marker = div()
                 .absolute()
@@ -654,7 +649,14 @@ pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
     registry.register_with_policy(
         WORKFLOW_CONDITION_RENDERER,
         policy,
-        |binding, _window, cx| cx.new(|_| WorkflowConditionNode::new(binding)),
+        |binding, _window, cx| {
+            let node_id = binding
+                .read(cx)
+                .authoring()
+                .expect("a condition node factory must receive a live authoring binding")
+                .node_id();
+            cx.new(|_| WorkflowConditionNode::new(binding, node_id))
+        },
     );
 }
 
@@ -856,29 +858,23 @@ fn read_condition_binding(
     cx: &App,
 ) -> Result<ConditionRenderData, WorkflowNodeError> {
     let binding = binding.read(cx);
-    let node_id = binding.snapshot().node_id();
-    let facts =
-        binding
-            .snapshot()
-            .read()
-            .map_err(|error| WorkflowNodeError::BindingUnavailable {
-                message: error.to_string(),
-            })?;
-    ensure_kind(node_id, facts.node())?;
-    let branches = parse_condition_branches(node_id, &facts.node().data)?;
-    let ports: BTreeMap<_, _> = facts
-        .ports()
-        .map(|port| (port.id(), port.port().clone()))
-        .collect();
-    let mut handles = binding
-        .port_handles(&facts)
-        .map_err(|error| WorkflowNodeError::BindingUnavailable {
+    let authoring = binding.authoring().map_err(|error| {
+        WorkflowNodeError::BindingUnavailable {
             message: error.to_string(),
-        })?
-        .into_iter()
-        .map(|handle| (handle.port(), handle))
+        }
+    })?;
+    let node_id = authoring.node_id();
+    ensure_kind(node_id, authoring.node())?;
+    let branches = parse_condition_branches(node_id, &authoring.node().data)?;
+    let ports: BTreeMap<_, _> = authoring
+        .ports()
+        .map(|port| (port.id(), port.facts().clone()))
+        .collect();
+    let mut handles = authoring
+        .ports()
+        .map(|port| (port.id(), port.handle().clone()))
         .collect::<BTreeMap<_, _>>();
-    validate_branch_ports(node_id, facts.node(), &branches, &ports)?;
+    validate_branch_ports(node_id, authoring.node(), &branches, &ports)?;
     let branch_rows = branches
         .into_iter()
         .map(|branch| {
@@ -891,18 +887,18 @@ fn read_condition_binding(
                 })
         })
         .collect::<Result<_, _>>()?;
-    let inputs = facts
+    let inputs = authoring
         .ports()
-        .filter(|port| port.port().dir == PortDirection::In)
+        .filter(|port| port.facts().dir == PortDirection::In)
         .filter_map(|port| {
             handles.remove(&port.id()).map(|handle| WorkflowPort {
                 id: port.id(),
-                direction: port.port().dir,
+                direction: port.facts().dir,
                 handle,
             })
         })
         .collect();
-    let title = facts
+    let title = authoring
         .node()
         .data
         .get("title")
@@ -910,7 +906,7 @@ fn read_condition_binding(
         .unwrap_or("Condition")
         .to_owned();
     Ok(ConditionRenderData {
-        revision: facts.graph_revision(),
+        revision: authoring.revision(),
         title,
         branches: branch_rows,
         inputs,

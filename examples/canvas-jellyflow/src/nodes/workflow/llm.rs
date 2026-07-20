@@ -3,14 +3,15 @@ use std::rc::Rc;
 
 use jellyflow::core::{CanvasSize, Node, NodeId, PortCapacity, PortDirection, PortKind};
 use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRevision};
+use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRevision, NodeInstanceKey};
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
 use jellyflow_open_gpui::{
     DraftAttempt, DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
     DraftReconcileDecision, DraftRecovery, DraftResolutionDecision, DraftSubmissionDecision,
     DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding,
-    OpenGpuiNodeBindingRead, OpenGpuiNodeRegistryBuilder, RevisionedDraft,
+    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistryBuilder,
+    RevisionedDraft,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render, Styled,
@@ -43,6 +44,7 @@ pub type WorkflowDraftStore = ExternalizedDraftStore<String>;
 
 pub struct WorkflowLlmNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    instance: NodeInstanceKey,
     activity: OpenGpuiNodeActivityRegistry,
     draft_store: WorkflowDraftStore,
     model_options: Entity<WorkflowModelOptionsState>,
@@ -165,10 +167,13 @@ fn recovery_diagnostic(recoveries: &[(&'static str, DraftRecovery)]) -> Option<S
 }
 
 impl WorkflowLlmNode {
-    fn reconcile_graph(&mut self, cx: &mut Context<Self>) -> Option<LlmData> {
-        let result = read_llm_binding(&self.binding, cx);
+    fn reconcile_graph(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(LlmData, Vec<WorkflowPort>)> {
+        let result = read_llm_render_binding(&self.binding, cx);
         match result {
-            Ok((revision, data)) => {
+            Ok((revision, data, ports)) => {
                 if matches!(
                     self.prompt.reconcile_remote(revision, data.prompt.clone()),
                     DraftReconcileDecision::RemoteApplied { .. }
@@ -178,7 +183,7 @@ impl WorkflowLlmNode {
                         .update(cx, |controller, cx| controller.set_value(value, cx));
                 }
                 self.model.reconcile_remote(revision, data.model.clone());
-                Some(data)
+                Some((data, ports))
             }
             Err(error) => {
                 self.diagnostic = Some(error.to_string());
@@ -204,10 +209,8 @@ impl WorkflowLlmNode {
     }
 
     fn apply_prompt(&mut self, cx: &mut Context<Self>) {
-        let node_id = self.binding.read(cx).snapshot().node_id();
         let pending = submit_llm_draft(
             &self.binding,
-            node_id,
             LlmField::Prompt,
             &mut self.prompt,
             cx,
@@ -226,13 +229,11 @@ impl WorkflowLlmNode {
         }
         self.model_menu_open.set(false);
         self.model_overlay_lease.take();
-        let node_id = self.binding.read(cx).snapshot().node_id();
         if let Some((revision, model)) = self.model_menu_base.take() {
             self.model = RevisionedDraft::new(revision, model);
         }
         self.model.edit_local(value);
-        let pending =
-            submit_llm_draft(&self.binding, node_id, LlmField::Model, &mut self.model, cx);
+        let pending = submit_llm_draft(&self.binding, LlmField::Model, &mut self.model, cx);
         self.start_command(LlmField::Model, pending, cx);
         cx.notify();
     }
@@ -296,9 +297,7 @@ impl WorkflowLlmNode {
     }
 
     fn reapply_local_model(&mut self, cx: &mut Context<Self>) {
-        let node_id = self.binding.read(cx).snapshot().node_id();
-        let pending =
-            reapply_llm_draft(&self.binding, node_id, LlmField::Model, &mut self.model, cx);
+        let pending = reapply_llm_draft(&self.binding, LlmField::Model, &mut self.model, cx);
         self.start_command(LlmField::Model, pending, cx);
         cx.notify();
     }
@@ -324,10 +323,8 @@ impl WorkflowLlmNode {
     }
 
     fn reapply_local_prompt(&mut self, cx: &mut Context<Self>) {
-        let node_id = self.binding.read(cx).snapshot().node_id();
         let pending = reapply_llm_draft(
             &self.binding,
-            node_id,
             LlmField::Prompt,
             &mut self.prompt,
             cx,
@@ -451,11 +448,10 @@ impl WorkflowLlmNode {
             }
             self.diagnostic = Some(format!("workflow activity lease failed: {error}"));
         } else if self.draft_capacity_overflowed {
-            let instance = self.binding.read(cx).snapshot().instance().clone();
             self.draft_store
-                .discard_externalized(&instance, WORKFLOW_PROMPT_FIELD);
+                .discard_externalized(&self.instance, WORKFLOW_PROMPT_FIELD);
             self.draft_store
-                .discard_externalized(&instance, WORKFLOW_MODEL_FIELD);
+                .discard_externalized(&self.instance, WORKFLOW_MODEL_FIELD);
             self.draft_capacity_overflowed = false;
         }
     }
@@ -472,12 +468,11 @@ impl WorkflowLlmNode {
         cx.notify();
     }
 
-    fn externalize_overflow_drafts(&mut self, cx: &mut Context<Self>) {
-        let instance = self.binding.read(cx).snapshot().instance().clone();
+    fn externalize_overflow_drafts(&mut self, _cx: &mut Context<Self>) {
         self.draft_store
-            .externalize_overflow(&instance, WORKFLOW_PROMPT_FIELD, &self.prompt);
+            .externalize_overflow(&self.instance, WORKFLOW_PROMPT_FIELD, &self.prompt);
         self.draft_store
-            .externalize_overflow(&instance, WORKFLOW_MODEL_FIELD, &self.model);
+            .externalize_overflow(&self.instance, WORKFLOW_MODEL_FIELD, &self.model);
         self.draft_capacity_overflowed = true;
     }
 
@@ -513,20 +508,22 @@ impl Render for WorkflowLlmNode {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let (node_id, drag_handle) = {
-            let binding = self.binding.read(cx);
-            (binding.snapshot().node_id(), binding.drag_handle())
-        };
-        let data = self.reconcile_graph(cx).unwrap_or_else(|| LlmData {
-            value: serde_json::Value::Null,
-            title: "Retired LLM".to_owned(),
-            prompt: self.prompt.local().clone(),
-            model: self.model.local().clone(),
+        let node_id = self.instance.node();
+        let drag_handle = self.binding.read(cx).drag_handle();
+        let (data, ports) = self.reconcile_graph(cx).unwrap_or_else(|| {
+            (
+                LlmData {
+                    value: serde_json::Value::Null,
+                    title: "Retired LLM".to_owned(),
+                    prompt: self.prompt.local().clone(),
+                    model: self.model.local().clone(),
+                },
+                Vec::new(),
+            )
         });
         self.sync_prompt_composition(cx);
         self.sync_activity(window, cx);
         let status = self.status();
-        let ports = bound_ports(&self.binding, cx);
         let prompt_node = cx.weak_entity();
         let apply_node = cx.weak_entity();
         let model_open_node = cx.weak_entity();
@@ -868,9 +865,13 @@ fn mount_workflow_llm(
     cx: &mut App,
 ) -> Entity<WorkflowLlmNode> {
     let activity = binding.read(cx).activity().clone();
-    let instance = binding.read(cx).snapshot().instance().clone();
-    let (revision, data, can_restore) = match read_llm_binding(&binding, cx) {
-        Ok((revision, data)) => (revision, data, true),
+    let initial = binding
+        .read(cx)
+        .authoring()
+        .expect("an LLM node factory must receive a live authoring binding");
+    let instance = initial.instance().clone();
+    let (revision, data, can_restore) = match LlmData::parse(initial.node_id(), initial.node()) {
+        Ok(data) => (initial.revision(), data, true),
         Err(_) => (
             0,
             LlmData {
@@ -921,6 +922,7 @@ fn mount_workflow_llm(
         let model_options_subscription = cx.observe(&model_options, |_, _, cx| cx.notify());
         WorkflowLlmNode {
             binding,
+            instance,
             activity,
             draft_store,
             model_options,
@@ -1034,20 +1036,20 @@ fn workflow_model_id(node: NodeId) -> String {
 
 fn submit_llm_draft(
     binding: &Entity<OpenGpuiNodeBinding>,
-    node_id: NodeId,
     field: LlmField,
     draft: &mut RevisionedDraft<String>,
     cx: &mut App,
 ) -> Result<Option<PendingLlmCommand>, WorkflowNodeError> {
-    let facts = binding.read(cx).snapshot().read().map_err(|error| {
+    let authoring = binding.read(cx).authoring().map_err(|error| {
         WorkflowNodeError::BindingUnavailable {
             message: error.to_string(),
         }
     })?;
-    let current = LlmData::parse(node_id, facts.node())?;
+    let node_id = authoring.node_id();
+    let current = LlmData::parse(node_id, authoring.node())?;
     let remote = current.field(field).to_owned();
-    draft.reconcile_remote(facts.graph_revision(), remote);
-    let intent = match draft.plan_submission_at(facts.graph_revision()) {
+    draft.reconcile_remote(authoring.revision(), remote);
+    let intent = match draft.plan_submission_at(authoring.revision()) {
         DraftSubmissionDecision::Submit(intent) => intent,
         DraftSubmissionDecision::Rejected(
             DraftIntentRejection::Clean | DraftIntentRejection::CompositionActive,
@@ -1056,45 +1058,44 @@ fn submit_llm_draft(
             return Err(WorkflowNodeError::DraftConflict { field: field.key() });
         }
     };
-    dispatch_llm_intent(facts, current, node_id, field, draft, intent, cx).map(Some)
+    dispatch_llm_intent(authoring, current, field, draft, intent, cx).map(Some)
 }
 
 fn reapply_llm_draft(
     binding: &Entity<OpenGpuiNodeBinding>,
-    node_id: NodeId,
     field: LlmField,
     draft: &mut RevisionedDraft<String>,
     cx: &mut App,
 ) -> Result<Option<PendingLlmCommand>, WorkflowNodeError> {
-    let facts = binding.read(cx).snapshot().read().map_err(|error| {
+    let authoring = binding.read(cx).authoring().map_err(|error| {
         WorkflowNodeError::BindingUnavailable {
             message: error.to_string(),
         }
     })?;
-    let current = LlmData::parse(node_id, facts.node())?;
+    let node_id = authoring.node_id();
+    let current = LlmData::parse(node_id, authoring.node())?;
     let remote = current.field(field).to_owned();
-    draft.reconcile_remote(facts.graph_revision(), remote);
+    draft.reconcile_remote(authoring.revision(), remote);
     let intent = match draft.resolve_at(
         DraftConflictResolution::ReapplyLocal,
-        facts.graph_revision(),
+        authoring.revision(),
     ) {
         DraftResolutionDecision::Reapply(intent) => intent,
         _ => return Err(WorkflowNodeError::DraftConflict { field: field.key() }),
     };
-    dispatch_llm_intent(facts, current, node_id, field, draft, intent, cx).map(Some)
+    dispatch_llm_intent(authoring, current, field, draft, intent, cx).map(Some)
 }
 
 fn dispatch_llm_intent(
-    facts: OpenGpuiNodeBindingRead,
+    authoring: OpenGpuiNodeAuthoring,
     current: LlmData,
-    node_id: NodeId,
     field: LlmField,
     draft: &mut RevisionedDraft<String>,
     intent: DraftSubmissionIntent<String>,
     cx: &mut App,
 ) -> Result<PendingLlmCommand, WorkflowNodeError> {
+    let node_id = authoring.node_id();
     let attempt = intent.attempt();
-    let expected_revision = intent.expected_revision();
     let committed_value = intent.value().clone();
     let next_data = match current.with_field(node_id, field, committed_value) {
         Ok(next_data) => next_data,
@@ -1103,10 +1104,9 @@ fn dispatch_llm_intent(
             return Err(error);
         }
     };
-    let ticket = match facts.enqueue_command(cx, move |_| {
-        GraphCommand::set_node_data(expected_revision, node_id, next_data)
-            .with_label(format!("edit workflow {}", field.key()))
-    }) {
+    let command = GraphCommand::set_node_data(authoring.revision(), node_id, next_data)
+        .with_label(format!("edit workflow {}", field.key()));
+    let ticket = match authoring.enqueue(command, cx) {
         Ok(ticket) => ticket,
         Err(error) => {
             draft.reject_submission(attempt);
@@ -1175,35 +1175,37 @@ fn read_llm_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &App,
 ) -> Result<(GraphRevision, LlmData), WorkflowNodeError> {
-    let facts = binding.read(cx).snapshot().read().map_err(|error| {
+    let authoring = binding.read(cx).authoring().map_err(|error| {
         WorkflowNodeError::BindingUnavailable {
             message: error.to_string(),
         }
     })?;
-    let node_id = binding.read(cx).snapshot().node_id();
     Ok((
-        facts.graph_revision(),
-        LlmData::parse(node_id, facts.node())?,
+        authoring.revision(),
+        LlmData::parse(authoring.node_id(), authoring.node())?,
     ))
 }
 
-fn bound_ports(binding: &Entity<OpenGpuiNodeBinding>, cx: &App) -> Vec<WorkflowPort> {
+fn read_llm_render_binding(
+    binding: &Entity<OpenGpuiNodeBinding>,
+    cx: &App,
+) -> Result<(GraphRevision, LlmData, Vec<WorkflowPort>), WorkflowNodeError> {
     let binding = binding.read(cx);
-    binding
-        .snapshot()
-        .read()
-        .and_then(|facts| {
-            Ok(facts
-                .ports()
-                .zip(binding.port_handles(&facts)?)
-                .map(|(port, handle)| WorkflowPort {
-                    id: port.id(),
-                    direction: port.port().dir,
-                    handle,
-                })
-                .collect::<Vec<_>>())
+    let authoring = binding.authoring().map_err(|error| {
+        WorkflowNodeError::BindingUnavailable {
+            message: error.to_string(),
+        }
+    })?;
+    let data = LlmData::parse(authoring.node_id(), authoring.node())?;
+    let ports = authoring
+        .ports()
+        .map(|port| WorkflowPort {
+            id: port.id(),
+            direction: port.facts().dir,
+            handle: port.handle().clone(),
         })
-        .unwrap_or_default()
+        .collect();
+    Ok((authoring.revision(), data, ports))
 }
 
 impl LlmData {
@@ -1431,7 +1433,11 @@ mod tests {
             node
         });
         registry.register(PROTECTOR_RENDERER, |binding, _window, cx| {
-            let node = binding.read(cx).snapshot().node_id();
+            let node = binding
+                .read(cx)
+                .authoring()
+                .expect("a protector factory must receive a live authoring binding")
+                .node_id();
             let lease = is_transient_protector(node).then(|| {
                 binding
                     .read(cx)

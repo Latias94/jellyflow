@@ -10,14 +10,16 @@ use jellyflow::runtime::{
     GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome, TopologyEdit,
     TopologyPort, ViewSessionOptions,
 };
+use jellyflow_open_gpui::activity::OpenGpuiActivityKind;
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeBinding, OpenGpuiPortHandle};
 use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
     OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeBinding,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy,
-    OpenGpuiPortHandle, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeRegistrationPolicy,
+    OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy, OpenGpuiRendererRegistrationStatus,
+    OpenGpuiSceneHost,
 };
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
@@ -59,10 +61,17 @@ impl Render for ProductNode {
             .render_count
             .set(self.state.render_count.get().saturating_add(1));
         let binding = self.binding.read(cx);
-        let base = binding
-            .port_handle(base_port_id())
-            .expect("catalog-created real port belongs to the retained node");
-        let dynamic = binding.port_handle(dynamic_port_id());
+        let authoring = binding
+            .authoring()
+            .expect("retained node opens one coherent authoring view");
+        let base = authoring
+            .port(base_port_id())
+            .expect("catalog-created real port belongs to the retained node")
+            .handle()
+            .clone();
+        let dynamic = authoring
+            .port(dynamic_port_id())
+            .map(|port| port.handle().clone());
         if base.presentation().connected() {
             self.state.connected_state_seen.set(true);
         }
@@ -95,34 +104,45 @@ impl Render for ProductNode {
                             clicks
                                 .click_count
                                 .set(clicks.click_count.get().saturating_add(1));
-                            let snapshot = command_binding.read(cx).snapshot().clone();
-                            let read = snapshot.read().expect("command binding stays live");
-                            let ticket = read
-                                .enqueue_command(cx, |read| {
-                                    let base = read
-                                        .port(base_port_id())
-                                        .expect("base port remains in the binding snapshot")
-                                        .clone();
-                                    let mut dynamic = base.clone();
-                                    dynamic.key = PortKey::new("dynamic-result");
-                                    GraphCommand::topology(
-                                        read.graph_revision(),
-                                        TopologyEdit::new().replace_node_ports(
-                                            node_id(),
-                                            [
-                                                TopologyPort::new(base_port_id(), base),
-                                                TopologyPort::new(dynamic_port_id(), dynamic),
-                                            ],
-                                            IncidentEdgePolicy::Reject,
-                                        ),
-                                    )
-                                    .with_label("add external dynamic port")
-                                })
+                            let (authoring, task_activity) = {
+                                let binding = command_binding.read(cx);
+                                (
+                                    binding
+                                        .authoring()
+                                        .expect("command callback opens a current authoring view"),
+                                    binding
+                                        .activity()
+                                        .acquire(OpenGpuiActivityKind::Task)
+                                        .expect("retained command task acquires an activity lease"),
+                                )
+                            };
+                            let base = authoring
+                                .port(base_port_id())
+                                .expect("base port remains in the authoring view")
+                                .facts()
+                                .clone();
+                            let mut dynamic = base.clone();
+                            dynamic.key = PortKey::new("dynamic-result");
+                            let command = GraphCommand::topology(
+                                authoring.revision(),
+                                TopologyEdit::new().replace_node_ports(
+                                    node_id(),
+                                    [
+                                        TopologyPort::new(base_port_id(), base),
+                                        TopologyPort::new(dynamic_port_id(), dynamic),
+                                    ],
+                                    IncidentEdgePolicy::Reject,
+                                ),
+                            )
+                            .with_label("add external dynamic port");
+                            let ticket = authoring
+                                .enqueue(command, cx)
                                 .expect("native command enters the host feedback journal");
                             let command_state = Rc::clone(&clicks);
                             let completion_node = product_node.clone();
                             let invalidate_binding = command_binding.clone();
                             let task = cx.spawn(async move |cx| {
+                                let _task_activity = task_activity;
                                 let applied = ticket
                                     .await
                                     .is_ok_and(|outcome| outcome.applied().is_some());
@@ -194,7 +214,6 @@ fn custom_port_marker(handle: OpenGpuiPortHandle, selector: &'static str) -> Any
                 .border_2()
                 .border_color(fill)
                 .child(div().w(px(4.0)).h(px(4.0)).rounded_full().bg(fill)),
-            |_, _, _| {},
         )
         .into_any_element()
 }

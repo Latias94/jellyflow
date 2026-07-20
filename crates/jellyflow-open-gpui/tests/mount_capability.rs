@@ -7,16 +7,19 @@ use jellyflow::core::{
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewSessionOptions};
+use jellyflow::runtime::{
+    CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewCloseReason, ViewSessionOptions,
+};
+use jellyflow_open_gpui::authoring::{
+    OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError, OpenGpuiNodeBinding, OpenGpuiPortHandle,
+};
 use jellyflow_open_gpui::{
-    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeBindingReadError, OpenGpuiNodeDragHandle, OpenGpuiNodeMountError,
-    OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiPortHandle,
-    OpenGpuiSceneHost,
+    OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeDragHandle, OpenGpuiNodeMountError,
+    OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Render, Styled, Window, div, px,
+    Render, Styled, VisualContext, Window, div, px,
 };
 
 const KIND: &str = "test.mount-capability-node";
@@ -62,7 +65,12 @@ impl Render for InteractiveProbeNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let handle = self.binding.read(cx).port_handle(port_id());
+        let handle = self
+            .binding
+            .read(cx)
+            .authoring()
+            .ok()
+            .and_then(|authoring| authoring.port(port_id()).map(|port| port.handle().clone()));
         let phases = self.phases.clone();
         div().relative().size_full().children(handle.map(|handle| {
             div()
@@ -70,7 +78,7 @@ impl Render for InteractiveProbeNode {
                 .right(px(8.0))
                 .top(px(40.0))
                 .child(
-                    handle.interactive(
+                    handle.interactive_with_observer(
                         div()
                             .debug_selector(|| "live-mount-port".to_owned())
                             .w(px(16.0))
@@ -96,7 +104,7 @@ impl Render for ExternalPortScene {
         let callbacks = self.callbacks.clone();
         let stale_port = self.stale_handle.borrow().clone().map(|handle| {
             handle
-                .interactive(
+                .interactive_with_observer(
                     div()
                         .debug_selector(|| "stale-mount-port".to_owned())
                         .w(px(24.0))
@@ -173,7 +181,11 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     let factory_bindings = bindings.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding.read(cx).snapshot().node_id();
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("new mount opens authoring")
+            .node_id();
         factory_bindings
             .borrow_mut()
             .entry(node)
@@ -192,11 +204,13 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     draw(cx);
 
     let old = bindings.borrow()[&node_id()][0].clone();
-    let old_instance = cx.read_entity(&old, |binding, _| binding.snapshot().instance().clone());
-    let stale_execute = binding_read(cx, &old);
-    let stale_handles = binding_read(cx, &old);
+    let old_instance = cx.read_entity(&old, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
+    let stale_execute = binding_authoring(cx, &old);
+    let stale_facts = binding_authoring(cx, &old);
     cx.read_entity(&old, |binding, _| {
-        assert!(binding.port_handle(port_id()).is_some());
+        assert!(binding.authoring().unwrap().port(port_id()).is_some());
     });
 
     cx.update_entity(&host, |host, cx| {
@@ -214,13 +228,15 @@ fn eligible_lru_eviction_revokes_old_binding_before_same_instance_remount(
     draw(cx);
 
     let new = bindings.borrow()[&node_id()][1].clone();
-    let new_instance = cx.read_entity(&new, |binding, _| binding.snapshot().instance().clone());
+    let new_instance = cx.read_entity(&new, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
     assert_eq!(
         old_instance, new_instance,
         "runtime identity survives eviction"
     );
     assert_revoked_binding(cx, &old);
-    assert_stale_reads_rejected(stale_execute, stale_handles, &old, cx);
+    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, cx);
     assert_live_replacement(&runtime, cx, &new, serde_json::json!("after eviction"));
 }
 
@@ -258,20 +274,173 @@ fn retry_mount_revokes_failed_factory_binding_before_same_instance_remount(
     draw(cx);
 
     let old = bindings.borrow()[0].clone();
-    let old_instance = cx.read_entity(&old, |binding, _| binding.snapshot().instance().clone());
-    let stale_execute = binding_read(cx, &old);
-    let stale_handles = binding_read(cx, &old);
+    let old_instance = cx.read_entity(&old, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
+    let stale_execute = binding_authoring(cx, &old);
+    let stale_facts = binding_authoring(cx, &old);
     assert!(cx.update_entity(&host, |host, cx| host.retry_mount(node_id(), cx)));
     assert_revoked_binding(cx, &old);
 
     draw(cx);
     assert_eq!(attempts.get(), 2);
     let new = bindings.borrow()[1].clone();
-    let new_instance = cx.read_entity(&new, |binding, _| binding.snapshot().instance().clone());
+    let new_instance = cx.read_entity(&new, |binding, _| {
+        binding.authoring().unwrap().instance().clone()
+    });
     assert_eq!(old_instance, new_instance, "retry reuses runtime identity");
     assert_revoked_binding(cx, &old);
-    assert_stale_reads_rejected(stale_execute, stale_handles, &old, cx);
+    assert_stale_authoring_rejected(stale_execute, stale_facts, &old, cx);
     assert_live_replacement(&runtime, cx, &new, serde_json::json!("after retry"));
+}
+
+#[open_gpui::test]
+fn authoring_rejects_mismatched_and_stale_commands_before_journal_admission(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = Rc::new(
+        GraphRuntime::builder(catalog())
+            .build(graph_with_nodes(1))
+            .unwrap(),
+    );
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let captured_binding = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
+    let factory_binding = captured_binding.clone();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        *factory_binding.borrow_mut() = Some(binding.clone());
+        cx.new(|_| ProbeNode { _binding: binding })
+    });
+
+    let (_host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            visible_viewport(),
+        )
+    });
+    draw(cx);
+    let binding = captured_binding
+        .borrow()
+        .clone()
+        .expect("captured live binding");
+
+    let mismatched = binding_authoring(cx, &binding);
+    let mismatch = cx.update(|_, cx| {
+        mismatched.enqueue(
+            GraphCommand::set_node_data(1, node_id(), serde_json::json!("mismatch")),
+            cx,
+        )
+    });
+    assert!(matches!(
+        mismatch,
+        Err(OpenGpuiNodeAuthoringError::CommandRevisionMismatch {
+            authoring_revision: 0,
+            command_revision: 1,
+        })
+    ));
+    draw(cx);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
+
+    let stale = binding_authoring(cx, &binding);
+    assert_eq!(
+        stale.port(port_id()).unwrap().facts().data,
+        serde_json::Value::Null,
+    );
+    runtime
+        .execute(GraphCommand::set_port_data(
+            0,
+            port_id(),
+            serde_json::json!("newer graph"),
+        ))
+        .unwrap()
+        .applied()
+        .expect("direct command advances the graph");
+    assert_eq!(
+        stale.port(port_id()).unwrap().facts().data,
+        serde_json::Value::Null,
+        "an owned authoring view does not silently refresh its graph root",
+    );
+    let fresh = binding_authoring(cx, &binding);
+    assert_eq!(
+        fresh.port(port_id()).unwrap().facts().data,
+        serde_json::json!("newer graph"),
+    );
+    let stale_result = cx.update(|_, cx| {
+        stale.enqueue(
+            GraphCommand::set_node_data(0, node_id(), serde_json::json!("stale")),
+            cx,
+        )
+    });
+    assert!(matches!(
+        stale_result,
+        Err(OpenGpuiNodeAuthoringError::StaleRevision {
+            authoring_revision: 0,
+            current_revision: 1,
+        })
+    ));
+    draw(cx);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+}
+
+#[open_gpui::test]
+fn host_close_reason_is_preserved_for_binding_and_captured_authoring(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = Rc::new(
+        GraphRuntime::builder(catalog())
+            .build(graph_with_nodes(1))
+            .unwrap(),
+    );
+    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let captured_binding = Rc::new(RefCell::new(None::<Entity<OpenGpuiNodeBinding>>));
+    let factory_binding = captured_binding.clone();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register(RENDERER, move |binding, _window, cx| {
+        *factory_binding.borrow_mut() = Some(binding.clone());
+        cx.new(|_| ProbeNode { _binding: binding })
+    });
+
+    let (host, cx) = cx.add_window_view(move |_, _| {
+        OpenGpuiSceneHost::new(
+            view,
+            registry.seal().expect("valid test registry"),
+            visible_viewport(),
+        )
+    });
+    draw(cx);
+    let binding = captured_binding
+        .borrow()
+        .clone()
+        .expect("captured live binding");
+    let captured_authoring = binding_authoring(cx, &binding);
+
+    let outcome = cx
+        .update_window_entity(&host, |host, window, cx| host.close_in_window(window, cx))
+        .expect("host closes without window-owned interaction");
+    assert_eq!(outcome.reason(), ViewCloseReason::HostClosed);
+    cx.read_entity(&binding, |binding, _| {
+        assert!(matches!(
+            binding.authoring(),
+            Err(OpenGpuiNodeAuthoringError::Closed {
+                reason: ViewCloseReason::HostClosed,
+            })
+        ));
+    });
+
+    let closed_result = cx.update(|_, cx| {
+        captured_authoring.enqueue(
+            GraphCommand::set_node_data(0, node_id(), serde_json::json!("closed")),
+            cx,
+        )
+    });
+    assert!(matches!(
+        closed_result,
+        Err(OpenGpuiNodeAuthoringError::Closed {
+            reason: ViewCloseReason::HostClosed,
+        })
+    ));
+    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
 }
 
 #[open_gpui::test]
@@ -291,7 +460,10 @@ fn old_port_handle_cannot_dispatch_after_retry_or_same_instance_remount(
     registry.try_register(RENDERER, move |binding, _window, cx| {
         factory_attempts.set(factory_attempts.get().saturating_add(1));
         if factory_handle.borrow().is_none() {
-            *factory_handle.borrow_mut() = binding.read(cx).port_handle(port_id());
+            *factory_handle.borrow_mut() =
+                binding.read(cx).authoring().ok().and_then(|authoring| {
+                    authoring.port(port_id()).map(|port| port.handle().clone())
+                });
         }
         if factory_attempts.get() == 1 {
             return Err(OpenGpuiNodeMountError::new("retry interaction fixture"));
@@ -506,7 +678,10 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
     registry.try_register(RENDERER, move |binding, _window, cx| {
         factory_attempts.set(factory_attempts.get().saturating_add(1));
         if factory_handle.borrow().is_none() {
-            *factory_handle.borrow_mut() = binding.read(cx).port_handle(port_id());
+            *factory_handle.borrow_mut() =
+                binding.read(cx).authoring().ok().and_then(|authoring| {
+                    authoring.port(port_id()).map(|port| port.handle().clone())
+                });
         }
         if factory_attempts.get() == 1 {
             return Err(OpenGpuiNodeMountError::new("retry interaction ABA fixture"));
@@ -589,13 +764,11 @@ fn revoked_port_prepaint_cannot_cancel_replacement_mount_drag(cx: &mut open_gpui
     });
 }
 
-fn binding_read(
+fn binding_authoring(
     cx: &mut open_gpui::VisualTestContext,
     binding: &Entity<OpenGpuiNodeBinding>,
-) -> OpenGpuiNodeBindingRead {
-    cx.read_entity(binding, |binding, _| {
-        binding.snapshot().read().expect("live binding read")
-    })
+) -> OpenGpuiNodeAuthoring {
+    cx.read_entity(binding, |binding, _| binding.authoring().unwrap())
 }
 
 fn assert_revoked_binding(
@@ -604,10 +777,9 @@ fn assert_revoked_binding(
 ) {
     cx.read_entity(binding, |binding, _| {
         assert!(matches!(
-            binding.snapshot().read(),
-            Err(OpenGpuiNodeBindingReadError::Retired { node }) if node == node_id()
+            binding.authoring(),
+            Err(OpenGpuiNodeAuthoringError::RetiredMount { node }) if node == node_id()
         ));
-        assert!(binding.port_handle(port_id()).is_none());
         assert!(binding.activity().is_revoked());
     });
     assert!(
@@ -616,29 +788,28 @@ fn assert_revoked_binding(
     );
 }
 
-fn assert_stale_reads_rejected(
-    stale_execute: OpenGpuiNodeBindingRead,
-    stale_handles: OpenGpuiNodeBindingRead,
+fn assert_stale_authoring_rejected(
+    stale_execute: OpenGpuiNodeAuthoring,
+    stale_facts: OpenGpuiNodeAuthoring,
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &mut open_gpui::VisualTestContext,
 ) {
-    let stale_result = cx.update(|_, cx| {
-        stale_execute.enqueue_command(cx, |_| panic!("retired read must not build a command"))
-    });
+    let command = GraphCommand::set_node_data(
+        stale_execute.revision(),
+        node_id(),
+        serde_json::json!("retired authoring must not execute"),
+    );
+    let stale_result = cx.update(|_, cx| stale_execute.enqueue(command, cx));
     assert!(matches!(
         stale_result,
-        Err(OpenGpuiNodeBindingReadError::Retired { node }) if node == node_id()
+        Err(OpenGpuiNodeAuthoringError::RetiredMount { node }) if node == node_id()
     ));
-    assert!(matches!(
-        stale_handles.port_connection_facts(port_id()),
-        Err(OpenGpuiNodeBindingReadError::Retired { node }) if node == node_id()
-    ));
-    cx.read_entity(binding, |binding, _| {
-        assert!(matches!(
-            binding.port_handles(&stale_handles),
-            Err(OpenGpuiNodeBindingReadError::Retired { node }) if node == node_id()
-        ));
-    });
+    let stale_port = stale_facts
+        .port(port_id())
+        .expect("owned authoring preserves coherent old facts");
+    assert_eq!(stale_port.facts().node, node_id());
+    assert_eq!(stale_port.handle().port(), port_id());
+    cx.read_entity(binding, |binding, _| assert!(binding.authoring().is_err()));
 }
 
 fn assert_live_replacement(
@@ -648,8 +819,7 @@ fn assert_live_replacement(
     value: serde_json::Value,
 ) {
     cx.read_entity(binding, |binding, _| {
-        assert!(binding.snapshot().read().is_ok());
-        assert!(binding.port_handle(port_id()).is_some());
+        assert!(binding.authoring().unwrap().port(port_id()).is_some());
         assert!(!binding.activity().is_revoked());
     });
     assert!(
@@ -657,13 +827,10 @@ fn assert_live_replacement(
             .expect("replacement layout invalidation")
     );
 
-    let read = binding_read(cx, binding);
+    let authoring = binding_authoring(cx, binding);
+    let command = GraphCommand::set_node_data(authoring.revision(), node_id(), value);
     let mut ticket = cx
-        .update(|_, cx| {
-            read.enqueue_command(cx, |read| {
-                GraphCommand::set_node_data(read.graph_revision(), node_id(), value)
-            })
-        })
+        .update(|_, cx| authoring.enqueue(command, cx))
         .expect("replacement binding enqueues");
     draw(cx);
     let outcome = poll_command_ticket(&mut ticket).expect("replacement ticket resolves");

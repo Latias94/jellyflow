@@ -8,12 +8,10 @@ use jellyflow::core::{
 use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
 use jellyflow::runtime::{
     GraphCommand, GraphCommandOutcome, GraphRevision, GraphSnapshot, IncidentEdgePolicy,
-    TopologyEdit, TopologyPort,
+    NodeInstanceKey, TopologyEdit, TopologyPort,
 };
-use jellyflow_open_gpui::{
-    OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeRegistryBuilder,
-};
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
+use jellyflow_open_gpui::{OpenGpuiCommandTicketResult, OpenGpuiNodeRegistryBuilder};
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Task,
     Window, div, px, rgb,
@@ -126,6 +124,7 @@ impl BlueprintCommandState {
 /// Retained Blueprint-style node whose dynamic pins are real graph ports.
 pub struct BlueprintCallNode {
     binding: Entity<OpenGpuiNodeBinding>,
+    instance: NodeInstanceKey,
     command: BlueprintCommandState,
     command_task: Option<Task<()>>,
     diagnostic: Option<String>,
@@ -133,9 +132,10 @@ pub struct BlueprintCallNode {
 
 impl BlueprintCallNode {
     #[must_use]
-    pub fn new(binding: Entity<OpenGpuiNodeBinding>) -> Self {
+    pub fn new(binding: Entity<OpenGpuiNodeBinding>, instance: NodeInstanceKey) -> Self {
         Self {
             binding,
+            instance,
             command: BlueprintCommandState::Idle,
             command_task: None,
             diagnostic: None,
@@ -146,18 +146,18 @@ impl BlueprintCallNode {
         if !self.command.is_idle() {
             return;
         }
-        let result = read_blueprint_binding(&self.binding, cx).and_then(|(node_id, facts)| {
+        let result = read_blueprint_binding(&self.binding, cx).and_then(|authoring| {
             let next_index = next_blueprint_input_index(
-                facts
+                authoring
                     .ports()
-                    .filter_map(|port| blueprint_input_index(port.port())),
+                    .filter_map(|port| blueprint_input_index(port.facts())),
             );
             let pin = BlueprintPin::new(
                 PortId::new(),
                 format!("input_{next_index}"),
                 TypeDesc::Float,
             )?;
-            self.enqueue_pin_intent(facts, node_id, BlueprintPinIntent::add(pin), cx)
+            self.enqueue_pin_intent(authoring, BlueprintPinIntent::add(pin), cx)
         });
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
@@ -168,18 +168,19 @@ impl BlueprintCallNode {
         let Some(intent) = self.command.retry_intent().cloned() else {
             return;
         };
-        let result = read_blueprint_binding(&self.binding, cx).and_then(|(node_id, facts)| {
+        let result = read_blueprint_binding(&self.binding, cx).and_then(|authoring| {
+            let node_id = authoring.node_id();
             if blueprint_intent_is_satisfied(
                 node_id,
-                facts.node(),
-                &collect_bound_ports(&facts),
+                authoring.node(),
+                &collect_bound_ports(&authoring),
                 &intent,
             ) {
                 self.command = BlueprintCommandState::Idle;
                 self.diagnostic = None;
                 return Ok(());
             }
-            self.enqueue_pin_intent(facts, node_id, intent.clone(), cx)
+            self.enqueue_pin_intent(authoring, intent.clone(), cx)
         });
         if let Err(error) = result {
             self.command = BlueprintCommandState::ReadyToRetry(intent);
@@ -189,17 +190,17 @@ impl BlueprintCallNode {
 
     fn enqueue_pin_intent(
         &mut self,
-        facts: OpenGpuiNodeBindingRead,
-        node_id: NodeId,
+        authoring: OpenGpuiNodeAuthoring,
         intent: BlueprintPinIntent,
         cx: &mut Context<Self>,
     ) -> Result<(), ShaderNodeError> {
-        let expected_revision = facts.graph_revision();
-        let ports = collect_bound_ports(&facts);
+        let node_id = authoring.node_id();
+        let expected_revision = authoring.revision();
+        let ports = collect_bound_ports(&authoring);
         let command = match build_blueprint_pin_command(
             expected_revision,
             node_id,
-            facts.node(),
+            authoring.node(),
             &ports,
             intent.action.clone(),
             intent.incident_edges,
@@ -210,7 +211,7 @@ impl BlueprintCallNode {
                 return Err(error);
             }
         };
-        let ticket = match facts.enqueue_command(cx, |_| command) {
+        let ticket = match authoring.enqueue(command, cx) {
             Ok(ticket) => ticket,
             Err(error) => {
                 self.command = BlueprintCommandState::ReadyToRetry(intent);
@@ -344,36 +345,35 @@ impl Render for BlueprintCallNode {
         let drag_handle = self.binding.read(cx).drag_handle();
         let (instance_scope, title, ports, observation) = {
             let binding = self.binding.read(cx);
-            let instance_scope = format!("{:?}", binding.snapshot().instance());
-            let node_id = binding.snapshot().node_id();
-            let facts = binding.snapshot().read().and_then(|facts| {
-                let title = facts
+            let instance_scope = format!("{:?}", self.instance);
+            let facts = binding.authoring().map(|authoring| {
+                let node_id = authoring.node_id();
+                let title = authoring
                     .node()
                     .data
                     .get("title")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Function Call")
                     .to_owned();
-                let observed_ports = collect_bound_ports(&facts);
-                let ports = facts
+                let observed_ports = collect_bound_ports(&authoring);
+                let ports = authoring
                     .ports()
-                    .zip(binding.port_handles(&facts)?)
-                    .map(|(port, handle)| ShaderPort {
+                    .map(|port| ShaderPort {
                         id: port.id(),
-                        key: port.port().key.clone(),
-                        direction: port.port().dir,
-                        label: blueprint_port_label(port.port()).into(),
-                        handle,
+                        key: port.facts().key.clone(),
+                        direction: port.facts().dir,
+                        label: blueprint_port_label(port.facts()).into(),
+                        handle: port.handle().clone(),
                     })
                     .collect();
-                Ok((
+                (
                     title,
                     ports,
-                    facts.graph_revision(),
+                    authoring.revision(),
                     node_id,
-                    facts.node().clone(),
+                    authoring.node().clone(),
                     observed_ports,
-                ))
+                )
             });
             match facts {
                 Ok((title, ports, revision, node_id, node, observed_ports)) => (
@@ -546,7 +546,13 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
 
 pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder) {
     registry.register(BLUEPRINT_CALL_RENDERER, |binding, _window, cx| {
-        cx.new(|_| BlueprintCallNode::new(binding))
+        let instance = binding
+            .read(cx)
+            .authoring()
+            .expect("a Blueprint node factory must receive a live authoring binding")
+            .instance()
+            .clone();
+        cx.new(|_| BlueprintCallNode::new(binding, instance))
     });
 }
 
@@ -595,21 +601,20 @@ pub fn plan_blueprint_pin_action(
 fn read_blueprint_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &mut App,
-) -> Result<(NodeId, OpenGpuiNodeBindingRead), ShaderNodeError> {
-    let node_id = binding.read(cx).snapshot().node_id();
-    let facts = binding.read(cx).snapshot().read().map_err(|error| {
+) -> Result<OpenGpuiNodeAuthoring, ShaderNodeError> {
+    let authoring = binding.read(cx).authoring().map_err(|error| {
         ShaderNodeError::BindingUnavailable {
             message: error.to_string(),
         }
     })?;
-    ensure_blueprint_kind(node_id, facts.node())?;
-    Ok((node_id, facts))
+    ensure_blueprint_kind(authoring.node_id(), authoring.node())?;
+    Ok(authoring)
 }
 
-fn collect_bound_ports(facts: &OpenGpuiNodeBindingRead) -> BTreeMap<PortId, Port> {
-    facts
+fn collect_bound_ports(authoring: &OpenGpuiNodeAuthoring) -> BTreeMap<PortId, Port> {
+    authoring
         .ports()
-        .map(|bound| (bound.id(), bound.port().clone()))
+        .map(|port| (port.id(), port.facts().clone()))
         .collect()
 }
 

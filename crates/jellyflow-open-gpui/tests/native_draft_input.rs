@@ -8,11 +8,11 @@ use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
     GraphCommand, GraphRevision, GraphRuntime, IncidentEdgePolicy, TopologyEdit, ViewSessionOptions,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReconcileDecision,
     DraftResolutionDecision, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiNodeActivityRegistry, OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
-    RevisionedDraft,
+    OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiSceneHost, RevisionedDraft,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
@@ -111,15 +111,21 @@ impl NativeDraftNode {
         let expected_revision = intent.expected_revision();
         let value = intent.value().clone();
         let node = node_id();
-        let ticket = self
+        let authoring = self
             .binding
             .read(cx)
-            .snapshot()
-            .read()
-            .expect("live retained binding")
-            .enqueue_command(cx, |_| {
-                GraphCommand::set_node_data(expected_revision, node, value.into())
-            })
+            .authoring()
+            .expect("live retained binding");
+        assert_eq!(
+            authoring.revision(),
+            expected_revision,
+            "draft intent must target the current authoring revision",
+        );
+        let ticket = authoring
+            .enqueue(
+                GraphCommand::set_node_data(expected_revision, node, value.into()),
+                cx,
+            )
             .expect("binding command enqueue");
         self.reapply_task = Some(cx.spawn(async move |node, cx| {
             let outcome = ticket.await.expect("binding command dispatch");
@@ -532,13 +538,17 @@ fn binding_value(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &open_gpui::App,
 ) -> (GraphRevision, String) {
-    let read = binding
+    let authoring = binding
         .read(cx)
-        .snapshot()
-        .read()
-        .expect("live binding snapshot");
-    let value = read.node().data.as_str().expect("string prompt").to_owned();
-    (read.graph_revision(), value)
+        .authoring()
+        .expect("live binding authoring");
+    let value = authoring
+        .node()
+        .data
+        .as_str()
+        .expect("string prompt")
+        .to_owned();
+    (authoring.revision(), value)
 }
 
 fn draw(cx: &mut open_gpui::VisualTestContext) {

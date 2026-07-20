@@ -11,10 +11,10 @@ use jellyflow::runtime::{
     AdapterEnvironment, GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome,
     TopologyEdit, TopologyPort, ViewSessionEvent, ViewSessionOptions, WeakViewSession,
 };
-use jellyflow_open_gpui::{
-    OpenGpuiCommandTicketResult, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead,
-    OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+use jellyflow_open_gpui::authoring::{
+    OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
 };
+use jellyflow_open_gpui::{OpenGpuiCommandTicketResult, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
 };
@@ -117,15 +117,25 @@ impl Render for NativeTracerNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let binding = self.binding.read(cx);
-        let read = binding
-            .snapshot()
-            .read()
+        let authoring = self
+            .binding
+            .read(cx)
+            .authoring()
             .expect("retained tracer binding stays live");
-        let has_dynamic_port = read.port(self.ids.dynamic_port).is_some();
-        let ports = binding
-            .port_handles(&read)
-            .expect("all tracer ports belong to this retained binding");
+        let has_dynamic_port = authoring.port(self.ids.dynamic_port).is_some();
+        let expected_port_order = authoring.node().ports.clone();
+        let ports = authoring
+            .ports()
+            .map(|port| {
+                assert_eq!(port.facts().node, self.ids.node);
+                (port.id(), port.handle().clone())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ports.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            expected_port_order,
+            "authoring pairs graph facts and native handles in node port order",
+        );
 
         let mode_node = cx.weak_entity();
         let mode = Select::new("adapter-tracer-mode", "Mode")
@@ -151,10 +161,13 @@ impl Render for NativeTracerNode {
             },
         )
         .on_click(move |_, _, cx| {
-            let snapshot = command_binding.read(cx).snapshot().clone();
-            let read = snapshot.read().expect("command binding stays live");
-            let ticket = read
-                .enqueue_command(cx, |read| next_topology_command(read, command_ids))
+            let authoring = command_binding
+                .read(cx)
+                .authoring()
+                .expect("command binding stays live");
+            let command = next_topology_command(&authoring, command_ids);
+            let ticket = authoring
+                .enqueue(command, cx)
                 .expect("native command enters the host journal");
             let observations = Rc::clone(&observations);
             cx.spawn(async move |_| {
@@ -185,10 +198,10 @@ impl Render for NativeTracerNode {
                     .child(command),
             );
 
-        for (index, handle) in ports.into_iter().enumerate() {
+        for (index, (_, handle)) in ports.into_iter().enumerate() {
             let top = 44.0 + index as f32 * 30.0;
             let marker = handle.measure(div().w(px(14.0)).h(px(14.0)));
-            root = if handle.side() == jellyflow_open_gpui::OpenGpuiPortSide::Left {
+            root = if handle.side() == OpenGpuiPortSide::Left {
                 root.child(div().absolute().left(px(0.0)).top(px(top)).child(marker))
             } else {
                 root.child(div().absolute().right(px(0.0)).top(px(top)).child(marker))
@@ -412,16 +425,17 @@ fn native_vertical_tracer_runs_commands_and_layout_through_one_real_host_frame(
     });
 }
 
-fn next_topology_command(read: &OpenGpuiNodeBindingRead, ids: TracerIds) -> GraphCommand {
-    if read.port(ids.dynamic_port).is_some() {
-        return GraphCommand::undo(read.graph_revision());
+fn next_topology_command(authoring: &OpenGpuiNodeAuthoring, ids: TracerIds) -> GraphCommand {
+    if authoring.port(ids.dynamic_port).is_some() {
+        return GraphCommand::undo(authoring.revision());
     }
-    let base = read
+    let base = authoring
         .port(ids.base_port)
         .expect("tracer base port exists")
+        .facts()
         .clone();
     GraphCommand::topology(
-        read.graph_revision(),
+        authoring.revision(),
         TopologyEdit::new().replace_node_ports(
             ids.node,
             [

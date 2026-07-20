@@ -7,10 +7,10 @@ use jellyflow::core::{
     NodeId, NodeKindKey, PortDirection, PortId,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_open_gpui::accessibility::OPEN_GPUI_DIAGNOSTIC_ROLE;
+use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
-use jellyflow_open_gpui::{
-    OPEN_GPUI_DIAGNOSTIC_ROLE, OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle,
-};
+use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use open_gpui::{
     AnyElement, Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
     SharedString, Stateful, StatefulInteractiveElement, Styled, div, px, rgb,
@@ -226,7 +226,6 @@ fn workflow_header_port_elements(ports: Vec<WorkflowPort>) -> Vec<AnyElement> {
                         .items_center()
                         .justify_center()
                         .child(chrome),
-                    |_, _, _| {},
                 );
             let top = px((WORKFLOW_HEADER_HEIGHT - WORKFLOW_PORT_DIAMETER) / 2.0);
             let edge_offset = px(-WORKFLOW_PORT_DIAMETER / 2.0);

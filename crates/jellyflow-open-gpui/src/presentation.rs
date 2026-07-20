@@ -411,7 +411,7 @@ pub struct OpenGpuiNodePresentationSnapshot {
 
 impl OpenGpuiNodePresentationSnapshot {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         node: OpenGpuiNodeInteractionState,
         ports: impl IntoIterator<Item = (PortId, OpenGpuiPortInteractionState)>,
     ) -> Self {
@@ -438,19 +438,22 @@ impl OpenGpuiNodePresentationSnapshot {
     }
 
     #[must_use]
-    pub fn with_node(mut self, node: OpenGpuiNodeInteractionState) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_node(mut self, node: OpenGpuiNodeInteractionState) -> Self {
         self.node = node;
         self
     }
 
     #[must_use]
-    pub fn with_port(mut self, port: PortId, state: OpenGpuiPortInteractionState) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_port(mut self, port: PortId, state: OpenGpuiPortInteractionState) -> Self {
         Arc::make_mut(&mut self.ports).insert(port, state);
         self
     }
 
     #[must_use]
-    pub fn without_port(mut self, port: PortId) -> Self {
+    #[cfg(test)]
+    pub(crate) fn without_port(mut self, port: PortId) -> Self {
         Arc::make_mut(&mut self.ports).remove(&port);
         self
     }

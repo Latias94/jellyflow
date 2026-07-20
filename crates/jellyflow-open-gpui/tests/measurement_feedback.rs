@@ -9,8 +9,9 @@ use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
     GraphCommand, GraphRuntime, PublishedPortOutcome, ViewCloseReason, ViewSessionOptions,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy, OpenGpuiNodeBinding,
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy,
     OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizeConvergence,
     OpenGpuiNodeSizePolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
 };
@@ -103,12 +104,17 @@ impl Render for FixedIntrinsicChildNode {
     ) -> impl open_gpui::IntoElement {
         self.renders.set(self.renders.get().saturating_add(1));
         let binding = self.binding.read(cx);
-        let input = binding
-            .port_handle(input_id())
-            .expect("input belongs to this node");
-        let output = binding
-            .port_handle(output_id())
-            .expect("output belongs to this node");
+        let authoring = binding.authoring().expect("live authoring view");
+        let input = authoring
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        let output = authoring
+            .port(output_id())
+            .expect("output belongs to this node")
+            .handle()
+            .clone();
 
         div()
             .relative()
@@ -144,12 +150,17 @@ impl Render for RepeatedPrepaintPortNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let input = binding
-            .port_handle(input_id())
-            .expect("input belongs to this node");
-        let output = binding
-            .port_handle(output_id())
-            .expect("output belongs to this node");
+        let authoring = binding.authoring().expect("live authoring view");
+        let input = authoring
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        let output = authoring
+            .port(output_id())
+            .expect("output belongs to this node")
+            .handle()
+            .clone();
 
         let mut node = div()
             .relative()
@@ -188,12 +199,17 @@ impl Render for TransactionalMeasuredPortsNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let input = binding
-            .port_handle(input_id())
-            .expect("input belongs to this node");
-        let output = binding
-            .port_handle(output_id())
-            .expect("output belongs to this node");
+        let authoring = binding.authoring().expect("live authoring view");
+        let input = authoring
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        let output = authoring
+            .port(output_id())
+            .expect("output belongs to this node")
+            .handle()
+            .clone();
 
         let mut node = div().relative().size_full().child(
             div()
@@ -239,16 +255,18 @@ impl Render for PrefixQueuedContentNode {
     ) -> impl open_gpui::IntoElement {
         self.render_count = self.render_count.saturating_add(1);
         if self.render_count == 2 {
-            let snapshot = self.binding.read(cx).snapshot().clone();
-            let read = snapshot.read().expect("prefix fixture binding stays live");
-            let _ticket = read
-                .enqueue_command(cx, |read| {
-                    GraphCommand::set_node_data(
-                        read.graph_revision(),
-                        NodeId::from_u128(10),
-                        serde_json::json!({ "prefix": true }),
-                    )
-                })
+            let authoring = self
+                .binding
+                .read(cx)
+                .authoring()
+                .expect("prefix fixture binding stays live");
+            let command = GraphCommand::set_node_data(
+                authoring.revision(),
+                NodeId::from_u128(10),
+                serde_json::json!({ "prefix": true }),
+            );
+            let _ticket = authoring
+                .enqueue(command, cx)
                 .expect("prefix fixture command enters the host journal");
         }
         self.binding.read(cx).measure_content(
@@ -268,8 +286,7 @@ impl Render for AlternatingContentNode {
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
         let height = binding
-            .snapshot()
-            .read()
+            .authoring()
             .expect("alternating fixture binding stays live")
             .node()
             .size
@@ -308,8 +325,7 @@ impl Render for StaleContentMeasuredNode {
         }
         let binding = self.binding.read(cx);
         let height = binding
-            .snapshot()
-            .read()
+            .authoring()
             .expect("stale fixture binding stays live")
             .node()
             .data
@@ -326,12 +342,16 @@ impl Render for RuntimeDroppingIncompleteNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        drop(self.runtime_owner.borrow_mut().take());
         let input = self
             .binding
             .read(cx)
-            .port_handle(input_id())
-            .expect("input belongs to this node");
+            .authoring()
+            .expect("authoring opens before the runtime is dropped")
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        drop(self.runtime_owner.borrow_mut().take());
         div()
             .size_full()
             .child(input.measure(div().w(px(14.0)).h(px(14.0))))
@@ -364,12 +384,17 @@ impl Render for MeasuredPortsNode {
                 .unwrap();
         }
         let binding = self.binding.read(cx);
-        let input = binding
-            .port_handle(input_id())
-            .expect("input belongs to this node");
-        let output = binding
-            .port_handle(output_id())
-            .expect("output belongs to this node");
+        let authoring = binding.authoring().expect("live authoring view");
+        let input = authoring
+            .port(input_id())
+            .expect("input belongs to this node")
+            .handle()
+            .clone();
+        let output = authoring
+            .port(output_id())
+            .expect("output belongs to this node")
+            .handle()
+            .clone();
 
         let mut node = div()
             .size_full()
@@ -579,16 +604,15 @@ fn incomplete_layout_keeps_command_and_authoritative_route_until_atomic_refresh(
         .clone()
         .expect("captured valid sibling binding");
     let mut ticket = cx.update_entity(&sibling, |binding, cx| {
-        let snapshot = binding.snapshot().clone();
-        let read = snapshot.read().expect("live sibling binding");
-        read.enqueue_command(cx, |read| {
-            GraphCommand::set_node_data(
-                read.graph_revision(),
-                NodeId::from_u128(11),
-                serde_json::json!({ "same-frame": "applied" }),
-            )
-        })
-        .expect("queue command beside incomplete layout")
+        let authoring = binding.authoring().expect("live sibling binding");
+        let command = GraphCommand::set_node_data(
+            authoring.revision(),
+            NodeId::from_u128(11),
+            serde_json::json!({ "same-frame": "applied" }),
+        );
+        authoring
+            .enqueue(command, cx)
+            .expect("queue command beside incomplete layout")
     });
     draw(cx);
 

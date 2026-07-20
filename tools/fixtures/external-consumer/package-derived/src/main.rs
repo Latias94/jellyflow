@@ -9,14 +9,15 @@ use jellyflow_core::{
     PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, egui};
+use jellyflow_open_gpui::authoring::{OpenGpuiNodeBinding, OpenGpuiPortHandle};
 use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
     OpenGpuiEdgePainterRegistry, OpenGpuiEdgeStrokePattern, OpenGpuiEdgeTone,
 };
 use jellyflow_open_gpui::{
-    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeBinding,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy,
-    OpenGpuiPortHandle, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+    OpenGpuiContentHeightPolicy, OpenGpuiGraphTheme, OpenGpuiNodeRegistrationPolicy,
+    OpenGpuiNodeRegistry, OpenGpuiNodeSizePolicy, OpenGpuiRendererRegistrationStatus,
+    OpenGpuiSceneHost,
 };
 use jellyflow_runtime::io::GraphFile;
 use jellyflow_runtime::schema::{
@@ -70,10 +71,17 @@ impl Render for ProductNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let base = binding
-            .port_handle(PortId::from_u128(11))
-            .expect("package fixture base port");
-        let dynamic = binding.port_handle(PortId::from_u128(12));
+        let authoring = binding
+            .authoring()
+            .expect("package fixture opens one coherent authoring view");
+        let base = authoring
+            .port(PortId::from_u128(11))
+            .expect("package fixture base port")
+            .handle()
+            .clone();
+        let dynamic = authoring
+            .port(PortId::from_u128(12))
+            .map(|port| port.handle().clone());
         let drag_header = binding
             .drag_handle()
             .wrap(div().h(px(12.0)).child(self.state.title.clone()));
@@ -135,7 +143,6 @@ fn package_port_marker(handle: OpenGpuiPortHandle) -> AnyElement {
                 .border_2()
                 .border_color(color)
                 .bg(color),
-            |_, _, _| {},
         )
         .into_any_element()
 }

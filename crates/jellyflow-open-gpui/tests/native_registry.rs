@@ -1,6 +1,6 @@
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryIssueKind,
-    OpenGpuiRendererRegistrationStatus,
+    OpenGpuiNodeRegistry, OpenGpuiNodeRegistryIssueKind, OpenGpuiRendererRegistrationStatus,
 };
 use open_gpui::{App, AppContext, Context, Entity, ParentElement, Render, Window, div};
 

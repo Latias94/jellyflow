@@ -7,7 +7,8 @@
 
 pub mod accessibility;
 pub mod activity;
-pub mod binding;
+pub mod authoring;
+mod binding;
 pub mod chrome;
 mod command_journal;
 pub mod draft;
@@ -24,21 +25,9 @@ mod semantic_zoom;
 mod size_policy;
 pub mod theme;
 
-pub use accessibility::{
-    OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_EDGE_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE,
-    OPEN_GPUI_NODE_ROLE, OPEN_GPUI_RECONNECT_HANDLE_ROLE, OPEN_GPUI_SCENE_ROLE,
-    OPEN_GPUI_STATIC_PORT_ROLE, open_gpui_edge_element_id, open_gpui_interaction_element_id,
-    open_gpui_node_element_id, open_gpui_node_measurement_element_id, open_gpui_port_element_id,
-    open_gpui_port_measurement_element_id, open_gpui_reconnect_element_id,
-    open_gpui_scene_element_id, open_gpui_scene_measurement_element_id,
-};
 pub use activity::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
     OpenGpuiNodeActivityRegistry,
-};
-pub use binding::{
-    OpenGpuiBoundPort, OpenGpuiNodeBinding, OpenGpuiNodeBindingRead, OpenGpuiNodeBindingReadError,
-    OpenGpuiNodeBindingSnapshot,
 };
 pub use command_journal::{
     OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, OpenGpuiCommandEnqueueError, OpenGpuiCommandTicket,
@@ -67,11 +56,6 @@ pub use interaction::{
 };
 pub use navigation::{OpenGpuiNavigationConfig, OpenGpuiNavigationProfile};
 pub use node_drag_handle::OpenGpuiNodeDragHandle;
-pub use port_handle::{OpenGpuiPortAnchor, OpenGpuiPortHandle, OpenGpuiPortSide};
-pub use presentation::{
-    OpenGpuiNodeInteractionState, OpenGpuiNodeLod, OpenGpuiNodePresentationSnapshot,
-    OpenGpuiPortCandidateState, OpenGpuiPortInteractionState, OpenGpuiSettlementState,
-};
 pub use registry::{
     OpenGpuiNodeMountError, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
     OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRegistryConfigError, OpenGpuiNodeRegistryIssue,

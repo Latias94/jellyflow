@@ -33,7 +33,7 @@ use crate::presentation::OpenGpuiPortInteractionState;
 use crate::theme::OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER;
 
 pub(crate) type OpenGpuiHostPortListener =
-    Rc<dyn Fn(&OpenGpuiPortEvent, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&OpenGpuiPortEvent, Option<OpenGpuiPortListener>, &mut Window, &mut App) + 'static>;
 pub(crate) type OpenGpuiHostPortHoverListener =
     Rc<dyn Fn(&NodeInstanceKey, PortId, bool, &mut Window, &mut App) + 'static>;
 
@@ -274,14 +274,26 @@ impl OpenGpuiPortHandle {
         .into_any_element()
     }
 
-    /// Wraps a native port marker with measurement, pointer targeting, capture, and typed events.
+    /// Wraps a native port marker with host-owned graph interaction and accessibility behavior.
+    pub fn interactive(&self, child: impl IntoElement) -> AnyElement {
+        self.interactive_inner(child, None)
+    }
+
+    /// Wraps a native port marker and observes host-owned graph events while this mount is current.
     ///
-    /// The returned element remains a thin graph-semantic boundary. Its child is still an ordinary
-    /// Open GPUI element, while the callback receives start, move, release, and cancellation facts.
-    pub fn interactive(
+    /// The host reducer always runs first. If it retires the mount, the observer is not called.
+    pub fn interactive_with_observer(
         &self,
         child: impl IntoElement,
-        listener: impl Fn(OpenGpuiPortEvent, &mut Window, &mut App) + 'static,
+        observer: impl Fn(OpenGpuiPortEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        self.interactive_inner(child, Some(Rc::new(observer)))
+    }
+
+    fn interactive_inner(
+        &self,
+        child: impl IntoElement,
+        observer: Option<OpenGpuiPortListener>,
     ) -> AnyElement {
         let child = child.into_any_element();
         if !self.sink.admits(self.source) {
@@ -293,15 +305,18 @@ impl OpenGpuiPortHandle {
         let measurement_id =
             open_gpui_port_measurement_element_id(self.sink.host, &self.instance, self.port);
         let owner = port_drag_owner(self.instance.clone(), self.port);
-        let product_listener: OpenGpuiPortListener = Rc::new(listener);
         let host_listener = self.sink.host_port_listener.clone();
         let mount = self.sink.mount.clone();
         let listener: OpenGpuiPortListener = Rc::new(move |event, window, cx| {
             if !mount.is_live() && !is_retirement_cancellation(&event) {
                 return;
             }
-            host_listener(&event, window, cx);
-            product_listener(event, window, cx);
+            let observer = if is_retirement_cancellation(&event) {
+                None
+            } else {
+                observer.clone()
+            };
+            host_listener(&event, observer, window, cx);
         });
         let keyboard_listener = listener.clone();
         let keyboard_owner = owner.clone();

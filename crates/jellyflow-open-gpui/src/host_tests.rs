@@ -20,6 +20,7 @@ use open_gpui::{
     ScrollWheelEvent, Styled, TouchPhase, VisualContext, Window, div, point, px,
 };
 
+use crate::authoring::OpenGpuiPortHandle;
 use crate::chrome::OpenGpuiEdgeVisualState;
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
 use crate::interaction::{
@@ -30,7 +31,7 @@ use crate::interaction::{
 use crate::size_policy::{OpenGpuiNodeSizeEpoch, OpenGpuiNodeSizeUpdate};
 use crate::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy,
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeSizePolicy, OpenGpuiPortHandle,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeSizePolicy,
 };
 
 use super::scene_render::{edge_path_endpoints, visit_edge_chrome_wires_in_paint_order};
@@ -81,24 +82,22 @@ impl Render for RoutedNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let node = binding.snapshot().node_id();
-        let read = binding.snapshot().read().expect("live node binding");
-        let port = read
+        let authoring = binding.authoring().expect("live node authoring");
+        let node = authoring.node_id();
+        let port = authoring
             .ports()
             .find(|port| {
                 matches!(
-                    (read.node().pos.x, port.port().dir),
+                    (authoring.node().pos.x, port.facts().dir),
                     (x, PortDirection::Out) if x < 300.0
                 ) || matches!(
-                    (read.node().pos.x, port.port().dir),
+                    (authoring.node().pos.x, port.facts().dir),
                     (x, PortDirection::In) if x >= 300.0
                 )
             })
             .expect("one routed port for this fixture node");
-        let direction = port.port().dir;
-        let handle = binding
-            .port_handle(port.id())
-            .expect("routed port belongs to node");
+        let direction = port.facts().dir;
+        let handle = port.handle().clone();
         let drag_handle = binding.drag_handle();
 
         let selector = test_port_selector(port.id(), direction);
@@ -172,21 +171,21 @@ impl Render for InteractiveRoutedNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let read = binding.snapshot().read().expect("live node binding");
-        let port = read
+        let authoring = binding.authoring().expect("live node authoring");
+        let port = authoring
             .ports()
             .find(|port| {
                 matches!(
-                    (read.node().pos.x, port.port().dir),
+                    (authoring.node().pos.x, port.facts().dir),
                     (x, PortDirection::Out) if x < 300.0
                 ) || matches!(
-                    (read.node().pos.x, port.port().dir),
+                    (authoring.node().pos.x, port.facts().dir),
                     (x, PortDirection::In) if x >= 300.0
                 )
             })
             .expect("one routed port for this fixture node");
-        let direction = port.port().dir;
-        let handle = binding.port_handle(port.id()).expect("real port");
+        let direction = port.facts().dir;
+        let handle = port.handle().clone();
         let drag_handle = binding.drag_handle();
         let selector = test_port_selector(port.id(), direction);
         let marker = div()
@@ -197,7 +196,7 @@ impl Render for InteractiveRoutedNode {
             PortDirection::In => div().absolute().left(px(0.0)).top(px(43.0)),
             PortDirection::Out => div().absolute().right(px(0.0)).top(px(43.0)),
         };
-        let interactive = handle.interactive(marker, {
+        let interactive = handle.interactive_with_observer(marker, {
             let events = self.events.clone();
             move |_, _, _| events.set(events.get() + 1)
         });
@@ -238,11 +237,8 @@ impl Render for StickyPortNode {
     ) -> impl open_gpui::IntoElement {
         if self.handle.is_none() {
             let binding = self.binding.read(cx);
-            let read = binding.snapshot().read().expect("live sticky binding");
-            self.handle = read
-                .ports()
-                .next()
-                .and_then(|port| binding.port_handle(port.id()));
+            let authoring = binding.authoring().expect("live sticky binding");
+            self.handle = authoring.ports().next().map(|port| port.handle().clone());
         }
 
         let mut root = div().relative().size_full();
@@ -279,7 +275,13 @@ fn mounted_host_scopes_environment_and_layout_invalidation_to_its_view(
     let captured_binding = source_binding.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        if binding.read(cx).snapshot().node_id() == source {
+        if binding
+            .read(cx)
+            .authoring()
+            .expect("live node authoring")
+            .node_id()
+            == source
+        {
             *captured_binding.borrow_mut() = Some(binding.clone());
         }
         cx.new(|_| RoutedNode { binding })
@@ -1797,7 +1799,13 @@ fn host_overview_drag_surface_moves_node_while_public_native_handle_is_inert(
     let captured_binding = binding_capture.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        if binding.read(cx).snapshot().node_id() == NodeId::from_u128(10) {
+        if binding
+            .read(cx)
+            .authoring()
+            .expect("live node authoring")
+            .node_id()
+            == NodeId::from_u128(10)
+        {
             *captured_binding.borrow_mut() = Some(binding.clone());
         }
         cx.new(|_| RoutedNode { binding })
@@ -2450,7 +2458,11 @@ fn sixty_fifth_real_node_gesture_cancels_without_side_effects_then_retries_after
     let factory_leases = leases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding.read(cx).snapshot().node_id();
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("live node authoring")
+            .node_id();
         if node != protected_capacity_scene_node_id() {
             let activity = binding.read(cx).activity().clone();
             let lease = activity.acquire(OpenGpuiActivityKind::Focus).unwrap();
@@ -3070,7 +3082,7 @@ fn coalesced_remove_undo_and_payload_patch_revoke_the_retired_incarnation_withou
     assert!(change.is_stale_for(&old_instance));
     let retired = host.update(cx, |host, cx| host.apply_node_changes(&changes, cx));
     for mounted in retired {
-        mounted.revoke();
+        mounted.retire();
     }
 
     assert!(old_activity.is_revoked());
@@ -5799,7 +5811,13 @@ fn runtime_drop_does_not_guess_third_party_pointer_ownership(cx: &mut open_gpui:
     let factory_lease = capture_lease.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, window, cx| {
-        if binding.read(cx).snapshot().node_id() == source {
+        if binding
+            .read(cx)
+            .authoring()
+            .expect("live node authoring")
+            .node_id()
+            == source
+        {
             *factory_lease.borrow_mut() = Some(
                 binding
                     .read(cx)
@@ -5897,7 +5915,11 @@ fn create_from_wire_overlay_capacity_failure_aborts_then_retries_after_release(
     let factory_leases = leases.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let node = binding.read(cx).snapshot().node_id();
+        let node = binding
+            .read(cx)
+            .authoring()
+            .expect("live node authoring")
+            .node_id();
         if node != protected_capacity_scene_node_id() {
             let lease = binding
                 .read(cx)

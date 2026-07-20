@@ -135,7 +135,7 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) feedback_failures: u64,
     pub(super) layout_rejections: u64,
     pub(super) measurement_failures: u64,
-    pub(super) binding_snapshot_builds: u64,
+    pub(super) binding_mount_initializations: u64,
     pub(super) binding_reconciliation_visits: u64,
     pub(super) binding_updates: u64,
     pub(super) binding_notifications: u64,
@@ -232,8 +232,8 @@ impl OpenGpuiSceneHostStats {
     }
 
     #[must_use]
-    pub fn binding_snapshot_builds(self) -> u64 {
-        self.binding_snapshot_builds
+    pub fn binding_mount_initializations(self) -> u64 {
+        self.binding_mount_initializations
     }
 
     /// Number of retained instances reached through affected-node patch lookups.
@@ -480,20 +480,19 @@ impl Render for DiagnosticFallback {
         if let Some(binding) = &self.binding {
             let binding = binding.read(cx);
             drag_handle = Some(binding.drag_handle());
-            if let Ok(snapshot) = binding.snapshot().read() {
-                let handles = binding.port_handles(&snapshot).unwrap_or_default();
-                for (port, handle) in snapshot.ports().zip(handles) {
-                    let marker = handle
+            if let Ok(authoring) = binding.authoring() {
+                for port in authoring.ports() {
+                    let marker = port
+                        .handle()
                         .interactive(
                             div()
                                 .w(px(10.0))
                                 .h(px(10.0))
                                 .rounded_full()
                                 .bg(open_gpui::rgb(0x64748b)),
-                            |_, _, _| {},
                         )
                         .into_any_element();
-                    match port.port().dir {
+                    match port.facts().dir {
                         PortDirection::In => inputs.push(marker),
                         PortDirection::Out => outputs.push(marker),
                     }

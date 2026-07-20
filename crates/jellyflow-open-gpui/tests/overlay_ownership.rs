@@ -7,9 +7,10 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{CanvasInteractionPhase, GraphRuntime, ViewSessionOptions};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    OpenGpuiConnectionOptions, OpenGpuiNodeBinding, OpenGpuiNodeRegistry,
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+    OpenGpuiConnectionOptions, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
+    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, deferred, div,
@@ -56,7 +57,11 @@ impl Render for UnderlayNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let port = binding.port_handle(output_id());
+        let port = binding.authoring().ok().and_then(|authoring| {
+            authoring
+                .port(output_id())
+                .map(|port| port.handle().clone())
+        });
         let drag_handle = binding.drag_handle();
         let node_down = self.events.clone();
         let node_up = self.events.clone();
@@ -79,7 +84,7 @@ impl Render for UnderlayNode {
                         .right(px(8.0))
                         .top(px(43.0))
                         .child(
-                            handle.interactive(
+                            handle.interactive_with_observer(
                                 div()
                                     .debug_selector(|| PORT_SELECTOR.to_owned())
                                     .w(px(14.0))

@@ -3,8 +3,9 @@ mod multiply;
 
 use jellyflow::core::{NodeId, PortDirection, PortId, PortKey};
 use jellyflow::runtime::schema::NodeKindSpec;
+use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
-use jellyflow_open_gpui::{OpenGpuiNodeRegistryBuilder, OpenGpuiPortHandle};
+use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use open_gpui::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px, rgb,
 };
@@ -188,7 +189,6 @@ fn port_element(port: ShaderPort, selector_for: fn(PortId) -> String) -> ShaderP
                 .items_center()
                 .justify_center()
                 .child(chrome),
-            |_, _, _| {},
         );
     ShaderPortElement {
         key: port.key,

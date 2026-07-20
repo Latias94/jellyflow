@@ -71,25 +71,25 @@ fn node_root(host: EntityId, instance: &NodeInstanceKey) -> ElementId {
 
 /// Returns the stable accessibility identity for one native graph scene.
 #[must_use]
-pub fn open_gpui_scene_element_id(host: EntityId, view: ViewId) -> ElementId {
+pub(crate) fn open_gpui_scene_element_id(host: EntityId, view: ViewId) -> ElementId {
     (view_root(host, view), "scene").into()
 }
 
 /// Returns the host-scoped identity for the scene's interaction boundary.
 #[must_use]
-pub fn open_gpui_interaction_element_id(host: EntityId, view: ViewId) -> ElementId {
+pub(crate) fn open_gpui_interaction_element_id(host: EntityId, view: ViewId) -> ElementId {
     (view_root(host, view), "interactions").into()
 }
 
 /// Returns the stable accessibility identity for one retained node incarnation.
 #[must_use]
-pub fn open_gpui_node_element_id(host: EntityId, instance: &NodeInstanceKey) -> ElementId {
+pub(crate) fn open_gpui_node_element_id(host: EntityId, instance: &NodeInstanceKey) -> ElementId {
     (node_root(host, instance), "semantic").into()
 }
 
 /// Returns the host-scoped identity for one retained node's measurement wrapper.
 #[must_use]
-pub fn open_gpui_node_measurement_element_id(
+pub(crate) fn open_gpui_node_measurement_element_id(
     host: EntityId,
     instance: &NodeInstanceKey,
 ) -> ElementId {
@@ -98,20 +98,20 @@ pub fn open_gpui_node_measurement_element_id(
 
 /// Returns the host-scoped identity for one scene measurement wrapper.
 #[must_use]
-pub fn open_gpui_scene_measurement_element_id(host: EntityId, view: ViewId) -> ElementId {
+pub(crate) fn open_gpui_scene_measurement_element_id(host: EntityId, view: ViewId) -> ElementId {
     (view_root(host, view), "scene-measurement").into()
 }
 
 /// Returns the stable host-scoped identity for one rendered edge action.
 #[must_use]
-pub fn open_gpui_edge_element_id(host: EntityId, view: ViewId, edge: EdgeId) -> ElementId {
+pub(crate) fn open_gpui_edge_element_id(host: EntityId, view: ViewId, edge: EdgeId) -> ElementId {
     let edge_root: ElementId = (view_root(host, view), "edge").into();
     (edge_root, edge.0.to_string()).into()
 }
 
 /// Returns the stable host-scoped identity for one endpoint reconnect action.
 #[must_use]
-pub fn open_gpui_reconnect_element_id(
+pub(crate) fn open_gpui_reconnect_element_id(
     host: EntityId,
     view: ViewId,
     edge: EdgeId,
@@ -124,7 +124,7 @@ pub fn open_gpui_reconnect_element_id(
 
 /// Returns the stable Open GPUI identity for one real port incarnation.
 #[must_use]
-pub fn open_gpui_port_element_id(
+pub(crate) fn open_gpui_port_element_id(
     host: EntityId,
     instance: &NodeInstanceKey,
     port: PortId,
@@ -135,7 +135,7 @@ pub fn open_gpui_port_element_id(
 
 /// Returns the host-scoped identity for an interactive port's measurement wrapper.
 #[must_use]
-pub fn open_gpui_port_measurement_element_id(
+pub(crate) fn open_gpui_port_measurement_element_id(
     host: EntityId,
     instance: &NodeInstanceKey,
     port: PortId,

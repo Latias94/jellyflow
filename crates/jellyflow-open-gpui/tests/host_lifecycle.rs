@@ -9,9 +9,10 @@ use jellyflow::runtime::{
     GraphCommand, GraphRuntime, ViewCloseReason, ViewCloseRequest, ViewSessionError,
     ViewSessionOptions,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeBinding, OpenGpuiNodeMountError,
-    OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
+    OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div};
 

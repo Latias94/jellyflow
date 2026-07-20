@@ -6,9 +6,10 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{GraphCommand, GraphRuntime, ViewSessionOptions};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostStats,
+    OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostStats,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 
@@ -29,7 +30,12 @@ impl Render for BindingProbeNode {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let _ = self.binding.read(cx).snapshot().node_id();
+        let _ = self
+            .binding
+            .read(cx)
+            .authoring()
+            .expect("mounted binding opens authoring")
+            .node_id();
         div().child("binding probe")
     }
 }
@@ -112,12 +118,10 @@ fn one_node_change_updates_only_its_binding_across_four_views_at_scale(
         .iter()
         .find_map(|binding| {
             cx.read_entity(binding, |binding, _| {
-                let snapshot = binding.snapshot();
-                (snapshot.node_id() == changed).then(|| {
-                    let read = snapshot.read().unwrap();
-                    assert_eq!(snapshot.facts_revision(), 1);
-                    assert_eq!(read.graph_revision(), 1);
-                    read.node().data.clone()
+                let authoring = binding.authoring().expect("visible binding stays live");
+                (authoring.node_id() == changed).then(|| {
+                    assert_eq!(authoring.revision(), 1);
+                    authoring.node().data.clone()
                 })
             })
         })
@@ -177,7 +181,7 @@ fn assert_binding_stats(
     updates: u64,
     reconciliation_visits: u64,
 ) {
-    assert_eq!(stats.binding_snapshot_builds(), snapshot_builds);
+    assert_eq!(stats.binding_mount_initializations(), snapshot_builds);
     assert_eq!(stats.binding_updates(), updates);
     assert_eq!(stats.binding_notifications(), updates);
     assert_eq!(stats.binding_reconciliation_visits(), reconciliation_visits,);

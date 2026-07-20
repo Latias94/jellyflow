@@ -93,11 +93,11 @@ impl Render for CanonicalNode {
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
         let binding = self.binding.read(cx);
-        let node_id = binding.snapshot().node_id();
-        let read = binding.snapshot().read().expect("live canonical binding");
-        let port = read.ports().next().expect("one canonical port");
-        let direction = port.port().dir;
-        let handle = binding.port_handle(port.id()).expect("canonical real port");
+        let authoring = binding.authoring().expect("live canonical authoring");
+        let node_id = authoring.node_id();
+        let port = authoring.ports().next().expect("one canonical port");
+        let direction = port.facts().dir;
+        let handle = port.handle().clone();
         let drag_handle = binding.drag_handle();
         let selector = canonical_port_selector(port.id());
         let marker = div()
@@ -114,7 +114,7 @@ impl Render for CanonicalNode {
             .debug_selector(move || node_selector.clone())
             .relative()
             .size_full()
-            .child(positioned.child(handle.interactive(marker, |_, _, _| {})));
+            .child(positioned.child(handle.interactive(marker)));
         if node_id == source_node() {
             let control_hits = self.control_hits.clone();
             root = root.child(

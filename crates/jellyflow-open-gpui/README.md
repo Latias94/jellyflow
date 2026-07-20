@@ -9,12 +9,16 @@ portable widget tree or a cross-framework node UI DSL.
 - `OpenGpuiNodeRegistry` stores sealed renderer-key registrations and mounts retained entities.
 - `OpenGpuiSceneHost` reconciles frames, parks and evicts inactive instances, releases retired
   entities, publishes native layer order, and submits one ordered feedback log per frame.
-- `OpenGpuiNodeBinding` exposes an owned frame snapshot to a native node. A binding read enqueues a
-  revision-checked graph command into the host's ordered frame journal and returns a one-shot ticket
-  that resolves from the real feedback receipt; it never mutates the runtime synchronously.
-  `port_handle` creates a semantic wrapper only for a real graph `PortId`; `measure_content`
-  reports a native 1:1 content root for an opt-in content size policy.
-- `OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
+- `authoring::OpenGpuiNodeBinding` is the long-lived capability for one exact retained mount. It
+  owns activity, drag, overlay, content measurement, and layout-invalidation capabilities, but it
+  does not expose a mutable or independently refreshable graph view.
+- `OpenGpuiNodeBinding::authoring` opens one owned, immutable
+  `authoring::OpenGpuiNodeAuthoring` for the current graph revision. Its ordered ports pair graph
+  facts, constant-work connection summaries, and an `authoring::OpenGpuiPortHandle` from that same revision. Consuming the view
+  with `enqueue(command, cx)` validates the mount, incarnation, and exact command revision before
+  the command can enter the host's ordered journal. The ticket resolves from real frame feedback;
+  graph mutation is never synchronous and stale commands are never silently retried.
+- `authoring::OpenGpuiPortHandle` measures a native element after layout and can add pointer, keyboard, and
   accessibility activation while leaving the child as an ordinary Open GPUI element.
 - Ordinary Open GPUI controls and scroll areas are safe inside nodes without wrappers.
   `OpenGpuiOverlayInteractionBoundary` owns popup hit-testing outside node bounds. Focus, IME,
@@ -28,6 +32,8 @@ portable widget tree or a cross-framework node UI DSL.
 ## Register a native node
 
 ```rust,ignore
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
+
 let mut registry = OpenGpuiNodeRegistry::builder();
 registry.register("workflow.llm", |binding, window, cx| {
     cx.new(|cx| MyLlmNode::new(binding, cx))
@@ -37,8 +43,68 @@ let host = OpenGpuiSceneHost::new(view, registry, viewport);
 ```
 
 `MyLlmNode` is free to compose text inputs, selects, scroll views, menus, async services, and
-product-specific state. It only wraps actual graph ports with `binding.port_handle(port_id)` and
-reports those handles through the native element tree.
+product-specific state. The registry accepts any `Entity<V>` where `V: Render + 'static`, so a node
+is an ordinary retained Open GPUI component tree rather than a Jellyflow widget DSL. Applications
+still initialize the themes, globals, and services required by their chosen Open GPUI components.
+
+## Authoring facts, ports, and commands
+
+Open a fresh authoring view inside a render pass or input callback and do not retain it as component
+state. Every item returned by `ports()` is a real graph port in node order. A dynamic marker only
+exists after the corresponding `Port` has entered the graph and a newer authoring view observes it.
+
+```rust,ignore
+let binding = self.binding.read(cx);
+let authoring = binding.authoring()?;
+let input = authoring.port(self.input_port).ok_or(NodeUiError::MissingInput)?;
+let marker = input.handle().clone().interactive(my_port_marker());
+let content = binding.measure_content(
+    div()
+        .child(binding.drag_handle().wrap(my_header()))
+        .child(my_application_controls())
+        .child(marker),
+);
+```
+
+Use `measure(child)` for a non-interactive semantic port and `interactive(child)` for host-owned
+pointer, keyboard, and accessibility behavior. Only use `interactive_with_observer` when the
+application actually needs to observe the host-reduced port event; an empty observer is unnecessary.
+
+Build an application command from one authoring view and consume that same view to enqueue it:
+
+```rust,ignore
+let authoring = self.binding.read(cx).authoring()?;
+let port = authoring
+    .port(self.output_port)
+    .ok_or(NodeUiError::MissingOutput)?
+    .facts()
+    .clone();
+let command = GraphCommand::topology(
+    authoring.revision(),
+    TopologyEdit::new().replace_node_ports(
+        authoring.node_id(),
+        [TopologyPort::new(self.output_port, port)],
+        IncidentEdgePolicy::Reject,
+    ),
+);
+let ticket = authoring.enqueue(command, cx)?;
+```
+
+Opening a later authoring view does not update an older one. Enqueue rejects a retired mount, a
+reincarnated node, a terminally closed view, a mismatched command revision, or a graph revision that
+changed before journal admission. Queueing two commands from the same committed revision is allowed;
+normal runtime ordering may apply the first and return a conflict for the second.
+
+The binding remains the lifecycle boundary. Keep an `activity::OpenGpuiActivityLease` while the
+component owns focus, IME composition, a popup, an async task, or another retained resource. Wrap a
+popup rendered outside node bounds with `binding.overlay_boundary()`. After application state
+changes intrinsic content geometry, update the binding entity and call
+`binding.invalidate_layout(cx)` from that binding context. The request is mount-scoped and cannot
+invalidate a replacement incarnation:
+
+```rust,ignore
+self.binding.update(cx, |binding, cx| binding.invalidate_layout(cx))??;
+```
 
 ## Scale and size authority
 
@@ -52,8 +118,9 @@ ports. Pointer capture, graph interaction, and draft leases protect retention bu
 interaction island.
 
 `ComponentManaged` keeps the registered renderer in detail and gives it full responsibility for
-continuous native metrics. The component can read `binding.read()?.viewport_transform()`; the host
-does not synthesize a subtree transform.
+continuous native metrics. The component can read
+`binding.authoring()?.viewport_transform()` from its coherent authoring view; the host does not
+synthesize a subtree transform.
 
 Document size is authoritative by default. A renderer may opt into fixed-width `ContentHeight` or
 bounded two-axis `Content` sizing at registration:

@@ -7,18 +7,18 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{
-    CanvasInteractionPhase, FrameRequest, GraphCommand, GraphRuntime, IncidentEdgePolicy,
-    RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionOptions,
+    CanvasInteractionPhase, GraphCommand, GraphRuntime, IncidentEdgePolicy, TopologyEdit,
+    TopologyPort, ViewCloseReason, ViewSessionOptions,
 };
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    OpenGpuiNodeBinding, OpenGpuiNodeRegistry, OpenGpuiPortActivationSource,
-    OpenGpuiPortDragCancelReason, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
-    open_gpui_port_element_id,
+    OpenGpuiNodeRegistry, OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason,
+    OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
 use open_gpui::{
-    AppContext, Context, Entity, EntityId, KeyUpEvent, Keystroke, Modifiers, MouseButton,
-    ParentElement, Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase, WeakFocusHandle,
-    Window, div, point, prelude::*, px,
+    AppContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, ParentElement,
+    Render, ScrollDelta, ScrollWheelEvent, Styled, TouchPhase, WeakFocusHandle, Window, div, point,
+    prelude::*, px,
 };
 
 const KIND: &str = "test.interactive-node";
@@ -31,6 +31,8 @@ struct InteractiveNode {
     binding: Entity<OpenGpuiNodeBinding>,
     control_focus: open_gpui::FocusHandle,
     port: Rc<PortProbe>,
+    observer_host: Rc<RefCell<Option<Entity<OpenGpuiSceneHost>>>>,
+    observe_port: bool,
     node_events: Rc<RefCell<Vec<&'static str>>>,
     control_events: Rc<RefCell<Vec<&'static str>>>,
     scroll_events: Rc<RefCell<Vec<&'static str>>>,
@@ -41,6 +43,7 @@ struct PortProbe {
     pointer: RefCell<Vec<OpenGpuiPortDragPhase>>,
     modifiers: RefCell<Vec<Modifiers>>,
     activations: RefCell<Vec<OpenGpuiPortActivationSource>>,
+    host_phases: RefCell<Vec<CanvasInteractionPhase>>,
     enabled: Cell<bool>,
 }
 
@@ -67,13 +70,18 @@ impl Render for InteractiveNode {
         let handle = self
             .binding
             .read(cx)
-            .port_handle(output_id())
-            .map(|handle| {
-                handle
-                    .with_interaction_enabled(self.port.enabled.get())
-                    .with_minimum_hit_diameter(22.0)
+            .authoring()
+            .ok()
+            .and_then(|authoring| {
+                authoring.port(output_id()).map(|port| {
+                    let handle = port.handle().clone();
+                    handle
+                        .with_interaction_enabled(self.port.enabled.get())
+                        .with_minimum_hit_diameter(22.0)
+                })
             });
         let port = self.port.clone();
+        let observer_host = self.observer_host.clone();
         let down_events = self.node_events.clone();
         let move_events = self.node_events.clone();
         let up_events = self.node_events.clone();
@@ -131,27 +139,37 @@ impl Render for InteractiveNode {
                 ),
             )
             .children(handle.map(|handle| {
+                let marker = div()
+                    .debug_selector(|| PORT_SELECTOR.to_owned())
+                    .w(px(14.0))
+                    .h(px(14.0));
+                let interactive = if self.observe_port {
+                    handle.interactive_with_observer(marker, move |event, _, cx| {
+                        let host = observer_host
+                            .borrow()
+                            .clone()
+                            .expect("observer host is mounted before node render");
+                        port.host_phases
+                            .borrow_mut()
+                            .push(host.read(cx).interaction_presentation().phase());
+                        match event {
+                            OpenGpuiPortEvent::Pointer(event) => {
+                                port.pointer.borrow_mut().push(event.phase());
+                                port.modifiers.borrow_mut().push(event.modifiers());
+                            }
+                            OpenGpuiPortEvent::Activation(event) => {
+                                port.activations.borrow_mut().push(event.source());
+                            }
+                        }
+                    })
+                } else {
+                    handle.interactive(marker)
+                };
                 div()
                     .absolute()
                     .right(px(8.0))
                     .top(px(43.0))
-                    .child(
-                        handle.interactive(
-                            div()
-                                .debug_selector(|| PORT_SELECTOR.to_owned())
-                                .w(px(14.0))
-                                .h(px(14.0)),
-                            move |event, _, _| match event {
-                                OpenGpuiPortEvent::Pointer(event) => {
-                                    port.pointer.borrow_mut().push(event.phase());
-                                    port.modifiers.borrow_mut().push(event.modifiers());
-                                }
-                                OpenGpuiPortEvent::Activation(event) => {
-                                    port.activations.borrow_mut().push(event.source());
-                                }
-                            },
-                        ),
-                    )
+                    .child(interactive)
                     .into_any_element()
             }))
     }
@@ -219,6 +237,7 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
     simulate_key_up(cx, "enter");
     simulate_key_up(cx, "space");
     simulate_key_up(cx, "shift-enter");
+    cx.run_until_parked();
 
     assert_eq!(
         port.activations.borrow().as_slice(),
@@ -234,6 +253,53 @@ fn tab_shift_tab_enter_and_space_use_native_keyboard_semantics_without_pointer_d
         "outer app events: {:?}",
         canvas_events.borrow().as_slice(),
     );
+}
+
+#[open_gpui::test]
+fn semantic_only_port_keeps_keyboard_and_pointer_connection_behavior_without_an_observer(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx, port_events, node_events, _, _, _, _) =
+        mount_scene_with_port_observer(cx, false);
+    draw(cx);
+
+    let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
+    cx.simulate_click(control.center(), Default::default());
+    node_events.borrow_mut().clear();
+    cx.simulate_keystrokes("tab");
+    simulate_key_up(cx, "enter");
+    cx.run_until_parked();
+
+    let request = cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch,
+        );
+        host.connection_search_request().expect("keyboard search")
+    });
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.cancel_connection_search(request, window, cx)
+        })
+        .expect("cancel keyboard search");
+    });
+
+    let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
+    let outside = point(px(700.0), px(500.0));
+    cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(
+            host.interaction_presentation().phase(),
+            CanvasInteractionPhase::ConnectionSearch,
+        );
+        assert!(host.connection_search_request().is_some());
+    });
+    assert!(port_events.pointer.borrow().is_empty());
+    assert!(port_events.activations.borrow().is_empty());
+    assert!(port_events.host_phases.borrow().is_empty());
 }
 
 #[open_gpui::test]
@@ -315,6 +381,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
 
     simulate_key_up(cx, "enter");
     simulate_key_up(cx, "space");
+    cx.run_until_parked();
     assert!(port_events.activations.borrow().is_empty());
 
     cx.simulate_keystrokes("shift-tab");
@@ -347,6 +414,7 @@ fn disabled_port_is_skipped_and_blocks_pointer_and_keyboard_activation(
     let port = cx.debug_bounds(PORT_SELECTOR).expect("port bounds");
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
     cx.simulate_mouse_up(port.center(), MouseButton::Left, Default::default());
+    cx.run_until_parked();
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
         [OpenGpuiPortDragPhase::Start, OpenGpuiPortDragPhase::Release]
@@ -583,6 +651,11 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
         port_events.pointer.borrow().as_slice(),
         [OpenGpuiPortDragPhase::Start]
     );
+    assert_eq!(
+        port_events.host_phases.borrow().as_slice(),
+        [CanvasInteractionPhase::Armed],
+        "the host reducer must run before the application observer, exactly once",
+    );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
     let first_hitbox = cx
@@ -605,6 +678,7 @@ fn port_capture_survives_redraw_and_transfers_out_of_bounds_release_to_search(
     let outside = point(px(700.0), px(500.0));
     cx.simulate_mouse_move(outside, Some(MouseButton::Left), modifiers);
     cx.simulate_mouse_up(outside, MouseButton::Left, modifiers);
+    cx.run_until_parked();
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
@@ -671,6 +745,7 @@ fn escape_cancels_port_capture_and_consumes_the_key(cx: &mut open_gpui::TestAppC
     cx.simulate_mouse_down(port.center(), MouseButton::Left, Default::default());
 
     cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
@@ -728,10 +803,8 @@ fn hard_retirement_cancels_capture_and_suppresses_late_pointer_events(
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
-        [
-            OpenGpuiPortDragPhase::Start,
-            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::OwnerRetired),
-        ],
+        [OpenGpuiPortDragPhase::Start],
+        "retired mounts must not invoke application observers",
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
@@ -767,10 +840,8 @@ fn hard_retirement_does_not_steal_focus_acquired_after_drag_started(
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
-        [
-            OpenGpuiPortDragPhase::Start,
-            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::OwnerRetired),
-        ]
+        [OpenGpuiPortDragPhase::Start],
+        "retired mounts must not invoke application observers",
     );
     cx.read_entity(&host, |host, _| assert!(host.active_port_drag().is_none()));
     cx.update(|window, cx| {
@@ -806,6 +877,7 @@ fn native_control_and_scroll_keep_component_bubbling_without_graph_gestures(
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    cx.run_until_parked();
     assert_eq!(control_events.borrow().as_slice(), ["down", "up"]);
     assert_eq!(node_events.borrow().as_slice(), ["down", "up"]);
     assert!(canvas_events.borrow().is_empty());
@@ -953,10 +1025,8 @@ fn window_aware_close_releases_capture_before_returning(cx: &mut open_gpui::Test
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
-        [
-            OpenGpuiPortDragPhase::Start,
-            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::HostClosed),
-        ],
+        [OpenGpuiPortDragPhase::Start],
+        "closed mounts must not invoke application observers",
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
@@ -983,10 +1053,8 @@ fn runtime_drop_during_connection_drag_releases_capture_and_terminalizes_the_own
     assert!(cx.update(|window, _| window.captured_hitbox()).is_none());
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
-        [
-            OpenGpuiPortDragPhase::Start,
-            OpenGpuiPortDragPhase::Cancel(OpenGpuiPortDragCancelReason::HostClosed),
-        ]
+        [OpenGpuiPortDragPhase::Start],
+        "closed mounts must not invoke application observers",
     );
     assert!(node_events.borrow().is_empty());
     assert!(canvas_events.borrow().is_empty());
@@ -1071,6 +1139,7 @@ fn escape_without_the_original_mouse_up_does_not_suppress_the_next_click(
 
     let control = cx.debug_bounds(CONTROL_SELECTOR).expect("control bounds");
     cx.simulate_click(control.center(), Default::default());
+    cx.run_until_parked();
 
     assert_eq!(
         port_events.pointer.borrow().as_slice(),
@@ -1084,61 +1153,25 @@ fn escape_without_the_original_mouse_up_does_not_suppress_the_next_click(
     assert!(canvas_events.borrow().is_empty());
 }
 
-#[test]
-fn port_element_identity_is_stable_per_instance_and_changes_after_recreation() {
-    let runtime = GraphRuntime::builder(catalog()).build(graph()).unwrap();
-    let view = runtime.attach_view(ViewSessionOptions::default()).unwrap();
-    let first_frame = view
-        .frame(FrameRequest::new(
-            viewport(),
-            RendererStamp::new(RENDERER, 1),
-        ))
-        .unwrap();
-    let first_instance = first_frame.nodes()[0].instance().clone();
-    let first_host = EntityId::from(1);
-    let first_id = open_gpui_port_element_id(first_host, &first_instance, output_id());
-
-    assert_eq!(
-        first_id,
-        open_gpui_port_element_id(first_host, &first_instance, output_id())
-    );
-    assert_ne!(
-        first_id,
-        open_gpui_port_element_id(EntityId::from(2), &first_instance, output_id())
-    );
-
-    let snapshot = runtime.snapshot().unwrap();
-    let node = snapshot.graph().node(&node_id()).unwrap().clone();
-    let port = snapshot.graph().port(&output_id()).unwrap().clone();
-    runtime
-        .execute(GraphCommand::topology(
-            0,
-            TopologyEdit::new().remove_node(node_id(), IncidentEdgePolicy::Reject),
-        ))
-        .unwrap();
-    runtime
-        .execute(GraphCommand::topology(
-            1,
-            TopologyEdit::new().add_node(node_id(), node, [TopologyPort::new(output_id(), port)]),
-        ))
-        .unwrap();
-
-    let second_frame = view
-        .frame(FrameRequest::new(
-            viewport(),
-            RendererStamp::new(RENDERER, 1),
-        ))
-        .unwrap();
-    let second_instance = second_frame.nodes()[0].instance();
-    assert_ne!(first_instance.incarnation(), second_instance.incarnation());
-    assert_ne!(
-        first_id,
-        open_gpui_port_element_id(first_host, second_instance, output_id())
-    );
-}
-
 fn mount_scene(
     cx: &mut open_gpui::TestAppContext,
+) -> (
+    Rc<GraphRuntime>,
+    Entity<OpenGpuiSceneHost>,
+    &mut open_gpui::VisualTestContext,
+    Rc<PortProbe>,
+    Rc<RefCell<Vec<&'static str>>>,
+    Rc<RefCell<Vec<&'static str>>>,
+    Rc<RefCell<Vec<&'static str>>>,
+    Rc<RefCell<Vec<&'static str>>>,
+    Rc<RefCell<Option<WeakFocusHandle>>>,
+) {
+    mount_scene_with_port_observer(cx, true)
+}
+
+fn mount_scene_with_port_observer(
+    cx: &mut open_gpui::TestAppContext,
+    observe_port: bool,
 ) -> (
     Rc<GraphRuntime>,
     Entity<OpenGpuiSceneHost>,
@@ -1158,11 +1191,13 @@ fn mount_scene(
     let control_events = Rc::new(RefCell::new(Vec::new()));
     let scroll_events = Rc::new(RefCell::new(Vec::new()));
     let control_focus = Rc::new(RefCell::new(None));
+    let captured_host = Rc::new(RefCell::new(None));
     let factory_port_events = port_events.clone();
     let factory_node_events = node_events.clone();
     let factory_control_events = control_events.clone();
     let factory_scroll_events = scroll_events.clone();
     let factory_control_focus = control_focus.clone();
+    let factory_observer_host = captured_host.clone();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
         let control_focus = cx.focus_handle().tab_stop(true);
@@ -1171,13 +1206,14 @@ fn mount_scene(
             binding,
             control_focus,
             port: factory_port_events.clone(),
+            observer_host: factory_observer_host.clone(),
+            observe_port,
             node_events: factory_node_events.clone(),
             control_events: factory_control_events.clone(),
             scroll_events: factory_scroll_events.clone(),
         })
     });
 
-    let captured_host = Rc::new(RefCell::new(None));
     let scene_host = captured_host.clone();
     let scene_canvas_events = canvas_events.clone();
     let (_scene, cx) = cx.add_window_view(move |_, cx| {

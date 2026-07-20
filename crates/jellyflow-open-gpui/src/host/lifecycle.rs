@@ -18,7 +18,7 @@ use crate::command_journal::{
 use super::OpenGpuiSceneHost;
 use super::diagnostics::{OpenGpuiSceneHostDiagnostic, OpenGpuiSceneHostDiagnosticKind};
 use super::node_lifecycle::{
-    MountedNode, catch_host_cleanup, resume_mounted_node_panic, revoke_mounted_nodes,
+    MountedNode, catch_host_cleanup, resume_mounted_node_panic, retire_mounted_nodes,
     suppress_host_panic,
 };
 
@@ -476,7 +476,7 @@ impl OpenGpuiSceneHost {
                     break;
                 };
                 for mounted in retired {
-                    mounted.revoke();
+                    mounted.retire();
                 }
                 resolve_command_tickets(resolutions);
                 if terminal {
@@ -500,11 +500,14 @@ impl OpenGpuiSceneHost {
         self.scene_transform = None;
         self.terminal_reason = Some(reason);
         self.document_epoch = None;
+        for (_, node) in self.mounts.iter() {
+            node.mount.close(reason);
+        }
         self.detach_all_instances()
     }
 
     pub(super) fn enter_terminal(&mut self, reason: ViewCloseReason) {
-        let panic = revoke_mounted_nodes(self.detach_for_terminal(reason));
+        let panic = retire_mounted_nodes(self.detach_for_terminal(reason));
         resume_mounted_node_panic(panic);
     }
 }
@@ -514,7 +517,11 @@ impl Drop for OpenGpuiSceneHost {
         let completed = self.commands.terminate_dropped();
         self.discard_frame_transaction();
         let resolutions = self.handle_completed_commands(completed);
-        let panic = revoke_mounted_nodes(self.detach_all_instances());
+        for (_, node) in self.mounts.iter() {
+            node.mount.close(ViewCloseReason::HostClosed);
+        }
+        let mounted = self.detach_all_instances();
+        let panic = retire_mounted_nodes(mounted);
         suppress_host_panic(panic);
         if let Some(bridge) = self.lifecycle_bridge.take() {
             bridge.unsubscribe(&self.view);
