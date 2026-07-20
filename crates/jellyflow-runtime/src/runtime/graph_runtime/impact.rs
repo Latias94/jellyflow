@@ -385,8 +385,12 @@ fn build_session_impact(
                     .map(|port| port.node)
                     .collect::<BTreeSet<_>>();
                 affected_nodes.extend(owners.iter().copied());
-                geometry_withdrawals.extend(owners.iter().copied());
-                layout_dirty_nodes.extend(owners);
+                let live_owners = owners
+                    .into_iter()
+                    .filter(|node| after.node(node).is_some())
+                    .collect::<BTreeSet<_>>();
+                geometry_withdrawals.extend(live_owners.iter().copied());
+                layout_dirty_nodes.extend(live_owners);
             }
             RuntimeFactKey::Edge(edge) => {
                 for current in [before.edge(&edge), after.edge(&edge)]
@@ -1126,6 +1130,39 @@ mod tests {
             std::iter::empty(),
             std::iter::empty()
         ));
+    }
+
+    #[test]
+    fn cascaded_port_removal_does_not_redirty_a_retired_node() {
+        let node_id = NodeId::from_u128(0x121);
+        let port_id = PortId::from_u128(0x122);
+        let node = node_at(CanvasPoint::default(), vec![port_id]);
+        let port = port(node_id, "value", PortDirection::Out);
+        let before = GraphBuilder::new(GraphId::from_u128(0x123))
+            .with_node(node_id, node.clone())
+            .with_port(port_id, port.clone())
+            .build()
+            .expect("valid fixture graph");
+        let transaction = GraphTransaction::from_ops([GraphOp::RemoveNode {
+            id: node_id,
+            node,
+            ports: vec![(port_id, port)],
+            edges: vec![],
+            bindings: vec![],
+        }]);
+        let mut after = before.clone();
+        transaction
+            .apply_to(&mut after)
+            .expect("remove fixture node");
+        let index = GraphIndex::from_graph(&before);
+
+        let impact = InstalledTransactionImpact::derive(&before, &after, &index, &transaction);
+
+        assert_eq!(impact.session.affected_nodes, vec![node_id]);
+        assert_eq!(impact.session.retired_nodes, vec![node_id]);
+        assert!(impact.session.geometry_withdrawals.is_empty());
+        assert!(impact.session.layout_dirty_nodes.is_empty());
+        assert_eq!(impact.index.ports, BTreeSet::from([port_id]));
     }
 
     fn indexed_fixture() -> (Graph, GraphTransaction) {
