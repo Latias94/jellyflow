@@ -26,6 +26,7 @@ jellyflow-core = { version = "0.4.0", path = "crates/jellyflow-core" }
 jellyflow-layout = { version = "0.4.0", path = "crates/jellyflow-layout" }
 jellyflow-runtime = { version = "0.4.0", path = "crates/jellyflow-runtime" }
 libc = "0.2"
+lyon = "1.0"
 rpds = { version = "1.2.1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }

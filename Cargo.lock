@@ -2238,6 +2238,7 @@ version = "0.4.0"
 dependencies = [
  "jellyflow",
  "jellyflow-runtime",
+ "lyon",
  "open-gpui",
  "open-gpui-ui-components",
  "serde_json",

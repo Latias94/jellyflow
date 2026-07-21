@@ -30,6 +30,16 @@ pub enum OpenGpuiEdgeStrokePattern {
     Dotted,
 }
 
+impl OpenGpuiEdgeStrokePattern {
+    const fn invalid_cue(self) -> Self {
+        match self {
+            Self::Solid => Self::Dashed,
+            Self::Dashed => Self::Dotted,
+            Self::Dotted => Self::Dashed,
+        }
+    }
+}
+
 /// Finite marker vocabulary carried to endpoint chrome layout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpenGpuiEdgeMarkerShape {
@@ -147,6 +157,14 @@ impl OpenGpuiEdgePainterRecipe {
     #[must_use]
     pub const fn label_appearance(self) -> OpenGpuiEdgeLabelAppearance {
         self.label_appearance
+    }
+
+    const fn uses_round_line_cap(self) -> bool {
+        true
+    }
+
+    const fn uses_round_line_join(self) -> bool {
+        true
     }
 }
 
@@ -292,7 +310,10 @@ impl OpenGpuiEdgePainterRegistry {
             presentation.target_marker_key.as_deref(),
             painter.target_marker,
         );
-        let style = theme.resolve_edge_style(visual_state, canonical_style_token(tone));
+        let style = theme.resolve_edge_style(
+            OpenGpuiEdgeVisualState::Ordinary,
+            canonical_style_token(tone),
+        );
         let label = presentation
             .label
             .as_deref()
@@ -310,14 +331,19 @@ impl OpenGpuiEdgePainterRegistry {
             path_batch_key: OpenGpuiEdgePainterBatchKey {
                 path: style.batch_key(),
                 stroke_pattern: painter.stroke_pattern,
+                round_line_cap: painter.uses_round_line_cap(),
+                round_line_join: painter.uses_round_line_join(),
+                invalid_cue: false,
             },
             source_marker: OpenGpuiEdgeMarkerRecipe {
                 endpoint: OpenGpuiEdgeMarkerEndpoint::Source,
                 shape: source_marker,
+                follows_path_tangent: true,
             },
             target_marker: OpenGpuiEdgeMarkerRecipe {
                 endpoint: OpenGpuiEdgeMarkerEndpoint::Target,
                 shape: target_marker,
+                follows_path_tangent: true,
             },
             label,
             fallbacks: OpenGpuiEdgePaintFallbacks {
@@ -327,6 +353,7 @@ impl OpenGpuiEdgePainterRegistry {
                 unknown_target_marker_key,
             },
         }
+        .with_visual_state(visual_state, theme)
     }
 
     fn resolve_painter<'a>(
@@ -353,9 +380,24 @@ impl OpenGpuiEdgePainterRegistry {
 pub struct OpenGpuiEdgePainterBatchKey {
     path: OpenGpuiEdgeBatchKey,
     stroke_pattern: OpenGpuiEdgeStrokePattern,
+    round_line_cap: bool,
+    round_line_join: bool,
+    invalid_cue: bool,
 }
 
 impl OpenGpuiEdgePainterBatchKey {
+    /// Builds the native fallback recipe used when no persisted edge presentation is available.
+    #[must_use]
+    pub const fn native_fallback(path: OpenGpuiEdgeBatchKey) -> Self {
+        Self {
+            path,
+            stroke_pattern: OpenGpuiEdgeStrokePattern::Solid,
+            round_line_cap: true,
+            round_line_join: true,
+            invalid_cue: false,
+        }
+    }
+
     /// Returns the existing style/layer batch key.
     #[must_use]
     pub const fn path(self) -> OpenGpuiEdgeBatchKey {
@@ -367,6 +409,24 @@ impl OpenGpuiEdgePainterBatchKey {
     pub const fn stroke_pattern(self) -> OpenGpuiEdgeStrokePattern {
         self.stroke_pattern
     }
+
+    /// Returns whether the stroke uses a round cap at open path and dash boundaries.
+    #[must_use]
+    pub const fn uses_round_line_cap(self) -> bool {
+        self.round_line_cap
+    }
+
+    /// Returns whether adjacent route segments use a round join.
+    #[must_use]
+    pub const fn uses_round_line_join(self) -> bool {
+        self.round_line_join
+    }
+
+    /// Returns whether this batch carries the non-color invalid-connection cue.
+    #[must_use]
+    pub const fn has_invalid_cue(self) -> bool {
+        self.invalid_cue
+    }
 }
 
 /// Immutable marker facts ready for endpoint layout.
@@ -374,6 +434,7 @@ impl OpenGpuiEdgePainterBatchKey {
 pub struct OpenGpuiEdgeMarkerRecipe {
     endpoint: OpenGpuiEdgeMarkerEndpoint,
     shape: OpenGpuiEdgeMarkerShape,
+    follows_path_tangent: bool,
 }
 
 impl OpenGpuiEdgeMarkerRecipe {
@@ -393,6 +454,12 @@ impl OpenGpuiEdgeMarkerRecipe {
     #[must_use]
     pub const fn is_visible(self) -> bool {
         !matches!(self.shape, OpenGpuiEdgeMarkerShape::None)
+    }
+
+    /// Returns whether marker orientation follows the sampled endpoint tangent.
+    #[must_use]
+    pub const fn follows_path_tangent(self) -> bool {
+        self.follows_path_tangent
     }
 }
 
@@ -495,10 +562,45 @@ impl<'a> OpenGpuiResolvedEdgePaintRecipe<'a> {
         self.style
     }
 
+    /// Reapplies hover, selection, active, or preview treatment to the same semantic recipe.
+    ///
+    /// Painter, stroke-pattern, marker, label, and fallback facts remain unchanged. This lets a
+    /// preview and its eventual committed edge share one base recipe while varying only native
+    /// visual treatment.
+    #[must_use]
+    pub fn with_visual_state(
+        mut self,
+        visual_state: OpenGpuiEdgeVisualState,
+        theme: &OpenGpuiGraphTheme,
+    ) -> Self {
+        self.style = self.style.with_visual_state(visual_state, theme);
+        self.path_batch_key.path = self.style.batch_key();
+        self
+    }
+
+    /// Adds a finite, non-color cue for an invalid connection attempt.
+    ///
+    /// The semantic tone and base painter remain intact. The alternate stroke pattern is guaranteed
+    /// to differ from the base pattern, and repeated application is idempotent.
+    #[must_use]
+    pub fn with_invalid_connection_cue(mut self) -> Self {
+        if !self.path_batch_key.invalid_cue {
+            self.path_batch_key.stroke_pattern = self.path_batch_key.stroke_pattern.invalid_cue();
+            self.path_batch_key.invalid_cue = true;
+        }
+        self
+    }
+
     /// Returns the bounded path batch key.
     #[must_use]
     pub const fn path_batch_key(self) -> OpenGpuiEdgePainterBatchKey {
         self.path_batch_key
+    }
+
+    /// Returns whether this resolved recipe carries a non-color invalid-connection cue.
+    #[must_use]
+    pub const fn has_invalid_connection_cue(self) -> bool {
+        self.path_batch_key.has_invalid_cue()
     }
 
     /// Returns source marker facts without performing layout.
@@ -767,6 +869,103 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(batch_keys.len(), 1);
+    }
+
+    #[test]
+    fn preview_reuses_the_committed_semantic_recipe() {
+        let registry = OpenGpuiEdgePainterRegistry::default();
+        let mut presentation = presentation();
+        presentation.label = Some("Flow".to_owned());
+        presentation.target_marker_key = Some("arrow".to_owned());
+        presentation.style_token = Some("warning".to_owned());
+        let theme = OpenGpuiGraphTheme::default();
+        let committed = registry.resolve(
+            EdgeKind::Exec,
+            OpenGpuiEdgeVisualState::Ordinary,
+            &presentation,
+            &theme,
+        );
+        let preview = committed.with_visual_state(OpenGpuiEdgeVisualState::Preview, &theme);
+        let directly_resolved_preview = registry.resolve(
+            EdgeKind::Exec,
+            OpenGpuiEdgeVisualState::Preview,
+            &presentation,
+            &theme,
+        );
+
+        assert_eq!(preview, directly_resolved_preview);
+        assert_eq!(preview.painter(), committed.painter());
+        assert_eq!(preview.source_marker(), committed.source_marker());
+        assert_eq!(preview.target_marker(), committed.target_marker());
+        assert_eq!(preview.label(), committed.label());
+        assert_eq!(preview.fallbacks(), committed.fallbacks());
+        assert_eq!(preview.style().tone(), committed.style().tone());
+        assert_ne!(preview.style().layer(), committed.style().layer());
+        assert_ne!(preview.style().color(), committed.style().color());
+        assert_eq!(
+            preview.path_batch_key().stroke_pattern(),
+            committed.path_batch_key().stroke_pattern()
+        );
+    }
+
+    #[test]
+    fn invalid_connection_cue_is_non_color_idempotent_and_bounded() {
+        let registered = OpenGpuiEdgePainterRecipe::new(
+            OpenGpuiEdgeStrokePattern::Dashed,
+            OpenGpuiEdgeTone::Warning,
+            OpenGpuiEdgeMarkerShape::Circle,
+            OpenGpuiEdgeMarkerShape::Arrow,
+            OpenGpuiEdgeLabelAppearance::Plain,
+        );
+        let mut builder = OpenGpuiEdgePainterRegistry::builder();
+        builder
+            .register("conditional", registered)
+            .expect("valid registration");
+        let registry = builder.build();
+        let mut presentation = presentation();
+        presentation.renderer_key = Some("conditional".to_owned());
+        let theme = OpenGpuiGraphTheme::default();
+        let base = registry.resolve(
+            EdgeKind::Exec,
+            OpenGpuiEdgeVisualState::Preview,
+            &presentation,
+            &theme,
+        );
+        let invalid = base.with_invalid_connection_cue();
+
+        assert!(invalid.has_invalid_connection_cue());
+        assert_eq!(invalid.painter(), base.painter());
+        assert_eq!(invalid.style(), base.style());
+        assert_ne!(invalid.path_batch_key(), base.path_batch_key());
+        assert_ne!(
+            invalid.path_batch_key().stroke_pattern(),
+            base.path_batch_key().stroke_pattern()
+        );
+        assert_eq!(invalid.with_invalid_connection_cue(), invalid);
+
+        let keys = (0..1_024)
+            .map(|_| base.with_invalid_connection_cue().path_batch_key())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn resolved_geometry_recipe_requests_smooth_strokes_and_tangent_aligned_markers() {
+        let registry = OpenGpuiEdgePainterRegistry::default();
+        let presentation = presentation();
+        let theme = OpenGpuiGraphTheme::default();
+        let resolved = registry.resolve(
+            EdgeKind::Exec,
+            OpenGpuiEdgeVisualState::Ordinary,
+            &presentation,
+            &theme,
+        );
+        let batch = resolved.path_batch_key();
+
+        assert!(batch.uses_round_line_cap());
+        assert!(batch.uses_round_line_join());
+        assert!(resolved.source_marker().follows_path_tangent());
+        assert!(resolved.target_marker().follows_path_tangent());
     }
 
     #[test]

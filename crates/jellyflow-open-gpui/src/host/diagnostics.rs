@@ -23,6 +23,7 @@ pub enum OpenGpuiSceneHostDiagnosticKind {
     FactoryFailure,
     Feedback,
     EdgePainter,
+    EndpointGeometry,
 }
 
 /// Recoverable failure retained by the adapter instead of panicking.
@@ -163,6 +164,7 @@ pub struct OpenGpuiSceneHostStats {
     pub(super) edge_path_cache_misses: u64,
     pub(super) edge_path_cache_resident: usize,
     pub(super) edge_painter_fallbacks: u64,
+    pub(super) endpoint_geometry_fallbacks: u64,
     pub(super) edge_paint_preparations: u64,
     pub(super) edge_paint_batches: u64,
     pub(super) edge_paths_painted: u64,
@@ -374,6 +376,12 @@ impl OpenGpuiSceneHostStats {
     #[must_use]
     pub fn edge_painter_fallbacks(self) -> u64 {
         self.edge_painter_fallbacks
+    }
+
+    /// Number of published endpoint disagreements or bounded endpoint fallbacks observed.
+    #[must_use]
+    pub fn endpoint_geometry_fallbacks(self) -> u64 {
+        self.endpoint_geometry_fallbacks
     }
 
     #[must_use]
@@ -683,6 +691,41 @@ impl OpenGpuiSceneHost {
         });
     }
 
+    pub(super) fn record_endpoint_geometry_diagnostics(
+        &mut self,
+        mut messages: Vec<String>,
+        total: usize,
+    ) {
+        if total == 0 {
+            return;
+        }
+        if messages.len() < total {
+            messages.push(format!(
+                "{} additional endpoint geometry fallbacks omitted",
+                total - messages.len()
+            ));
+        }
+        let message = messages.join("; ");
+        let duplicate = self.last_diagnostic.as_ref().is_some_and(|diagnostic| {
+            diagnostic.kind == OpenGpuiSceneHostDiagnosticKind::EndpointGeometry
+                && diagnostic.message == message
+        });
+        if duplicate {
+            return;
+        }
+        self.stats.endpoint_geometry_fallbacks = self
+            .stats
+            .endpoint_geometry_fallbacks
+            .saturating_add(total as u64);
+        self.last_diagnostic = Some(OpenGpuiSceneHostDiagnostic {
+            kind: OpenGpuiSceneHostDiagnosticKind::EndpointGeometry,
+            instance: None,
+            node: None,
+            renderer_key: None,
+            message,
+        });
+    }
+
     pub(super) fn record_frame_materialization_overflow(
         &mut self,
         overflow: FrameMaterializationOverflow,
@@ -760,6 +803,7 @@ impl OpenGpuiSceneHost {
             OpenGpuiSceneHostDiagnosticKind::FactoryFailure => "Renderer failed",
             OpenGpuiSceneHostDiagnosticKind::Feedback => "Layout feedback failed",
             OpenGpuiSceneHostDiagnosticKind::EdgePainter => "Edge painter fallback",
+            OpenGpuiSceneHostDiagnosticKind::EndpointGeometry => "Endpoint geometry fallback",
         };
         let retry = diagnostic
             .instance
@@ -829,4 +873,17 @@ pub(super) fn mount_diagnostic(
 
 fn factory_retry_selector(node: NodeId) -> String {
     format!("jellyflow-factory-retry-{}", node.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_geometry_fallback_stats_start_at_zero() {
+        assert_eq!(
+            OpenGpuiSceneHostStats::default().endpoint_geometry_fallbacks(),
+            0
+        );
+    }
 }

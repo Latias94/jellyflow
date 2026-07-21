@@ -2,6 +2,7 @@ mod connection;
 mod diagnostics;
 mod edge_actions;
 mod edge_layer;
+mod endpoint_resolver;
 mod focus_navigation;
 mod frame_feedback;
 mod interaction_session;

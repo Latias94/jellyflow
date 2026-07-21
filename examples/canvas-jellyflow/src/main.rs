@@ -3,7 +3,7 @@ use std::fmt;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use jellyflow::runtime::{GraphRuntime, ViewSessionOptions, ViewSubscriptionToken};
+use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
 use open_gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, QuitMode, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, rgb, size,
@@ -12,7 +12,7 @@ use open_gpui_canvas_jellyflow::ShaderGraphProfile;
 use open_gpui_canvas_jellyflow::blackboard::{GraphRuntimeBlackboardSource, NativeBlackboard};
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 use open_gpui_canvas_jellyflow::nodes::{
-    NativeNodeResources, ShaderDraftStore, WorkflowDraftStore, native_node_catalog,
+    NativeNodeResources, ShaderFieldStore, WorkflowFieldStore, native_node_catalog,
     native_node_registry, workflow_demo_graph,
 };
 use open_gpui_platform::application;
@@ -25,9 +25,8 @@ mod real_window_smoke;
 
 use demo_fixture::shader_demo_graph;
 use real_window_smoke::{
-    SMOKE_WINDOW_HEIGHT, SMOKE_WINDOW_WIDTH, SharedSmokeState, configure_smoke_document,
-    fail_smoke, finish_smoke_after_run, install_smoke_quit_guard, new_smoke_state,
-    start_smoke_probe, start_smoke_timeout,
+    SharedSmokeState, SmokeConfig, configure_smoke_document, fail_smoke, finish_smoke_after_run,
+    install_smoke_quit_guard, new_smoke_state, start_smoke_probe, start_smoke_timeout,
 };
 
 const WINDOW_WIDTH: f32 = 1_180.0;
@@ -36,8 +35,6 @@ const USAGE: &str = "usage: open-gpui-canvas-jellyflow [--workflow] [--smoke]";
 
 struct NativeGraphScene {
     _runtime: Rc<GraphRuntime>,
-    _workflow_draft_subscription: ViewSubscriptionToken,
-    _shader_draft_subscription: ViewSubscriptionToken,
     graph: Entity<NativeGraphSurface>,
     blackboard: Entity<NativeBlackboard>,
 }
@@ -159,7 +156,23 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let smoke_state = options.smoke.then(|| new_smoke_state(options.demo.label()));
+    let smoke_config = if options.smoke {
+        match SmokeConfig::from_env().and_then(|config| {
+            config.prepare_capture_dir()?;
+            Ok(config)
+        }) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                eprintln!("invalid smoke configuration: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        None
+    };
+    let smoke_state = smoke_config
+        .clone()
+        .map(|config| new_smoke_state(options.demo.label(), config));
     let launch_smoke_state = smoke_state.clone();
     let launch_failed = Rc::new(Cell::new(false));
     let app_launch_failed = Rc::clone(&launch_failed);
@@ -221,22 +234,16 @@ fn launch_native_graph(
         .attach_view(ViewSessionOptions::default())
         .map_err(|error| NativeLaunchError::new("view_attachment", error.to_string()))?;
     let smoke_view = options.smoke.then(|| view.downgrade());
-    let workflow_drafts = WorkflowDraftStore::new();
-    let workflow_draft_subscription = workflow_drafts
-        .bind(&view)
-        .map_err(|error| NativeLaunchError::new("workflow_draft_binding", error.to_string()))?;
-    let shader_drafts = ShaderDraftStore::new();
-    let shader_draft_subscription = shader_drafts
-        .bind(&view)
-        .map_err(|error| NativeLaunchError::new("shader_draft_binding", error.to_string()))?;
+    let workflow_fields = WorkflowFieldStore::new();
+    let shader_fields = ShaderFieldStore::new();
     let resources =
-        NativeNodeResources::ready_default(cx).with_draft_stores(workflow_drafts, shader_drafts);
+        NativeNodeResources::ready_default(cx).with_field_stores(workflow_fields, shader_fields);
     let registry = native_node_registry(resources);
-    let (window_width, window_height) = if options.smoke {
-        (SMOKE_WINDOW_WIDTH, SMOKE_WINDOW_HEIGHT)
-    } else {
-        (WINDOW_WIDTH, WINDOW_HEIGHT)
-    };
+    let (window_width, window_height) = smoke_state
+        .as_ref()
+        .map_or((WINDOW_WIDTH, WINDOW_HEIGHT), |state| {
+            state.borrow().window_size()
+        });
     let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
 
     cx.open_window(
@@ -270,8 +277,6 @@ fn launch_native_graph(
             });
             cx.new(|_| NativeGraphScene {
                 _runtime: runtime,
-                _workflow_draft_subscription: workflow_draft_subscription,
-                _shader_draft_subscription: shader_draft_subscription,
                 graph,
                 blackboard,
             })

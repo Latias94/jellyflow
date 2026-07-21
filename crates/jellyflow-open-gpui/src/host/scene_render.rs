@@ -8,7 +8,8 @@ use jellyflow::core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId,
 };
 use jellyflow::runtime::runtime::geometry::{
-    EdgePath, EdgePathAnchor, EdgePathSample, EdgeRouteFacts, PathCommand, resolve_edge_route_path,
+    EdgePath, EdgePathAnchor, EdgePathSample, EdgePosition, EdgeRouteFacts, PathCommand,
+    resolve_edge_route_path,
 };
 use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{
@@ -16,6 +17,7 @@ use jellyflow::runtime::{
     RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
     VisibleRouteQueryRevision,
 };
+use lyon::tessellation::{LineCap, LineJoin};
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
     AnyElement, Context, CursorStyle, EntityId, FocusHandle, InteractiveElement, IntoElement,
@@ -50,6 +52,10 @@ use super::diagnostics::OpenGpuiEdgeLayerOverflow;
 use super::edge_layer::{
     OpenGpuiEdgePaintBatch, OpenGpuiEdgePaintItemKey, OpenGpuiEdgePaintPlanKey,
     OpenGpuiEdgePaintPlanSegment, OpenGpuiEdgePathCacheKey, OpenGpuiVisibleRouteIdentity,
+};
+use super::endpoint_resolver::{
+    PublishedEndpointDiagnostic, PublishedEndpointResolver, PublishedRouteEndpointIdentity,
+    ResolvedEndpoint,
 };
 use super::focus_navigation::{OpenGpuiGraphFocusEntry, OpenGpuiGraphFocusTarget};
 use super::frame_feedback::{OpenGpuiFrameTransaction, OpenGpuiFrameTransactionSubmission};
@@ -103,6 +109,8 @@ pub(super) struct OpenGpuiSceneWire {
     pub(super) visual_state: OpenGpuiEdgeVisualState,
     pub(super) paint_key: OpenGpuiEdgePainterBatchKey,
     pub(super) path_stroke_width: f32,
+    pub(super) source_endpoint: ResolvedEndpoint,
+    pub(super) target_endpoint: ResolvedEndpoint,
     source_marker: Option<OpenGpuiPreparedEdgeMarker>,
     target_marker: Option<OpenGpuiPreparedEdgeMarker>,
     label: Option<OpenGpuiPreparedEdgeLabel>,
@@ -143,6 +151,7 @@ struct OpenGpuiPreparedEdgeCacheKey {
     query_bounds: ViewRect,
     query_revision: VisibleRouteQueryRevision,
     route_generation: u64,
+    geometry_layout_revision: u64,
     edge_budget: usize,
     active_edge: Option<EdgeId>,
     suppressed_edge: Option<EdgeId>,
@@ -277,9 +286,7 @@ impl OpenGpuiSceneHost {
             return Err(error);
         }
         let geometry = self.view.geometry_snapshot()?;
-        let graph = (!presentation_offsets.is_empty())
-            .then(|| self.view.graph_snapshot())
-            .transpose()?;
+        let graph = self.view.graph_snapshot()?;
         let connection_preview = self.connection_preview_plan(&geometry);
         let suppressed_edge = connection_preview
             .as_ref()
@@ -308,7 +315,7 @@ impl OpenGpuiSceneHost {
             let mut identities = route_plan.routes.to_vec();
             append_dragged_incident_routes(
                 &self.view,
-                graph.as_ref().map(|snapshot| snapshot.graph()),
+                Some(graph.graph()),
                 presentation_offsets,
                 &mut identities,
                 self.edge_layer_budget,
@@ -323,6 +330,7 @@ impl OpenGpuiSceneHost {
                 query_bounds,
                 query_revision: route_plan.revision,
                 route_generation: route_plan.generation,
+                geometry_layout_revision: geometry.layout_revision(),
                 edge_budget: self.edge_layer_budget,
                 active_edge: active,
                 suppressed_edge,
@@ -338,55 +346,116 @@ impl OpenGpuiSceneHost {
             let mut active_wires = Vec::new();
             let mut painter_fallbacks = Vec::new();
             let mut painter_fallback_count = 0usize;
+            let mut endpoint_diagnostics = Vec::new();
+            let mut endpoint_fallback_count = 0usize;
+            let endpoint_resolver = PublishedEndpointResolver::new(&geometry);
 
             for identity in identities.iter().copied() {
                 let edge = identity.edge;
                 if !admitted.insert(edge) || Some(edge) == suppressed_edge {
                     continue;
                 }
-                let Some(route) = geometry.route(edge) else {
+                let Some(graph_edge) = graph.graph().edge(&edge) else {
                     continue;
                 };
-                let drag_path = graph.as_ref().and_then(|graph| {
-                    dragged_edge_path(graph.graph(), edge, route.facts(), |node| {
-                        presentation_offsets.get(&node).copied()
-                    })
+                let source_fallback = self.explicit_endpoint_fallback(
+                    &endpoint_resolver,
+                    graph.graph(),
+                    graph_edge.from,
+                );
+                let target_fallback = self.explicit_endpoint_fallback(
+                    &endpoint_resolver,
+                    graph.graph(),
+                    graph_edge.to,
+                );
+                let Some(mut source_endpoint) = endpoint_resolver.resolve_route(
+                    graph_edge.from,
+                    PublishedRouteEndpointIdentity::new(edge, EdgeEndpoint::From),
+                    source_fallback,
+                ) else {
+                    continue;
+                };
+                let Some(mut target_endpoint) = endpoint_resolver.resolve_route(
+                    graph_edge.to,
+                    PublishedRouteEndpointIdentity::new(edge, EdgeEndpoint::To),
+                    target_fallback,
+                ) else {
+                    continue;
+                };
+                collect_scene_endpoint_diagnostic(
+                    source_endpoint.diagnostic(),
+                    &mut endpoint_diagnostics,
+                    &mut endpoint_fallback_count,
+                );
+                collect_scene_endpoint_diagnostic(
+                    target_endpoint.diagnostic(),
+                    &mut endpoint_diagnostics,
+                    &mut endpoint_fallback_count,
+                );
+                let published_route = geometry.route(edge);
+                let fallback_route = if published_route.is_none() {
+                    resolve_edge_route_path(
+                        graph_edge,
+                        EdgePosition {
+                            source: source_endpoint.position(),
+                            target: target_endpoint.position(),
+                        },
+                    )
+                } else {
+                    None
+                };
+                let Some(route) = published_route
+                    .map(|route| route.facts())
+                    .or(fallback_route.as_ref())
+                else {
+                    continue;
+                };
+                let drag_path = dragged_edge_path(graph.graph(), edge, route, |node| {
+                    presentation_offsets.get(&node).copied()
                 });
-                let visible_path = drag_path.as_ref().unwrap_or(&route.facts().path);
+                let path_override =
+                    drag_path.or_else(|| fallback_route.as_ref().map(|route| route.path.clone()));
+                let visible_path = path_override.as_ref().unwrap_or(&route.path);
+                if path_override.is_some() {
+                    if let Ok(sample) = visible_path.sample(EdgePathAnchor::Source) {
+                        source_endpoint = source_endpoint.with_route_sample(sample);
+                    }
+                    if let Ok(sample) = visible_path.sample(EdgePathAnchor::Target) {
+                        target_endpoint = target_endpoint.with_route_sample(sample);
+                    }
+                }
                 if !edge_path_intersects_viewport(visible_path, self.viewport, cull_margin) {
                     continue;
                 }
                 let visual_state = if active == Some(edge) {
                     OpenGpuiEdgeVisualState::Active
-                } else if route.facts().interaction.selected {
+                } else if route.interaction.selected {
                     OpenGpuiEdgeVisualState::Selected
                 } else {
                     OpenGpuiEdgeVisualState::Ordinary
                 };
                 let paint_recipe = self.edge_painters.resolve(
-                    route.facts().edge_kind,
+                    route.edge_kind,
                     visual_state,
-                    &route.facts().presentation,
+                    &route.presentation,
                     &self.graph_theme,
                 );
                 if paint_recipe.fallbacks().has_any() {
                     painter_fallback_count = painter_fallback_count.saturating_add(1);
                     if painter_fallbacks.len() < 16 {
                         painter_fallbacks.push((
-                            route.facts().presentation.renderer_key.clone(),
+                            route.presentation.renderer_key.clone(),
                             edge_painter_fallback_message(edge, paint_recipe.fallbacks()),
                         ));
                     }
                 }
-                let source_marker = prepare_edge_marker(
-                    visible_path,
-                    EdgePathAnchor::Source,
+                let source_marker = prepare_resolved_edge_marker(
+                    source_endpoint,
                     paint_recipe.source_marker().shape(),
                     true,
                 );
-                let target_marker = prepare_edge_marker(
-                    visible_path,
-                    EdgePathAnchor::Target,
+                let target_marker = prepare_resolved_edge_marker(
+                    target_endpoint,
                     paint_recipe.target_marker().shape(),
                     false,
                 );
@@ -411,10 +480,12 @@ impl OpenGpuiSceneHost {
                     visual_state,
                     paint_key: paint_recipe.path_batch_key(),
                     path_stroke_width: paint_recipe.path_batch_key().path().stroke_width(),
+                    source_endpoint,
+                    target_endpoint,
                     source_marker,
                     target_marker,
                     label,
-                    drag_path,
+                    drag_path: path_override,
                 };
                 match visual_state {
                     OpenGpuiEdgeVisualState::Ordinary => ordinary.push(wire),
@@ -458,6 +529,12 @@ impl OpenGpuiSceneHost {
             };
             if let Some(key) = cache_key {
                 self.prepared_edges.insert(key, prepared.clone());
+            }
+            if endpoint_fallback_count > 0 {
+                self.record_endpoint_geometry_diagnostics(
+                    endpoint_diagnostics,
+                    endpoint_fallback_count,
+                );
             }
             (
                 prepared,
@@ -671,10 +748,15 @@ impl OpenGpuiSceneHost {
                     .resolve_paint_plan(Some(plan_key), |cache| {
                         let mut batches = BTreeMap::new();
                         for wire in published[range.clone()].iter() {
-                            let Some(route) = geometry.route(wire.edge) else {
-                                continue;
+                            let path = match wire.drag_path.as_ref() {
+                                Some(path) => path,
+                                None => {
+                                    let Some(route) = geometry.route(wire.edge) else {
+                                        continue;
+                                    };
+                                    &route.facts().path
+                                }
                             };
-                            let path = wire.drag_path.as_ref().unwrap_or(&route.facts().path);
                             let built = if let Some(key) =
                                 edge_paint_item_key(wire, transform, bounds.origin)
                             {
@@ -682,7 +764,7 @@ impl OpenGpuiSceneHost {
                                     build_scene_wire_path(
                                         path,
                                         wire.path_stroke_width,
-                                        key.batch().stroke_pattern(),
+                                        key.batch(),
                                         transform,
                                         bounds.origin,
                                     )
@@ -691,7 +773,7 @@ impl OpenGpuiSceneHost {
                                 build_scene_wire_path(
                                     path,
                                     wire.path_stroke_width,
-                                    wire.paint_key.stroke_pattern(),
+                                    wire.paint_key,
                                     transform,
                                     bounds.origin,
                                 )
@@ -1026,16 +1108,16 @@ impl OpenGpuiSceneHost {
             if !selected {
                 continue;
             }
-            for (endpoint, anchor, allowed, endpoint_name) in [
+            for (endpoint, resolved, allowed, endpoint_name) in [
                 (
                     EdgeEndpoint::From,
-                    EdgePathAnchor::Source,
+                    wire.source_endpoint,
                     interaction.reconnect_source,
                     "source",
                 ),
                 (
                     EdgeEndpoint::To,
-                    EdgePathAnchor::Target,
+                    wire.target_endpoint,
                     interaction.reconnect_target,
                     "target",
                 ),
@@ -1043,10 +1125,7 @@ impl OpenGpuiSceneHost {
                 if !allowed {
                     continue;
                 }
-                let Ok(sample) = path.sample(anchor) else {
-                    continue;
-                };
-                let Some(position) = transform.screen_point_for_canvas(sample.point) else {
+                let Some(position) = transform.screen_point_for_canvas(resolved.point()) else {
                     continue;
                 };
                 let interaction_handle = native_interactions.clone();
@@ -1412,9 +1491,10 @@ impl OpenGpuiSceneHost {
                 },
                 |recipe| recipe.style(),
             );
-            let stroke_pattern = resolved.map_or(OpenGpuiEdgeStrokePattern::Solid, |recipe| {
-                recipe.path_batch_key().stroke_pattern()
-            });
+            let path_batch_key = resolved.map_or_else(
+                || OpenGpuiEdgePainterBatchKey::native_fallback(preview_style.batch_key()),
+                |recipe| recipe.path_batch_key(),
+            );
             let source_marker = resolved
                 .map(|recipe| recipe.source_marker().shape())
                 .unwrap_or(OpenGpuiEdgeMarkerShape::None);
@@ -1446,7 +1526,7 @@ impl OpenGpuiSceneHost {
                     let path = build_scene_wire_path(
                         &preview_path,
                         preview_style.stroke_width(),
-                        stroke_pattern,
+                        path_batch_key,
                         transform,
                         bounds.origin,
                     );
@@ -2060,6 +2140,20 @@ fn edge_painter_fallback_message(
     )
 }
 
+fn collect_scene_endpoint_diagnostic(
+    diagnostic: Option<PublishedEndpointDiagnostic>,
+    messages: &mut Vec<String>,
+    total: &mut usize,
+) {
+    let Some(diagnostic) = diagnostic else {
+        return;
+    };
+    *total = (*total).saturating_add(1);
+    if messages.len() < 16 {
+        messages.push(diagnostic.to_string());
+    }
+}
+
 fn retain_back_to<T>(items: &mut Vec<T>, keep: usize) {
     if items.len() > keep {
         items.drain(..items.len() - keep);
@@ -2179,6 +2273,21 @@ fn prepare_edge_marker(
             shape,
             reverse,
         })
+}
+
+fn prepare_resolved_edge_marker(
+    endpoint: ResolvedEndpoint,
+    shape: OpenGpuiEdgeMarkerShape,
+    reverse: bool,
+) -> Option<OpenGpuiPreparedEdgeMarker> {
+    (shape != OpenGpuiEdgeMarkerShape::None).then_some(OpenGpuiPreparedEdgeMarker {
+        sample: EdgePathSample {
+            point: endpoint.point(),
+            tangent: endpoint.tangent(),
+        },
+        shape,
+        reverse,
+    })
 }
 
 fn build_edge_marker_path(
@@ -2412,11 +2521,11 @@ fn grid_axis_lines(
 fn build_scene_wire_path(
     path: &EdgePath,
     stroke_width: f32,
-    stroke_pattern: OpenGpuiEdgeStrokePattern,
+    paint_key: OpenGpuiEdgePainterBatchKey,
     transform: ViewportTransform,
     scene_origin: open_gpui::Point<Pixels>,
 ) -> Option<Path<Pixels>> {
-    let mut builder = match stroke_pattern {
+    let mut builder = match paint_key.stroke_pattern() {
         OpenGpuiEdgeStrokePattern::Solid => PathBuilder::stroke(px(stroke_width)),
         OpenGpuiEdgeStrokePattern::Dashed => {
             PathBuilder::stroke(px(stroke_width)).dash_array(&[px(6.0), px(4.0)])
@@ -2425,6 +2534,15 @@ fn build_scene_wire_path(
             PathBuilder::stroke(px(stroke_width)).dash_array(&[px(1.0), px(3.0)])
         }
     };
+    if let open_gpui::PathStyle::Stroke(options) = &mut builder.style {
+        if paint_key.uses_round_line_cap() {
+            options.start_cap = LineCap::Round;
+            options.end_cap = LineCap::Round;
+        }
+        if paint_key.uses_round_line_join() {
+            options.line_join = LineJoin::Round;
+        }
+    }
     let mut segment_count = 0_usize;
     for command in &path.commands {
         match *command {

@@ -7,10 +7,10 @@ use jellyflow::core::{
     NodeId, NodeKindKey, PortDirection, PortId,
 };
 use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use jellyflow_open_gpui::accessibility::OPEN_GPUI_DIAGNOSTIC_ROLE;
 use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
-use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use open_gpui::{
     AnyElement, Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
     SharedString, Stateful, StatefulInteractiveElement, Styled, div, px, rgb,
@@ -21,16 +21,17 @@ use crate::model_options::WorkflowModelOptionsState;
 use super::native_graph_theme;
 
 pub use condition::{
-    ConditionBranchAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
-    WORKFLOW_CONDITION_RENDERER, WorkflowBranch, WorkflowConditionNode, condition_branches,
-    plan_condition_branch_action, workflow_condition_add_selector,
-    workflow_condition_branch_selector, workflow_condition_node_id,
-    workflow_condition_remove_selector, workflow_condition_scroll_selector,
-    workflow_condition_up_selector,
+    ConditionCaseAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
+    WORKFLOW_CONDITION_RENDERER, WorkflowCase, WorkflowConditionNode, WorkflowConditionOutputs,
+    WorkflowElseBranch, condition_cases, condition_outputs, plan_condition_case_action,
+    workflow_condition_add_selector, workflow_condition_case_selector,
+    workflow_condition_else_selector, workflow_condition_node_id,
+    workflow_condition_pending_selector, workflow_condition_remove_selector,
+    workflow_condition_scroll_selector, workflow_condition_up_selector,
 };
 pub use llm::{
     WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND, WORKFLOW_LLM_RENDERER, WORKFLOW_MODEL_FIELD,
-    WORKFLOW_PROMPT_FIELD, WorkflowDraftStore, WorkflowLlmNode, workflow_llm_node_id,
+    WORKFLOW_PROMPT_FIELD, WorkflowFieldStore, WorkflowLlmNode, workflow_llm_node_id,
     workflow_model_accept_remote_selector, workflow_model_conflict_selector,
     workflow_model_option_selector, workflow_model_options_empty_selector,
     workflow_model_options_failed_selector, workflow_model_options_loading_selector,
@@ -46,10 +47,11 @@ const WORKFLOW_LLM_OUTPUT_ID: u128 = 0xd1fa_0102;
 const WORKFLOW_CONDITION_INPUT_ID: u128 = 0xd1fa_0201;
 const WORKFLOW_MATCH_PORT_ID: u128 = 0xd1fa_0202;
 const WORKFLOW_ELSE_PORT_ID: u128 = 0xd1fa_0203;
+const WORKFLOW_REVIEW_PORT_ID: u128 = 0xd1fa_0204;
 const WORKFLOW_FORWARD_EDGE_ID: u128 = 0xd1fa_0301;
 const WORKFLOW_RETRY_EDGE_ID: u128 = 0xd1fa_0302;
-const MATCH_BRANCH_ID: &str = "branch-match";
-const ELSE_BRANCH_ID: &str = "branch-else";
+const MATCH_CASE_ID: &str = "case-match";
+const REVIEW_CASE_ID: &str = "case-review";
 const WORKFLOW_HEADER_HEIGHT: f32 = 44.0;
 pub(super) const WORKFLOW_PORT_DIAMETER: f32 = 13.0;
 
@@ -67,30 +69,43 @@ pub enum WorkflowNodeError {
         node: NodeId,
         field: &'static str,
     },
-    EmptyBranchId,
-    EmptyBranchLabel {
-        branch_id: String,
+    EmptyCaseId,
+    ReservedCaseId {
+        case_id: String,
     },
-    DuplicateBranchId {
-        branch_id: String,
+    EmptyCaseLabel {
+        case_id: String,
     },
-    DuplicateBranchPort {
+    DuplicateCaseId {
+        case_id: String,
+    },
+    DuplicateCasePort {
         port: PortId,
     },
-    BranchNotFound {
-        branch_id: String,
+    CaseNotFound {
+        case_id: String,
     },
-    ReorderIndexOutOfBounds {
+    CaseReorderIndexOutOfBounds {
         index: usize,
-        branch_count: usize,
+        case_count: usize,
     },
-    MissingBranchPort {
+    MissingCasePort {
         node: NodeId,
         port: PortId,
     },
-    InvalidBranchPort {
+    InvalidCasePort {
         node: NodeId,
         port: PortId,
+    },
+    MissingElsePort {
+        node: NodeId,
+    },
+    InvalidElsePort {
+        node: NodeId,
+        port: PortId,
+    },
+    InvalidConditionPortOrder {
+        node: NodeId,
     },
     BindingUnavailable {
         message: String,
@@ -118,32 +133,50 @@ impl std::fmt::Display for WorkflowNodeError {
             Self::InvalidData { node, field } => {
                 write!(f, "workflow node {node:?} has invalid {field} data")
             }
-            Self::EmptyBranchId => f.write_str("workflow branch id must not be empty"),
-            Self::EmptyBranchLabel { branch_id } => {
-                write!(f, "workflow branch {branch_id:?} must have a label")
-            }
-            Self::DuplicateBranchId { branch_id } => {
-                write!(f, "workflow branch id is duplicated: {branch_id:?}")
-            }
-            Self::DuplicateBranchPort { port } => {
-                write!(f, "workflow branch port is duplicated: {port:?}")
-            }
-            Self::BranchNotFound { branch_id } => {
-                write!(f, "workflow branch does not exist: {branch_id:?}")
-            }
-            Self::ReorderIndexOutOfBounds {
-                index,
-                branch_count,
-            } => write!(
+            Self::EmptyCaseId => f.write_str("workflow condition case id must not be empty"),
+            Self::ReservedCaseId { case_id } => write!(
                 f,
-                "workflow branch reorder index {index} is outside {branch_count} branches"
+                "workflow condition case id {case_id:?} is reserved for the immutable Else branch"
             ),
-            Self::MissingBranchPort { node, port } => {
-                write!(f, "workflow node {node:?} is missing branch port {port:?}")
+            Self::EmptyCaseLabel { case_id } => {
+                write!(f, "workflow condition case {case_id:?} must have a label")
             }
-            Self::InvalidBranchPort { node, port } => write!(
+            Self::DuplicateCaseId { case_id } => {
+                write!(f, "workflow condition case id is duplicated: {case_id:?}")
+            }
+            Self::DuplicateCasePort { port } => {
+                write!(f, "workflow condition case port is duplicated: {port:?}")
+            }
+            Self::CaseNotFound { case_id } => {
+                write!(f, "workflow condition case does not exist: {case_id:?}")
+            }
+            Self::CaseReorderIndexOutOfBounds { index, case_count } => write!(
                 f,
-                "workflow node {node:?} has an invalid branch output port {port:?}"
+                "workflow condition case reorder index {index} is outside {case_count} cases"
+            ),
+            Self::MissingCasePort { node, port } => {
+                write!(
+                    f,
+                    "workflow node {node:?} is missing condition case port {port:?}"
+                )
+            }
+            Self::InvalidCasePort { node, port } => write!(
+                f,
+                "workflow node {node:?} has an invalid condition case port {port:?}"
+            ),
+            Self::MissingElsePort { node } => {
+                write!(
+                    f,
+                    "workflow condition node {node:?} is missing its Else port"
+                )
+            }
+            Self::InvalidElsePort { node, port } => write!(
+                f,
+                "workflow condition node {node:?} has invalid Else port {port:?}"
+            ),
+            Self::InvalidConditionPortOrder { node } => write!(
+                f,
+                "workflow condition node {node:?} must order case ports before Else"
             ),
             Self::BindingUnavailable { message } => {
                 write!(f, "workflow binding is unavailable: {message}")
@@ -304,10 +337,10 @@ pub(super) fn catalog_specs() -> [NodeKindSpec; 2] {
 
 pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
-    draft_store: WorkflowDraftStore,
+    field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
 ) {
-    llm::register(registry, draft_store, model_options);
+    llm::register(registry, field_store, model_options);
     condition::register(registry);
 }
 
@@ -319,16 +352,17 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     let condition_input = PortId::from_u128(WORKFLOW_CONDITION_INPUT_ID);
     let match_output = PortId::from_u128(WORKFLOW_MATCH_PORT_ID);
     let else_output = PortId::from_u128(WORKFLOW_ELSE_PORT_ID);
-    let branches = [
-        WorkflowBranch {
-            id: MATCH_BRANCH_ID.to_owned(),
+    let review_output = PortId::from_u128(WORKFLOW_REVIEW_PORT_ID);
+    let cases = [
+        WorkflowCase {
+            id: MATCH_CASE_ID.to_owned(),
             label: "Intent matches".to_owned(),
             port_id: match_output,
         },
-        WorkflowBranch {
-            id: ELSE_BRANCH_ID.to_owned(),
-            label: "Else".to_owned(),
-            port_id: else_output,
+        WorkflowCase {
+            id: REVIEW_CASE_ID.to_owned(),
+            label: "Needs review".to_owned(),
+            port_id: review_output,
         },
     ];
     let mut catalog = NodeCatalog::new();
@@ -350,7 +384,7 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
             CanvasPoint { x: 500.0, y: 170.0 },
-            [condition_input],
+            [condition_input, else_output],
         )
         .expect("workflow condition fixture must match its fixed catalog ports");
     let mut graph = GraphBuilder::new(GraphId::from_u128(WORKFLOW_GRAPH_ID));
@@ -375,16 +409,18 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
     }
 
     let (condition_id, mut condition_node, condition_ports) = condition_creation.into_parts();
-    condition_node.data = condition::condition_data("Route by intent", &branches);
+    condition_node.data = condition::condition_data("Route by intent", &cases);
+    condition_node.ports.retain(|port| *port != else_output);
     condition_node
         .ports
-        .extend(branches.iter().map(WorkflowBranch::port_id));
+        .extend(cases.iter().map(WorkflowCase::port_id));
+    condition_node.ports.push(else_output);
     graph.insert_node(condition_id, condition_node);
     for (port_id, port) in condition_ports {
         graph.insert_port(port_id, port);
     }
-    for branch in &branches {
-        graph.insert_port(branch.port_id(), condition::branch_port(condition, branch));
+    for case in &cases {
+        graph.insert_port(case.port_id(), condition::case_port(condition, case));
     }
     graph.insert_edge(
         EdgeId::from_u128(WORKFLOW_FORWARD_EDGE_ID),

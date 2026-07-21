@@ -15,6 +15,7 @@ categories = ["gui", "visualization"]
 
 [dependencies]
 jellyflow.workspace = true
+lyon.workspace = true
 open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false }
 thiserror.workspace = true
 

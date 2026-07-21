@@ -427,6 +427,75 @@ fn accepting_remote_blackboard_value_clears_conflict_without_writing_the_graph(
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 }
 
+#[open_gpui::test]
+fn uncertain_blackboard_command_stays_single_flight_until_authoritative_refresh(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let symbol_id = SymbolId::from_u128(0xb1ac_0008);
+    let graph = GraphBuilder::new(GraphId::from_u128(0xb1b4))
+        .with_symbol(symbol_id, symbol("base"))
+        .build()
+        .expect("valid uncertain blackboard graph");
+    let runtime = Rc::new(
+        GraphRuntime::builder(Default::default())
+            .build(graph)
+            .expect("uncertain blackboard runtime"),
+    );
+    let source = Rc::new(UncertainCommitBlackboardSource::new(Rc::clone(&runtime)));
+    let panel_source: Rc<dyn BlackboardSource> = source.clone();
+    let (_blackboard, cx) = cx.add_window_view(move |_, _| NativeBlackboard::new(panel_source));
+    draw(cx);
+
+    let name = cx
+        .debug_bounds(&blackboard_symbol_name_selector(symbol_id))
+        .expect("uncertain symbol name input");
+    cx.simulate_click(name.center(), Default::default());
+    cx.simulate_keystrokes("end");
+    cx.simulate_input(" local");
+    draw(cx);
+
+    let apply_selector = blackboard_symbol_apply_selector(symbol_id);
+    let apply = cx
+        .debug_bounds(&apply_selector)
+        .expect("uncertain symbol apply command");
+    cx.simulate_click(apply.center(), Default::default());
+    draw(cx);
+
+    assert_eq!(source.execute_calls(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .graph()
+            .symbol(&symbol_id)
+            .unwrap()
+            .name,
+        "base local"
+    );
+
+    let blocked_apply = cx
+        .debug_bounds(&apply_selector)
+        .expect("uncertain attempt keeps its apply control mounted");
+    cx.simulate_click(blocked_apply.center(), Default::default());
+    draw(cx);
+    assert_eq!(
+        source.execute_calls(),
+        1,
+        "an uncertain command must not be dispatched a second time"
+    );
+
+    source.publish_latest();
+    draw(cx);
+    let acknowledged_apply = cx
+        .debug_bounds(&apply_selector)
+        .expect("acknowledged symbol apply control");
+    cx.simulate_click(acknowledged_apply.center(), Default::default());
+    draw(cx);
+    assert_eq!(source.execute_calls(), 1);
+}
+
 type BlackboardCallbackSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 struct ControlledBlackboardSource {
@@ -497,6 +566,74 @@ impl BlackboardSource for ControlledBlackboardSource {
         self.runtime
             .execute(command)
             .map_err(|error| BlackboardCommandError::new(error.to_string()))
+    }
+}
+
+struct UncertainCommitBlackboardSource {
+    runtime: Rc<GraphRuntime>,
+    visible: RefCell<jellyflow::runtime::GraphSnapshot>,
+    callback: BlackboardCallbackSlot,
+    execute_calls: Cell<usize>,
+}
+
+impl UncertainCommitBlackboardSource {
+    fn new(runtime: Rc<GraphRuntime>) -> Self {
+        let visible = runtime
+            .snapshot()
+            .expect("initial uncertain source snapshot");
+        Self {
+            runtime,
+            visible: RefCell::new(visible),
+            callback: Rc::default(),
+            execute_calls: Cell::new(0),
+        }
+    }
+
+    fn execute_calls(&self) -> usize {
+        self.execute_calls.get()
+    }
+
+    fn publish_latest(&self) {
+        *self.visible.borrow_mut() = self
+            .runtime
+            .snapshot()
+            .expect("latest uncertain source snapshot");
+        if let Some(callback) = self.callback.borrow().as_ref() {
+            callback();
+        }
+    }
+}
+
+impl BlackboardSource for UncertainCommitBlackboardSource {
+    fn subscribe(
+        &self,
+        callback: Rc<dyn Fn()>,
+    ) -> Result<BlackboardSourceSubscription, BlackboardSourceError> {
+        *self.callback.borrow_mut() = Some(callback);
+        let callback = Rc::clone(&self.callback);
+        Ok(BlackboardSourceSubscription::new(move || {
+            callback.borrow_mut().take();
+        }))
+    }
+
+    fn snapshot(&self) -> Result<BlackboardSourceSnapshot, BlackboardSourceError> {
+        Ok(BlackboardSourceSnapshot::Ready(
+            self.visible.borrow().clone(),
+        ))
+    }
+
+    fn execute(
+        &self,
+        command: GraphCommand,
+    ) -> Result<jellyflow::runtime::GraphCommandOutcome, BlackboardCommandError> {
+        self.execute_calls
+            .set(self.execute_calls.get().saturating_add(1));
+        self.runtime
+            .execute(command)
+            .map_err(|error| BlackboardCommandError::new(error.to_string()))?;
+        Err(BlackboardCommandError::new(
+            "transport failed after dispatch",
+        ))
     }
 }
 

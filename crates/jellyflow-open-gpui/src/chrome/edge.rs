@@ -135,6 +135,19 @@ impl OpenGpuiEdgeStyle {
         self.tone
     }
 
+    /// Reapplies only the visual treatment while preserving the semantic tone.
+    ///
+    /// Stroke widths remain screen-space metrics. Callers must project route geometry before
+    /// painting and must not multiply this style by canvas zoom.
+    #[must_use]
+    pub fn with_visual_state(
+        self,
+        state: OpenGpuiEdgeVisualState,
+        theme: &OpenGpuiGraphTheme,
+    ) -> Self {
+        theme.resolve_edge_tone_style(state, self.tone)
+    }
+
     /// Returns the allocation-free key used to group compatible paint work.
     #[must_use]
     pub fn batch_key(self) -> OpenGpuiEdgeBatchKey {
@@ -195,6 +208,14 @@ impl OpenGpuiGraphTheme {
         style_token: Option<&str>,
     ) -> OpenGpuiEdgeStyle {
         let tone = OpenGpuiEdgeTone::from_style_token(style_token);
+        self.resolve_edge_tone_style(state, tone)
+    }
+
+    fn resolve_edge_tone_style(
+        &self,
+        state: OpenGpuiEdgeVisualState,
+        tone: OpenGpuiEdgeTone,
+    ) -> OpenGpuiEdgeStyle {
         let base = tone.color(self.palette);
         let (color, configured_width) = match state {
             OpenGpuiEdgeVisualState::Ordinary => (base, self.metrics.edge_ordinary_width),
@@ -337,5 +358,23 @@ mod tests {
 
         let style = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Hovered, None);
         assert_eq!(style.stroke_width(), 2.0);
+    }
+
+    #[test]
+    fn visual_restyling_preserves_tone_and_screen_space_width_contract() {
+        let theme = OpenGpuiGraphTheme::default();
+        let ordinary = theme.resolve_edge_style(OpenGpuiEdgeVisualState::Ordinary, Some("control"));
+        let selected = ordinary.with_visual_state(OpenGpuiEdgeVisualState::Selected, &theme);
+
+        assert_eq!(ordinary.tone(), selected.tone());
+        assert_eq!(ordinary.layer(), OpenGpuiEdgeLayer::Ordinary);
+        assert_eq!(selected.layer(), OpenGpuiEdgeLayer::Selected);
+        assert_eq!(ordinary.stroke_width(), 1.5);
+        assert_eq!(selected.stroke_width(), 2.5);
+
+        for _zoom in [0.5_f32, 1.0, 2.0] {
+            assert_eq!(ordinary.stroke_width(), 1.5);
+            assert_eq!(selected.stroke_width(), 2.5);
+        }
     }
 }

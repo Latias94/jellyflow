@@ -1,623 +1,504 @@
-use jellyflow_open_gpui::draft::DraftSubmissionRejectionDecision;
+use jellyflow::core::{GraphBuilder, GraphId, Node, NodeId, NodeKindKey};
+use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRuntime};
 use jellyflow_open_gpui::{
-    DraftConflict, DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
-    DraftReconcileDecision, DraftResolutionDecision, DraftStaleRejectionDecision,
-    DraftSubmissionDecision, DraftSubmissionKind, RevisionedDraft,
+    OpenGpuiCommandTicketError, RetainedFieldAttemptState, RetainedFieldConflictChoice,
+    RetainedFieldError, RetainedFieldPhase, RetainedFieldResolution, RetainedFieldSettlement,
+    RetainedFieldSubmitMode, RetainedFieldUpdate, RevisionedField,
 };
 
-#[test]
-fn clean_draft_applies_a_new_remote_snapshot_directly() {
-    let mut draft = RevisionedDraft::new(4, String::from("before"));
-
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-    assert_eq!(
-        draft.reconcile_remote(5, String::from("after")),
-        DraftReconcileDecision::RemoteApplied {
-            from_revision: 4,
-            to_revision: 5,
-        }
-    );
-    assert_eq!(draft.local(), "after");
-    assert_eq!(draft.remote(), "after");
-    assert_eq!(draft.base_revision(), 5);
-    assert_eq!(draft.remote_revision(), 5);
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-}
+const KIND: &str = "test.revisioned-field";
+const RENDERER: &str = "test.revisioned.field";
 
 #[test]
-fn dirty_and_composing_drafts_preserve_local_input_on_new_remote_revisions() {
-    let mut dirty = RevisionedDraft::new(10, String::from("base"));
-    dirty.edit_local(String::from("local edit"));
+fn authoritative_observations_distinguish_clean_dirty_and_composing_fields() {
+    let mut clean = RevisionedField::new(4, String::from("before"));
 
+    assert_eq!(clean.phase(), RetainedFieldPhase::Clean);
     assert_eq!(
-        dirty.reconcile_remote(11, String::from("other view")),
-        DraftReconcileDecision::Conflict {
-            conflict: DraftConflict::new(10, 11),
-        }
+        clean.observe(5, String::from("after")),
+        RetainedFieldUpdate::RemoteApplied
     );
-    assert_eq!(dirty.local(), "local edit");
-    assert_eq!(dirty.remote(), "other view");
-    assert_eq!(dirty.phase(), DraftPhase::Conflict);
+    assert_eq!(clean.local(), "after");
+    assert_eq!(clean.remote(), "after");
+    assert_eq!(clean.base_revision(), 5);
+    assert_eq!(clean.remote_revision(), 5);
 
-    let mut composing = RevisionedDraft::new(20, String::from("base"));
-    composing.mark_composing();
-    composing.edit_local(String::from("partial composition"));
-
+    clean.edit(String::from("local edit"));
+    assert_eq!(clean.phase(), RetainedFieldPhase::Dirty);
     assert_eq!(
-        composing.reconcile_remote(21, String::from("new remote value")),
-        DraftReconcileDecision::Conflict {
-            conflict: DraftConflict::new(20, 21),
-        }
+        clean.observe(6, String::from("other view")),
+        RetainedFieldUpdate::Conflict
+    );
+    assert_eq!(clean.local(), "local edit");
+    assert_eq!(clean.remote(), "other view");
+    assert_eq!(clean.phase(), RetainedFieldPhase::Conflict);
+    let conflict = clean.conflict().expect("revision conflict");
+    assert_eq!(conflict.base_revision(), 5);
+    assert_eq!(conflict.remote_revision(), 6);
+
+    let mut composing = RevisionedField::new(20, String::from("base"));
+    composing.set_composing(true);
+    composing.edit(String::from("partial composition"));
+    assert_eq!(composing.phase(), RetainedFieldPhase::Composing);
+    assert_eq!(
+        composing.observe(21, String::from("new remote value")),
+        RetainedFieldUpdate::Conflict
     );
     assert_eq!(composing.local(), "partial composition");
     assert_eq!(composing.remote(), "new remote value");
-    assert_eq!(composing.phase(), DraftPhase::ComposingConflict);
+    assert_eq!(composing.phase(), RetainedFieldPhase::ComposingConflict);
 }
 
 #[test]
-fn an_unchanged_field_advances_the_base_without_conflicting_with_a_dirty_draft() {
-    let mut draft = RevisionedDraft::new(30, String::from("remote"));
-    draft.edit_local(String::from("local"));
+fn unchanged_authoritative_value_advances_a_dirty_fields_base() {
+    let mut field = RevisionedField::new(30, String::from("remote"));
+    field.edit(String::from("local"));
 
     assert_eq!(
-        draft.reconcile_remote(31, String::from("remote")),
-        DraftReconcileDecision::BaseAdvanced {
-            from_revision: 30,
-            to_revision: 31,
-            phase: DraftPhase::Dirty,
-        }
+        field.observe(31, String::from("remote")),
+        RetainedFieldUpdate::BaseAdvanced
     );
-    assert_eq!(draft.base_revision(), 31);
-    assert_eq!(draft.local(), "local");
-    assert_eq!(draft.phase(), DraftPhase::Dirty);
+    assert_eq!(field.base_revision(), 31);
+    assert_eq!(field.local(), "local");
+    assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
+
+    field.edit(String::from("remote"));
+    assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+    assert!(matches!(field.plan(31), Err(RetainedFieldError::Clean)));
 }
 
 #[test]
-fn editing_back_to_the_authoritative_value_restores_a_clean_draft() {
-    let mut draft = RevisionedDraft::new(34, String::from("remote"));
-
+fn conflicts_require_an_explicit_accept_keep_or_reapply_choice() {
+    let mut accepted = conflicting_field();
     assert!(matches!(
-        draft.edit_local(String::from("local")),
-        jellyflow_open_gpui::DraftEditDecision::Updated {
-            phase: DraftPhase::Dirty
-        }
+        accepted
+            .resolve(RetainedFieldConflictChoice::AcceptRemote, 71)
+            .expect("accept authoritative value"),
+        RetainedFieldResolution::AcceptedRemote { revision: 71 }
     ));
-    assert_eq!(
-        draft.edit_local(String::from("remote")),
-        jellyflow_open_gpui::DraftEditDecision::Updated {
-            phase: DraftPhase::Clean,
-        }
-    );
-    assert_eq!(
-        draft.plan_submission_at(34),
-        DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean)
-    );
-}
+    assert_eq!(accepted.local(), "remote");
+    assert_eq!(accepted.phase(), RetainedFieldPhase::Clean);
 
-#[test]
-fn editing_a_conflicted_draft_back_to_the_authoritative_value_resolves_the_conflict() {
-    let mut draft = conflicting_draft();
-
-    assert_eq!(
-        draft.edit_local(String::from("remote")),
-        jellyflow_open_gpui::DraftEditDecision::Updated {
-            phase: DraftPhase::Clean,
-        }
-    );
-    assert_eq!(draft.base_revision(), 71);
-    assert_eq!(draft.conflict(), None);
-    assert_eq!(
-        draft.plan_submission_at(71),
-        DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean)
-    );
-}
-
-#[test]
-fn submission_requires_the_latest_authoritative_field_observation() {
-    let mut draft = RevisionedDraft::new(35, String::from("remote"));
-    draft.edit_local(String::from("local"));
+    let mut kept = conflicting_field();
+    let conflict = kept.conflict().expect("conflicting field");
     assert!(matches!(
-        draft.reconcile_remote(36, String::from("remote")),
-        DraftReconcileDecision::BaseAdvanced { .. }
+        kept.resolve(RetainedFieldConflictChoice::KeepLocal, 71)
+            .expect("keep local value"),
+        RetainedFieldResolution::KeptLocal { conflict: actual } if actual == conflict
+    ));
+    assert_eq!(kept.local(), "local");
+    assert_eq!(kept.phase(), RetainedFieldPhase::Conflict);
+
+    let mut reapplied = conflicting_field();
+    let intent = match reapplied
+        .resolve(RetainedFieldConflictChoice::ReapplyLocal, 71)
+        .expect("explicit reapply intent")
+    {
+        RetainedFieldResolution::Reapply(intent) => intent,
+        resolution => panic!("expected reapply intent, got {resolution:?}"),
+    };
+    assert_eq!(intent.mode(), RetainedFieldSubmitMode::Reapply);
+    assert_eq!(intent.expected_revision(), 71);
+    assert_eq!(intent.value(), "local");
+    assert!(matches!(
+        reapplied.plan(71),
+        Err(RetainedFieldError::AttemptPending { .. })
     ));
 
+    let mut composing = conflicting_field();
+    composing.set_composing(true);
+    assert!(matches!(
+        composing.resolve(RetainedFieldConflictChoice::ReapplyLocal, 71),
+        Err(RetainedFieldError::CompositionActive)
+    ));
+}
+
+#[test]
+fn planning_requires_the_latest_authoritative_revision() {
+    let mut field = RevisionedField::new(35, String::from("remote"));
+    field.edit(String::from("local"));
     assert_eq!(
-        draft.plan_submission_at(35),
-        DraftSubmissionDecision::Rejected(DraftIntentRejection::UnreconciledRevision {
+        field.observe(36, String::from("remote")),
+        RetainedFieldUpdate::BaseAdvanced
+    );
+
+    assert!(matches!(
+        field.plan(35),
+        Err(RetainedFieldError::RevisionMismatch {
             observed_revision: 36,
             requested_revision: 35,
         })
-    );
-    assert_eq!(draft.pending_attempt(), None);
+    ));
+    assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
 
-    let intent = submission(draft.plan_submission_at(36));
+    let intent = field.plan(36).expect("fresh submission intent");
     assert_eq!(intent.attempt().get(), 1);
     assert_eq!(intent.expected_revision(), 36);
     assert_eq!(intent.value(), "local");
+    field
+        .not_dispatched(intent.attempt())
+        .expect("definitely undispatched intent can be cleared");
+    assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+    assert!(field.can_submit());
 }
 
 #[test]
-fn self_receipt_and_matching_snapshot_acknowledge_the_submitted_draft() {
-    let mut draft = RevisionedDraft::new(40, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(40));
+fn receipt_first_waits_for_a_matching_authoritative_snapshot() {
+    let (mut field, attempt) = planned_field();
 
-    assert_eq!(intent.kind(), DraftSubmissionKind::Commit);
-    assert_eq!(intent.expected_revision(), 40);
-    assert_eq!(intent.value(), "submitted");
     assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 41),
-        DraftReceiptDecision::Recorded {
-            attempt: intent.attempt(),
-            committed_revision: 41,
+        field.settle_ticket(attempt, Ok(applied_outcome())),
+        RetainedFieldSettlement::AwaitingSnapshot {
+            attempt,
+            committed_revision: 1,
         }
     );
-    assert_eq!(draft.base_revision(), 41);
-    assert_eq!(draft.local(), "submitted");
-    assert_eq!(draft.phase(), DraftPhase::Dirty);
+    assert_eq!(
+        field.attempt_state(),
+        RetainedFieldAttemptState::ReceiptFirst {
+            attempt,
+            committed_revision: 1,
+        }
+    );
+    assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
 
     assert_eq!(
-        draft.reconcile_remote(41, String::from("submitted")),
-        DraftReconcileDecision::SelfAcknowledged {
-            attempt: intent.attempt(),
-            revision: 41,
+        field.observe(1, String::from("submitted")),
+        RetainedFieldUpdate::Acknowledged {
+            attempt,
+            revision: 1,
             local_changed_after_submission: false,
         }
     );
-    assert_eq!(draft.local(), "submitted");
-    assert_eq!(draft.remote(), "submitted");
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-    assert_eq!(draft.pending_attempt(), None);
+    assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+    assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
 }
 
 #[test]
-fn receipt_is_acknowledged_by_a_later_matching_authoritative_observation() {
-    let mut draft = RevisionedDraft::new(10, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(10));
+fn snapshot_first_stays_dirty_until_its_matching_receipt_arrives() {
+    let (mut field, attempt) = planned_field();
 
     assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 11),
-        DraftReceiptDecision::Recorded {
-            attempt: intent.attempt(),
-            committed_revision: 11,
+        field.observe(1, String::from("submitted")),
+        RetainedFieldUpdate::SnapshotFirst {
+            attempt,
+            revision: 1,
         }
     );
     assert_eq!(
-        draft.reconcile_remote(12, String::from("submitted")),
-        DraftReconcileDecision::SelfAcknowledged {
-            attempt: intent.attempt(),
-            revision: 12,
+        field.attempt_state(),
+        RetainedFieldAttemptState::SnapshotFirst {
+            attempt,
+            observed_revision: 1,
+        }
+    );
+    assert_eq!(field.conflict(), None);
+    assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
+
+    assert_eq!(
+        field.settle_ticket(attempt, Ok(applied_outcome())),
+        RetainedFieldSettlement::Acknowledged {
+            attempt,
+            revision: 1,
             local_changed_after_submission: false,
         }
     );
-    assert_eq!(draft.base_revision(), 12);
-    assert_eq!(draft.remote_revision(), 12);
-    assert_eq!(draft.phase(), DraftPhase::Clean);
+    assert_eq!(field.phase(), RetainedFieldPhase::Clean);
 }
 
 #[test]
-fn a_snapshot_observed_before_its_receipt_is_acknowledged_only_after_both_exist() {
-    let mut draft = RevisionedDraft::new(50, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(50));
+fn noop_uses_the_same_receipt_and_snapshot_evidence_as_an_applied_command() {
+    let (mut field, attempt) = planned_field();
 
     assert_eq!(
-        draft.reconcile_remote(51, String::from("submitted")),
-        DraftReconcileDecision::Conflict {
-            conflict: DraftConflict::new(50, 51),
-        },
-        "a matching value is not a self acknowledgement without its receipt"
+        field.settle_ticket(attempt, Ok(noop_outcome_at_revision_one())),
+        RetainedFieldSettlement::AwaitingSnapshot {
+            attempt,
+            committed_revision: 1,
+        }
     );
-    assert_eq!(draft.phase(), DraftPhase::Conflict);
-
     assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 51),
-        DraftReceiptDecision::Acknowledged {
-            attempt: intent.attempt(),
-            revision: 51,
+        field.observe(1, String::from("submitted")),
+        RetainedFieldUpdate::Acknowledged {
+            attempt,
+            revision: 1,
             local_changed_after_submission: false,
         }
     );
-    assert_eq!(draft.phase(), DraftPhase::Clean);
+    assert_eq!(field.phase(), RetainedFieldPhase::Clean);
 }
 
 #[test]
-fn later_matching_observation_is_acknowledged_when_its_receipt_arrives_late() {
-    let mut draft = RevisionedDraft::new(10, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(10));
+fn acknowledgement_preserves_an_edit_made_after_submission() {
+    let (mut field, attempt) = planned_field();
+    field.edit(String::from("newer local"));
 
-    assert_eq!(
-        draft.reconcile_remote(12, String::from("submitted")),
-        DraftReconcileDecision::Conflict {
-            conflict: DraftConflict::new(10, 12),
-        },
-        "a matching value remains untrusted until its attempt receipt arrives"
-    );
-    assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 11),
-        DraftReceiptDecision::Acknowledged {
-            attempt: intent.attempt(),
-            revision: 12,
-            local_changed_after_submission: false,
-        }
-    );
-    assert_eq!(draft.base_revision(), 12);
-    assert_eq!(draft.remote_revision(), 12);
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-}
-
-#[test]
-fn late_receipt_does_not_acknowledge_a_newer_mismatching_observation() {
-    let mut draft = RevisionedDraft::new(10, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(10));
-
-    assert_eq!(
-        draft.reconcile_remote(12, String::from("other writer")),
-        DraftReconcileDecision::Conflict {
-            conflict: DraftConflict::new(10, 12),
-        }
-    );
-    assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 11),
-        DraftReceiptDecision::Superseded {
-            attempt: intent.attempt(),
-            committed_revision: 11,
-            current_revision: 12,
-        }
-    );
-    assert_eq!(draft.pending_attempt(), None);
-    assert_eq!(draft.local(), "submitted");
-    assert_eq!(draft.remote(), "other writer");
-    assert_eq!(draft.conflict(), Some(DraftConflict::new(10, 12)));
-    assert_eq!(draft.phase(), DraftPhase::Conflict);
-}
-
-#[test]
-fn input_after_submission_is_not_cleared_by_the_old_acknowledgement() {
-    let mut draft = RevisionedDraft::new(60, String::from("base"));
-    draft.edit_local(String::from("first submission"));
-    let first = submission(draft.plan_submission_at(60));
     assert!(matches!(
-        draft.record_self_receipt(first.attempt(), 61),
-        DraftReceiptDecision::Recorded { .. }
+        field.settle_ticket(attempt, Ok(applied_outcome())),
+        RetainedFieldSettlement::AwaitingSnapshot { .. }
     ));
-
-    draft.edit_local(String::from("typed after submit"));
     assert_eq!(
-        draft.reconcile_remote(61, String::from("first submission")),
-        DraftReconcileDecision::SelfAcknowledged {
-            attempt: first.attempt(),
-            revision: 61,
+        field.observe(1, String::from("submitted")),
+        RetainedFieldUpdate::Acknowledged {
+            attempt,
+            revision: 1,
             local_changed_after_submission: true,
         }
     );
-    assert_eq!(draft.local(), "typed after submit");
-    assert_eq!(draft.remote(), "first submission");
-    assert_eq!(draft.base_revision(), 61);
-    assert_eq!(draft.phase(), DraftPhase::Dirty);
-
-    let second = submission(draft.plan_submission_at(61));
-    assert_eq!(second.expected_revision(), 61);
-    assert_eq!(second.value(), "typed after submit");
+    assert_eq!(field.local(), "newer local");
+    assert_eq!(field.remote(), "submitted");
+    assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
 }
 
 #[test]
-fn input_after_submission_that_returns_to_the_committed_value_acknowledges_cleanly() {
-    let mut draft = RevisionedDraft::new(62, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(62));
-    draft.edit_local(String::from("temporary"));
-    draft.edit_local(String::from("submitted"));
-
+fn conflict_and_rejection_outcomes_require_an_authoritative_refresh() {
+    let (mut conflicted, conflict_attempt) = planned_field();
+    let settlement = conflicted.settle_ticket(conflict_attempt, Ok(conflict_outcome()));
     assert!(matches!(
-        draft.record_self_receipt(intent.attempt(), 63),
-        DraftReceiptDecision::Recorded { .. }
-    ));
-    assert!(matches!(
-        draft.reconcile_remote(63, String::from("submitted")),
-        DraftReconcileDecision::SelfAcknowledged {
-            local_changed_after_submission: true,
+        settlement,
+        RetainedFieldSettlement::RefreshRequired {
+            attempt,
+            minimum_revision: 1,
             ..
-        }
+        } if attempt == conflict_attempt
     ));
-    assert_eq!(draft.phase(), DraftPhase::Clean);
     assert_eq!(
-        draft.plan_submission_at(63),
-        DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean)
+        conflicted.attempt_state(),
+        RetainedFieldAttemptState::RefreshRequired {
+            attempt: Some(conflict_attempt),
+            minimum_revision: 1,
+        }
     );
-}
-
-#[test]
-fn accepted_submission_converges_when_a_newer_remote_matches_post_submission_input() {
-    let mut draft = RevisionedDraft::new(64, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(64));
     assert!(matches!(
-        draft.record_self_receipt(intent.attempt(), 65),
-        DraftReceiptDecision::Recorded { .. }
+        conflicted.plan(0),
+        Err(RetainedFieldError::AttemptPending { .. })
     ));
-    draft.edit_local(String::from("newer"));
-
     assert_eq!(
-        draft.reconcile_remote(66, String::from("newer")),
-        DraftReconcileDecision::RemoteApplied {
-            from_revision: 64,
-            to_revision: 66,
-        }
+        conflicted.observe(1, String::from("other writer")),
+        RetainedFieldUpdate::Conflict
     );
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-    assert_eq!(draft.base_revision(), 66);
-    assert_eq!(draft.pending_attempt(), None);
-}
+    assert_eq!(conflicted.attempt_state(), RetainedFieldAttemptState::Idle);
+    assert_eq!(conflicted.phase(), RetainedFieldPhase::Conflict);
 
-#[test]
-fn explicit_submission_rejection_preserves_dirty_state_without_retrying() {
-    let mut draft = RevisionedDraft::new(65, String::from("base"));
-    draft.edit_local(String::from("local"));
-    let first = submission(draft.plan_submission_at(65));
-
-    assert_eq!(
-        draft.reject_submission(first.attempt()),
-        DraftSubmissionRejectionDecision::Rejected {
-            attempt: first.attempt(),
-            phase: DraftPhase::Dirty,
-        }
-    );
-    assert_eq!(draft.pending_attempt(), None);
-    assert_eq!(draft.local(), "local");
-    assert_eq!(draft.remote(), "base");
-    assert_eq!(draft.phase(), DraftPhase::Dirty);
-
-    let second = submission(draft.plan_submission_at(65));
-    assert_ne!(first.attempt(), second.attempt());
-    assert_eq!(second.attempt().get(), 2);
-}
-
-#[test]
-fn rejected_submission_that_returned_to_the_remote_value_clears_dirty_state() {
-    let mut draft = RevisionedDraft::new(68, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(68));
-    draft.edit_local(String::from("base"));
-
-    assert_eq!(
-        draft.reject_submission(intent.attempt()),
-        DraftSubmissionRejectionDecision::Rejected {
-            attempt: intent.attempt(),
-            phase: DraftPhase::Clean,
-        }
-    );
-    assert_eq!(draft.base_revision(), 68);
-    assert_eq!(draft.conflict(), None);
-    assert_eq!(draft.pending_attempt(), None);
-}
-
-#[test]
-fn submission_rejection_cannot_cancel_an_attempt_with_an_accepted_receipt() {
-    let mut draft = RevisionedDraft::new(66, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(66));
-
-    assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 67),
-        DraftReceiptDecision::Recorded {
-            attempt: intent.attempt(),
-            committed_revision: 67,
-        }
-    );
-    assert_eq!(
-        draft.reject_submission(intent.attempt()),
-        DraftSubmissionRejectionDecision::ReceiptAlreadyAccepted {
-            attempt: intent.attempt(),
-            committed_revision: 67,
-        }
-    );
-    assert_eq!(draft.pending_attempt(), Some(intent.attempt()));
-    assert_eq!(
-        draft.reconcile_remote(67, String::from("submitted")),
-        DraftReconcileDecision::SelfAcknowledged {
-            attempt: intent.attempt(),
-            revision: 67,
-            local_changed_after_submission: false,
-        }
-    );
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-}
-
-#[test]
-fn explicit_reapply_rejection_preserves_the_conflict_without_retrying() {
-    let mut draft = conflicting_draft();
-    let first = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 71) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a reapply intent, got {other:?}"),
-    };
-
-    assert_eq!(
-        draft.reject_submission(first.attempt()),
-        DraftSubmissionRejectionDecision::Rejected {
-            attempt: first.attempt(),
-            phase: DraftPhase::Conflict,
-        }
-    );
-    assert_eq!(draft.pending_attempt(), None);
-    assert_eq!(draft.local(), "local");
-    assert_eq!(draft.remote(), "remote");
-    assert_eq!(draft.conflict(), Some(DraftConflict::new(70, 71)));
-
-    let second = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 71) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a second explicit reapply intent, got {other:?}"),
-    };
-    assert_eq!(second.attempt().get(), 2);
-}
-
-#[test]
-fn conflict_resolutions_accept_remote_keep_local_or_plan_an_explicit_reapply() {
-    let mut accept_remote = conflicting_draft();
-    assert_eq!(
-        accept_remote.resolve_at(DraftConflictResolution::AcceptRemote, 71),
-        DraftResolutionDecision::AcceptedRemote { revision: 71 }
-    );
-    assert_eq!(accept_remote.local(), "remote");
-    assert_eq!(accept_remote.phase(), DraftPhase::Clean);
-
-    let mut keep_local = conflicting_draft();
-    assert_eq!(
-        keep_local.resolve_at(DraftConflictResolution::KeepLocal, 71),
-        DraftResolutionDecision::KeptLocal {
-            conflict: DraftConflict::new(70, 71),
-        }
-    );
-    assert_eq!(keep_local.local(), "local");
-    assert_eq!(keep_local.remote(), "remote");
-    assert_eq!(keep_local.phase(), DraftPhase::Conflict);
-
-    let mut reapply_local = conflicting_draft();
-    let intent = match reapply_local.resolve_at(DraftConflictResolution::ReapplyLocal, 71) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a reapply intent, got {other:?}"),
-    };
-    assert_eq!(intent.kind(), DraftSubmissionKind::Reapply);
-    assert_eq!(intent.expected_revision(), 71);
-    assert_eq!(intent.value(), "local");
-    assert_eq!(reapply_local.phase(), DraftPhase::Conflict);
-}
-
-#[test]
-fn reapply_requires_the_latest_authoritative_field_observation() {
-    let mut draft = conflicting_draft();
-
-    assert_eq!(
-        draft.resolve_at(DraftConflictResolution::ReapplyLocal, 70),
-        DraftResolutionDecision::Rejected(DraftIntentRejection::UnreconciledRevision {
-            observed_revision: 71,
-            requested_revision: 70,
-        })
-    );
-    assert_eq!(draft.pending_attempt(), None);
-
-    let intent = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 71) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a revision-current reapply intent, got {other:?}"),
-    };
-    assert_eq!(intent.attempt().get(), 1);
-    assert_eq!(intent.expected_revision(), 71);
-}
-
-#[test]
-fn composition_blocks_reapply_until_unmarked_and_uses_the_latest_revision() {
-    let mut draft = RevisionedDraft::new(80, String::from("base"));
-    draft.mark_composing();
-    draft.edit_local(String::from("composed local"));
-    draft.reconcile_remote(81, String::from("first remote"));
-    draft.reconcile_remote(82, String::from("latest remote"));
-
-    assert_eq!(
-        draft.resolve_at(DraftConflictResolution::ReapplyLocal, 82),
-        DraftResolutionDecision::Rejected(DraftIntentRejection::CompositionActive)
-    );
-    assert_eq!(draft.pending_attempt(), None);
-    assert_eq!(draft.local(), "composed local");
-
-    draft.unmark_composing();
-    let intent = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 82) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a reapply intent, got {other:?}"),
-    };
-    assert_eq!(intent.expected_revision(), 82);
-    assert_eq!(intent.value(), "composed local");
-}
-
-#[test]
-fn stale_reapply_rejection_preserves_conflict_and_never_retries_implicitly() {
-    let mut draft = conflicting_draft();
-    let first = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 71) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("expected a reapply intent, got {other:?}"),
-    };
-
-    assert_eq!(
-        draft.reject_stale(first.attempt(), 72, String::from("newer remote")),
-        DraftStaleRejectionDecision::ConflictPreserved {
-            conflict: DraftConflict::new(70, 72),
-        }
-    );
-    assert_eq!(draft.local(), "local");
-    assert_eq!(draft.remote(), "newer remote");
-    assert_eq!(draft.phase(), DraftPhase::Conflict);
-    assert_eq!(draft.pending_attempt(), None);
-
-    let second = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 72) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        other => panic!("an explicit second reapply should plan a new intent: {other:?}"),
-    };
-    assert_ne!(first.attempt(), second.attempt());
-    assert_eq!(second.expected_revision(), 72);
-    assert_eq!(second.value(), "local");
-}
-
-#[test]
-fn stale_rejection_converges_when_the_current_value_matches_local_input() {
-    let mut draft = RevisionedDraft::new(73, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(73));
-    draft.edit_local(String::from("current"));
-
-    assert_eq!(
-        draft.reject_stale(intent.attempt(), 74, String::from("current")),
-        DraftStaleRejectionDecision::LocalMatchesRemote {
-            revision: 74,
-            phase: DraftPhase::Clean,
-        }
-    );
-    assert_eq!(draft.local(), "current");
-    assert_eq!(draft.remote(), "current");
-    assert_eq!(draft.base_revision(), 74);
-    assert_eq!(draft.conflict(), None);
-}
-
-#[test]
-fn superseded_receipt_converges_when_the_newer_remote_matches_post_submission_input() {
-    let mut draft = RevisionedDraft::new(75, String::from("base"));
-    draft.edit_local(String::from("submitted"));
-    let intent = submission(draft.plan_submission_at(75));
-    draft.edit_local(String::from("newer"));
-
+    let (mut rejected, rejected_attempt) = planned_field();
+    let settlement = rejected.settle_ticket(rejected_attempt, Ok(rejected_outcome()));
     assert!(matches!(
-        draft.reconcile_remote(77, String::from("newer")),
-        DraftReconcileDecision::Conflict { .. }
+        settlement,
+        RetainedFieldSettlement::RefreshRequired {
+            attempt,
+            minimum_revision: 0,
+            ..
+        } if attempt == rejected_attempt
+    ));
+    assert!(matches!(
+        rejected.plan(0),
+        Err(RetainedFieldError::AttemptPending { .. })
     ));
     assert_eq!(
-        draft.record_self_receipt(intent.attempt(), 76),
-        DraftReceiptDecision::Superseded {
-            attempt: intent.attempt(),
-            committed_revision: 76,
-            current_revision: 77,
+        rejected.observe(0, String::from("base")),
+        RetainedFieldUpdate::Unchanged
+    );
+    assert_eq!(rejected.attempt_state(), RetainedFieldAttemptState::Idle);
+    assert_eq!(rejected.phase(), RetainedFieldPhase::Dirty);
+}
+
+#[test]
+fn transport_failure_is_uncertain_and_never_implicitly_retried() {
+    let (mut field, attempt) = planned_field();
+
+    let settlement = field.settle_ticket(
+        attempt,
+        Err(OpenGpuiCommandTicketError::MissingReceipt { operation_index: 0 }),
+    );
+    assert!(matches!(
+        settlement,
+        RetainedFieldSettlement::Uncertain {
+            attempt: uncertain_attempt,
+            ..
+        } if uncertain_attempt == attempt
+    ));
+    assert_eq!(
+        field.attempt_state(),
+        RetainedFieldAttemptState::Uncertain {
+            attempt,
+            expected_revision: 0,
         }
     );
-    assert_eq!(draft.phase(), DraftPhase::Clean);
-    assert_eq!(draft.base_revision(), 77);
-    assert_eq!(draft.conflict(), None);
-}
-
-fn conflicting_draft() -> RevisionedDraft<String> {
-    let mut draft = RevisionedDraft::new(70, String::from("base"));
-    draft.edit_local(String::from("local"));
+    assert!(field.notice().is_some());
     assert!(matches!(
-        draft.reconcile_remote(71, String::from("remote")),
-        DraftReconcileDecision::Conflict { .. }
+        field.plan(0),
+        Err(RetainedFieldError::AttemptPending { .. })
     ));
-    draft
+
+    assert_eq!(
+        field.observe(0, String::from("base")),
+        RetainedFieldUpdate::Unchanged
+    );
+    assert!(matches!(
+        field.attempt_state(),
+        RetainedFieldAttemptState::Uncertain { .. }
+    ));
+    assert_eq!(
+        field.observe(1, String::from("submitted")),
+        RetainedFieldUpdate::UncertainResolved {
+            attempt,
+            revision: 1,
+            submitted_value_is_authoritative: true,
+        }
+    );
+    assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+    assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
 }
 
-fn submission(
-    decision: DraftSubmissionDecision<String>,
-) -> jellyflow_open_gpui::DraftSubmissionIntent<String> {
-    match decision {
-        DraftSubmissionDecision::Submit(intent) => intent,
-        other => panic!("expected a submission intent, got {other:?}"),
-    }
+#[test]
+fn explicit_fresh_resolution_preserves_a_continued_local_edit() {
+    let (mut field, attempt) = planned_field();
+    field
+        .mark_uncertain(attempt, "command may have committed")
+        .expect("matching attempt becomes uncertain");
+    field.edit(String::from("continued local edit"));
+
+    assert_eq!(
+        field
+            .resolve_uncertain_from_fresh(1, String::from("other writer"))
+            .expect("fresh authoritative evidence"),
+        RetainedFieldUpdate::UncertainResolved {
+            attempt,
+            revision: 1,
+            submitted_value_is_authoritative: false,
+        }
+    );
+    assert_eq!(field.local(), "continued local edit");
+    assert_eq!(field.remote(), "other writer");
+    assert_eq!(field.phase(), RetainedFieldPhase::Conflict);
+    assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+    assert!(field.notice().is_none());
+}
+
+fn conflicting_field() -> RevisionedField<String> {
+    let mut field = RevisionedField::new(70, String::from("base"));
+    field.edit(String::from("local"));
+    assert_eq!(
+        field.observe(71, String::from("remote")),
+        RetainedFieldUpdate::Conflict
+    );
+    field
+}
+
+fn planned_field() -> (
+    RevisionedField<String>,
+    jellyflow_open_gpui::RetainedFieldAttempt,
+) {
+    let mut field = RevisionedField::new(0, String::from("base"));
+    field.edit(String::from("submitted"));
+    let intent = field.plan(0).expect("field submission intent");
+    (field, intent.attempt())
+}
+
+fn applied_outcome() -> GraphCommandOutcome {
+    let runtime = runtime_with_value("base");
+    runtime
+        .execute(GraphCommand::set_node_data(
+            0,
+            node_id(),
+            "submitted".into(),
+        ))
+        .expect("applied command outcome")
+}
+
+fn noop_outcome_at_revision_one() -> GraphCommandOutcome {
+    let runtime = runtime_with_value("base");
+    runtime
+        .execute(GraphCommand::set_node_data(
+            0,
+            node_id(),
+            "submitted".into(),
+        ))
+        .expect("seed applied outcome");
+    let outcome = runtime
+        .execute(GraphCommand::set_node_data(
+            1,
+            node_id(),
+            "submitted".into(),
+        ))
+        .expect("noop command outcome");
+    assert!(matches!(outcome, GraphCommandOutcome::Noop(_)));
+    outcome
+}
+
+fn conflict_outcome() -> GraphCommandOutcome {
+    let runtime = runtime_with_value("base");
+    runtime
+        .execute(GraphCommand::set_node_data(
+            0,
+            node_id(),
+            "other writer".into(),
+        ))
+        .expect("seed applied outcome");
+    let outcome = runtime
+        .execute(GraphCommand::set_node_data(
+            0,
+            node_id(),
+            "submitted".into(),
+        ))
+        .expect("conflict command outcome");
+    assert!(matches!(outcome, GraphCommandOutcome::Conflict(_)));
+    outcome
+}
+
+fn rejected_outcome() -> GraphCommandOutcome {
+    let runtime = runtime_with_value("base");
+    let outcome = runtime
+        .execute(GraphCommand::set_node_data(
+            0,
+            NodeId::from_u128(999),
+            "submitted".into(),
+        ))
+        .expect("rejected command outcome");
+    assert!(matches!(outcome, GraphCommandOutcome::Rejected(_)));
+    outcome
+}
+
+fn runtime_with_value(value: &str) -> GraphRuntime {
+    GraphRuntime::builder(catalog())
+        .build(
+            GraphBuilder::new(GraphId::from_u128(0xf1e1d))
+                .with_node(
+                    node_id(),
+                    Node {
+                        kind: NodeKindKey::new(KIND),
+                        kind_version: 1,
+                        pos: Default::default(),
+                        origin: None,
+                        selectable: None,
+                        draggable: None,
+                        connectable: None,
+                        deletable: None,
+                        parent: None,
+                        extent: None,
+                        expand_parent: None,
+                        size: None,
+                        hidden: false,
+                        collapsed: false,
+                        ports: Vec::new(),
+                        data: serde_json::json!(value),
+                    },
+                )
+                .build()
+                .expect("revisioned field graph"),
+        )
+        .expect("revisioned field runtime")
+}
+
+fn catalog() -> NodeCatalog {
+    let mut catalog = NodeCatalog::new();
+    catalog
+        .register(NodeKindSpec::builder(KIND, "Revisioned field", RENDERER).build())
+        .expect("revisioned field kind");
+    catalog
+}
+
+fn node_id() -> NodeId {
+    NodeId::from_u128(1)
 }

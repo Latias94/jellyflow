@@ -4,10 +4,36 @@ use jellyflow::runtime::runtime::viewport::ViewportTransform;
 use jellyflow::runtime::{GeometrySnapshot, ViewSize, WeakViewSession};
 use open_gpui::Window;
 
-use super::{
-    SmokeExpectations, SmokeGeometryEvidence, SmokeGeometryInput, SmokePaintEvidence,
-    canvas_pixel_width, inspect_canvas_paint, inspect_geometry,
+use super::super::{
+    MIN_CANVAS_DISTINCT_COLORS, MIN_CANVAS_NON_BACKGROUND_PIXELS, SmokeExpectations,
+    SmokeGeometryEvidence, SmokeGeometryInput, SmokePaintEvidence, canvas_pixel_width,
+    inspect_canvas_framebuffer, inspect_canvas_paint, inspect_geometry,
 };
+
+pub(super) fn capture_visual_frame(
+    window: &mut Window,
+    surface_size: ViewSize,
+    screenshot_path: Option<&Path>,
+) -> Result<(), &'static str> {
+    let image = window
+        .render_to_image()
+        .map_err(|_| "paint_capture_failed")?;
+    if let Some(path) = screenshot_path {
+        image
+            .save(path)
+            .map_err(|_| "paint_screenshot_write_failed")?;
+    }
+    let canvas_width = canvas_pixel_width(image.width(), surface_size)?;
+    let (non_background_pixels, distinct_colors) =
+        inspect_canvas_framebuffer(image.width(), image.height(), canvas_width, image.as_raw())?;
+    if non_background_pixels < MIN_CANVAS_NON_BACKGROUND_PIXELS {
+        return Err("paint_blank_canvas");
+    }
+    if distinct_colors < MIN_CANVAS_DISTINCT_COLORS {
+        return Err("paint_insufficient_colors");
+    }
+    Ok(())
+}
 
 pub(super) fn inspect_current_frame(
     window: &mut Window,

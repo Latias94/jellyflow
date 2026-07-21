@@ -15,6 +15,7 @@ use crate::interaction::OpenGpuiOverlayInteractionBoundary;
 use crate::node_drag_handle::OpenGpuiNodeDragHandle;
 use crate::port_handle::{OpenGpuiMeasurementSink, OpenGpuiPortHandle};
 use crate::presentation::{OpenGpuiNodePresentationSnapshot, OpenGpuiPortInteractionState};
+use crate::retained_field::RetainedFieldMountCapability;
 
 /// Revocable identity for one adapter-owned native mount.
 ///
@@ -207,6 +208,15 @@ impl OpenGpuiNodeBinding {
 
     pub fn activity(&self) -> &OpenGpuiNodeActivityRegistry {
         &self.activity
+    }
+
+    pub(crate) fn retained_field_mount(&self) -> RetainedFieldMountCapability {
+        RetainedFieldMountCapability::new(
+            self.mount.instance.clone(),
+            self.mount.view.clone(),
+            self.mount.mount.clone(),
+            self.activity.clone(),
+        )
     }
 
     /// Returns the explicit native pointer surface capability for this retained node instance.

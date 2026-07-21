@@ -24,6 +24,10 @@ use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 mod input_probe;
 #[cfg(feature = "real-window-smoke")]
 use input_probe::RealWindowSmokeProbe;
+mod config;
+#[cfg(feature = "real-window-smoke")]
+use config::SmokeCaptureState;
+pub(super) use config::SmokeConfig;
 
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
 const SMOKE_PROBE_INTERVAL: Duration = Duration::from_millis(16);
@@ -40,8 +44,6 @@ const MIN_NODE_NON_BACKGROUND_PIXELS: usize = 16;
 #[cfg(any(test, feature = "real-window-smoke"))]
 const MIN_NODE_NON_BACKGROUND_RATIO: f32 = 0.08;
 const SMOKE_INPUT_EVENT_COUNT: u16 = 27;
-pub(super) const SMOKE_WINDOW_WIDTH: f32 = 960.0;
-pub(super) const SMOKE_WINDOW_HEIGHT: f32 = 640.0;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SmokeExpectations {
@@ -370,6 +372,7 @@ enum SmokeOutcome {
 
 pub(super) struct SmokeState {
     demo: &'static str,
+    config: SmokeConfig,
     expectations: Option<SmokeExpectations>,
     outcome: SmokeOutcome,
     last_observation: Option<SmokeObservation>,
@@ -377,9 +380,10 @@ pub(super) struct SmokeState {
 }
 
 impl SmokeState {
-    fn new(demo: &'static str) -> Self {
+    fn new(demo: &'static str, config: SmokeConfig) -> Self {
         Self {
             demo,
+            config,
             expectations: None,
             outcome: SmokeOutcome::Pending,
             last_observation: None,
@@ -389,6 +393,10 @@ impl SmokeState {
 
     fn configure(&mut self, expectations: SmokeExpectations) {
         self.expectations = Some(expectations);
+    }
+
+    pub(super) fn window_size(&self) -> (f32, f32) {
+        self.config.window_size()
     }
 
     fn observe(&mut self, observation: SmokeObservation) -> SmokeProbeDecision {
@@ -565,8 +573,8 @@ impl SmokeState {
 
 pub(super) type SharedSmokeState = Rc<RefCell<SmokeState>>;
 
-pub(super) fn new_smoke_state(demo: &'static str) -> SharedSmokeState {
-    Rc::new(RefCell::new(SmokeState::new(demo)))
+pub(super) fn new_smoke_state(demo: &'static str, config: SmokeConfig) -> SharedSmokeState {
+    Rc::new(RefCell::new(SmokeState::new(demo, config)))
 }
 
 pub(super) fn configure_smoke_document(state: &SharedSmokeState, graph: &Graph) {
@@ -607,9 +615,14 @@ pub(super) fn start_smoke_probe(
         fail_smoke(&state, "smoke_expectations_unconfigured");
         return;
     };
+    #[cfg(feature = "real-window-smoke")]
+    let (demo, config) = {
+        let state = state.borrow();
+        (state.demo, state.config.clone())
+    };
     cx.spawn(async move |cx| {
         #[cfg(feature = "real-window-smoke")]
-        let mut native_probe = RealWindowSmokeProbe::default();
+        let mut native_probe = RealWindowSmokeProbe::new(demo, config);
         loop {
             cx.background_executor().timer(SMOKE_PROBE_INTERVAL).await;
             let mut observation = cx.update(|cx| observe_smoke_surface(&graph, cx));
@@ -821,16 +834,7 @@ fn inspect_canvas_paint(
     rgba: &[u8],
     geometry: &SmokeGeometryEvidence,
 ) -> Result<SmokePaintEvidence, &'static str> {
-    let width = usize::try_from(image_width).map_err(|_| "paint_invalid_image")?;
-    let height = usize::try_from(image_height).map_err(|_| "paint_invalid_image")?;
-    let expected_len = width
-        .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or("paint_invalid_image")?;
-    if width == 0
-        || height == 0
-        || rgba.len() != expected_len
-        || geometry.image_width != image_width
+    if geometry.image_width != image_width
         || geometry.image_height != image_height
         || geometry.canvas_width == 0
         || geometry.canvas_width > image_width
@@ -839,20 +843,12 @@ fn inspect_canvas_paint(
         return Err("paint_invalid_image");
     }
 
+    let width = usize::try_from(image_width).map_err(|_| "paint_invalid_image")?;
+    let height = usize::try_from(image_height).map_err(|_| "paint_invalid_image")?;
     let canvas_width = usize::try_from(geometry.canvas_width).map_err(|_| "paint_invalid_image")?;
     let row_stride = width.checked_mul(4).ok_or("paint_invalid_image")?;
-    let canvas_stride = canvas_width.checked_mul(4).ok_or("paint_invalid_image")?;
-    let mut non_background_pixels = 0usize;
-    let mut colors = HashSet::new();
-    for row in rgba.chunks_exact(row_stride) {
-        for pixel in row[..canvas_stride].chunks_exact(4) {
-            if is_background(pixel) {
-                continue;
-            }
-            non_background_pixels = non_background_pixels.saturating_add(1);
-            colors.insert([pixel[0], pixel[1], pixel[2]]);
-        }
-    }
+    let (non_background_pixels, distinct_colors) =
+        inspect_canvas_framebuffer(image_width, image_height, geometry.canvas_width, rgba)?;
 
     let mut nodes = BTreeMap::new();
     for (node_id, region) in &geometry.node_regions {
@@ -892,9 +888,48 @@ fn inspect_canvas_paint(
         image_height,
         canvas_width: geometry.canvas_width,
         non_background_pixels,
-        distinct_colors: colors.len(),
+        distinct_colors,
         nodes,
     })
+}
+
+#[cfg(any(test, feature = "real-window-smoke"))]
+fn inspect_canvas_framebuffer(
+    image_width: u32,
+    image_height: u32,
+    canvas_width: u32,
+    rgba: &[u8],
+) -> Result<(usize, usize), &'static str> {
+    let width = usize::try_from(image_width).map_err(|_| "paint_invalid_image")?;
+    let height = usize::try_from(image_height).map_err(|_| "paint_invalid_image")?;
+    let canvas_width = usize::try_from(canvas_width).map_err(|_| "paint_invalid_image")?;
+    let expected_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("paint_invalid_image")?;
+    if width == 0
+        || height == 0
+        || canvas_width == 0
+        || canvas_width > width
+        || rgba.len() != expected_len
+    {
+        return Err("paint_invalid_image");
+    }
+
+    let row_stride = width.checked_mul(4).ok_or("paint_invalid_image")?;
+    let canvas_stride = canvas_width.checked_mul(4).ok_or("paint_invalid_image")?;
+    let mut non_background_pixels = 0usize;
+    let mut colors = HashSet::new();
+    for row in rgba.chunks_exact(row_stride) {
+        for pixel in row[..canvas_stride].chunks_exact(4) {
+            if is_background(pixel) {
+                continue;
+            }
+            non_background_pixels = non_background_pixels.saturating_add(1);
+            colors.insert([pixel[0], pixel[1], pixel[2]]);
+        }
+    }
+    Ok((non_background_pixels, colors.len()))
 }
 
 #[cfg(any(test, feature = "real-window-smoke"))]
@@ -1541,7 +1576,7 @@ mod tests {
     #[test]
     fn smoke_state_emits_one_marker_with_expected_ids_geometry_and_per_node_paint() {
         let expected = expectations();
-        let mut state = SmokeState::new("shader");
+        let mut state = SmokeState::new("shader", SmokeConfig::default());
         state.configure(expected.clone());
         assert_eq!(
             state.observe(complete_observation(&expected)),
@@ -1581,7 +1616,7 @@ mod tests {
 
     #[test]
     fn startup_failure_emits_one_failed_marker_and_nonzero_status() {
-        let mut state = SmokeState::new("workflow");
+        let mut state = SmokeState::new("workflow", SmokeConfig::default());
         state.fail("window_open");
         let marker = state.marker().expect("startup failure marker");
 

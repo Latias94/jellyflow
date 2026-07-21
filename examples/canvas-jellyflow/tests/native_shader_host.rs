@@ -34,9 +34,10 @@ use open_gpui_canvas_jellyflow::nodes::{
     SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR, SHADER_PREVIEW_CONTROL_SELECTOR,
     SHADER_PREVIEW_VALUE_SELECTOR, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
     WORKFLOW_CONDITION_RENDERER, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND,
-    WORKFLOW_LLM_RENDERER, blueprint_port_selector, native_node_catalog, native_node_registry,
-    plan_blueprint_pin_action, shader_connected_input_selector, shader_inline_editor_selector,
-    shader_inline_value_selector, shader_port_selector,
+    WORKFLOW_LLM_RENDERER, blueprint_pin_down_selector, blueprint_pin_remove_selector,
+    blueprint_pin_up_selector, blueprint_pins, blueprint_port_selector, native_node_catalog,
+    native_node_registry, plan_blueprint_pin_action, shader_connected_input_selector,
+    shader_inline_editor_selector, shader_inline_value_selector, shader_port_selector,
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -360,6 +361,63 @@ fn shader_wire_drop_filters_native_search_and_commits_one_atomic_topology_comman
                 .is_none()
         );
     });
+}
+
+#[open_gpui::test]
+fn shader_native_search_enter_submits_the_active_filtered_identity_once(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("shader keyboard-search runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("shader keyboard-search view");
+    let (_surface, cx) =
+        cx.add_window_view(move |_, cx| NativeGraphSurface::new(view, native_registry(cx), cx));
+    draw(cx);
+
+    let output = cx
+        .debug_bounds(&shader_port_selector(output_id()))
+        .expect("native shader output");
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(
+        point(px(700.0), px(500.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    draw(cx);
+
+    let input = cx
+        .debug_bounds(native_connection_search_input_selector())
+        .expect("native create-from-wire filter");
+    cx.simulate_click(input.center(), Default::default());
+    cx.simulate_input("Blueprint");
+    draw(cx);
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_some(),
+    );
+
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+
+    let snapshot = runtime
+        .snapshot()
+        .expect("keyboard-created shader topology");
+    assert_eq!(snapshot.graph().nodes().len(), 3);
+    assert_eq!(snapshot.graph().edges().len(), 1);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+    assert!(
+        snapshot
+            .graph()
+            .nodes()
+            .values()
+            .any(|node| node.kind.0 == BLUEPRINT_CALL_KIND),
+    );
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
 }
 
 #[open_gpui::test]
@@ -1162,7 +1220,10 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
     }));
     assert_eq!(
         blueprint.default_data(),
-        &serde_json::json!({ "title": "Function Call" })
+        &serde_json::json!({
+            "title": "Function Call",
+            "pins": [],
+        })
     );
 
     let llm = catalog
@@ -1212,17 +1273,23 @@ fn native_catalog_declares_all_product_kinds_with_renderable_defaults_and_real_p
         condition.default_size(),
         Some(WORKFLOW_CONDITION_DEFAULT_SIZE)
     );
-    assert_eq!(condition.ports().len(), 1);
+    assert_eq!(condition.ports().len(), 2);
     let input = &condition.ports()[0];
     assert_eq!(input.key().0, "input");
     assert_eq!(input.direction(), PortDirection::In);
     assert_eq!(input.kind(), PortKind::Exec);
     assert_eq!(input.capacity(), PortCapacity::Single);
+    let else_port = &condition.ports()[1];
+    assert_eq!(else_port.key().0, "else");
+    assert_eq!(else_port.direction(), PortDirection::Out);
+    assert_eq!(else_port.kind(), PortKind::Exec);
+    assert_eq!(else_port.capacity(), PortCapacity::Multi);
     assert_eq!(
         condition.default_data(),
         &serde_json::json!({
             "title": "Condition",
-            "branches": [],
+            "cases": [],
+            "else_branch": { "label": "Else" },
         })
     );
 }
@@ -1312,18 +1379,12 @@ fn shader_profile_rejects_only_the_data_connection_that_closes_a_cycle() {
 fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     let runtime = native_runtime(blueprint_graph()).expect("blueprint graph");
     let original = runtime.snapshot().expect("original blueprint snapshot");
-    let original_data = original
-        .graph()
-        .node(&blueprint_node_id())
-        .expect("blueprint node")
-        .data
-        .clone();
-    let pin = BlueprintPin::new(dynamic_pin_id(), "roughness", TypeDesc::Float)
+    let pin = BlueprintPin::new("roughness", dynamic_pin_id(), "roughness", TypeDesc::Float)
         .expect("valid blueprint pin");
     let command = plan_blueprint_pin_action(
         &original,
         blueprint_node_id(),
-        BlueprintPinAction::Add(pin),
+        BlueprintPinAction::Add(pin.clone()),
         IncidentEdgePolicy::Reject,
     )
     .expect("blueprint add-pin command");
@@ -1336,7 +1397,10 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
     let added = runtime.snapshot().expect("added pin snapshot");
     let added_node = added.graph().node(&blueprint_node_id()).unwrap();
     assert_eq!(added_node.ports.last(), Some(&dynamic_pin_id()));
-    assert_eq!(added_node.data, original_data);
+    assert_eq!(
+        blueprint_pins(&added, blueprint_node_id()).unwrap(),
+        vec![pin.clone()]
+    );
     let added_port = added.graph().port(&dynamic_pin_id()).expect("dynamic pin");
     assert_eq!(added_port.node, blueprint_node_id());
     assert_eq!(added_port.dir, PortDirection::In);
@@ -1379,6 +1443,119 @@ fn blueprint_dynamic_pin_keeps_its_port_id_through_one_step_undo_and_redo() {
         redone.graph().port(&dynamic_pin_id()).unwrap().key.0,
         "arg.roughness"
     );
+}
+
+#[test]
+fn blueprint_connected_pin_reorder_and_remove_are_one_atomic_history_step() {
+    let runtime = native_runtime(blueprint_graph_with_source()).expect("connected blueprint graph");
+    let roughness =
+        BlueprintPin::new("roughness", dynamic_pin_id(), "Roughness", TypeDesc::Float).unwrap();
+    let metallic =
+        BlueprintPin::new("metallic", sparse_input_1_id(), "Metallic", TypeDesc::Float).unwrap();
+    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(roughness.clone()));
+    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(metallic.clone()));
+    let revision = runtime.snapshot().unwrap().revision();
+    runtime
+        .execute(GraphCommand::connect(
+            revision,
+            blueprint_dynamic_edge_id(),
+            source_output_id(),
+            roughness.port_id(),
+            NodeGraphConnectionMode::Strict,
+        ))
+        .unwrap()
+        .applied()
+        .expect("connect dynamic blueprint pin");
+    apply_blueprint_pin_action(
+        &runtime,
+        BlueprintPinAction::Reorder {
+            pin_id: metallic.id().to_owned(),
+            index: 0,
+        },
+    );
+
+    let connected = runtime.snapshot().unwrap();
+    assert_eq!(
+        blueprint_pins(&connected, blueprint_node_id()).unwrap(),
+        vec![metallic.clone(), roughness.clone()]
+    );
+    assert_eq!(
+        connected
+            .graph()
+            .edge(&blueprint_dynamic_edge_id())
+            .unwrap()
+            .to,
+        roughness.port_id(),
+        "reorder must retain connection ownership by stable PortId"
+    );
+    let history_before_reject = runtime.history_state().unwrap();
+    let reject = plan_blueprint_pin_action(
+        &connected,
+        blueprint_node_id(),
+        BlueprintPinAction::Remove {
+            pin_id: roughness.id().to_owned(),
+        },
+        IncidentEdgePolicy::Reject,
+    )
+    .unwrap();
+    assert!(runtime.execute(reject).unwrap().rejection().is_some());
+    let after_reject = runtime.snapshot().unwrap();
+    assert!(connected.ptr_eq(&after_reject));
+    assert_eq!(runtime.history_state().unwrap(), history_before_reject);
+
+    let cascade = plan_blueprint_pin_action(
+        &after_reject,
+        blueprint_node_id(),
+        BlueprintPinAction::Remove {
+            pin_id: roughness.id().to_owned(),
+        },
+        IncidentEdgePolicy::Cascade,
+    )
+    .unwrap();
+    runtime
+        .execute(cascade)
+        .unwrap()
+        .applied()
+        .expect("cascade dynamic pin removal");
+    let removed = runtime.snapshot().unwrap();
+    assert_eq!(
+        blueprint_pins(&removed, blueprint_node_id()).unwrap(),
+        vec![metallic.clone()]
+    );
+    assert!(removed.graph().port(&roughness.port_id()).is_none());
+    assert!(removed.graph().edge(&blueprint_dynamic_edge_id()).is_none());
+
+    runtime
+        .execute(GraphCommand::undo(removed.revision()))
+        .unwrap()
+        .applied()
+        .expect("undo atomic pin removal");
+    let restored = runtime.snapshot().unwrap();
+    assert_eq!(
+        blueprint_pins(&restored, blueprint_node_id()).unwrap(),
+        vec![metallic.clone(), roughness.clone()]
+    );
+    assert_eq!(
+        restored
+            .graph()
+            .edge(&blueprint_dynamic_edge_id())
+            .unwrap()
+            .to,
+        roughness.port_id()
+    );
+
+    runtime
+        .execute(GraphCommand::redo(restored.revision()))
+        .unwrap()
+        .applied()
+        .expect("redo atomic pin removal");
+    let redone = runtime.snapshot().unwrap();
+    assert_eq!(
+        blueprint_pins(&redone, blueprint_node_id()).unwrap(),
+        vec![metallic]
+    );
+    assert!(redone.graph().port(&roughness.port_id()).is_none());
+    assert!(redone.graph().edge(&blueprint_dynamic_edge_id()).is_none());
 }
 
 #[open_gpui::test]
@@ -1431,7 +1608,11 @@ fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     let dynamic = *node.ports.last().expect("dynamic port id");
     let dynamic_port = snapshot.graph().port(&dynamic).expect("dynamic real port");
     assert_eq!(dynamic_port.node, blueprint_node_id());
-    assert_eq!(dynamic_port.key.0, "arg.input_1");
+    let persisted = blueprint_pins(&snapshot, blueprint_node_id()).unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].port_id(), dynamic);
+    assert_eq!(persisted[0].name(), "input_1");
+    assert_eq!(dynamic_port.key.0, format!("arg.{}", persisted[0].id()));
     assert_eq!(dynamic_port.dir, PortDirection::In);
     assert_eq!(dynamic_port.ty, Some(TypeDesc::Float));
     assert!(cx.debug_bounds(&blueprint_port_selector(dynamic)).is_some());
@@ -1441,6 +1622,107 @@ fn blueprint_add_input_control_mounts_one_real_dynamic_port_without_remounting(
     assert_eq!(geometry.port(dynamic).unwrap().node(), blueprint_node_id());
     assert_single_retained_mount(cx, &host);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
+}
+
+#[open_gpui::test]
+fn blueprint_native_pin_rows_reorder_remove_and_republish_real_geometry(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let runtime = native_runtime(blueprint_graph()).expect("blueprint row runtime");
+    let first = BlueprintPin::new("first", dynamic_pin_id(), "First", TypeDesc::Float).unwrap();
+    let second =
+        BlueprintPin::new("second", sparse_input_1_id(), "Second", TypeDesc::Float).unwrap();
+    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(first.clone()));
+    apply_blueprint_pin_action(&runtime, BlueprintPinAction::Add(second.clone()));
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("blueprint row view");
+    let weak_view = view.downgrade();
+    let (host, cx) = cx.add_window_view(move |_, cx| {
+        OpenGpuiSceneHost::new(view, native_registry(cx), blueprint_viewport())
+    });
+    draw(cx);
+
+    for pin in [&first, &second] {
+        assert!(
+            cx.debug_bounds(&blueprint_port_selector(pin.port_id()))
+                .is_some()
+        );
+        let geometry = weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .port(pin.port_id())
+            .expect("dynamic pin geometry")
+            .clone();
+        assert_eq!(geometry.node(), blueprint_node_id());
+        assert!(geometry.visual_bounds().is_positive_finite());
+        assert!(geometry.hit_bounds().is_positive_finite());
+    }
+
+    let up = cx
+        .debug_bounds(&blueprint_pin_up_selector(
+            blueprint_node_id(),
+            second.port_id(),
+        ))
+        .expect("second pin up control");
+    cx.simulate_click(up.center(), Default::default());
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        blueprint_pins(&runtime.snapshot().unwrap(), blueprint_node_id()).unwrap(),
+        vec![second.clone(), first.clone()]
+    );
+
+    let down = cx
+        .debug_bounds(&blueprint_pin_down_selector(
+            blueprint_node_id(),
+            second.port_id(),
+        ))
+        .expect("first displayed pin down control");
+    cx.simulate_click(down.center(), Default::default());
+    draw(cx);
+    draw(cx);
+    assert_eq!(
+        blueprint_pins(&runtime.snapshot().unwrap(), blueprint_node_id()).unwrap(),
+        vec![first.clone(), second.clone()]
+    );
+
+    let remove = cx
+        .debug_bounds(&blueprint_pin_remove_selector(
+            blueprint_node_id(),
+            first.port_id(),
+        ))
+        .expect("first pin remove control");
+    cx.simulate_click(remove.center(), Default::default());
+    draw(cx);
+    draw(cx);
+    let removed = runtime.snapshot().unwrap();
+    assert_eq!(
+        blueprint_pins(&removed, blueprint_node_id()).unwrap(),
+        vec![second.clone()]
+    );
+    assert!(removed.graph().port(&first.port_id()).is_none());
+    assert!(
+        cx.debug_bounds(&blueprint_port_selector(first.port_id()))
+            .is_none()
+    );
+    assert!(
+        weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .port(first.port_id())
+            .is_none()
+    );
+    assert_eq!(
+        weak_view
+            .geometry_snapshot()
+            .unwrap()
+            .port(second.port_id())
+            .unwrap()
+            .node(),
+        blueprint_node_id(),
+    );
+    assert_single_retained_mount(cx, &host);
 }
 
 #[open_gpui::test]
@@ -1460,6 +1742,11 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
     });
     draw(cx);
 
+    let baseline = runtime.snapshot().expect("baseline rejected blueprint");
+    let baseline_node = baseline.graph().node(&blueprint_node_id()).unwrap();
+    let baseline_ports = baseline_node.ports.clone();
+    let baseline_data = baseline_node.data.clone();
+    let baseline_history = runtime.history_state().unwrap();
     let feedback_before = cx.read_entity(&host, |host, _| host.stats().feedback_submissions());
     let add_input = cx
         .debug_bounds(BLUEPRINT_ADD_INPUT_SELECTOR)
@@ -1472,17 +1759,24 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
         assert!(host.stats().feedback_submissions() > feedback_before);
     });
     let rejected = runtime.snapshot().expect("rejected blueprint snapshot");
-    assert_eq!(rejected.revision(), 0);
     assert_eq!(
         rejected
             .graph()
             .node(&blueprint_node_id())
             .expect("rejected blueprint node")
-            .ports
-            .len(),
-        3,
+            .ports,
+        baseline_ports,
     );
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    assert_eq!(
+        rejected.graph().node(&blueprint_node_id()).unwrap().data,
+        baseline_data,
+    );
+    assert!(
+        blueprint_pins(&rejected, blueprint_node_id())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(runtime.history_state().unwrap(), baseline_history);
     assert!(
         cx.debug_bounds(BLUEPRINT_COMMAND_DIAGNOSTIC_SELECTOR)
             .is_some()
@@ -1493,14 +1787,32 @@ fn blueprint_rejected_add_requires_explicit_retry_and_never_resubmits_from_rende
 
     draw(cx);
     draw(cx);
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    let stable = runtime.snapshot().unwrap();
+    assert_eq!(
+        stable.graph().node(&blueprint_node_id()).unwrap().ports,
+        baseline_ports
+    );
+    assert!(
+        blueprint_pins(&stable, blueprint_node_id())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(runtime.history_state().unwrap(), baseline_history);
 
     cx.simulate_click(retry.center(), Default::default());
     draw(cx);
     draw(cx);
-    assert_eq!(runtime.snapshot().unwrap().revision(), 0);
-    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+    let retried = runtime.snapshot().unwrap();
+    assert_eq!(
+        retried.graph().node(&blueprint_node_id()).unwrap().ports,
+        baseline_ports
+    );
+    assert!(
+        blueprint_pins(&retried, blueprint_node_id())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(runtime.history_state().unwrap(), baseline_history);
     assert!(cx.debug_bounds(BLUEPRINT_RETRY_SELECTOR).is_some());
 }
 
@@ -1517,9 +1829,8 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
             .graph()
             .port(&sparse_input_2_id())
             .expect("retained sparse pin")
-            .key
-            .0,
-        "arg.input_2"
+            .data["label"],
+        "input_2"
     );
 
     let view = runtime
@@ -1552,7 +1863,7 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
             added
                 .graph()
                 .port(port_id)
-                .is_some_and(|port| port.key.0 == "arg.input_1")
+                .is_some_and(|port| port.data["label"] == "input_1")
         })
         .expect("first unoccupied sparse name is filled");
     assert_ne!(added_input_1, sparse_input_1_id());
@@ -1561,9 +1872,8 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
             .graph()
             .port(&sparse_input_2_id())
             .expect("retained sparse pin")
-            .key
-            .0,
-        "arg.input_2"
+            .data["label"],
+        "input_2"
     );
     assert!(
         cx.debug_bounds(&blueprint_port_selector(added_input_1))
@@ -1592,9 +1902,8 @@ fn blueprint_add_input_fills_a_sparse_name_without_replacing_stable_ports(
             .graph()
             .port(&added_input_1)
             .expect("redone pin keeps its port id")
-            .key
-            .0,
-        "arg.input_1"
+            .data["label"],
+        "input_1"
     );
     assert!(redone.graph().port(&sparse_input_2_id()).is_some());
 }
@@ -1608,7 +1917,7 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
     apply_blueprint_pin_action(
         &runtime,
         BlueprintPinAction::Add(
-            BlueprintPin::new(dynamic_pin_id(), "roughness", TypeDesc::Float)
+            BlueprintPin::new("roughness", dynamic_pin_id(), "roughness", TypeDesc::Float)
                 .expect("valid named dynamic pin"),
         ),
     );
@@ -1726,7 +2035,18 @@ fn blueprint_semantic_zoom_preserves_sparse_dynamic_port_geometry_without_remoun
     }
     assert_single_retained_mount(cx, &host);
     let after = runtime.snapshot().expect("after blueprint semantic zoom");
-    assert!(before.ptr_eq(&after));
+    assert_eq!(
+        after
+            .graph()
+            .node(&blueprint_node_id())
+            .expect("restored blueprint node")
+            .data,
+        before
+            .graph()
+            .node(&blueprint_node_id())
+            .expect("pre-zoom blueprint node")
+            .data,
+    );
     assert_eq!(
         after
             .graph()
@@ -2000,6 +2320,31 @@ fn blueprint_graph() -> jellyflow::core::Graph {
     graph_from_creations(GraphId::from_u128(0x6200), [blueprint])
 }
 
+fn blueprint_graph_with_source() -> jellyflow::core::Graph {
+    let catalog = native_node_catalog().expect("native catalog");
+    let source = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new(SHADER_MULTIPLY_KIND),
+            source_node_id(),
+            CanvasPoint { x: -320.0, y: 40.0 },
+            [source_input_a_id(), source_input_b_id(), source_output_id()],
+        )
+        .expect("blueprint source node");
+    let blueprint = catalog
+        .instantiate_node_with_ids(
+            &NodeKindKey::new(BLUEPRINT_CALL_KIND),
+            blueprint_node_id(),
+            CanvasPoint { x: 32.0, y: 40.0 },
+            [
+                blueprint_exec_input_id(),
+                blueprint_exec_output_id(),
+                blueprint_value_input_id(),
+            ],
+        )
+        .expect("blueprint node");
+    graph_from_creations(GraphId::from_u128(0x6201), [source, blueprint])
+}
+
 fn graph_from_creations<const N: usize>(
     graph_id: GraphId,
     creations: [jellyflow::runtime::schema::NodeCreation; N],
@@ -2107,6 +2452,10 @@ fn dynamic_pin_id() -> PortId {
     PortId::from_u128(0x6214)
 }
 
+fn blueprint_dynamic_edge_id() -> EdgeId {
+    EdgeId::from_u128(0x6217)
+}
+
 fn sparse_input_1_id() -> PortId {
     PortId::from_u128(0x6215)
 }
@@ -2135,21 +2484,31 @@ fn prepare_sparse_blueprint_inputs(runtime: &GraphRuntime) {
     apply_blueprint_pin_action(
         runtime,
         BlueprintPinAction::Add(
-            BlueprintPin::new(sparse_input_1_id(), "input_1", TypeDesc::Float)
-                .expect("valid first sparse pin"),
+            BlueprintPin::new(
+                "sparse-input-1",
+                sparse_input_1_id(),
+                "input_1",
+                TypeDesc::Float,
+            )
+            .expect("valid first sparse pin"),
         ),
     );
     apply_blueprint_pin_action(
         runtime,
         BlueprintPinAction::Add(
-            BlueprintPin::new(sparse_input_2_id(), "input_2", TypeDesc::Float)
-                .expect("valid second sparse pin"),
+            BlueprintPin::new(
+                "sparse-input-2",
+                sparse_input_2_id(),
+                "input_2",
+                TypeDesc::Float,
+            )
+            .expect("valid second sparse pin"),
         ),
     );
     apply_blueprint_pin_action(
         runtime,
         BlueprintPinAction::Remove {
-            port: sparse_input_1_id(),
+            pin_id: "sparse-input-1".to_owned(),
         },
     );
 }

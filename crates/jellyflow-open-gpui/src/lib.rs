@@ -11,7 +11,7 @@ pub mod authoring;
 mod binding;
 pub mod chrome;
 mod command_journal;
-pub mod draft;
+mod draft;
 mod draft_store;
 pub mod host;
 pub mod interaction;
@@ -20,6 +20,7 @@ mod node_drag_handle;
 mod port_handle;
 pub mod presentation;
 pub mod registry;
+pub mod retained_field;
 mod scale_policy;
 mod semantic_zoom;
 mod size_policy;
@@ -33,14 +34,6 @@ pub use command_journal::{
     OPEN_GPUI_COMMAND_JOURNAL_CAPACITY, OpenGpuiCommandEnqueueError, OpenGpuiCommandTicket,
     OpenGpuiCommandTicketError, OpenGpuiCommandTicketResult,
 };
-pub use draft::{
-    DraftAttempt, DraftCompositionDecision, DraftConflict, DraftConflictResolution,
-    DraftEditDecision, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
-    DraftReconcileDecision, DraftRecovery, DraftResolutionDecision, DraftRestore,
-    DraftStaleRejectionDecision, DraftSubmissionDecision, DraftSubmissionIntent,
-    DraftSubmissionKind, DraftSubmissionRejectionDecision, RevisionedDraft,
-};
-pub use draft_store::ExternalizedDraftStore;
 pub use host::{
     OPEN_GPUI_DEFAULT_EDGE_LAYER_BUDGET, OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY,
     OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_DEFAULT_VISIBLE_ROUTE_QUERY_BUDGET,
@@ -60,6 +53,13 @@ pub use registry::{
     OpenGpuiNodeMountError, OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry,
     OpenGpuiNodeRegistryBuilder, OpenGpuiNodeRegistryConfigError, OpenGpuiNodeRegistryIssue,
     OpenGpuiNodeRegistryIssueKind, OpenGpuiRendererRegistrationStatus,
+};
+pub use retained_field::{
+    RetainedField, RetainedFieldAttempt, RetainedFieldAttemptState, RetainedFieldConflict,
+    RetainedFieldConflictChoice, RetainedFieldError, RetainedFieldIntent, RetainedFieldKey,
+    RetainedFieldPhase, RetainedFieldRecovery, RetainedFieldResolution, RetainedFieldRetention,
+    RetainedFieldSettlement, RetainedFieldStore, RetainedFieldStoreError, RetainedFieldSubmitMode,
+    RetainedFieldUpdate, RevisionedField,
 };
 pub use scale_policy::{
     OPEN_GPUI_DEFAULT_DETAIL_ENTER_ZOOM, OPEN_GPUI_DEFAULT_OVERVIEW_ENTER_ZOOM,

@@ -1,6 +1,7 @@
 //! Retained native node entities used by the Open GPUI product example.
 
 mod shader;
+mod topology_attempt;
 mod workflow;
 
 use jellyflow::runtime::schema::{NodeCatalog, NodeCatalogRegistrationError};
@@ -23,22 +24,25 @@ pub use shader::{
     BLUEPRINT_CALL_RENDERER, BLUEPRINT_NODE_SELECTOR, BlueprintCallNode, BlueprintPin,
     BlueprintPinAction, SHADER_FACTOR_FIELD, SHADER_MULTIPLY_DEFAULT_SIZE, SHADER_MULTIPLY_KIND,
     SHADER_MULTIPLY_RENDERER, SHADER_NODE_SELECTOR, SHADER_PREVIEW_CONTROL_SELECTOR,
-    SHADER_PREVIEW_VALUE_SELECTOR, ShaderDraftStore, ShaderMultiplyNode, ShaderNodeError,
+    SHADER_PREVIEW_VALUE_SELECTOR, ShaderFieldStore, ShaderMultiplyNode, ShaderNodeError,
+    blueprint_pin_down_selector, blueprint_pin_remove_selector, blueprint_pin_row_selector,
+    blueprint_pin_scroll_selector, blueprint_pin_up_selector, blueprint_pins,
     blueprint_port_selector, plan_blueprint_pin_action, shader_connected_input_selector,
     shader_factor_accept_remote_selector, shader_factor_conflict_selector,
     shader_factor_reapply_selector, shader_inline_editor_selector, shader_inline_value_selector,
     shader_port_selector,
 };
 pub use workflow::{
-    ConditionBranchAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
+    ConditionCaseAction, WORKFLOW_CONDITION_DEFAULT_SIZE, WORKFLOW_CONDITION_KIND,
     WORKFLOW_CONDITION_RENDERER, WORKFLOW_LLM_DEFAULT_SIZE, WORKFLOW_LLM_KIND,
-    WORKFLOW_LLM_RENDERER, WORKFLOW_MODEL_FIELD, WORKFLOW_PROMPT_FIELD, WorkflowBranch,
-    WorkflowConditionNode, WorkflowDraftStore, WorkflowLlmNode, WorkflowNodeError,
-    condition_branches, plan_condition_branch_action, workflow_condition_add_selector,
-    workflow_condition_branch_selector, workflow_condition_node_id,
-    workflow_condition_remove_selector, workflow_condition_scroll_selector,
-    workflow_condition_up_selector, workflow_demo_graph, workflow_llm_node_id,
-    workflow_model_accept_remote_selector, workflow_model_conflict_selector,
+    WORKFLOW_LLM_RENDERER, WORKFLOW_MODEL_FIELD, WORKFLOW_PROMPT_FIELD, WorkflowCase,
+    WorkflowConditionNode, WorkflowConditionOutputs, WorkflowElseBranch, WorkflowFieldStore,
+    WorkflowLlmNode, WorkflowNodeError, condition_cases, condition_outputs,
+    plan_condition_case_action, workflow_condition_add_selector, workflow_condition_case_selector,
+    workflow_condition_else_selector, workflow_condition_node_id,
+    workflow_condition_pending_selector, workflow_condition_remove_selector,
+    workflow_condition_scroll_selector, workflow_condition_up_selector, workflow_demo_graph,
+    workflow_llm_node_id, workflow_model_accept_remote_selector, workflow_model_conflict_selector,
     workflow_model_option_selector, workflow_model_options_empty_selector,
     workflow_model_options_failed_selector, workflow_model_options_loading_selector,
     workflow_model_options_partial_selector, workflow_model_options_retry_selector,
@@ -64,8 +68,8 @@ fn sync_activity_lease(
 /// Application-owned resources captured by retained product node factories.
 #[derive(Clone)]
 pub struct NativeNodeResources {
-    workflow_draft_store: WorkflowDraftStore,
-    shader_draft_store: ShaderDraftStore,
+    workflow_field_store: WorkflowFieldStore,
+    shader_field_store: ShaderFieldStore,
     workflow_model_options: Entity<WorkflowModelOptionsState>,
 }
 
@@ -73,8 +77,8 @@ impl NativeNodeResources {
     #[must_use]
     pub fn new(workflow_model_options: Entity<WorkflowModelOptionsState>) -> Self {
         Self {
-            workflow_draft_store: WorkflowDraftStore::new(),
-            shader_draft_store: ShaderDraftStore::new(),
+            workflow_field_store: WorkflowFieldStore::new(),
+            shader_field_store: ShaderFieldStore::new(),
             workflow_model_options,
         }
     }
@@ -85,13 +89,13 @@ impl NativeNodeResources {
     }
 
     #[must_use]
-    pub fn with_draft_stores(
+    pub fn with_field_stores(
         mut self,
-        workflow_draft_store: WorkflowDraftStore,
-        shader_draft_store: ShaderDraftStore,
+        workflow_field_store: WorkflowFieldStore,
+        shader_field_store: ShaderFieldStore,
     ) -> Self {
-        self.workflow_draft_store = workflow_draft_store;
-        self.shader_draft_store = shader_draft_store;
+        self.workflow_field_store = workflow_field_store;
+        self.shader_field_store = shader_field_store;
         self
     }
 }
@@ -113,10 +117,10 @@ pub fn register_native_nodes(
     registry: &mut OpenGpuiNodeRegistryBuilder,
     resources: NativeNodeResources,
 ) {
-    shader::register_with_draft_store(registry, resources.shader_draft_store);
+    shader::register_with_field_store(registry, resources.shader_field_store);
     workflow::register(
         registry,
-        resources.workflow_draft_store,
+        resources.workflow_field_store,
         resources.workflow_model_options,
     );
 }

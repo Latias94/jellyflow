@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 mod events;
 mod evidence;
 mod phase;
@@ -16,11 +14,10 @@ use open_gpui::{
     App, Entity, FocusHandle, MouseButton, PlatformInput, ScrollDelta, ScrollWheelEvent,
     TouchPhase, Window, point, px,
 };
-use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 use open_gpui_canvas_jellyflow::connection_search::NativeGraphSurface;
 
 use self::events::{key_down, key_up, mouse_down, mouse_move, mouse_up};
-use self::evidence::inspect_current_frame;
+use self::evidence::{capture_visual_frame, inspect_current_frame};
 use self::phase::ProbePhase;
 use self::planning::{
     EdgePlan, NodePlan, ReconnectPlan, blank_surface_point, choose_reconnect,
@@ -28,9 +25,8 @@ use self::planning::{
     graph_contains_edge, point_changed, point_inside_surface, port_point,
 };
 use super::{
-    SMOKE_INPUT_EVENT_COUNT, SMOKE_WINDOW_HEIGHT, SMOKE_WINDOW_WIDTH, SmokeExpectations,
-    SmokeGeometryEvidence, SmokeGeometryInput, SmokeInputEvidence, SmokePaintEvidence,
-    canvas_pixel_width, inspect_canvas_paint, inspect_geometry,
+    SMOKE_INPUT_EVENT_COUNT, SmokeCaptureState, SmokeConfig, SmokeExpectations,
+    SmokeGeometryEvidence, SmokeInputEvidence, SmokePaintEvidence,
 };
 
 const MAX_PHASE_WAIT_TICKS: u16 = 180;
@@ -38,8 +34,10 @@ const NODE_DRAG_X: f32 = -48.0;
 const NODE_DRAG_Y: f32 = 32.0;
 const EDGE_SELECTION_PROGRESS: f32 = 0.35;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct RealWindowSmokeProbe {
+    demo: &'static str,
+    config: SmokeConfig,
     phase: ProbePhase,
     wait_ticks: u16,
     dispatched_events: u16,
@@ -52,6 +50,7 @@ pub(super) struct RealWindowSmokeProbe {
     reconnect: Option<ReconnectPlan>,
     press: Option<ViewPoint>,
     release: Option<ViewPoint>,
+    capture_fit: Option<ViewportTransform>,
     viewport_before: Option<ViewportTransform>,
     node_dragged: bool,
     viewport_panned: bool,
@@ -70,6 +69,41 @@ pub(super) struct RealWindowSmokeProbe {
 }
 
 impl RealWindowSmokeProbe {
+    pub(super) fn new(demo: &'static str, config: SmokeConfig) -> Self {
+        Self {
+            demo,
+            config,
+            phase: ProbePhase::default(),
+            wait_ticks: 0,
+            dispatched_events: 0,
+            geometry: None,
+            paint: None,
+            node: None,
+            first_edge: None,
+            second_edge: None,
+            created_edge: None,
+            reconnect: None,
+            press: None,
+            release: None,
+            capture_fit: None,
+            viewport_before: None,
+            node_dragged: false,
+            viewport_panned: false,
+            viewport_zoomed: false,
+            connection_created: false,
+            keyboard_edge_deleted: false,
+            reconnect_applied: false,
+            search_opened: false,
+            search_focus_moved: false,
+            search_cancelled: false,
+            search_focus_restored: false,
+            search_focus_baseline: None,
+            search_render_requested: false,
+            final_frame_validated: false,
+            compact_layout: false,
+        }
+    }
+
     pub(super) fn geometry(&self) -> Option<&SmokeGeometryEvidence> {
         self.geometry.as_ref()
     }
@@ -91,21 +125,26 @@ impl RealWindowSmokeProbe {
         scenario::advance(self, window, cx, surface, view, expectations, surface_size)
     }
 
-    fn capture(
+    fn capture_visual(
+        &mut self,
+        window: &mut Window,
+        surface_size: ViewSize,
+    ) -> Result<(), &'static str> {
+        let screenshot_path = self
+            .config
+            .capture_path(self.demo, SmokeCaptureState::Initial);
+        capture_visual_frame(window, surface_size, screenshot_path.as_deref())
+    }
+
+    fn plan_input(
         &mut self,
         window: &mut Window,
         view: &WeakViewSession,
         expectations: &SmokeExpectations,
         surface_size: ViewSize,
     ) -> Result<(), &'static str> {
-        let screenshot_path = std::env::var_os("JELLYFLOW_SMOKE_SCREENSHOT").map(PathBuf::from);
-        let (snapshot, transform, geometry, paint) = inspect_current_frame(
-            window,
-            view,
-            expectations,
-            surface_size,
-            screenshot_path.as_deref(),
-        )?;
+        let (snapshot, transform, geometry, paint) =
+            inspect_current_frame(window, view, expectations, surface_size, None)?;
         let graph = view
             .graph_snapshot()
             .map_err(|_| "input_graph_snapshot_failed")?;
@@ -150,9 +189,7 @@ impl RealWindowSmokeProbe {
         if self.node.is_none() {
             return Err("input_node_fixture_incomplete");
         }
-        self.compact_layout =
-            (surface_size.width + NATIVE_BLACKBOARD_WIDTH - SMOKE_WINDOW_WIDTH).abs() <= 2.0
-                && (surface_size.height - SMOKE_WINDOW_HEIGHT).abs() <= 2.0;
+        self.compact_layout = self.config.surface_matches(surface_size);
         self.geometry = Some(geometry);
         self.paint = Some(paint);
         Ok(())

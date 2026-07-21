@@ -3,7 +3,12 @@ pub(super) enum ProbePhase {
     #[default]
     Fit,
     FitWait,
+    CaptureZoom,
+    CaptureZoomWait,
     Capture,
+    RestoreFit,
+    RestoreFitWait,
+    PlanInput,
     NodePress,
     NodeMove,
     NodeWaitActive,
@@ -51,7 +56,9 @@ pub(super) enum ProbePhase {
 impl ProbePhase {
     pub(super) fn timeout_reason(self) -> &'static str {
         match self {
+            Self::CaptureZoomWait => "input_capture_zoom_timeout",
             Self::FitWait => "input_fit_timeout",
+            Self::RestoreFitWait => "input_restore_fit_timeout",
             Self::NodeWaitActive => "input_node_activation_timeout",
             Self::NodeWaitSettled => "input_node_settlement_timeout",
             Self::PanWait => "input_pan_timeout",
@@ -67,8 +74,11 @@ impl ProbePhase {
             Self::SearchWaitDrag => "input_search_drag_timeout",
             Self::SearchWaitOpen => "input_search_open_timeout",
             Self::SearchWaitClosed => "input_search_close_timeout",
-            Self::Fit
+            Self::CaptureZoom
             | Self::Capture
+            | Self::RestoreFit
+            | Self::Fit
+            | Self::PlanInput
             | Self::NodePress
             | Self::NodeMove
             | Self::NodeRelease

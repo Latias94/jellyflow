@@ -2556,6 +2556,7 @@ name = "jellyflow-open-gpui"
 version = "0.4.0"
 dependencies = [
  "jellyflow",
+ "lyon",
  "open-gpui",
  "thiserror 2.0.18",
 ]

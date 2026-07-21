@@ -10,13 +10,14 @@ use jellyflow::runtime::{
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReconcileDecision,
-    DraftResolutionDecision, OpenGpuiActivityKind, OpenGpuiActivityLease,
-    OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiSceneHost, RevisionedDraft,
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeActivityRegistry,
+    OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedField, RetainedFieldConflictChoice,
+    RetainedFieldError, RetainedFieldKey, RetainedFieldPhase, RetainedFieldResolution,
+    RetainedFieldStore, RetainedFieldUpdate,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
-    Task, Window, div, px,
+    Window, div, px,
 };
 use open_gpui_ui_components::{
     TextInput,
@@ -26,16 +27,15 @@ use open_gpui_ui_components::{
 const KIND: &str = "test.native-draft";
 const RENDERER: &str = "test.native.draft";
 const INPUT_SELECTOR: &str = "text-input:native-draft-prompt:root";
+const FIELD_KEY: &str = "prompt";
 
 struct NativeDraftNode {
     binding: Entity<OpenGpuiNodeBinding>,
     activity: OpenGpuiNodeActivityRegistry,
     controller: Entity<TextInputController>,
-    draft: RevisionedDraft<String>,
+    field: RetainedField<String>,
     focus_lease: Option<OpenGpuiActivityLease>,
     ime_lease: Option<OpenGpuiActivityLease>,
-    draft_lease: Option<OpenGpuiActivityLease>,
-    reapply_task: Option<Task<()>>,
 }
 
 impl NativeDraftNode {
@@ -43,18 +43,15 @@ impl NativeDraftNode {
         binding: Entity<OpenGpuiNodeBinding>,
         activity: OpenGpuiNodeActivityRegistry,
         controller: Entity<TextInputController>,
-        revision: GraphRevision,
-        value: String,
+        field: RetainedField<String>,
     ) -> Self {
         Self {
             binding,
             activity,
             controller,
-            draft: RevisionedDraft::new(revision, value),
+            field,
             focus_lease: None,
             ime_lease: None,
-            draft_lease: None,
-            reapply_task: None,
         }
     }
 
@@ -66,80 +63,98 @@ impl NativeDraftNode {
                 controller.marked_range_utf16().is_some(),
             )
         };
-        self.draft.edit_local(value);
-        if composing {
-            self.draft.mark_composing();
-        } else {
-            self.draft.unmark_composing();
-        }
+        self.field.field_mut().edit(value);
+        self.field.field_mut().set_composing(composing);
+        self.field
+            .sync_retention()
+            .expect("live native input retention");
         cx.notify();
     }
 
     fn sync_from_graph(&mut self, cx: &mut Context<Self>) {
         let (revision, value) = binding_value(&self.binding, cx);
-        let decision = self.draft.reconcile_remote(revision, value);
-        if matches!(decision, DraftReconcileDecision::RemoteApplied { .. }) {
-            let value = self.draft.local().clone();
+        let update = self.field.field_mut().observe(revision, value);
+        if matches!(update, RetainedFieldUpdate::RemoteApplied) {
+            let value = self.field.field().local().clone();
             self.controller
                 .update(cx, |controller, cx| controller.set_value(value, cx));
         }
     }
 
     fn accept_remote(&mut self, cx: &mut Context<Self>) {
+        let revision = self.field.field().remote_revision();
         assert!(matches!(
-            self.draft.resolve_at(
-                DraftConflictResolution::AcceptRemote,
-                self.draft.remote_revision(),
-            ),
-            DraftResolutionDecision::AcceptedRemote { .. }
+            self.field
+                .field_mut()
+                .resolve(RetainedFieldConflictChoice::AcceptRemote, revision),
+            Ok(RetainedFieldResolution::AcceptedRemote { .. })
         ));
-        let value = self.draft.local().clone();
+        let value = self.field.field().local().clone();
         self.controller
             .update(cx, |controller, cx| controller.set_value(value, cx));
+        self.field
+            .sync_retention()
+            .expect("accepted native input retention");
         cx.notify();
     }
 
     fn reapply_local(&mut self, cx: &mut Context<Self>) {
-        let intent = match self.draft.resolve_at(
-            DraftConflictResolution::ReapplyLocal,
-            self.draft.remote_revision(),
-        ) {
-            DraftResolutionDecision::Reapply(intent) => intent,
-            decision => panic!("expected a reapply intent, got {decision:?}"),
+        let revision = self.field.field().remote_revision();
+        let intent = match self
+            .field
+            .field_mut()
+            .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision)
+            .expect("explicit native input reapply")
+        {
+            RetainedFieldResolution::Reapply(intent) => intent,
+            resolution => panic!("expected a reapply intent, got {resolution:?}"),
         };
         let attempt = intent.attempt();
         let expected_revision = intent.expected_revision();
         let value = intent.value().clone();
         let node = node_id();
-        let authoring = self
-            .binding
-            .read(cx)
-            .authoring()
-            .expect("live retained binding");
+        self.field
+            .prepare_task(attempt)
+            .expect("retain native input command task");
+        let authoring = match self.binding.read(cx).authoring() {
+            Ok(authoring) => authoring,
+            Err(error) => {
+                self.field
+                    .not_dispatched(attempt)
+                    .expect("clear definitely undispatched native input command");
+                panic!("live retained binding: {error}");
+            }
+        };
         assert_eq!(
             authoring.revision(),
             expected_revision,
-            "draft intent must target the current authoring revision",
+            "field intent must target the current authoring revision",
         );
-        let ticket = authoring
-            .enqueue(
-                GraphCommand::set_node_data(expected_revision, node, value.into()),
-                cx,
-            )
-            .expect("binding command enqueue");
-        self.reapply_task = Some(cx.spawn(async move |node, cx| {
-            let outcome = ticket.await.expect("binding command dispatch");
-            let revision = outcome
-                .applied()
-                .expect("reapply command applies")
-                .revision();
+        let ticket = match authoring.enqueue(
+            GraphCommand::set_node_data(expected_revision, node, value.into()),
+            cx,
+        ) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                self.field
+                    .not_dispatched(attempt)
+                    .expect("clear definitely undispatched native input command");
+                panic!("binding command enqueue: {error}");
+            }
+        };
+        let task = cx.spawn(async move |node, cx| {
+            let result = ticket.await;
             node.update(cx, |node, cx| {
-                node.draft.record_self_receipt(attempt, revision);
-                node.reapply_task = None;
+                node.field
+                    .settle_ticket(attempt, result)
+                    .expect("settle live native input command");
                 cx.notify();
             })
             .expect("native draft node remains mounted");
-        }));
+        });
+        self.field
+            .attach_task(attempt, task)
+            .expect("attach native input command task");
     }
 
     fn sync_activity(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -162,12 +177,9 @@ impl NativeDraftNode {
             OpenGpuiActivityKind::Ime,
             composing,
         );
-        sync_lease(
-            &self.activity,
-            &mut self.draft_lease,
-            OpenGpuiActivityKind::Draft,
-            self.draft.phase() != DraftPhase::Clean,
-        );
+        self.field
+            .sync_retention()
+            .expect("live native input retention");
     }
 }
 
@@ -213,9 +225,12 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     draw(cx);
 
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.draft.phase(), DraftPhase::ComposingConflict);
-        assert_eq!(node.draft.local(), "local 中文🙂");
-        assert_eq!(node.draft.remote(), "base");
+        assert_eq!(
+            node.field.field().phase(),
+            RetainedFieldPhase::ComposingConflict
+        );
+        assert_eq!(node.field.field().local(), "local 中文🙂");
+        assert_eq!(node.field.field().remote(), "base");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local 中文🙂");
@@ -235,9 +250,12 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     draw(cx);
 
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.draft.phase(), DraftPhase::ComposingConflict);
-        assert_eq!(node.draft.local(), "local 中文🙂");
-        assert_eq!(node.draft.remote(), "committed");
+        assert_eq!(
+            node.field.field().phase(),
+            RetainedFieldPhase::ComposingConflict
+        );
+        assert_eq!(node.field.field().local(), "local 中文🙂");
+        assert_eq!(node.field.field().remote(), "committed");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local 中文🙂");
@@ -252,8 +270,8 @@ fn focused_composing_draft_survives_real_undo_and_redo_until_remote_is_accepted(
     cx.update_entity(&node, |node, cx| node.accept_remote(cx));
     draw(cx);
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.draft.phase(), DraftPhase::Clean);
-        assert_eq!(node.draft.local(), "committed");
+        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Clean);
+        assert_eq!(node.field.field().local(), "committed");
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "committed");
@@ -293,12 +311,12 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
     draw(cx);
 
     cx.update_entity(&node, |node, _| {
+        let revision = node.field.field().remote_revision();
         assert!(matches!(
-            node.draft.resolve_at(
-                DraftConflictResolution::ReapplyLocal,
-                node.draft.remote_revision(),
-            ),
-            DraftResolutionDecision::Rejected(DraftIntentRejection::CompositionActive)
+            node.field
+                .field_mut()
+                .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision,),
+            Err(RetainedFieldError::CompositionActive)
         ));
     });
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
@@ -324,8 +342,8 @@ fn composing_conflict_reapplies_only_after_explicit_unmark_and_revision_checked_
         serde_json::json!("local branch")
     );
     cx.read_entity(&node, |node, _| {
-        assert_eq!(node.draft.phase(), DraftPhase::Clean);
-        assert_eq!(node.draft.base_revision(), 2);
+        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Clean);
+        assert_eq!(node.field.field().base_revision(), 2);
     });
     cx.read_entity(&controller, |controller, _| {
         assert_eq!(controller.value(), "local branch");
@@ -454,7 +472,7 @@ fn focus_and_mark_local(
     });
     cx.update_entity(node, |node, cx| node.sync_from_controller(cx));
     cx.read_entity(node, |node, _| {
-        assert_eq!(node.draft.phase(), DraftPhase::Composing);
+        assert_eq!(node.field.field().phase(), RetainedFieldPhase::Composing);
     });
     draw(cx);
 }
@@ -477,20 +495,22 @@ fn mount_scene(
     let factory_node = captured_node.clone();
     let factory_controller = captured_controller.clone();
     let factory_activity = captured_activity.clone();
+    let field_store = RetainedFieldStore::new();
     let mut registry = OpenGpuiNodeRegistry::builder();
     registry.register(RENDERER, move |binding, _window, cx| {
         let activity = binding.read(cx).activity().clone();
         let (revision, value) = binding_value(&binding, cx);
         let controller = cx.new(|cx| TextInputController::with_value(value.clone(), cx));
-        let node = cx.new(|_| {
-            NativeDraftNode::new(
-                binding,
-                activity.clone(),
-                controller.clone(),
-                revision,
-                value,
-            )
-        });
+        let field = RetainedField::mount(
+            binding.read(cx),
+            RetainedFieldKey::new(FIELD_KEY).expect("valid native input field key"),
+            field_store.clone(),
+            revision,
+            value,
+        )
+        .expect("mount native retained field");
+        let node =
+            cx.new(|_| NativeDraftNode::new(binding, activity.clone(), controller.clone(), field));
         *factory_node.borrow_mut() = Some(node.clone());
         *factory_controller.borrow_mut() = Some(controller);
         *factory_activity.borrow_mut() = Some(activity);

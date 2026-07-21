@@ -9,15 +9,15 @@ use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-    OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeBinding,
-    OpenGpuiNodeRegistry, OpenGpuiSceneHost, RevisionedDraft,
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+    RetainedField, RetainedFieldKey, RetainedFieldRetention,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 use open_gpui_canvas_jellyflow::nodes::{
     NativeNodeResources, WORKFLOW_LLM_KIND, native_node_catalog, register_native_nodes,
     workflow_prompt_selector,
 };
-use open_gpui_canvas_jellyflow::nodes::{WORKFLOW_PROMPT_FIELD, WorkflowDraftStore};
+use open_gpui_canvas_jellyflow::nodes::{WORKFLOW_PROMPT_FIELD, WorkflowFieldStore};
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
 const KIND: &str = "test.workflow-overflow";
@@ -27,9 +27,7 @@ const CHURN_NODES: usize = OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY + 1;
 const NODE_SPACING: f32 = 240.0;
 
 struct OverflowNode {
-    _binding: Entity<OpenGpuiNodeBinding>,
-    _draft: RevisionedDraft<String>,
-    _lease: Option<OpenGpuiActivityLease>,
+    _field: RetainedField<String>,
 }
 
 struct ProtectedNode {
@@ -66,23 +64,24 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("attach view");
-    let store = WorkflowDraftStore::new();
+    let store = WorkflowFieldStore::new();
     let overflow_node = Rc::new(RefCell::new(None::<NodeId>));
+    let mounted_overflow = Rc::new(RefCell::new(None::<Entity<OverflowNode>>));
     let overflow_values = Rc::new(RefCell::new(Vec::<String>::new()));
     let initial_mounts = Rc::new(RefCell::new(BTreeMap::<NodeId, u32>::new()));
     let mut registry = OpenGpuiNodeRegistry::builder();
     let factory_store = store.clone();
     let factory_overflow_node = overflow_node.clone();
+    let factory_mounted_overflow = mounted_overflow.clone();
     let factory_overflow_values = overflow_values.clone();
     let factory_initial_mounts = initial_mounts.clone();
     registry.register(RENDERER, move |binding, _window, cx| {
-        let snapshot = binding.read(cx).snapshot();
-        let node = snapshot.node_id();
-        let instance = snapshot.instance().clone();
-        let revision = snapshot
-            .read()
-            .map(|facts| facts.graph_revision())
-            .unwrap_or_default();
+        let authoring = binding
+            .read(cx)
+            .authoring()
+            .expect("overflow factory receives a live authoring binding");
+        let node = authoring.node_id();
+        let revision = authoring.revision();
         let is_initial = node_index(node) < INITIAL_NODES;
         let mount = factory_initial_mounts
             .borrow_mut()
@@ -90,47 +89,41 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
             .and_modify(|mount| *mount += 1)
             .or_insert(1)
             .to_owned();
-        let mut draft = factory_store
-            .restore(
-                &instance,
-                WORKFLOW_PROMPT_FIELD,
-                revision,
-                String::from("authoritative"),
-            )
-            .into_draft();
+        let key = RetainedFieldKey::new(WORKFLOW_PROMPT_FIELD).expect("constant field key");
+        let mut field = RetainedField::mount(
+            binding.read(cx),
+            key,
+            factory_store.clone(),
+            revision,
+            String::from("authoritative"),
+        )
+        .expect("retained field mounts while binding is live");
         if is_initial && mount == 1 {
-            draft.edit_local(format!("unsaved-{}", node_index(node)));
+            field
+                .field_mut()
+                .edit(format!("unsaved-{}", node_index(node)));
         }
 
-        let lease = if is_initial {
-            match binding
-                .read(cx)
-                .activity()
-                .acquire(OpenGpuiActivityKind::Draft)
-            {
-                Ok(lease) => Some(lease),
-                Err(OpenGpuiActivityAcquireError::ProtectedCapacityExceeded { capacity }) => {
-                    assert_eq!(capacity, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY);
-                    factory_store.externalize_overflow(&instance, WORKFLOW_PROMPT_FIELD, &draft);
-                    let mut current = factory_overflow_node.borrow_mut();
-                    assert!(current.is_none() || *current == Some(node));
-                    *current = Some(node);
-                    factory_overflow_values
-                        .borrow_mut()
-                        .push(draft.local().clone());
-                    None
-                }
-                Err(error) => panic!("unexpected activity error: {error}"),
+        let externalized = if is_initial {
+            let retention = field.sync_retention().expect("synchronize retention");
+            if retention == RetainedFieldRetention::Externalized {
+                let mut current = factory_overflow_node.borrow_mut();
+                assert!(current.is_none() || *current == Some(node));
+                *current = Some(node);
+                factory_overflow_values
+                    .borrow_mut()
+                    .push(field.field().local().clone());
             }
+            retention == RetainedFieldRetention::Externalized
         } else {
-            None
+            false
         };
 
-        cx.new(|_| OverflowNode {
-            _binding: binding,
-            _draft: draft,
-            _lease: lease,
-        })
+        let mounted = cx.new(|_| OverflowNode { _field: field });
+        if externalized {
+            *factory_mounted_overflow.borrow_mut() = Some(mounted.clone());
+        }
+        mounted
     });
 
     let (host, cx) = cx.add_window_view(move |_, _| {
@@ -182,6 +175,22 @@ fn sixty_fifth_dirty_draft_survives_real_host_capacity_and_lru_churn(
             format!("unsaved-{}", node_index(overflow))
         ],
         "the same unsaved draft must be restored before the remounted entity is reclaimed again"
+    );
+
+    let mounted = mounted_overflow
+        .borrow_mut()
+        .take()
+        .expect("the remounted overflow field remains observable");
+    cx.update_entity(&mounted, |node, _| {
+        node._field.field_mut().edit("authoritative".to_owned());
+        assert_eq!(
+            node._field.sync_retention().expect("release clean field"),
+            RetainedFieldRetention::Idle,
+        );
+    });
+    assert!(
+        store.is_empty(),
+        "a clean overflow field must delete its stale externalized snapshot"
     );
 }
 

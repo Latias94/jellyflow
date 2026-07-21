@@ -156,11 +156,13 @@ The adapter keeps a bounded cache (256 eligible parked entries and 64 protected 
 default). Focused, composing, captured, overlay, and dirty-draft nodes are protected or explicitly
 externalized/cancelled before eviction.
 
-Applications that preserve dirty product fields across protected-capacity overflow own an
-`ExternalizedDraftStore<T>`, bind it to each `ViewSession`, and pass clones into the corresponding
-node factories. Restore is keyed by the exact view, node, renderer, incarnation, and field identity;
-it returns `DraftRecovery` diagnostics without recreating IME ownership or replaying an interrupted
-graph command. Node reincarnation and terminal view closure remove retired snapshots automatically.
+Applications that preserve dirty product fields across protected-capacity overflow own a shared
+`RetainedFieldStore<T>` and pass clones into their node factories. Each mounted `RetainedField<T>`
+binds that store to its weak view capability automatically and owns draft activity, ticket
+settlement, externalization, and restoration. Restore is keyed by the exact view, node, renderer,
+incarnation, and field identity; it reports `RetainedFieldRecovery` without recreating IME ownership
+or replaying an interrupted graph command. Node reincarnation and terminal view closure remove
+retired snapshots automatically.
 
 ## Product example and tests
 

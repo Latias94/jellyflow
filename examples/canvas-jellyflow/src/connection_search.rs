@@ -5,13 +5,14 @@ use std::time::Duration;
 use jellyflow::runtime::schema::NodeCatalog;
 use jellyflow::runtime::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
-    CreateFromWireCandidates, InteractionTerminalReason, ViewSession, ViewSize,
+    CreateFromWireCandidates, InteractionTerminalReason, ViewCloseReason, ViewSession, ViewSize,
 };
-use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_open_gpui::{OpenGpuiConnectionSearchError, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Task,
-    WeakFocusHandle, Window, div, px, rgb,
+    MouseButton, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled,
+    Subscription, Task, WeakFocusHandle, Window, div, px, rgb,
 };
 use open_gpui_ui_components::gpui_adapter::TextInputController;
 use open_gpui_ui_components::{Button, ButtonVariant, TextInput};
@@ -159,23 +160,348 @@ pub struct NativeGraphSurface {
     cleanup_search_focus: bool,
     previous_focus: Option<WeakFocusHandle>,
     surface_focus: FocusHandle,
+    search_scroll: ScrollHandle,
     search_load_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 struct NativeConnectionSearch {
     request: ConnectionSearchRequest,
-    candidates: Option<CreateFromWireCandidates>,
+    state: NativeConnectionSearchState<CreateFromWireCandidates>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeSearchLoadGeneration(u64);
+
+impl NativeSearchLoadGeneration {
+    const FIRST: Self = Self(1);
+
+    fn next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSearchProductStatus {
+    Loading,
+    Retrying,
+    Ready,
+    SourceError,
+    StaleCandidate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeConnectionSearchProjection {
+    Closed,
+    Loading,
+    Retrying,
+    Ready,
+    FilteredEmpty,
+    SourceError,
+    StaleCandidate,
+    Committing,
+    Terminal,
+    Cancelled,
+    Retired,
+    HostClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCandidateNavigation {
+    Previous,
+    Next,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeCandidateIdentity {
+    kind: String,
+    port: String,
+}
+
+impl NativeCandidateIdentity {
+    fn from_candidate(candidate: &jellyflow::runtime::schema::CreateFromWireCandidate) -> Self {
+        Self {
+            kind: candidate.node_kind().0.clone(),
+            port: candidate.port().0.clone(),
+        }
+    }
+}
+
+struct NativeConnectionSearchState<C> {
+    load_generation: NativeSearchLoadGeneration,
+    status: NativeSearchProductStatus,
+    candidates: Option<C>,
     rows: Vec<NativeCandidateRow>,
+    visible: Vec<NativeCandidateIdentity>,
+    active: Option<NativeCandidateIdentity>,
+    query: String,
     diagnostic: Option<String>,
+    commit_started: bool,
 }
 
 struct NativeCandidateRow {
     index: usize,
+    identity: NativeCandidateIdentity,
     selector: String,
     title: String,
     detail: String,
     searchable: String,
+}
+
+impl<C> NativeConnectionSearchState<C> {
+    fn loading() -> Self {
+        Self {
+            load_generation: NativeSearchLoadGeneration::FIRST,
+            status: NativeSearchProductStatus::Loading,
+            candidates: None,
+            rows: Vec::new(),
+            visible: Vec::new(),
+            active: None,
+            query: String::new(),
+            diagnostic: None,
+            commit_started: false,
+        }
+    }
+
+    fn pending_load(&self) -> Option<NativeSearchLoadGeneration> {
+        matches!(
+            self.status,
+            NativeSearchProductStatus::Loading | NativeSearchProductStatus::Retrying
+        )
+        .then_some(self.load_generation)
+    }
+
+    fn begin_retry(&mut self) -> Option<NativeSearchLoadGeneration> {
+        if self.commit_started {
+            return None;
+        }
+        let Some(generation) = self.load_generation.next() else {
+            self.status = NativeSearchProductStatus::SourceError;
+            self.diagnostic = Some("Search retry limit reached".to_owned());
+            return None;
+        };
+        self.load_generation = generation;
+        self.status = NativeSearchProductStatus::Retrying;
+        self.candidates = None;
+        self.rows.clear();
+        self.visible.clear();
+        self.diagnostic = None;
+        Some(generation)
+    }
+
+    fn finish_load(
+        &mut self,
+        generation: NativeSearchLoadGeneration,
+        result: Result<(C, Vec<NativeCandidateRow>), String>,
+    ) -> bool {
+        if self.pending_load() != Some(generation) {
+            return false;
+        }
+        match result {
+            Ok((candidates, rows)) => {
+                self.candidates = Some(candidates);
+                self.rows = rows;
+                self.status = NativeSearchProductStatus::Ready;
+                self.diagnostic = None;
+                self.rebuild_visible_rows();
+            }
+            Err(message) => {
+                self.candidates = None;
+                self.rows.clear();
+                self.visible.clear();
+                self.active = None;
+                self.status = NativeSearchProductStatus::SourceError;
+                self.diagnostic = Some(message);
+            }
+        }
+        true
+    }
+
+    fn set_query(&mut self, query: &str) -> bool {
+        if self.commit_started {
+            return false;
+        }
+        let query = query.trim().to_lowercase();
+        if self.query == query {
+            return false;
+        }
+        self.query = query;
+        self.rebuild_visible_rows();
+        true
+    }
+
+    fn rebuild_visible_rows(&mut self) {
+        self.visible = self
+            .rows
+            .iter()
+            .filter(|row| self.query.is_empty() || row.searchable.contains(&self.query))
+            .map(|row| row.identity.clone())
+            .collect();
+        if self
+            .active
+            .as_ref()
+            .is_none_or(|active| !self.visible.contains(active))
+        {
+            self.active = self.visible.first().cloned();
+        }
+    }
+
+    fn visible_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| self.visible.contains(&row.identity).then_some(index))
+            .collect()
+    }
+
+    fn active_visible_index(&self) -> Option<usize> {
+        let active = self.active.as_ref()?;
+        self.visible
+            .iter()
+            .position(|candidate| candidate == active)
+    }
+
+    fn hover(&mut self, identity: &NativeCandidateIdentity) -> bool {
+        if self.status != NativeSearchProductStatus::Ready
+            || self.commit_started
+            || self.active.as_ref() == Some(identity)
+            || !self.visible.contains(identity)
+        {
+            return false;
+        }
+        self.active = Some(identity.clone());
+        true
+    }
+
+    fn navigate(&mut self, navigation: NativeCandidateNavigation) -> bool {
+        if self.status != NativeSearchProductStatus::Ready
+            || self.commit_started
+            || self.visible.is_empty()
+        {
+            return false;
+        }
+        let next = self
+            .active
+            .as_ref()
+            .and_then(|active| {
+                self.visible
+                    .iter()
+                    .position(|candidate| candidate == active)
+            })
+            .map_or(0, |index| match navigation {
+                NativeCandidateNavigation::Previous => {
+                    index.checked_sub(1).unwrap_or(self.visible.len() - 1)
+                }
+                NativeCandidateNavigation::Next => (index + 1) % self.visible.len(),
+            });
+        let candidate = self.visible[next].clone();
+        if self.active.as_ref() == Some(&candidate) {
+            return false;
+        }
+        self.active = Some(candidate);
+        true
+    }
+
+    fn freeze_for_commit(&mut self, identity: &NativeCandidateIdentity) -> bool {
+        if self.commit_started
+            || self.status != NativeSearchProductStatus::Ready
+            || !self.visible.contains(identity)
+        {
+            return false;
+        }
+        self.active = Some(identity.clone());
+        self.commit_started = true;
+        true
+    }
+
+    fn mark_source_error(&mut self, message: String) {
+        self.commit_started = false;
+        self.status = NativeSearchProductStatus::SourceError;
+        self.diagnostic = Some(message);
+    }
+
+    fn mark_stale_candidate(&mut self, message: String) {
+        self.commit_started = false;
+        self.status = NativeSearchProductStatus::StaleCandidate;
+        self.diagnostic = Some(message);
+    }
+
+    fn projection(
+        &self,
+        phase: CanvasInteractionPhase,
+        terminal: Option<InteractionTerminalReason>,
+        close_reason: Option<ViewCloseReason>,
+    ) -> NativeConnectionSearchProjection {
+        native_connection_search_projection(Some(self), phase, terminal, close_reason)
+    }
+}
+
+fn native_connection_search_projection<C>(
+    state: Option<&NativeConnectionSearchState<C>>,
+    phase: CanvasInteractionPhase,
+    terminal: Option<InteractionTerminalReason>,
+    close_reason: Option<ViewCloseReason>,
+) -> NativeConnectionSearchProjection {
+    if close_reason.is_some() || phase == CanvasInteractionPhase::Closed {
+        return NativeConnectionSearchProjection::HostClosed;
+    }
+    match terminal {
+        Some(InteractionTerminalReason::Cancelled) => {
+            return NativeConnectionSearchProjection::Cancelled;
+        }
+        Some(InteractionTerminalReason::OwnerRetired) => {
+            return NativeConnectionSearchProjection::Retired;
+        }
+        Some(_) => return NativeConnectionSearchProjection::Terminal,
+        _ => {}
+    }
+    let Some(state) = state else {
+        return NativeConnectionSearchProjection::Closed;
+    };
+    if state.commit_started || phase == CanvasInteractionPhase::Committing {
+        return NativeConnectionSearchProjection::Committing;
+    }
+    match state.status {
+        NativeSearchProductStatus::Loading => NativeConnectionSearchProjection::Loading,
+        NativeSearchProductStatus::Retrying => NativeConnectionSearchProjection::Retrying,
+        NativeSearchProductStatus::Ready if state.visible.is_empty() => {
+            NativeConnectionSearchProjection::FilteredEmpty
+        }
+        NativeSearchProductStatus::Ready => NativeConnectionSearchProjection::Ready,
+        NativeSearchProductStatus::SourceError => NativeConnectionSearchProjection::SourceError,
+        NativeSearchProductStatus::StaleCandidate => {
+            NativeConnectionSearchProjection::StaleCandidate
+        }
+    }
+}
+
+impl NativeConnectionSearchState<CreateFromWireCandidates> {
+    fn begin_commit(
+        &mut self,
+        identity: &NativeCandidateIdentity,
+    ) -> Option<(CreateFromWireCandidates, usize)> {
+        if self.commit_started || self.status != NativeSearchProductStatus::Ready {
+            return None;
+        }
+        let row = self
+            .rows
+            .iter()
+            .find(|row| &row.identity == identity && self.visible.contains(identity))?;
+        let candidates = self.candidates.as_ref()?;
+        let candidate = candidates.candidates().get(row.index)?;
+        if NativeCandidateIdentity::from_candidate(candidate) != *identity {
+            self.mark_stale_candidate(
+                "Candidate identity changed; refresh compatible nodes.".to_owned(),
+            );
+            return None;
+        }
+        let candidate_index = row.index;
+        let candidates = candidates.clone();
+        if !self.freeze_for_commit(identity) {
+            return None;
+        }
+        Some((candidates, candidate_index))
+    }
 }
 
 impl NativeGraphSurface {
@@ -202,7 +528,22 @@ impl NativeGraphSurface {
                 cx.notify();
             }
         });
-        let query_subscription = cx.observe(&query_controller, |_, _, cx| cx.notify());
+        let query_subscription = cx.observe(&query_controller, |surface, _, cx| {
+            let query = surface.query_controller.read(cx).value().to_string();
+            let changed = surface
+                .search
+                .as_mut()
+                .is_some_and(|search| search.state.set_query(&query));
+            if changed {
+                let index = surface
+                    .search
+                    .as_ref()
+                    .and_then(|search| search.state.active_visible_index())
+                    .unwrap_or(0);
+                surface.search_scroll.scroll_to_item(index);
+                cx.notify();
+            }
+        });
         Self {
             host,
             catalog,
@@ -213,6 +554,7 @@ impl NativeGraphSurface {
             cleanup_search_focus: false,
             previous_focus: None,
             surface_focus: cx.focus_handle(),
+            search_scroll: ScrollHandle::new(),
             search_load_task: None,
             _subscriptions: vec![host_subscription, query_subscription],
         }
@@ -253,9 +595,7 @@ impl NativeGraphSurface {
                     .update(cx, |controller, cx| controller.set_value("", cx));
                 self.search = Some(NativeConnectionSearch {
                     request,
-                    candidates: None,
-                    rows: Vec::new(),
-                    diagnostic: None,
+                    state: NativeConnectionSearchState::loading(),
                 });
                 self.focus_search_on_next_render = true;
                 true
@@ -278,10 +618,10 @@ impl NativeGraphSurface {
                 }
             }
             Some(_) => {
-                let diagnostic = presentation
+                let search_status = presentation
                     .connection()
-                    .and_then(|connection| connection.search())
-                    .and_then(|status| match status {
+                    .and_then(|connection| connection.search());
+                let diagnostic = search_status.and_then(|status| match status {
                         ConnectionSearchStatus::Error => {
                             Some("Search failed; retry to query the current graph.".to_owned())
                         }
@@ -305,11 +645,25 @@ impl NativeGraphSurface {
                 let Some(search) = self.search.as_mut() else {
                     return false;
                 };
-                if diagnostic.is_some() && search.diagnostic != diagnostic {
-                    search.diagnostic = diagnostic;
-                    true
-                } else {
-                    false
+                match (search_status, diagnostic) {
+                    (Some(ConnectionSearchStatus::Error), Some(diagnostic))
+                        if search.state.pending_load().is_none()
+                            && search.state.diagnostic.as_ref() != Some(&diagnostic) =>
+                    {
+                        search.state.mark_source_error(diagnostic);
+                        true
+                    }
+                    (Some(ConnectionSearchStatus::CommitRejected), Some(diagnostic))
+                        if search.state.diagnostic.as_ref() != Some(&diagnostic) =>
+                    {
+                        if presentation.terminal() == Some(InteractionTerminalReason::Conflict) {
+                            search.state.mark_stale_candidate(diagnostic);
+                        } else {
+                            search.state.mark_source_error(diagnostic);
+                        }
+                        true
+                    }
+                    _ => false,
                 }
             }
         }
@@ -318,6 +672,7 @@ impl NativeGraphSurface {
     fn load_search(
         &mut self,
         request: ConnectionSearchRequest,
+        generation: NativeSearchLoadGeneration,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -330,26 +685,26 @@ impl NativeGraphSurface {
             .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string()))
         };
         let result = source.candidates(request, &mut query);
-        let Some(search) = self
+        let result = result
+            .map(|candidates| {
+                let rows = Self::candidate_rows(&self.catalog, &candidates);
+                (candidates, rows)
+            })
+            .map_err(|error| format!("Search failed: {error}"));
+        let changed = self
             .search
             .as_mut()
             .filter(|search| search.request == request)
-        else {
-            return;
-        };
-        match result {
-            Ok(candidates) => {
-                search.rows = Self::candidate_rows(&self.catalog, &candidates);
-                search.candidates = Some(candidates);
-                search.diagnostic = None;
-            }
-            Err(error) => {
-                search.candidates = None;
-                search.rows.clear();
-                search.diagnostic = Some(format!("Search failed: {error}"));
-            }
+            .is_some_and(|search| search.state.finish_load(generation, result));
+        if changed {
+            let index = self
+                .search
+                .as_ref()
+                .and_then(|search| search.state.active_visible_index())
+                .unwrap_or(0);
+            self.search_scroll.scroll_to_item(index);
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn schedule_search_load(
@@ -358,12 +713,15 @@ impl NativeGraphSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.search_load_task.is_some()
-            || self
-                .search
-                .as_ref()
-                .is_none_or(|search| search.request != request)
-        {
+        let Some(generation) = self
+            .search
+            .as_ref()
+            .filter(|search| search.request == request)
+            .and_then(|search| search.state.pending_load())
+        else {
+            return;
+        };
+        if self.search_load_task.is_some() {
             return;
         }
         let window_handle = window.window_handle();
@@ -375,10 +733,9 @@ impl NativeGraphSurface {
                         surface.search_load_task = None;
                         if surface.search.as_ref().is_some_and(|search| {
                             search.request == request
-                                && search.candidates.is_none()
-                                && search.diagnostic.is_none()
+                                && search.state.pending_load() == Some(generation)
                         }) {
-                            surface.load_search(request, window, cx);
+                            surface.load_search(request, generation, window, cx);
                         }
                     });
                 })
@@ -396,8 +753,10 @@ impl NativeGraphSurface {
             .enumerate()
             .filter_map(|(index, candidate)| {
                 let spec = catalog.get(candidate.node_kind())?;
+                let identity = NativeCandidateIdentity::from_candidate(candidate);
                 Some(NativeCandidateRow {
                     index,
+                    identity,
                     selector: native_connection_search_candidate_selector(
                         &candidate.node_kind().0,
                         &candidate.port().0,
@@ -422,42 +781,62 @@ impl NativeGraphSurface {
         let Some(request) = self.search.as_ref().map(|search| search.request) else {
             return;
         };
+        if self
+            .search
+            .as_ref()
+            .is_some_and(|search| search.state.commit_started)
+        {
+            return;
+        }
         let result = self.host.update(cx, |host, cx| {
             host.retry_connection_search(request, window, cx)
         });
         if let Err(error) = result {
             if let Some(search) = self.search.as_mut() {
-                search.diagnostic = Some(format!("Search retry failed: {error}"));
+                search
+                    .state
+                    .mark_source_error(format!("Search retry failed: {error}"));
             }
             cx.notify();
             return;
         }
-        if let Some(search) = self.search.as_mut() {
-            search.candidates = None;
-            search.rows.clear();
-            search.diagnostic = None;
-        }
+        let Some(generation) = self
+            .search
+            .as_mut()
+            .and_then(|search| search.state.begin_retry())
+        else {
+            return;
+        };
         self.search_load_task = None;
-        self.load_search(request, window, cx);
+        self.load_search(request, generation, window, cx);
     }
 
     fn commit_candidate(
         &mut self,
-        candidate_index: usize,
+        identity: &NativeCandidateIdentity,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.host.read(cx).interaction_presentation().phase()
-            != CanvasInteractionPhase::ConnectionSearch
+        let presentation = self.host.read(cx).interaction_presentation();
+        if presentation.phase() != CanvasInteractionPhase::ConnectionSearch
+            || presentation.terminal().is_some()
+            || !matches!(
+                presentation
+                    .connection()
+                    .and_then(|connection| connection.search()),
+                Some(ConnectionSearchStatus::Ready { .. })
+            )
         {
             return;
         }
-        let Some((request, candidates)) = self.search.as_ref().and_then(|search| {
-            search
-                .candidates
-                .clone()
-                .map(|candidates| (search.request, candidates))
-        }) else {
+        let Some((request, candidates, candidate_index)) =
+            self.search.as_mut().and_then(|search| {
+                search
+                    .state
+                    .begin_commit(identity)
+                    .map(|(candidates, index)| (search.request, candidates, index))
+            })
+        else {
             return;
         };
         let result = self.host.update(cx, |host, cx| {
@@ -473,17 +852,76 @@ impl NativeGraphSurface {
         });
         match result {
             Ok(_) => {
-                if let Some(search) = self.search.as_mut() {
-                    search.diagnostic = None;
-                }
                 cx.notify();
             }
             Err(error) => {
                 if let Some(search) = self.search.as_mut() {
-                    search.diagnostic = Some(format!("Connection rejected: {error}"));
+                    let message = format!("Connection rejected: {error}");
+                    match error {
+                        OpenGpuiConnectionSearchError::CandidateNoLongerValid
+                        | OpenGpuiConnectionSearchError::CandidateUnavailable { .. }
+                        | OpenGpuiConnectionSearchError::CandidateSetMismatch
+                        | OpenGpuiConnectionSearchError::StaleGeneration
+                        | OpenGpuiConnectionSearchError::InactiveRequest => {
+                            search.state.mark_stale_candidate(message);
+                        }
+                        OpenGpuiConnectionSearchError::Query(_) => {
+                            search.state.mark_source_error(message);
+                        }
+                        OpenGpuiConnectionSearchError::Instantiation(_)
+                        | OpenGpuiConnectionSearchError::CandidatePortUnavailable { .. }
+                        | OpenGpuiConnectionSearchError::InvalidSelection => {
+                            search.state.mark_stale_candidate(message);
+                        }
+                        OpenGpuiConnectionSearchError::Interaction(_) => {
+                            search.state.mark_source_error(message);
+                        }
+                    }
                 }
                 cx.notify();
             }
+        }
+    }
+
+    fn commit_active_candidate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(identity) = self
+            .search
+            .as_ref()
+            .and_then(|search| search.state.active.clone())
+        else {
+            return;
+        };
+        self.commit_candidate(&identity, window, cx);
+    }
+
+    fn hover_candidate(&mut self, identity: &NativeCandidateIdentity, cx: &mut Context<Self>) {
+        if self
+            .search
+            .as_mut()
+            .is_some_and(|search| search.state.hover(identity))
+        {
+            cx.notify();
+        }
+    }
+
+    fn navigate_candidates(
+        &mut self,
+        navigation: NativeCandidateNavigation,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self
+            .search
+            .as_mut()
+            .is_some_and(|search| search.state.navigate(navigation));
+        if changed {
+            if let Some(index) = self
+                .search
+                .as_ref()
+                .and_then(|search| search.state.active_visible_index())
+            {
+                self.search_scroll.scroll_to_item(index);
+            }
+            cx.notify();
         }
     }
 
@@ -493,6 +931,10 @@ impl NativeGraphSurface {
         };
         if self.host.read(cx).interaction_presentation().phase()
             == CanvasInteractionPhase::Committing
+            || self
+                .search
+                .as_ref()
+                .is_some_and(|search| search.state.commit_started)
         {
             return;
         }
@@ -521,32 +963,20 @@ impl NativeGraphSurface {
         cx.notify();
     }
 
-    fn filtered_row_indices(&self, cx: &Context<Self>) -> Vec<usize> {
-        let Some(search) = self.search.as_ref() else {
-            return Vec::new();
-        };
-        let query = self.query_controller.read(cx).value().trim().to_lowercase();
-        search
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| {
-                (query.is_empty() || row.searchable.contains(&query)).then_some(index)
-            })
-            .collect()
-    }
-
     fn render_search(&self, cx: &mut Context<Self>) -> Option<impl open_gpui::IntoElement> {
         let search = self.search.as_ref()?;
-        let row_indices = self.filtered_row_indices(cx);
+        let row_indices = search.state.visible_row_indices();
         let rows_empty = row_indices.is_empty();
         let host = self.host.read(cx);
         let overlay_boundary = host.overlay_boundary();
         let presentation = host.interaction_presentation();
-        let search_status = presentation
-            .connection()
-            .and_then(|connection| connection.search());
-        let committing = presentation.phase() == CanvasInteractionPhase::Committing;
+        let projection = search.state.projection(
+            presentation.phase(),
+            presentation.terminal(),
+            host.close_reason(),
+        );
+        let committing = projection == NativeConnectionSearchProjection::Committing;
+        let candidate_actions_enabled = projection == NativeConnectionSearchProjection::Ready;
         let surface_size = host.surface_size().unwrap_or_else(|| {
             let fallback = host.frame_bounds().size;
             ViewSize::new(fallback.width, fallback.height)
@@ -555,8 +985,13 @@ impl NativeGraphSurface {
         let surface = cx.weak_entity();
         let backdrop_surface = surface.clone();
         let retry_surface = surface.clone();
-        let diagnostic = search.diagnostic.clone();
-        let show_retry = diagnostic.is_some() && !committing;
+        let diagnostic = search.state.diagnostic.clone();
+        let show_retry = matches!(
+            projection,
+            NativeConnectionSearchProjection::SourceError
+                | NativeConnectionSearchProjection::StaleCandidate
+                | NativeConnectionSearchProjection::Terminal
+        ) && !committing;
         let layout =
             NativeConnectionSearchLayout::resolve(surface_size, anchor, diagnostic.is_some());
         let mut results = div()
@@ -568,53 +1003,70 @@ impl NativeGraphSurface {
             .flex_col()
             .gap(px(6.0))
             .overflow_y_scroll()
+            .track_scroll(&self.search_scroll)
             .scrollbar_width(px(7.0));
         for row_index in row_indices {
-            let row = &search.rows[row_index];
+            let row = &search.state.rows[row_index];
             let candidate_surface = surface.clone();
-            let candidate_row_surface = surface.clone();
-            let index = row.index;
+            let candidate_hover_surface = surface.clone();
+            let identity = row.identity.clone();
+            let hover_identity = identity.clone();
+            let active = search.state.active.as_ref() == Some(&identity);
             let selector = row.selector.clone();
             let debug_selector = selector.clone();
             results = results.child(
                 div()
                     .id(selector)
                     .debug_selector(move || debug_selector)
-                    .on_click(move |_, window, cx| {
-                        let _ = candidate_row_surface.update(cx, |surface, cx| {
-                            surface.commit_candidate(index, window, cx)
-                        });
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(0x1d2128))
+                    .when(active, |row| {
+                        row.bg(rgb(0x2d3745)).border_color(rgb(0x6f94c9))
+                    })
+                    .on_hover(move |hovered, _, cx| {
+                        if *hovered {
+                            let _ = candidate_hover_surface.update(cx, |surface, cx| {
+                                surface.hover_candidate(&hover_identity, cx);
+                            });
+                        }
                     })
                     .child(
                         Button::new(
-                            format!("jellyflow-native-search-candidate-{index}"),
+                            format!(
+                                "jellyflow-native-search-candidate-{}-{}",
+                                identity.kind, identity.port
+                            ),
                             format!("{}  {}", row.title, row.detail),
                         )
                         .variant(ButtonVariant::Secondary)
-                        .disabled(committing)
+                        .disabled(!candidate_actions_enabled)
                         .on_click(move |_, window, cx| {
                             let _ = candidate_surface.update(cx, |surface, cx| {
-                                surface.commit_candidate(index, window, cx)
+                                surface.commit_candidate(&identity, window, cx)
                             });
                         }),
                     ),
             );
         }
-        if committing
-            || matches!(search_status, Some(ConnectionSearchStatus::Loading))
-                && search.candidates.is_none()
-                && search.diagnostic.is_none()
-        {
+        if matches!(
+            projection,
+            NativeConnectionSearchProjection::Loading
+                | NativeConnectionSearchProjection::Retrying
+                | NativeConnectionSearchProjection::Committing
+        ) {
             results = results.child(
                 div()
                     .debug_selector(|| NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR.to_owned())
                     .py(px(16.0))
                     .text_sm()
                     .text_color(rgb(0x9aa3af))
-                    .child(if committing {
-                        "Applying connection..."
-                    } else {
-                        "Loading compatible nodes..."
+                    .child(match projection {
+                        NativeConnectionSearchProjection::Committing => "Applying connection...",
+                        NativeConnectionSearchProjection::Retrying => {
+                            "Refreshing compatible nodes..."
+                        }
+                        _ => "Loading compatible nodes...",
                     }),
             );
         } else if rows_empty {
@@ -624,7 +1076,11 @@ impl NativeGraphSurface {
                     .py(px(16.0))
                     .text_sm()
                     .text_color(rgb(0x9aa3af))
-                    .child("No compatible nodes"),
+                    .child(if search.state.query.is_empty() {
+                        "No compatible nodes"
+                    } else {
+                        "No matching nodes"
+                    }),
             );
         }
         let panel = div()
@@ -648,7 +1104,8 @@ impl NativeGraphSurface {
                     .child(
                         TextInput::new("jellyflow-native-connection-search-filter", "Filter nodes")
                             .controller(self.query_controller.clone())
-                            .placeholder("Search compatible nodes"),
+                            .placeholder("Search compatible nodes")
+                            .disabled(committing),
                     ),
             )
             .child(results)
@@ -708,7 +1165,7 @@ impl Render for NativeGraphSurface {
         if let Some(request) = self
             .search
             .as_ref()
-            .filter(|search| search.candidates.is_none() && search.diagnostic.is_none())
+            .filter(|search| search.state.pending_load().is_some())
             .map(|search| search.request)
         {
             self.schedule_search_load(request, window, cx);
@@ -744,11 +1201,23 @@ impl Render for NativeGraphSurface {
             .size_full()
             .track_focus(&self.surface_focus)
             .on_key_down(cx.listener(|surface, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key.eq_ignore_ascii_case("escape") && surface.search.is_some() {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    surface.cancel_search(window, cx);
+                if surface.search.is_none() || event.keystroke.modifiers.modified() {
+                    return;
                 }
+                let key = event.keystroke.key.as_str();
+                if key.eq_ignore_ascii_case("escape") {
+                    surface.cancel_search(window, cx);
+                } else if key.eq_ignore_ascii_case("up") {
+                    surface.navigate_candidates(NativeCandidateNavigation::Previous, cx);
+                } else if key.eq_ignore_ascii_case("down") {
+                    surface.navigate_candidates(NativeCandidateNavigation::Next, cx);
+                } else if key.eq_ignore_ascii_case("enter") {
+                    surface.commit_active_candidate(window, cx);
+                } else {
+                    return;
+                }
+                window.prevent_default();
+                cx.stop_propagation();
             }))
             .child(div().absolute().size_full().child(self.host.clone()))
             .children(self.render_search(cx))
@@ -784,6 +1253,204 @@ mod tests {
     use open_gpui::{ParentElement, Render, Styled, VisualContext};
 
     use super::*;
+
+    fn candidate_identity(kind: &str) -> NativeCandidateIdentity {
+        NativeCandidateIdentity {
+            kind: kind.to_owned(),
+            port: "value".to_owned(),
+        }
+    }
+
+    fn candidate_row(kind: &str, searchable: &str, index: usize) -> NativeCandidateRow {
+        NativeCandidateRow {
+            index,
+            identity: candidate_identity(kind),
+            selector: format!("candidate-{kind}"),
+            title: kind.to_owned(),
+            detail: format!("{kind} / value"),
+            searchable: searchable.to_owned(),
+        }
+    }
+
+    fn ready_search_state() -> NativeConnectionSearchState<()> {
+        let mut state = NativeConnectionSearchState::loading();
+        let generation = state.pending_load().expect("initial load generation");
+        assert!(state.finish_load(
+            generation,
+            Ok((
+                (),
+                vec![
+                    candidate_row("alpha", "alpha math", 0),
+                    candidate_row("beta", "beta texture", 1),
+                    candidate_row("gamma", "gamma output", 2),
+                ],
+            )),
+        ));
+        state
+    }
+
+    #[test]
+    fn candidate_filter_opens_on_first_and_preserves_stable_identity() {
+        let mut state = ready_search_state();
+        assert_eq!(state.active, Some(candidate_identity("alpha")));
+
+        assert!(state.hover(&candidate_identity("beta")));
+        assert!(state.set_query("texture"));
+        assert_eq!(state.active, Some(candidate_identity("beta")));
+
+        assert!(state.set_query("output"));
+        assert_eq!(state.active, Some(candidate_identity("gamma")));
+
+        assert!(state.set_query("missing"));
+        assert!(state.visible.is_empty());
+        assert_eq!(state.active, None);
+
+        assert!(state.set_query(""));
+        assert_eq!(state.active, Some(candidate_identity("alpha")));
+    }
+
+    #[test]
+    fn refresh_preserves_a_still_available_active_identity() {
+        let mut state = ready_search_state();
+        assert!(state.hover(&candidate_identity("beta")));
+        state.mark_stale_candidate("refresh".to_owned());
+        let generation = state.begin_retry().expect("refresh generation");
+
+        assert!(state.finish_load(
+            generation,
+            Ok((
+                (),
+                vec![
+                    candidate_row("gamma", "gamma output", 0),
+                    candidate_row("beta", "beta texture", 1),
+                ],
+            )),
+        ));
+        assert_eq!(state.active, Some(candidate_identity("beta")));
+    }
+
+    #[test]
+    fn hover_and_keyboard_navigation_share_active_identity_and_wrap() {
+        let mut state = ready_search_state();
+
+        assert!(state.navigate(NativeCandidateNavigation::Previous));
+        assert_eq!(state.active, Some(candidate_identity("gamma")));
+        assert!(state.navigate(NativeCandidateNavigation::Next));
+        assert_eq!(state.active, Some(candidate_identity("alpha")));
+        assert!(state.hover(&candidate_identity("beta")));
+        assert_eq!(state.active, Some(candidate_identity("beta")));
+    }
+
+    #[test]
+    fn commit_latch_accepts_once_and_freezes_filter_hover_and_navigation() {
+        let mut state = ready_search_state();
+        let candidate = candidate_identity("beta");
+
+        assert!(state.freeze_for_commit(&candidate));
+        assert!(!state.freeze_for_commit(&candidate));
+        assert!(!state.set_query("gamma"));
+        assert!(!state.hover(&candidate_identity("gamma")));
+        assert!(!state.navigate(NativeCandidateNavigation::Next));
+        assert_eq!(state.active, Some(candidate));
+    }
+
+    #[test]
+    fn completion_from_an_old_load_generation_cannot_replace_retry_results() {
+        let mut state = NativeConnectionSearchState::loading();
+        let first = state.pending_load().expect("first load generation");
+        state.mark_source_error("first query failed".to_owned());
+        let retry = state.begin_retry().expect("retry generation");
+
+        assert!(!state.finish_load(first, Ok((11_u8, vec![candidate_row("stale", "stale", 0)])),));
+        assert_eq!(state.status, NativeSearchProductStatus::Retrying);
+        assert!(state.candidates.is_none());
+
+        assert!(state.finish_load(retry, Ok((22_u8, vec![candidate_row("fresh", "fresh", 0)])),));
+        assert_eq!(state.candidates, Some(22));
+        assert_eq!(state.active, Some(candidate_identity("fresh")));
+    }
+
+    #[test]
+    fn product_projection_covers_search_and_host_terminal_states() {
+        assert_eq!(
+            native_connection_search_projection::<()>(
+                None,
+                CanvasInteractionPhase::Idle,
+                None,
+                None,
+            ),
+            NativeConnectionSearchProjection::Closed,
+        );
+
+        let mut state = NativeConnectionSearchState::<()>::loading();
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::Loading,
+        );
+        state.status = NativeSearchProductStatus::Retrying;
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::Retrying,
+        );
+        state = ready_search_state();
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::Ready,
+        );
+        assert!(state.set_query("missing"));
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::FilteredEmpty,
+        );
+        state.mark_source_error("source".to_owned());
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::SourceError,
+        );
+        state.mark_stale_candidate("stale".to_owned());
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::StaleCandidate,
+        );
+        state.commit_started = true;
+        assert_eq!(
+            state.projection(CanvasInteractionPhase::ConnectionSearch, None, None),
+            NativeConnectionSearchProjection::Committing,
+        );
+        state.commit_started = false;
+        assert_eq!(
+            state.projection(
+                CanvasInteractionPhase::ConnectionSearch,
+                Some(InteractionTerminalReason::Conflict),
+                None,
+            ),
+            NativeConnectionSearchProjection::Terminal,
+        );
+        assert_eq!(
+            state.projection(
+                CanvasInteractionPhase::ConnectionSearch,
+                Some(InteractionTerminalReason::Cancelled),
+                None,
+            ),
+            NativeConnectionSearchProjection::Cancelled,
+        );
+        assert_eq!(
+            state.projection(
+                CanvasInteractionPhase::ConnectionSearch,
+                Some(InteractionTerminalReason::OwnerRetired),
+                None,
+            ),
+            NativeConnectionSearchProjection::Retired,
+        );
+        assert_eq!(
+            state.projection(
+                CanvasInteractionPhase::Closed,
+                Some(InteractionTerminalReason::ViewClosed),
+                Some(ViewCloseReason::HostClosed),
+            ),
+            NativeConnectionSearchProjection::HostClosed,
+        );
+    }
 
     #[test]
     fn compact_product_surface_clamps_search_to_the_twelve_pixel_safe_area() {

@@ -3,19 +3,18 @@ use std::rc::Rc;
 
 use jellyflow::core::{CanvasSize, Node, NodeId, PortCapacity, PortDirection, PortKind};
 use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRevision, NodeInstanceKey};
-use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
+use jellyflow::runtime::{GraphCommand, GraphRevision};
+use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
-    DraftAttempt, DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
-    DraftReconcileDecision, DraftRecovery, DraftResolutionDecision, DraftSubmissionDecision,
-    DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicket,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistryBuilder,
-    RevisionedDraft,
+    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicketResult,
+    OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistryBuilder, RetainedField, RetainedFieldAttempt,
+    RetainedFieldConflictChoice, RetainedFieldError, RetainedFieldKey, RetainedFieldPhase,
+    RetainedFieldRecovery, RetainedFieldResolution, RetainedFieldStore, RetainedFieldSubmitMode,
+    RetainedFieldUpdate, RevisionedField,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render, Styled,
-    Subscription, Task, Window, div, px, rgb,
+    Subscription, Window, div, px, rgb,
 };
 use open_gpui_ui_components::{
     Button, ButtonVariant, ListboxOption, Select, TextInput, gpui_adapter::TextInputController,
@@ -40,29 +39,21 @@ pub const WORKFLOW_MODEL_FIELD: &str = "model";
 const WORKFLOW_LLM_NODE_ID: u128 = 0xd1fa_0001;
 pub(super) const DEFAULT_MODEL: &str = "gpt-4.1";
 
-pub type WorkflowDraftStore = ExternalizedDraftStore<String>;
+pub type WorkflowFieldStore = RetainedFieldStore<String>;
 
 pub struct WorkflowLlmNode {
     binding: Entity<OpenGpuiNodeBinding>,
-    instance: NodeInstanceKey,
     activity: OpenGpuiNodeActivityRegistry,
-    draft_store: WorkflowDraftStore,
     model_options: Entity<WorkflowModelOptionsState>,
     _model_options_subscription: Subscription,
     prompt_controller: Entity<TextInputController>,
-    prompt: RevisionedDraft<String>,
-    model: RevisionedDraft<String>,
+    prompt: RetainedField<String>,
+    model: RetainedField<String>,
     model_menu_base: Option<(GraphRevision, String)>,
     model_menu_open: Rc<Cell<bool>>,
     model_overlay_lease: Option<OpenGpuiActivityLease>,
     focus_lease: Option<OpenGpuiActivityLease>,
     ime_lease: Option<OpenGpuiActivityLease>,
-    draft_lease: Option<OpenGpuiActivityLease>,
-    draft_capacity_overflowed: bool,
-    _prompt_command_task: Option<Task<()>>,
-    _model_command_task: Option<Task<()>>,
-    _prompt_command_lease: Option<OpenGpuiActivityLease>,
-    _model_command_lease: Option<OpenGpuiActivityLease>,
     diagnostic: Option<String>,
 }
 
@@ -78,11 +69,6 @@ struct LlmData {
 enum LlmField {
     Prompt,
     Model,
-}
-
-struct PendingLlmCommand {
-    attempt: DraftAttempt,
-    ticket: OpenGpuiCommandTicket,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,7 +123,7 @@ impl LlmField {
     }
 }
 
-fn recovery_diagnostic(recoveries: &[(&'static str, DraftRecovery)]) -> Option<String> {
+fn recovery_diagnostic(recoveries: &[(&'static str, RetainedFieldRecovery)]) -> Option<String> {
     let recovery_details = recoveries
         .iter()
         .filter(|(_, recovery)| !recovery.is_empty())
@@ -167,22 +153,26 @@ fn recovery_diagnostic(recoveries: &[(&'static str, DraftRecovery)]) -> Option<S
 }
 
 impl WorkflowLlmNode {
-    fn reconcile_graph(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<(LlmData, Vec<WorkflowPort>)> {
+    fn reconcile_graph(&mut self, cx: &mut Context<Self>) -> Option<(LlmData, Vec<WorkflowPort>)> {
         let result = read_llm_render_binding(&self.binding, cx);
         match result {
             Ok((revision, data, ports)) => {
                 if matches!(
-                    self.prompt.reconcile_remote(revision, data.prompt.clone()),
-                    DraftReconcileDecision::RemoteApplied { .. }
+                    self.prompt
+                        .field_mut()
+                        .observe(revision, data.prompt.clone()),
+                    RetainedFieldUpdate::RemoteApplied
                 ) {
-                    let value = self.prompt.local().clone();
+                    let value = self.prompt.field().local().clone();
                     self.prompt_controller
                         .update(cx, |controller, cx| controller.set_value(value, cx));
                 }
-                self.model.reconcile_remote(revision, data.model.clone());
+                let _ = observe_model_snapshot(
+                    self.model.field_mut(),
+                    self.model_menu_open.get(),
+                    revision,
+                    data.model.clone(),
+                );
                 Some((data, ports))
             }
             Err(error) => {
@@ -193,30 +183,18 @@ impl WorkflowLlmNode {
     }
 
     fn edit_prompt(&mut self, value: String, cx: &mut Context<Self>) {
-        self.prompt.edit_local(value);
+        self.prompt.field_mut().edit(value);
         let composing = self
             .prompt_controller
             .read(cx)
             .marked_range_utf16()
             .is_some();
-        if composing {
-            self.prompt.mark_composing();
-        } else {
-            self.prompt.unmark_composing();
-        }
-        self.diagnostic = None;
+        self.prompt.field_mut().set_composing(composing);
         cx.notify();
     }
 
     fn apply_prompt(&mut self, cx: &mut Context<Self>) {
-        let pending = submit_llm_draft(
-            &self.binding,
-            LlmField::Prompt,
-            &mut self.prompt,
-            cx,
-        );
-        self.start_command(LlmField::Prompt, pending, cx);
-        cx.notify();
+        self.submit_field(LlmField::Prompt, RetainedFieldSubmitMode::Commit, cx);
     }
 
     fn select_model(&mut self, value: String, cx: &mut Context<Self>) {
@@ -230,12 +208,10 @@ impl WorkflowLlmNode {
         self.model_menu_open.set(false);
         self.model_overlay_lease.take();
         if let Some((revision, model)) = self.model_menu_base.take() {
-            self.model = RevisionedDraft::new(revision, model);
+            self.model.field_mut().observe(revision, model);
         }
-        self.model.edit_local(value);
-        let pending = submit_llm_draft(&self.binding, LlmField::Model, &mut self.model, cx);
-        self.start_command(LlmField::Model, pending, cx);
-        cx.notify();
+        self.model.field_mut().edit(value);
+        self.submit_field(LlmField::Model, RetainedFieldSubmitMode::Commit, cx);
     }
 
     fn set_model_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -248,7 +224,10 @@ impl WorkflowLlmNode {
         if self.model_menu_open.get() {
             return;
         }
-        if !self.model_options.read(cx).status().is_ready() || self.model.conflict().is_some() {
+        if !self.model_options.read(cx).status().is_ready()
+            || self.model.field().conflict().is_some()
+            || self.model.field().attempt_state().blocks_submission()
+        {
             return;
         }
         let (revision, data) = match read_llm_binding(&self.binding, cx) {
@@ -259,6 +238,15 @@ impl WorkflowLlmNode {
                 return;
             }
         };
+        self.model.field_mut().observe(revision, data.model.clone());
+        if self.model.field().conflict().is_some()
+            || self.model.field().attempt_state().blocks_submission()
+        {
+            self.model_menu_base.take();
+            self.model_menu_open.set(false);
+            cx.notify();
+            return;
+        }
         let revoked_open = self.model_menu_open.clone();
         match self
             .activity
@@ -266,7 +254,6 @@ impl WorkflowLlmNode {
                 revoked_open.set(false)
             }) {
             Ok(lease) => {
-                self.model.reconcile_remote(revision, data.model.clone());
                 self.model_menu_base = Some((revision, data.model));
                 self.model_menu_open.set(true);
                 self.model_overlay_lease = Some(lease);
@@ -283,13 +270,15 @@ impl WorkflowLlmNode {
 
     fn accept_remote_model(&mut self, cx: &mut Context<Self>) {
         let result = read_llm_binding(&self.binding, cx).and_then(|(revision, data)| {
-            self.model.reconcile_remote(revision, data.model);
+            self.model.field_mut().observe(revision, data.model);
             match self
                 .model
-                .resolve_at(DraftConflictResolution::AcceptRemote, revision)
+                .field_mut()
+                .resolve(RetainedFieldConflictChoice::AcceptRemote, revision)
             {
-                DraftResolutionDecision::AcceptedRemote { .. } => Ok(()),
-                _ => Err(WorkflowNodeError::DraftConflict { field: "model" }),
+                Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
+                Ok(_) => Err(WorkflowNodeError::DraftConflict { field: "model" }),
+                Err(error) => Err(Self::field_error(LlmField::Model, error)),
             }
         });
         self.diagnostic = result.err().map(|error| error.to_string());
@@ -297,24 +286,24 @@ impl WorkflowLlmNode {
     }
 
     fn reapply_local_model(&mut self, cx: &mut Context<Self>) {
-        let pending = reapply_llm_draft(&self.binding, LlmField::Model, &mut self.model, cx);
-        self.start_command(LlmField::Model, pending, cx);
-        cx.notify();
+        self.submit_field(LlmField::Model, RetainedFieldSubmitMode::Reapply, cx);
     }
 
     fn accept_remote_prompt(&mut self, cx: &mut Context<Self>) {
         let result = read_llm_binding(&self.binding, cx).and_then(|(revision, data)| {
-            self.prompt.reconcile_remote(revision, data.prompt);
+            self.prompt.field_mut().observe(revision, data.prompt);
             match self
                 .prompt
-                .resolve_at(DraftConflictResolution::AcceptRemote, revision)
+                .field_mut()
+                .resolve(RetainedFieldConflictChoice::AcceptRemote, revision)
             {
-                DraftResolutionDecision::AcceptedRemote { .. } => Ok(()),
-                _ => Err(WorkflowNodeError::DraftConflict { field: "prompt" }),
+                Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
+                Ok(_) => Err(WorkflowNodeError::DraftConflict { field: "prompt" }),
+                Err(error) => Err(Self::field_error(LlmField::Prompt, error)),
             }
         });
         if result.is_ok() {
-            let value = self.prompt.local().clone();
+            let value = self.prompt.field().local().clone();
             self.prompt_controller
                 .update(cx, |controller, cx| controller.set_value(value, cx));
         }
@@ -323,85 +312,132 @@ impl WorkflowLlmNode {
     }
 
     fn reapply_local_prompt(&mut self, cx: &mut Context<Self>) {
-        let pending = reapply_llm_draft(
-            &self.binding,
-            LlmField::Prompt,
-            &mut self.prompt,
-            cx,
-        );
-        self.start_command(LlmField::Prompt, pending, cx);
+        self.submit_field(LlmField::Prompt, RetainedFieldSubmitMode::Reapply, cx);
+    }
+
+    fn submit_field(
+        &mut self,
+        field: LlmField,
+        mode: RetainedFieldSubmitMode,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.enqueue_field(field, mode, cx) {
+            self.diagnostic = Some(error.to_string());
+        }
         cx.notify();
     }
 
-    fn start_command(
+    fn enqueue_field(
         &mut self,
         field: LlmField,
-        pending: Result<Option<PendingLlmCommand>, WorkflowNodeError>,
+        mode: RetainedFieldSubmitMode,
         cx: &mut Context<Self>,
-    ) {
-        match pending {
-            Ok(Some(PendingLlmCommand { attempt, ticket })) => {
-                let task_lease = match self.activity.acquire(OpenGpuiActivityKind::Task) {
-                    Ok(lease) => {
-                        self.diagnostic = None;
-                        Some(lease)
+    ) -> Result<(), WorkflowNodeError> {
+        let authoring = self.binding.read(cx).authoring().map_err(|error| {
+            WorkflowNodeError::BindingUnavailable {
+                message: error.to_string(),
+            }
+        })?;
+        let node_id = authoring.node_id();
+        let current = LlmData::parse(node_id, authoring.node())?;
+        let revision = authoring.revision();
+        self.field_mut(field)
+            .field_mut()
+            .observe(revision, current.field(field).to_owned());
+        let intent = match mode {
+            RetainedFieldSubmitMode::Commit => {
+                match self.field_mut(field).field_mut().plan(revision) {
+                    Ok(intent) => intent,
+                    Err(RetainedFieldError::Clean | RetainedFieldError::CompositionActive) => {
+                        return Ok(());
                     }
-                    Err(error) => {
-                        self.diagnostic = Some(format!(
-                            "workflow {} command task lease failed: {error}",
-                            field.key()
-                        ));
-                        None
-                    }
-                };
-                let task = cx.spawn(async move |node, cx| {
-                    let result = ticket.await;
-                    let _ = node.update(cx, |node, cx| {
-                        node.finish_command(field, attempt, result, cx);
-                    });
-                });
-                match field {
-                    LlmField::Prompt => {
-                        self._prompt_command_lease = task_lease;
-                        self._prompt_command_task = Some(task);
-                    }
-                    LlmField::Model => {
-                        self._model_command_lease = task_lease;
-                        self._model_command_task = Some(task);
-                    }
+                    Err(error) => return Err(Self::field_error(field, error)),
                 }
             }
-            Ok(None) => self.diagnostic = None,
-            Err(error) => self.diagnostic = Some(error.to_string()),
+            RetainedFieldSubmitMode::Reapply => {
+                match self
+                    .field_mut(field)
+                    .field_mut()
+                    .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision)
+                {
+                    Ok(RetainedFieldResolution::Reapply(intent)) => intent,
+                    Ok(_) => return Err(WorkflowNodeError::DraftConflict { field: field.key() }),
+                    Err(error) => return Err(Self::field_error(field, error)),
+                }
+            }
+        };
+        let attempt = intent.attempt();
+        let next_data = match current.with_field(node_id, field, intent.value().clone()) {
+            Ok(next_data) => next_data,
+            Err(error) => {
+                let _ = self.field_mut(field).not_dispatched(attempt);
+                return Err(error);
+            }
+        };
+        let command = GraphCommand::set_node_data(revision, node_id, next_data)
+            .with_label(format!("edit workflow {}", field.key()));
+        if let Err(error) = self.field_mut(field).prepare_task(attempt) {
+            let _ = self.field_mut(field).not_dispatched(attempt);
+            return Err(Self::field_error(field, error));
         }
+        let ticket = match authoring.enqueue(command, cx) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                let _ = self.field_mut(field).not_dispatched(attempt);
+                return Err(WorkflowNodeError::BindingUnavailable {
+                    message: error.to_string(),
+                });
+            }
+        };
+        self.diagnostic = None;
+        let task = cx.spawn(async move |node, cx| {
+            let result = ticket.await;
+            let _ = node.update(cx, |node, cx| {
+                node.finish_field_command(field, attempt, result, cx);
+            });
+        });
+        if let Err(error) = self.field_mut(field).attach_task(attempt, task) {
+            let _ = self.field_mut(field).field_mut().mark_uncertain(
+                attempt,
+                format!(
+                    "workflow {} command was dispatched but its task detached: {error}",
+                    field.key()
+                ),
+            );
+            return Err(Self::field_error(field, error));
+        }
+        Ok(())
     }
 
-    fn finish_command(
+    fn finish_field_command(
         &mut self,
         field: LlmField,
-        attempt: DraftAttempt,
+        attempt: RetainedFieldAttempt,
         result: OpenGpuiCommandTicketResult,
         cx: &mut Context<Self>,
     ) {
-        match field {
-            LlmField::Prompt => {
-                self._prompt_command_task = None;
-                self._prompt_command_lease = None;
-            }
-            LlmField::Model => {
-                self._model_command_task = None;
-                self._model_command_lease = None;
-            }
+        if let Err(error) = self.field_mut(field).settle_ticket(attempt, result) {
+            self.diagnostic = Some(Self::field_error(field, error).to_string());
         }
-        let draft = match field {
+        cx.notify();
+    }
+
+    fn field_mut(&mut self, field: LlmField) -> &mut RetainedField<String> {
+        match field {
             LlmField::Prompt => &mut self.prompt,
             LlmField::Model => &mut self.model,
-        };
-        if draft.pending_attempt() != Some(attempt) {
-            return;
         }
-        self.diagnostic = finish_llm_ticket(draft, field, attempt, result);
-        cx.notify();
+    }
+
+    fn field_error(field: LlmField, error: RetainedFieldError) -> WorkflowNodeError {
+        match error {
+            RetainedFieldError::ConflictRequiresResolution | RetainedFieldError::NoConflict => {
+                WorkflowNodeError::DraftConflict { field: field.key() }
+            }
+            error => WorkflowNodeError::CommandRejected {
+                message: format!("workflow {} field: {error}", field.key()),
+            },
+        }
     }
 
     fn sync_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -430,36 +466,18 @@ impl WorkflowLlmNode {
             self.diagnostic = Some(format!("workflow activity lease failed: {error}"));
         }
 
-        let dirty =
-            self.prompt.phase() != DraftPhase::Clean || self.model.phase() != DraftPhase::Clean;
-        let draft = sync_activity_lease(
-            &self.activity,
-            &mut self.draft_lease,
-            OpenGpuiActivityKind::Draft,
-            dirty,
-        );
-        if let Err(error) = draft {
-            if matches!(
-                error,
-                OpenGpuiActivityAcquireError::ProtectedCapacityExceeded { .. }
-            ) && dirty
-            {
-                self.externalize_overflow_drafts(cx);
-            }
-            self.diagnostic = Some(format!("workflow activity lease failed: {error}"));
-        } else if self.draft_capacity_overflowed {
-            self.draft_store
-                .discard_externalized(&self.instance, WORKFLOW_PROMPT_FIELD);
-            self.draft_store
-                .discard_externalized(&self.instance, WORKFLOW_MODEL_FIELD);
-            self.draft_capacity_overflowed = false;
+        if let Err(error) = self.prompt.sync_retention() {
+            self.diagnostic = Some(format!("workflow prompt retention failed: {error}"));
+        }
+        if let Err(error) = self.model.sync_retention() {
+            self.diagnostic = Some(format!("workflow model retention failed: {error}"));
         }
     }
 
     fn reject_transient_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.prompt_controller.read(cx).value().to_owned();
-        self.prompt.edit_local(value.clone());
-        self.prompt.unmark_composing();
+        self.prompt.field_mut().edit(value.clone());
+        self.prompt.field_mut().set_composing(false);
         self.prompt_controller
             .update(cx, |controller, cx| controller.set_value(value, cx));
         self.focus_lease.take();
@@ -468,38 +486,49 @@ impl WorkflowLlmNode {
         cx.notify();
     }
 
-    fn externalize_overflow_drafts(&mut self, _cx: &mut Context<Self>) {
-        self.draft_store
-            .externalize_overflow(&self.instance, WORKFLOW_PROMPT_FIELD, &self.prompt);
-        self.draft_store
-            .externalize_overflow(&self.instance, WORKFLOW_MODEL_FIELD, &self.model);
-        self.draft_capacity_overflowed = true;
-    }
-
     fn sync_prompt_composition(&mut self, cx: &mut Context<Self>) {
         let composing = self
             .prompt_controller
             .read(cx)
             .marked_range_utf16()
             .is_some();
-        reconcile_prompt_composition(&mut self.prompt, composing);
+        reconcile_prompt_composition(self.prompt.field_mut(), composing);
     }
 
     fn status(&self) -> WorkflowNodeStatus {
-        let phases = [self.prompt.phase(), self.model.phase()];
-        if phases
-            .iter()
-            .any(|phase| matches!(phase, DraftPhase::Conflict | DraftPhase::ComposingConflict))
-        {
+        let phases = [self.prompt.field().phase(), self.model.field().phase()];
+        if phases.iter().any(|phase| {
+            matches!(
+                phase,
+                RetainedFieldPhase::Conflict | RetainedFieldPhase::ComposingConflict
+            )
+        }) {
             WorkflowNodeStatus::Conflict
-        } else if self.diagnostic.is_some() {
+        } else if self.diagnostic.is_some()
+            || self.prompt.field().notice().is_some()
+            || self.model.field().notice().is_some()
+        {
             WorkflowNodeStatus::Error
-        } else if phases.iter().any(|phase| *phase != DraftPhase::Clean) {
+        } else if phases
+            .iter()
+            .any(|phase| *phase != RetainedFieldPhase::Clean)
+        {
             WorkflowNodeStatus::Draft
         } else {
             WorkflowNodeStatus::Ready
         }
     }
+}
+
+fn observe_model_snapshot(
+    field: &mut RevisionedField<String>,
+    menu_open: bool,
+    revision: GraphRevision,
+    authoritative: String,
+) -> Option<RetainedFieldUpdate> {
+    // A selection is authored against the value visible when the menu opened. Keeping that base
+    // stable turns a concurrent provider update into an explicit conflict instead of overwriting it.
+    (!menu_open).then(|| field.observe(revision, authoritative))
 }
 
 impl Render for WorkflowLlmNode {
@@ -508,15 +537,15 @@ impl Render for WorkflowLlmNode {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl open_gpui::IntoElement {
-        let node_id = self.instance.node();
+        let node_id = self.prompt.instance().node();
         let drag_handle = self.binding.read(cx).drag_handle();
         let (data, ports) = self.reconcile_graph(cx).unwrap_or_else(|| {
             (
                 LlmData {
                     value: serde_json::Value::Null,
                     title: "Retired LLM".to_owned(),
-                    prompt: self.prompt.local().clone(),
-                    model: self.model.local().clone(),
+                    prompt: self.prompt.field().local().clone(),
+                    model: self.model.field().local().clone(),
                 },
                 Vec::new(),
             )
@@ -532,8 +561,8 @@ impl Render for WorkflowLlmNode {
         let select_id = workflow_model_id(node_id);
         let model_options_status = self.model_options.read(cx).status().clone();
         let model_options_notice = ModelOptionsNotice::from_status(&model_options_status);
-        let model_select_disabled = self.model.conflict().is_some()
-            || self.model.pending_attempt().is_some()
+        let model_select_disabled = self.model.field().conflict().is_some()
+            || self.model.field().attempt_state().blocks_submission()
             || !model_options_status.is_ready();
         if model_select_disabled && self.model_menu_open.get() {
             self.model_menu_open.set(false);
@@ -550,7 +579,7 @@ impl Render for WorkflowLlmNode {
             .child(
                 TextInput::new(prompt_id, "Prompt")
                     .controller(self.prompt_controller.clone())
-                    .value(self.prompt.local().clone())
+                    .value(self.prompt.field().local().clone())
                     .placeholder("Describe the task")
                     .on_change(move |value, window, cx| {
                         let prompt_node = prompt_node.clone();
@@ -569,10 +598,7 @@ impl Render for WorkflowLlmNode {
                             "Apply prompt",
                         )
                         .variant(ButtonVariant::Secondary)
-                        .disabled(
-                            !matches!(self.prompt.phase(), DraftPhase::Dirty)
-                                || self.prompt.pending_attempt().is_some(),
-                        )
+                        .disabled(!self.prompt.field().can_submit())
                         .on_click(move |_, window, cx| {
                             let _ = apply_node.update(cx, |node, cx| node.apply_prompt(cx));
                             window.refresh();
@@ -582,8 +608,8 @@ impl Render for WorkflowLlmNode {
             .child(
                 Select::new(select_id, "Model")
                     .options(model_options)
-                    .placeholder(self.model.local().clone())
-                    .selected(self.model.local().clone())
+                    .placeholder(self.model.field().local().clone())
+                    .selected(self.model.field().local().clone())
                     .open(self.model_menu_open.get())
                     .full_width(true)
                     .disabled(model_select_disabled)
@@ -657,11 +683,45 @@ impl Render for WorkflowLlmNode {
             }
             control_body = control_body.child(alert);
         }
-        if self.prompt.conflict().is_some() {
+        if let Some(message) = self.prompt.field().notice() {
+            control_body = control_body.child(
+                workflow_alert(
+                    format!("jellyflow-workflow-prompt-command-notice-{}", node_id.0),
+                    "Prompt command state",
+                )
+                .p(px(8.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(0x725f42))
+                .bg(rgb(0x302b22))
+                .text_xs()
+                .text_color(rgb(0xe6cf9e))
+                .child(message.to_owned()),
+            );
+        }
+        if let Some(message) = self.model.field().notice() {
+            control_body = control_body.child(
+                workflow_alert(
+                    format!("jellyflow-workflow-model-command-notice-{}", node_id.0),
+                    "Model command state",
+                )
+                .p(px(8.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(0x725f42))
+                .bg(rgb(0x302b22))
+                .text_xs()
+                .text_color(rgb(0xe6cf9e))
+                .child(message.to_owned()),
+            );
+        }
+        if self.prompt.field().conflict().is_some() {
             let accept_node = cx.weak_entity();
             let reapply_node = cx.weak_entity();
-            let reapply_disabled = matches!(self.prompt.phase(), DraftPhase::ComposingConflict)
-                || self.prompt.pending_attempt().is_some();
+            let reapply_disabled = matches!(
+                self.prompt.field().phase(),
+                RetainedFieldPhase::ComposingConflict
+            ) || self.prompt.field().attempt_state().blocks_submission();
             let accept_selector = workflow_prompt_accept_remote_selector(node_id);
             let reapply_selector = workflow_prompt_reapply_selector(node_id);
             let conflict_selector = workflow_prompt_conflict_selector(node_id);
@@ -726,7 +786,7 @@ impl Render for WorkflowLlmNode {
                 ),
             );
         }
-        if self.model.conflict().is_some() {
+        if self.model.field().conflict().is_some() {
             let accept_node = cx.weak_entity();
             let reapply_node = cx.weak_entity();
             let accept_selector = workflow_model_accept_remote_selector(node_id);
@@ -779,7 +839,9 @@ impl Render for WorkflowLlmNode {
                                         "Reapply local",
                                     )
                                     .variant(ButtonVariant::Secondary)
-                                    .disabled(self.model.pending_attempt().is_some())
+                                    .disabled(
+                                        self.model.field().attempt_state().blocks_submission(),
+                                    )
                                     .on_click(
                                         move |_, window, cx| {
                                             let _ = reapply_node.update(cx, |node, cx| {
@@ -850,17 +912,17 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
 
 pub(super) fn register(
     registry: &mut OpenGpuiNodeRegistryBuilder,
-    draft_store: WorkflowDraftStore,
+    field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
 ) {
     registry.register(WORKFLOW_LLM_RENDERER, move |binding, _window, cx| {
-        mount_workflow_llm(binding, draft_store.clone(), model_options.clone(), cx)
+        mount_workflow_llm(binding, field_store.clone(), model_options.clone(), cx)
     });
 }
 
 fn mount_workflow_llm(
     binding: Entity<OpenGpuiNodeBinding>,
-    draft_store: WorkflowDraftStore,
+    field_store: WorkflowFieldStore,
     model_options: Entity<WorkflowModelOptionsState>,
     cx: &mut App,
 ) -> Entity<WorkflowLlmNode> {
@@ -869,62 +931,44 @@ fn mount_workflow_llm(
         .read(cx)
         .authoring()
         .expect("an LLM node factory must receive a live authoring binding");
-    let instance = initial.instance().clone();
-    let (revision, data, can_restore) = match LlmData::parse(initial.node_id(), initial.node()) {
-        Ok(data) => (initial.revision(), data, true),
-        Err(_) => (
-            0,
-            LlmData {
-                value: serde_json::Value::Null,
-                title: "LLM".to_owned(),
-                prompt: String::new(),
-                model: DEFAULT_MODEL.to_owned(),
-            },
-            false,
-        ),
-    };
-    let (prompt, prompt_recovery) = if can_restore {
-        let restored = draft_store.restore(
-            &instance,
-            WORKFLOW_PROMPT_FIELD,
-            revision,
-            data.prompt.clone(),
-        );
-        let recovery = restored.recovery();
-        (restored.into_draft(), recovery)
-    } else {
-        (
-            RevisionedDraft::new(revision, data.prompt.clone()),
-            DraftRecovery::default(),
-        )
-    };
-    let (model, model_recovery) = if can_restore {
-        let restored = draft_store.restore(
-            &instance,
-            WORKFLOW_MODEL_FIELD,
-            revision,
-            data.model.clone(),
-        );
-        let recovery = restored.recovery();
-        (restored.into_draft(), recovery)
-    } else {
-        (
-            RevisionedDraft::new(revision, data.model.clone()),
-            DraftRecovery::default(),
-        )
-    };
+    let revision = initial.revision();
+    let data = LlmData::parse(initial.node_id(), initial.node()).unwrap_or_else(|_| LlmData {
+        value: serde_json::Value::Null,
+        title: "LLM".to_owned(),
+        prompt: String::new(),
+        model: DEFAULT_MODEL.to_owned(),
+    });
+    let prompt_key = RetainedFieldKey::new(WORKFLOW_PROMPT_FIELD)
+        .expect("workflow prompt field key is a non-empty constant");
+    let prompt = RetainedField::mount(
+        binding.read(cx),
+        prompt_key,
+        field_store.clone(),
+        revision,
+        data.prompt.clone(),
+    )
+    .expect("workflow prompt field must mount while its binding is live");
+    let model_key = RetainedFieldKey::new(WORKFLOW_MODEL_FIELD)
+        .expect("workflow model field key is a non-empty constant");
+    let model = RetainedField::mount(
+        binding.read(cx),
+        model_key,
+        field_store,
+        revision,
+        data.model.clone(),
+    )
+    .expect("workflow model field must mount while its binding is live");
     let recoveries = vec![
-        (WORKFLOW_PROMPT_FIELD, prompt_recovery),
-        (WORKFLOW_MODEL_FIELD, model_recovery),
+        (WORKFLOW_PROMPT_FIELD, prompt.recovery()),
+        (WORKFLOW_MODEL_FIELD, model.recovery()),
     ];
-    let controller = cx.new(|cx| TextInputController::with_value(prompt.local().clone(), cx));
+    let controller =
+        cx.new(|cx| TextInputController::with_value(prompt.field().local().clone(), cx));
     cx.new(|cx| {
         let model_options_subscription = cx.observe(&model_options, |_, _, cx| cx.notify());
         WorkflowLlmNode {
             binding,
-            instance,
             activity,
-            draft_store,
             model_options,
             _model_options_subscription: model_options_subscription,
             prompt_controller: controller,
@@ -935,12 +979,6 @@ fn mount_workflow_llm(
             model_overlay_lease: None,
             focus_lease: None,
             ime_lease: None,
-            draft_lease: None,
-            draft_capacity_overflowed: false,
-            _prompt_command_task: None,
-            _model_command_task: None,
-            _prompt_command_lease: None,
-            _model_command_lease: None,
             diagnostic: recovery_diagnostic(&recoveries),
         }
     })
@@ -1034,152 +1072,17 @@ fn workflow_model_id(node: NodeId) -> String {
     format!("jellyflow-workflow-model-{}", node.0)
 }
 
-fn submit_llm_draft(
-    binding: &Entity<OpenGpuiNodeBinding>,
-    field: LlmField,
-    draft: &mut RevisionedDraft<String>,
-    cx: &mut App,
-) -> Result<Option<PendingLlmCommand>, WorkflowNodeError> {
-    let authoring = binding.read(cx).authoring().map_err(|error| {
-        WorkflowNodeError::BindingUnavailable {
-            message: error.to_string(),
-        }
-    })?;
-    let node_id = authoring.node_id();
-    let current = LlmData::parse(node_id, authoring.node())?;
-    let remote = current.field(field).to_owned();
-    draft.reconcile_remote(authoring.revision(), remote);
-    let intent = match draft.plan_submission_at(authoring.revision()) {
-        DraftSubmissionDecision::Submit(intent) => intent,
-        DraftSubmissionDecision::Rejected(
-            DraftIntentRejection::Clean | DraftIntentRejection::CompositionActive,
-        ) => return Ok(None),
-        DraftSubmissionDecision::Rejected(_) => {
-            return Err(WorkflowNodeError::DraftConflict { field: field.key() });
-        }
-    };
-    dispatch_llm_intent(authoring, current, field, draft, intent, cx).map(Some)
-}
-
-fn reapply_llm_draft(
-    binding: &Entity<OpenGpuiNodeBinding>,
-    field: LlmField,
-    draft: &mut RevisionedDraft<String>,
-    cx: &mut App,
-) -> Result<Option<PendingLlmCommand>, WorkflowNodeError> {
-    let authoring = binding.read(cx).authoring().map_err(|error| {
-        WorkflowNodeError::BindingUnavailable {
-            message: error.to_string(),
-        }
-    })?;
-    let node_id = authoring.node_id();
-    let current = LlmData::parse(node_id, authoring.node())?;
-    let remote = current.field(field).to_owned();
-    draft.reconcile_remote(authoring.revision(), remote);
-    let intent = match draft.resolve_at(
-        DraftConflictResolution::ReapplyLocal,
-        authoring.revision(),
-    ) {
-        DraftResolutionDecision::Reapply(intent) => intent,
-        _ => return Err(WorkflowNodeError::DraftConflict { field: field.key() }),
-    };
-    dispatch_llm_intent(authoring, current, field, draft, intent, cx).map(Some)
-}
-
-fn dispatch_llm_intent(
-    authoring: OpenGpuiNodeAuthoring,
-    current: LlmData,
-    field: LlmField,
-    draft: &mut RevisionedDraft<String>,
-    intent: DraftSubmissionIntent<String>,
-    cx: &mut App,
-) -> Result<PendingLlmCommand, WorkflowNodeError> {
-    let node_id = authoring.node_id();
-    let attempt = intent.attempt();
-    let committed_value = intent.value().clone();
-    let next_data = match current.with_field(node_id, field, committed_value) {
-        Ok(next_data) => next_data,
-        Err(error) => {
-            draft.reject_submission(attempt);
-            return Err(error);
-        }
-    };
-    let command = GraphCommand::set_node_data(authoring.revision(), node_id, next_data)
-        .with_label(format!("edit workflow {}", field.key()));
-    let ticket = match authoring.enqueue(command, cx) {
-        Ok(ticket) => ticket,
-        Err(error) => {
-            draft.reject_submission(attempt);
-            return Err(WorkflowNodeError::BindingUnavailable {
-                message: error.to_string(),
-            });
-        }
-    };
-    Ok(PendingLlmCommand { attempt, ticket })
-}
-
-fn finish_llm_ticket(
-    draft: &mut RevisionedDraft<String>,
-    field: LlmField,
-    attempt: DraftAttempt,
-    result: OpenGpuiCommandTicketResult,
-) -> Option<String> {
-    match result {
-        Ok(GraphCommandOutcome::Applied(receipt)) => {
-            match draft.record_self_receipt(attempt, receipt.revision()) {
-                DraftReceiptDecision::Recorded { .. }
-                | DraftReceiptDecision::Acknowledged { .. }
-                | DraftReceiptDecision::AlreadyRecorded { .. } => None,
-                decision => Some(format!(
-                    "workflow {} receipt needs a fresh binding snapshot: {decision:?}",
-                    field.key()
-                )),
-            }
-        }
-        Ok(GraphCommandOutcome::Noop(_)) => {
-            draft.reject_submission(attempt);
-            (draft.phase() != DraftPhase::Clean).then(|| {
-                format!(
-                    "workflow {} command made no graph change; review the fresh value before retrying",
-                    field.key()
-                )
-            })
-        }
-        Ok(GraphCommandOutcome::Conflict(conflict)) => {
-            draft.reject_submission(attempt);
-            Some(format!(
-                "workflow {} changed at revision {}; refresh, then reapply explicitly",
-                field.key(),
-                conflict.current().revision()
-            ))
-        }
-        Ok(GraphCommandOutcome::Rejected(rejection)) => {
-            draft.reject_submission(attempt);
-            Some(format!(
-                "workflow {} command was rejected: {}",
-                field.key(),
-                rejection.message()
-            ))
-        }
-        Err(error) => {
-            draft.reject_submission(attempt);
-            Some(format!(
-                "workflow {} command result is uncertain: {error}; refresh before retrying",
-                field.key()
-            ))
-        }
-    }
-}
-
 fn read_llm_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &App,
 ) -> Result<(GraphRevision, LlmData), WorkflowNodeError> {
-    let authoring = binding.read(cx).authoring().map_err(|error| {
-        WorkflowNodeError::BindingUnavailable {
-            message: error.to_string(),
-        }
-    })?;
+    let authoring =
+        binding
+            .read(cx)
+            .authoring()
+            .map_err(|error| WorkflowNodeError::BindingUnavailable {
+                message: error.to_string(),
+            })?;
     Ok((
         authoring.revision(),
         LlmData::parse(authoring.node_id(), authoring.node())?,
@@ -1191,11 +1094,11 @@ fn read_llm_render_binding(
     cx: &App,
 ) -> Result<(GraphRevision, LlmData, Vec<WorkflowPort>), WorkflowNodeError> {
     let binding = binding.read(cx);
-    let authoring = binding.authoring().map_err(|error| {
-        WorkflowNodeError::BindingUnavailable {
+    let authoring = binding
+        .authoring()
+        .map_err(|error| WorkflowNodeError::BindingUnavailable {
             message: error.to_string(),
-        }
-    })?;
+        })?;
     let data = LlmData::parse(authoring.node_id(), authoring.node())?;
     let ports = authoring
         .ports()
@@ -1284,16 +1187,16 @@ fn ensure_kind(node_id: NodeId, node: &Node) -> Result<(), WorkflowNodeError> {
     }
 }
 
-fn reconcile_prompt_composition(draft: &mut RevisionedDraft<String>, composing: bool) {
+fn reconcile_prompt_composition(field: &mut RevisionedField<String>, composing: bool) {
     if composing {
-        draft.mark_composing();
+        field.set_composing(true);
     } else if matches!(
-        draft.phase(),
-        DraftPhase::Composing | DraftPhase::ComposingConflict
+        field.phase(),
+        RetainedFieldPhase::Composing | RetainedFieldPhase::ComposingConflict
     ) {
         // The native text controller clears its marked range during IME commit without emitting a
         // second application-level change callback. Reconcile that edge on render.
-        draft.unmark_composing();
+        field.set_composing(false);
     }
 }
 
@@ -1302,10 +1205,10 @@ mod tests {
     use std::cell::RefCell;
 
     use jellyflow::core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId, NodeKindKey, PortId};
-    use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
+    use jellyflow::runtime::{GraphCommandOutcome, GraphRuntime, ViewSessionOptions};
     use jellyflow_open_gpui::{
         OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
-        OpenGpuiNodeRegistry, OpenGpuiSceneHost,
+        OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedFieldAttemptState,
     };
     use open_gpui::{AppContext, EntityInputHandler};
     use open_gpui_ui_components::gpui_adapter::init_text_input;
@@ -1332,77 +1235,136 @@ mod tests {
 
     #[test]
     fn ime_commit_without_a_second_change_callback_returns_prompt_to_dirty() {
-        let mut draft = RevisionedDraft::new(0, String::from("before"));
-        draft.edit_local(String::from("composing"));
+        let mut field = RevisionedField::new(0, String::from("before"));
+        field.edit(String::from("composing"));
 
-        reconcile_prompt_composition(&mut draft, true);
-        assert_eq!(draft.phase(), DraftPhase::Composing);
+        reconcile_prompt_composition(&mut field, true);
+        assert_eq!(field.phase(), RetainedFieldPhase::Composing);
 
-        reconcile_prompt_composition(&mut draft, false);
-        assert_eq!(draft.phase(), DraftPhase::Dirty);
+        reconcile_prompt_composition(&mut field, false);
+        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
     }
 
     #[test]
     fn ime_commit_preserves_a_remote_conflict_for_explicit_resolution() {
-        let mut draft = RevisionedDraft::new(0, String::from("before"));
-        draft.edit_local(String::from("local"));
-        reconcile_prompt_composition(&mut draft, true);
-        draft.reconcile_remote(1, String::from("remote"));
-        assert_eq!(draft.phase(), DraftPhase::ComposingConflict);
+        let mut field = RevisionedField::new(0, String::from("before"));
+        field.edit(String::from("local"));
+        reconcile_prompt_composition(&mut field, true);
+        field.observe(1, String::from("remote"));
+        assert_eq!(field.phase(), RetainedFieldPhase::ComposingConflict);
 
-        reconcile_prompt_composition(&mut draft, false);
-        assert_eq!(draft.phase(), DraftPhase::Conflict);
+        reconcile_prompt_composition(&mut field, false);
+        assert_eq!(field.phase(), RetainedFieldPhase::Conflict);
     }
 
     #[test]
-    fn dropped_host_never_acknowledges_a_pending_prompt_draft() {
-        let mut draft = RevisionedDraft::new(7, String::from("remote"));
-        draft.edit_local(String::from("local"));
-        let intent = match draft.plan_submission_at(7) {
-            DraftSubmissionDecision::Submit(intent) => intent,
-            decision => panic!("expected pending prompt intent, got {decision:?}"),
-        };
+    fn model_transport_error_survives_prompt_edit_and_blocks_duplicate_model_submission() {
+        let mut prompt = RevisionedField::new(7, String::from("before prompt"));
+        let mut model = RevisionedField::new(7, String::from("gpt-4.1"));
+        model.edit(String::from("gpt-5"));
+        let intent = model.plan(7).expect("dirty model intent");
+        assert!(matches!(
+            model.settle_ticket(
+                intent.attempt(),
+                Err(jellyflow_open_gpui::OpenGpuiCommandTicketError::HostDropped),
+            ),
+            jellyflow_open_gpui::RetainedFieldSettlement::Uncertain { .. }
+        ));
+        let model_notice = model.notice().expect("uncertain model notice").to_owned();
 
-        let diagnostic = finish_llm_ticket(
-            &mut draft,
-            LlmField::Prompt,
-            intent.attempt(),
-            Err(jellyflow_open_gpui::OpenGpuiCommandTicketError::HostDropped),
-        )
-        .expect("host drop remains visible to the user");
+        prompt.edit(String::from("edited prompt"));
 
-        assert!(diagnostic.contains("uncertain"));
-        assert_eq!(draft.pending_attempt(), None);
-        assert_eq!(draft.phase(), DraftPhase::Dirty);
-        assert_eq!(draft.local(), "local");
-        assert_eq!(draft.remote(), "remote");
+        assert!(prompt.can_submit());
+        assert!(prompt.notice().is_none());
+        assert!(matches!(
+            model.attempt_state(),
+            RetainedFieldAttemptState::Uncertain { .. }
+        ));
+        assert_eq!(model.notice(), Some(model_notice.as_str()));
+        assert!(matches!(
+            model.plan(7),
+            Err(RetainedFieldError::AttemptPending { .. })
+        ));
     }
 
     #[test]
-    fn applied_receipt_waits_for_the_authoritative_binding_snapshot() {
-        let mut draft = RevisionedDraft::new(0, String::from("before"));
-        draft.edit_local(String::from("local"));
-        draft.reconcile_remote(1, String::from("remote"));
-        let intent = match draft.resolve_at(DraftConflictResolution::ReapplyLocal, 1) {
-            DraftResolutionDecision::Reapply(intent) => intent,
-            decision => panic!("expected a reapply intent, got {decision:?}"),
-        };
-
+    fn applied_prompt_receipt_waits_for_the_authoritative_snapshot() {
+        let mut field = RevisionedField::new(0, String::from("before"));
+        field.edit(String::from("local"));
+        let intent = field.plan(0).expect("dirty prompt intent");
         assert!(matches!(
-            draft.record_self_receipt(intent.attempt(), 2),
-            jellyflow_open_gpui::DraftReceiptDecision::Recorded { .. }
+            field.settle_ticket(intent.attempt(), Ok(applied_prompt_outcome("local"))),
+            jellyflow_open_gpui::RetainedFieldSettlement::AwaitingSnapshot { .. }
         ));
-        assert_eq!(draft.phase(), DraftPhase::Conflict);
-        assert_eq!(draft.pending_attempt(), Some(intent.attempt()));
-        assert_eq!(draft.remote(), "remote");
-
         assert!(matches!(
-            draft.reconcile_remote(2, String::from("local")),
-            jellyflow_open_gpui::DraftReconcileDecision::SelfAcknowledged { .. }
+            field.attempt_state(),
+            RetainedFieldAttemptState::ReceiptFirst { .. }
         ));
-        assert_eq!(draft.phase(), DraftPhase::Clean);
-        assert_eq!(draft.pending_attempt(), None);
-        assert_eq!(draft.remote(), "local");
+        assert!(matches!(
+            field.observe(1, String::from("local")),
+            RetainedFieldUpdate::Acknowledged { .. }
+        ));
+        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+    }
+
+    #[test]
+    fn authoritative_prompt_snapshot_can_arrive_before_its_receipt() {
+        let mut field = RevisionedField::new(0, String::from("before"));
+        field.edit(String::from("local"));
+        let intent = field.plan(0).expect("dirty prompt intent");
+        assert!(matches!(
+            field.observe(1, String::from("local")),
+            RetainedFieldUpdate::SnapshotFirst { .. }
+        ));
+        assert!(matches!(
+            field.settle_ticket(intent.attempt(), Ok(applied_prompt_outcome("local"))),
+            jellyflow_open_gpui::RetainedFieldSettlement::Acknowledged { .. }
+        ));
+        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+    }
+
+    #[test]
+    fn open_model_menu_keeps_its_authoring_base_until_selection() {
+        let mut field = RevisionedField::new(7, String::from("gpt-4.1"));
+
+        assert_eq!(
+            observe_model_snapshot(&mut field, true, 8, String::from("remote-provider-model")),
+            None
+        );
+        assert_eq!(field.remote_revision(), 7);
+        assert_eq!(field.remote(), "gpt-4.1");
+
+        field.edit(String::from("claude-3.7-sonnet"));
+        assert!(matches!(
+            field.observe(8, String::from("remote-provider-model")),
+            RetainedFieldUpdate::Conflict
+        ));
+        assert_eq!(field.phase(), RetainedFieldPhase::Conflict);
+        assert_eq!(field.local(), "claude-3.7-sonnet");
+        assert_eq!(field.remote(), "remote-provider-model");
+    }
+
+    fn applied_prompt_outcome(value: &str) -> GraphCommandOutcome {
+        let catalog = transient_overflow_catalog();
+        let runtime = GraphRuntime::builder(catalog.clone())
+            .build(transient_overflow_graph(&catalog))
+            .expect("valid workflow prompt receipt graph");
+        let snapshot = runtime.snapshot().expect("initial workflow snapshot");
+        let node = snapshot
+            .graph()
+            .node(&transient_llm_id())
+            .expect("workflow receipt LLM node");
+        let data = LlmData::parse(transient_llm_id(), node)
+            .expect("valid workflow receipt data")
+            .with_field(transient_llm_id(), LlmField::Prompt, value.to_owned())
+            .expect("valid workflow prompt update");
+        runtime
+            .execute(GraphCommand::set_node_data(
+                snapshot.revision(),
+                transient_llm_id(),
+                data,
+            ))
+            .expect("apply workflow prompt command")
     }
 
     #[open_gpui::test]
@@ -1417,7 +1379,7 @@ mod tests {
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("attach workflow transient overflow view");
-        let draft_store = WorkflowDraftStore::new();
+        let draft_store = WorkflowFieldStore::new();
         let model_options = cx.update(|cx| cx.new(|_| WorkflowModelOptionsState::ready_default()));
         let captured = Rc::new(RefCell::new(None::<Entity<WorkflowLlmNode>>));
         let mounts = Rc::new(Cell::new(0_u32));
@@ -1487,11 +1449,10 @@ mod tests {
         draw_transient_host(cx);
 
         cx.read_entity(&node, |node, _| {
-            assert_eq!(node.prompt.local(), "partial composition");
-            assert_eq!(node.prompt.phase(), DraftPhase::Dirty);
+            assert_eq!(node.prompt.field().local(), "partial composition");
+            assert_eq!(node.prompt.field().phase(), RetainedFieldPhase::Dirty);
             assert!(node.focus_lease.is_none());
             assert!(node.ime_lease.is_none());
-            assert!(node.draft_lease.is_none());
             assert_eq!(node.activity.protected_count(), 0);
         });
         cx.read_entity(&controller, |controller, _| {
@@ -1547,8 +1508,8 @@ mod tests {
             .expect("remounted overflow workflow LLM");
         let restored_controller = restored.read_with(cx, |node, _| node.prompt_controller.clone());
         cx.read_entity(&restored, |node, _| {
-            assert_eq!(node.prompt.local(), "partial composition");
-            assert_eq!(node.prompt.phase(), DraftPhase::Dirty);
+            assert_eq!(node.prompt.field().local(), "partial composition");
+            assert_eq!(node.prompt.field().phase(), RetainedFieldPhase::Dirty);
             assert!(node.focus_lease.is_none());
             assert!(node.ime_lease.is_none());
             assert_eq!(node.activity.protected_count(), 0);

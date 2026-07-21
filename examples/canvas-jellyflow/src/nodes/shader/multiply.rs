@@ -3,24 +3,21 @@ use jellyflow::core::{
     CanvasSize, Node, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
 use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRevision, NodeInstanceKey};
+use jellyflow::runtime::{GraphCommand, GraphRevision};
 use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
 use jellyflow_open_gpui::{
-    DraftAttempt, DraftConflictResolution, DraftIntentRejection, DraftPhase, DraftReceiptDecision,
-    DraftReconcileDecision, DraftRecovery, DraftResolutionDecision, DraftSubmissionDecision,
-    DraftSubmissionIntent, ExternalizedDraftStore, OpenGpuiActivityAcquireError,
-    OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicketError,
-    OpenGpuiCommandTicketResult, OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistryBuilder,
-    RevisionedDraft,
+    OpenGpuiCommandTicketResult, OpenGpuiNodeRegistryBuilder, RetainedField, RetainedFieldAttempt,
+    RetainedFieldAttemptState, RetainedFieldConflictChoice, RetainedFieldError,
+    RetainedFieldIntent, RetainedFieldKey, RetainedFieldResolution, RetainedFieldSettlement,
+    RetainedFieldStore, RetainedFieldUpdate,
 };
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    Styled, Task, Window, div, px, rgb,
+    Styled, Window, div, px, rgb,
 };
 use open_gpui_ui_components::prelude::Sizable;
 use open_gpui_ui_components::{Button, ButtonVariant, NumberInput};
 
-use super::super::sync_activity_lease;
 use super::{ShaderNodeError, ShaderPort, ShaderPortElement, port_element};
 
 pub const SHADER_MULTIPLY_KIND: &str = "shader.multiply";
@@ -36,121 +33,39 @@ pub const SHADER_FACTOR_COMMAND_PENDING_SELECTOR: &str =
     "jellyflow-native-shader-factor-command-pending";
 pub const SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR: &str =
     "jellyflow-native-shader-factor-command-diagnostic";
-pub const SHADER_FACTOR_RETRY_SELECTOR: &str = "jellyflow-native-shader-factor-retry";
+pub const SHADER_FACTOR_NOTICE_SELECTOR: &str = "jellyflow-native-shader-factor-notice";
 pub const SHADER_FACTOR_FIELD: &str = "factor";
 
-pub type ShaderDraftStore = ExternalizedDraftStore<f32>;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ShaderFactorIntent {
-    attempt: DraftAttempt,
-    expected_revision: GraphRevision,
-    value: f32,
-}
-
-impl From<&DraftSubmissionIntent<f32>> for ShaderFactorIntent {
-    fn from(intent: &DraftSubmissionIntent<f32>) -> Self {
-        Self {
-            attempt: intent.attempt(),
-            expected_revision: intent.expected_revision(),
-            value: *intent.value(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-enum ShaderFactorCommandState {
-    #[default]
-    Idle,
-    InFlight(ShaderFactorIntent),
-    AwaitingSnapshot {
-        intent: ShaderFactorIntent,
-        committed_revision: GraphRevision,
-    },
-    NeedsRefresh {
-        intent: ShaderFactorIntent,
-        minimum_revision: GraphRevision,
-    },
-    ReadyToRetry(ShaderFactorIntent),
-}
-
-impl ShaderFactorCommandState {
-    fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle)
-    }
-
-    fn is_waiting(&self) -> bool {
-        matches!(
-            self,
-            Self::InFlight(_) | Self::AwaitingSnapshot { .. } | Self::NeedsRefresh { .. }
-        )
-    }
-
-    fn retry_intent(&self) -> Option<ShaderFactorIntent> {
-        match self {
-            Self::ReadyToRetry(intent) => Some(*intent),
-            _ => None,
-        }
-    }
-}
+pub type ShaderFieldStore = RetainedFieldStore<f32>;
 
 /// One retained, framework-native shader node mounted by [`OpenGpuiSceneHost`].
 ///
 /// [`OpenGpuiSceneHost`]: jellyflow_open_gpui::OpenGpuiSceneHost
 pub struct ShaderMultiplyNode {
     binding: Entity<OpenGpuiNodeBinding>,
-    instance: NodeInstanceKey,
-    activity: OpenGpuiNodeActivityRegistry,
-    draft_store: ShaderDraftStore,
-    factor: RevisionedDraft<f32>,
-    draft_lease: Option<OpenGpuiActivityLease>,
-    draft_capacity_overflowed: bool,
+    factor: RetainedField<f32>,
     preview_expanded: bool,
-    factor_command: ShaderFactorCommandState,
-    factor_command_task: Option<Task<()>>,
     diagnostic: Option<String>,
 }
 
 impl ShaderMultiplyNode {
-    fn new(
-        binding: Entity<OpenGpuiNodeBinding>,
-        instance: NodeInstanceKey,
-        activity: OpenGpuiNodeActivityRegistry,
-        draft_store: ShaderDraftStore,
-        factor: RevisionedDraft<f32>,
-        recovery: DraftRecovery,
-    ) -> Self {
-        let mut details = Vec::new();
-        if let Some(attempt) = recovery.interrupted_attempt() {
-            details.push(format!("factor#{}", attempt.get()));
-        }
-        if recovery.composition_interrupted() {
-            details.push("factor:composition".to_owned());
-        }
-        let diagnostic = (!details.is_empty()).then(|| {
-            format!(
-                "Recovered interrupted shader draft state ({}); explicit resubmission or composition is required",
-                details.join(", ")
-            )
-        });
+    fn new(binding: Entity<OpenGpuiNodeBinding>, factor: RetainedField<f32>) -> Self {
         Self {
             binding,
-            instance,
-            activity,
-            draft_store,
             factor,
-            draft_lease: None,
-            draft_capacity_overflowed: false,
             preview_expanded: false,
-            factor_command: ShaderFactorCommandState::Idle,
-            factor_command_task: None,
-            diagnostic,
+            diagnostic: None,
         }
     }
 
     fn edit_factor(&mut self, value: f32, cx: &mut Context<Self>) {
-        self.factor.edit_local(value);
-        if self.factor_command.is_idle()
+        if !value.is_finite() {
+            self.diagnostic = Some("shader factor must be finite".to_owned());
+            cx.notify();
+            return;
+        }
+        self.factor.field_mut().edit(value);
+        if self.factor.field().can_submit()
             && let Err(error) = self.submit_dirty_factor(cx)
         {
             self.diagnostic = Some(error.to_string());
@@ -159,78 +74,150 @@ impl ShaderMultiplyNode {
     }
 
     fn accept_remote_factor(&mut self, cx: &mut Context<Self>) {
-        if !matches!(
-            self.factor_command,
-            ShaderFactorCommandState::Idle | ShaderFactorCommandState::ReadyToRetry(_)
-        ) {
-            self.diagnostic = Some("shader factor command is still pending".to_owned());
-            cx.notify();
-            return;
-        }
         let result = read_shader_binding(&self.binding, cx).and_then(|(authoring, remote)| {
             let revision = authoring.revision();
-            self.factor.reconcile_remote(revision, remote);
+            self.factor.field_mut().observe(revision, remote);
             match self
                 .factor
-                .resolve_at(DraftConflictResolution::AcceptRemote, revision)
+                .field_mut()
+                .resolve(RetainedFieldConflictChoice::AcceptRemote, revision)
             {
-                DraftResolutionDecision::AcceptedRemote { .. } => Ok(()),
-                _ => Err(ShaderNodeError::DraftConflict),
+                Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
+                Ok(_) => Err(ShaderNodeError::DraftConflict),
+                Err(error) => Err(field_error(error)),
             }
         });
-        if result.is_ok() {
-            self.factor_command = ShaderFactorCommandState::Idle;
-        }
         self.diagnostic = result.err().map(|error| error.to_string());
         cx.notify();
     }
 
     fn reapply_local_factor(&mut self, cx: &mut Context<Self>) {
-        if !matches!(
-            self.factor_command,
-            ShaderFactorCommandState::Idle | ShaderFactorCommandState::ReadyToRetry(_)
-        ) {
-            self.diagnostic = Some("shader factor command is still pending".to_owned());
-            cx.notify();
-            return;
-        }
-        let saved_intent = self.factor_command.retry_intent();
-        let result = self.retry_factor(saved_intent, cx);
-        if let Err(error) = result {
-            if let Some(intent) = saved_intent {
-                self.factor_command = ShaderFactorCommandState::ReadyToRetry(intent);
-            }
-            self.diagnostic = Some(error.to_string());
-        }
+        let result = self.reapply_factor(cx);
+        self.diagnostic = result.err().map(|error| error.to_string());
         cx.notify();
     }
 
     fn submit_dirty_factor(&mut self, cx: &mut Context<Self>) -> Result<(), ShaderNodeError> {
         let (authoring, remote) = read_shader_binding(&self.binding, cx)?;
-        self.factor.reconcile_remote(authoring.revision(), remote);
-        let intent = match self.factor.plan_submission_at(authoring.revision()) {
-            DraftSubmissionDecision::Submit(intent) => intent,
-            DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean) => return Ok(()),
-            DraftSubmissionDecision::Rejected(_) => return Err(ShaderNodeError::DraftConflict),
+        self.factor
+            .field_mut()
+            .observe(authoring.revision(), remote);
+        let intent = match self.factor.field_mut().plan(authoring.revision()) {
+            Ok(intent) => intent,
+            Err(RetainedFieldError::Clean) => return Ok(()),
+            Err(error) => return Err(field_error(error)),
         };
         self.enqueue_factor_intent(authoring, intent, cx)
     }
 
-    fn finish_factor_acknowledgement(
+    fn reapply_factor(&mut self, cx: &mut Context<Self>) -> Result<(), ShaderNodeError> {
+        let (authoring, remote) = read_shader_binding(&self.binding, cx)?;
+        let revision = authoring.revision();
+        self.factor.field_mut().observe(revision, remote);
+        let intent = match self
+            .factor
+            .field_mut()
+            .resolve(RetainedFieldConflictChoice::ReapplyLocal, revision)
+        {
+            Ok(RetainedFieldResolution::Reapply(intent)) => intent,
+            Ok(_) => return Err(ShaderNodeError::DraftConflict),
+            Err(error) => return Err(field_error(error)),
+        };
+        self.enqueue_factor_intent(authoring, intent, cx)
+    }
+
+    fn enqueue_factor_intent(
         &mut self,
-        local_changed_after_submission: bool,
+        authoring: OpenGpuiNodeAuthoring,
+        intent: RetainedFieldIntent<f32>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ShaderNodeError> {
+        let node_id = authoring.node_id();
+        let attempt = intent.attempt();
+        let next_data = match shader_data_with_factor(node_id, authoring.node(), *intent.value()) {
+            Ok(next_data) => next_data,
+            Err(error) => {
+                let _ = self.factor.not_dispatched(attempt);
+                return Err(error);
+            }
+        };
+        let command = GraphCommand::set_node_data(authoring.revision(), node_id, next_data)
+            .with_label("edit shader factor");
+        if let Err(error) = self.factor.prepare_task(attempt) {
+            let _ = self.factor.not_dispatched(attempt);
+            return Err(field_error(error));
+        }
+        let ticket = match authoring.enqueue(command, cx) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                let _ = self.factor.not_dispatched(attempt);
+                return Err(ShaderNodeError::BindingUnavailable {
+                    message: error.to_string(),
+                });
+            }
+        };
+        self.diagnostic = None;
+        let task = cx.spawn(async move |node, cx| {
+            let result = ticket.await;
+            let _ = node.update(cx, |node, cx| {
+                node.finish_factor_ticket(attempt, result, cx)
+            });
+        });
+        if let Err(error) = self.factor.attach_task(attempt, task) {
+            let _ = self.factor.field_mut().mark_uncertain(
+                attempt,
+                format!("shader factor command was dispatched but its task detached: {error}"),
+            );
+            return Err(field_error(error));
+        }
+        Ok(())
+    }
+
+    fn finish_factor_ticket(
+        &mut self,
+        attempt: RetainedFieldAttempt,
+        result: OpenGpuiCommandTicketResult,
         cx: &mut Context<Self>,
     ) {
-        self.factor_command = ShaderFactorCommandState::Idle;
-        self.diagnostic = None;
-        if !local_changed_after_submission {
-            return;
+        let settlement = match self.factor.settle_ticket(attempt, result) {
+            Ok(settlement) => settlement,
+            Err(error) => {
+                self.diagnostic = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if matches!(
+            settlement,
+            RetainedFieldSettlement::Acknowledged {
+                local_changed_after_submission: true,
+                ..
+            }
+        ) {
+            self.defer_dirty_submission(cx);
         }
+        cx.notify();
+    }
 
+    fn observe_factor(&mut self, revision: GraphRevision, value: f32, cx: &mut Context<Self>) {
+        let update = self.factor.field_mut().observe(revision, value);
+        if matches!(
+            update,
+            RetainedFieldUpdate::Acknowledged {
+                local_changed_after_submission: true,
+                ..
+            } | RetainedFieldUpdate::UncertainResolved { .. }
+        ) && self.factor.field().can_submit()
+        {
+            self.defer_dirty_submission(cx);
+        }
+    }
+
+    fn defer_dirty_submission(&self, cx: &mut Context<Self>) {
         let node = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = node.update(cx, |node, cx| {
-                if node.factor_command.is_idle()
+                if node.factor.field().can_submit()
                     && let Err(error) = node.submit_dirty_factor(cx)
                 {
                     node.diagnostic = Some(error.to_string());
@@ -239,293 +226,17 @@ impl ShaderMultiplyNode {
             });
         });
     }
-
-    fn retry_factor(
-        &mut self,
-        saved_intent: Option<ShaderFactorIntent>,
-        cx: &mut Context<Self>,
-    ) -> Result<(), ShaderNodeError> {
-        let (authoring, remote) = read_shader_binding(&self.binding, cx)?;
-        let revision = authoring.revision();
-        self.factor.reconcile_remote(revision, remote);
-        if let Some(saved_intent) = saved_intent {
-            self.factor.edit_local(saved_intent.value);
-        }
-        let intent = if self.factor.conflict().is_some() {
-            match self
-                .factor
-                .resolve_at(DraftConflictResolution::ReapplyLocal, revision)
-            {
-                DraftResolutionDecision::Reapply(intent) => intent,
-                _ => return Err(ShaderNodeError::DraftConflict),
-            }
-        } else {
-            match self.factor.plan_submission_at(revision) {
-                DraftSubmissionDecision::Submit(intent) => intent,
-                DraftSubmissionDecision::Rejected(DraftIntentRejection::Clean) => {
-                    self.factor_command = ShaderFactorCommandState::Idle;
-                    self.diagnostic = None;
-                    return Ok(());
-                }
-                DraftSubmissionDecision::Rejected(_) => {
-                    return Err(ShaderNodeError::DraftConflict);
-                }
-            }
-        };
-        self.enqueue_factor_intent(authoring, intent, cx)
-    }
-
-    fn enqueue_factor_intent(
-        &mut self,
-        authoring: OpenGpuiNodeAuthoring,
-        intent: DraftSubmissionIntent<f32>,
-        cx: &mut Context<Self>,
-    ) -> Result<(), ShaderNodeError> {
-        let node_id = authoring.node_id();
-        let retained_intent = ShaderFactorIntent::from(&intent);
-        let next_data = match shader_data_with_factor(
-            node_id,
-            authoring.node(),
-            retained_intent.value,
-        ) {
-            Ok(next_data) => next_data,
-            Err(error) => {
-                self.factor.reject_submission(retained_intent.attempt);
-                self.factor_command = ShaderFactorCommandState::ReadyToRetry(retained_intent);
-                return Err(error);
-            }
-        };
-        let command =
-            GraphCommand::set_node_data(authoring.revision(), node_id, next_data)
-                .with_label("edit shader factor");
-        let ticket = match authoring.enqueue(command, cx) {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                self.factor.reject_submission(retained_intent.attempt);
-                self.factor_command = ShaderFactorCommandState::ReadyToRetry(retained_intent);
-                return Err(ShaderNodeError::BindingUnavailable {
-                    message: error.to_string(),
-                });
-            }
-        };
-        self.factor_command = ShaderFactorCommandState::InFlight(retained_intent);
-        self.diagnostic = None;
-        self.factor_command_task = Some(cx.spawn(async move |node, cx| {
-            let result = ticket.await;
-            let _ = node.update(cx, |node, cx| {
-                node.finish_factor_ticket(retained_intent, result, cx)
-            });
-        }));
-        Ok(())
-    }
-
-    fn finish_factor_ticket(
-        &mut self,
-        intent: ShaderFactorIntent,
-        result: OpenGpuiCommandTicketResult,
-        cx: &mut Context<Self>,
-    ) {
-        self.factor_command_task = None;
-        if !matches!(
-            self.factor_command,
-            ShaderFactorCommandState::InFlight(active) if active.attempt == intent.attempt
-        ) {
-            return;
-        }
-
-        match result {
-            Ok(GraphCommandOutcome::Applied(receipt)) => {
-                match self
-                    .factor
-                    .record_self_receipt(intent.attempt, receipt.revision())
-                {
-                    DraftReceiptDecision::Acknowledged {
-                        local_changed_after_submission,
-                        ..
-                    } => self.finish_factor_acknowledgement(local_changed_after_submission, cx),
-                    DraftReceiptDecision::Recorded {
-                        committed_revision, ..
-                    }
-                    | DraftReceiptDecision::AlreadyRecorded {
-                        committed_revision, ..
-                    } => {
-                        self.factor_command = ShaderFactorCommandState::AwaitingSnapshot {
-                            intent,
-                            committed_revision,
-                        };
-                        self.diagnostic = Some(
-                            "shader factor command applied; waiting for authoritative snapshot"
-                                .to_owned(),
-                        );
-                    }
-                    DraftReceiptDecision::Superseded {
-                        current_revision, ..
-                    } => {
-                        self.factor_command = ShaderFactorCommandState::NeedsRefresh {
-                            intent,
-                            minimum_revision: current_revision,
-                        };
-                        self.diagnostic = Some(
-                            "shader factor receipt was superseded; resynchronizing before retry"
-                                .to_owned(),
-                        );
-                    }
-                    DraftReceiptDecision::UnknownAttempt { .. }
-                    | DraftReceiptDecision::InvalidCommittedRevision { .. } => {
-                        self.factor_command = ShaderFactorCommandState::NeedsRefresh {
-                            intent,
-                            minimum_revision: receipt.revision(),
-                        };
-                        self.diagnostic = Some(
-                            "shader factor receipt did not match the retained attempt; resynchronizing"
-                                .to_owned(),
-                        );
-                    }
-                }
-            }
-            Ok(GraphCommandOutcome::Noop(noop)) => {
-                self.factor_command = ShaderFactorCommandState::NeedsRefresh {
-                    intent,
-                    minimum_revision: noop.revision(),
-                };
-                self.diagnostic =
-                    Some("shader factor command made no graph change; resynchronizing".to_owned());
-            }
-            Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                self.factor_command = ShaderFactorCommandState::NeedsRefresh {
-                    intent,
-                    minimum_revision: conflict.current().revision(),
-                };
-                self.diagnostic = Some(format!(
-                    "shader factor revision conflict (expected {}, current {}); refresh required before retry",
-                    conflict.expected_revision(),
-                    conflict.current().revision(),
-                ));
-            }
-            Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                self.factor_command = ShaderFactorCommandState::NeedsRefresh {
-                    intent,
-                    minimum_revision: intent.expected_revision,
-                };
-                self.diagnostic = Some(format!(
-                    "shader factor command was rejected: {}",
-                    rejection.message()
-                ));
-            }
-            Err(error) => {
-                let (state, diagnostic) = shader_factor_ticket_failure(intent, error);
-                self.factor_command = state;
-                self.diagnostic = Some(diagnostic);
-            }
-        }
-        cx.notify();
-    }
-
-    fn reconcile_factor_snapshot(
-        &mut self,
-        revision: GraphRevision,
-        value: f32,
-        cx: &mut Context<Self>,
-    ) {
-        let decision = self.factor.reconcile_remote(revision, value);
-        let state = std::mem::take(&mut self.factor_command);
-        let mut acknowledged_local_change = None;
-        self.factor_command = match state {
-            ShaderFactorCommandState::AwaitingSnapshot {
-                intent,
-                committed_revision: _,
-            } if matches!(
-                decision,
-                DraftReconcileDecision::SelfAcknowledged { attempt, .. }
-                    if attempt == intent.attempt
-            ) =>
-            {
-                let DraftReconcileDecision::SelfAcknowledged {
-                    local_changed_after_submission,
-                    ..
-                } = decision
-                else {
-                    unreachable!("guard requires a matching acknowledgement");
-                };
-                acknowledged_local_change = Some(local_changed_after_submission);
-                ShaderFactorCommandState::Idle
-            }
-            ShaderFactorCommandState::AwaitingSnapshot {
-                intent,
-                committed_revision,
-            } if revision > committed_revision
-                && self.factor.pending_attempt() != Some(intent.attempt) =>
-            {
-                self.diagnostic = Some(
-                    "shader factor snapshot superseded the accepted receipt; explicit retry required"
-                        .to_owned(),
-                );
-                ShaderFactorCommandState::ReadyToRetry(intent)
-            }
-            ShaderFactorCommandState::NeedsRefresh {
-                intent,
-                minimum_revision,
-            } if revision >= minimum_revision => {
-                if value == intent.value {
-                    self.factor.reject_submission(intent.attempt);
-                    self.factor.reconcile_remote(revision, value);
-                    self.diagnostic = None;
-                    ShaderFactorCommandState::Idle
-                } else {
-                    self.factor.reject_stale(intent.attempt, revision, value);
-                    ShaderFactorCommandState::ReadyToRetry(intent)
-                }
-            }
-            state => state,
-        };
-        if let Some(local_changed_after_submission) = acknowledged_local_change {
-            self.finish_factor_acknowledgement(local_changed_after_submission, cx);
-        }
-    }
-
-    fn sync_draft_activity(&mut self, cx: &mut Context<Self>) {
-        let active =
-            self.factor.phase() != DraftPhase::Clean || self.factor.pending_attempt().is_some();
-        let result = sync_activity_lease(
-            &self.activity,
-            &mut self.draft_lease,
-            OpenGpuiActivityKind::Draft,
-            active,
-        );
-        if let Err(error) = result {
-            if matches!(
-                error,
-                OpenGpuiActivityAcquireError::ProtectedCapacityExceeded { .. }
-            ) && active
-            {
-                self.externalize_overflow_draft(cx);
-            }
-            self.diagnostic = Some(format!("shader activity lease failed: {error}"));
-        } else if self.draft_capacity_overflowed {
-            self.draft_store
-                .discard_externalized(&self.instance, SHADER_FACTOR_FIELD);
-            self.draft_capacity_overflowed = false;
-        }
-    }
-
-    fn externalize_overflow_draft(&mut self, _cx: &mut Context<Self>) {
-        self.draft_store
-            .externalize_overflow(&self.instance, SHADER_FACTOR_FIELD, &self.factor);
-        self.draft_capacity_overflowed = true;
-    }
 }
 
-fn shader_factor_ticket_failure(
-    intent: ShaderFactorIntent,
-    error: OpenGpuiCommandTicketError,
-) -> (ShaderFactorCommandState, String) {
-    (
-        ShaderFactorCommandState::NeedsRefresh {
-            intent,
-            minimum_revision: intent.expected_revision,
+fn field_error(error: RetainedFieldError) -> ShaderNodeError {
+    match error {
+        RetainedFieldError::ConflictRequiresResolution | RetainedFieldError::NoConflict => {
+            ShaderNodeError::DraftConflict
+        }
+        error => ShaderNodeError::CommandRejected {
+            message: error.to_string(),
         },
-        format!("shader factor command result is uncertain; resynchronizing before retry: {error}"),
-    )
+    }
 }
 
 impl Render for ShaderMultiplyNode {
@@ -546,8 +257,8 @@ impl Render for ShaderMultiplyNode {
             ports,
         ) = {
             let binding = self.binding.read(cx);
-            let node_id = self.instance.node();
-            let instance_scope = format!("{:?}", self.instance);
+            let node_id = self.factor.instance().node();
+            let instance_scope = format!("{:?}", self.factor.instance());
             let facts = binding.authoring().map(|authoring| {
                 let data = &authoring.node().data;
                 let title = data
@@ -559,9 +270,7 @@ impl Render for ShaderMultiplyNode {
                 let preview = finite_f32(data.get("preview"), factor);
                 let input_a_connected = authoring
                     .ports()
-                    .find(|port| {
-                        port.facts().dir == PortDirection::In && port.facts().key.0 == "a"
-                    })
+                    .find(|port| port.facts().dir == PortDirection::In && port.facts().key.0 == "a")
                     .is_some_and(|port| port.connection().is_connected());
                 let ports = authoring
                     .ports()
@@ -607,7 +316,7 @@ impl Render for ShaderMultiplyNode {
                     instance_scope,
                     None,
                     "Retired shader node".to_owned(),
-                    *self.factor.local(),
+                    *self.factor.field().local(),
                     1.0,
                     false,
                     Vec::new(),
@@ -615,16 +324,14 @@ impl Render for ShaderMultiplyNode {
             }
         };
         if let Some(revision) = graph_revision {
-            self.reconcile_factor_snapshot(revision, factor, cx);
+            self.observe_factor(revision, factor, cx);
         }
-        self.sync_draft_activity(cx);
-        let inline_factor = *self.factor.local();
-        let factor_input_disabled =
-            !self.factor_command.is_idle() || self.factor.conflict().is_some();
-        let conflict_resolution_disabled = !matches!(
-            self.factor_command,
-            ShaderFactorCommandState::Idle | ShaderFactorCommandState::ReadyToRetry(_)
-        );
+        if let Err(error) = self.factor.sync_retention() {
+            self.diagnostic = Some(format!("shader factor retention failed: {error}"));
+        }
+        let inline_factor = *self.factor.field().local();
+        let factor_input_disabled = self.factor.field().conflict().is_some();
+        let conflict_resolution_disabled = self.factor.field().attempt_state().blocks_submission();
 
         let mut input_a = None;
         let mut input_b = None;
@@ -725,7 +432,7 @@ impl Render for ShaderMultiplyNode {
             )
             .child(div().text_sm().text_color(rgb(0xdbe3ec)).child("B"));
 
-        let status_content = if self.factor.conflict().is_some() {
+        let status_content = if self.factor.field().conflict().is_some() {
             let accept_node = cx.weak_entity();
             let reapply_node = cx.weak_entity();
             let accept_selector = shader_factor_accept_remote_selector(node_id);
@@ -801,43 +508,24 @@ impl Render for ShaderMultiplyNode {
                     )
                     .into_any_element(),
             )
-        } else if self.factor_command.retry_intent().is_some() {
-            let retry_node = cx.weak_entity();
-            let message = self
-                .diagnostic
-                .clone()
-                .unwrap_or_else(|| "Factor edit needs retry".to_owned());
+        } else if let Some(message) = self.factor.field().notice().map(str::to_owned) {
             Some(
                 div()
-                    .debug_selector(|| SHADER_FACTOR_RETRY_SELECTOR.to_owned())
+                    .debug_selector(|| SHADER_FACTOR_NOTICE_SELECTOR.to_owned())
                     .h_full()
                     .px(px(8.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
                     .rounded(px(4.0))
                     .bg(rgb(0x3a2026))
                     .text_color(rgb(0xffa5ad))
                     .child(
                         div()
-                            .debug_selector(|| SHADER_FACTOR_COMMAND_DIAGNOSTIC_SELECTOR.to_owned())
                             .min_w(px(0.0))
                             .flex_1()
                             .truncate()
                             .text_xs()
                             .child(message),
-                    )
-                    .child(
-                        Button::new(
-                            format!("jellyflow-shader-factor-retry-{instance_scope}"),
-                            "Retry",
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .xsmall()
-                        .on_click(move |_, window, cx| {
-                            let _ = retry_node.update(cx, |node, cx| node.reapply_local_factor(cx));
-                            window.refresh();
-                        }),
                     )
                     .into_any_element(),
             )
@@ -862,7 +550,12 @@ impl Render for ShaderMultiplyNode {
                     )
                     .into_any_element(),
             )
-        } else if self.factor_command.is_waiting() {
+        } else if matches!(
+            self.factor.field().attempt_state(),
+            RetainedFieldAttemptState::Pending { .. }
+                | RetainedFieldAttemptState::SnapshotFirst { .. }
+                | RetainedFieldAttemptState::ReceiptFirst { .. }
+        ) {
             Some(
                 div()
                     .debug_selector(|| SHADER_FACTOR_COMMAND_PENDING_SELECTOR.to_owned())
@@ -983,46 +676,33 @@ pub(super) fn catalog_spec() -> NodeKindSpec {
         .build()
 }
 
-pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder, draft_store: ShaderDraftStore) {
+pub(super) fn register(registry: &mut OpenGpuiNodeRegistryBuilder, field_store: ShaderFieldStore) {
     registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
-        mount_shader_multiply(binding, draft_store.clone(), cx)
+        mount_shader_multiply(binding, field_store.clone(), cx)
     });
 }
 
 fn mount_shader_multiply(
     binding: Entity<OpenGpuiNodeBinding>,
-    draft_store: ShaderDraftStore,
+    field_store: ShaderFieldStore,
     cx: &mut App,
 ) -> Entity<ShaderMultiplyNode> {
-    let activity = binding.read(cx).activity().clone();
     let initial = binding
         .read(cx)
         .authoring()
         .expect("a shader node factory must receive a live authoring binding");
-    let instance = initial.instance().clone();
-    let (factor, recovery) = match shader_factor_from_authoring(&initial) {
-        Ok(authoritative) => restore_shader_factor_draft(
-            &draft_store,
-            &instance,
-            initial.revision(),
-            authoritative,
-        ),
-        Err(_) => (RevisionedDraft::new(0, 1.0), DraftRecovery::default()),
-    };
-    cx.new(|_| {
-        ShaderMultiplyNode::new(binding, instance, activity, draft_store, factor, recovery)
-    })
-}
-
-fn restore_shader_factor_draft(
-    draft_store: &ShaderDraftStore,
-    instance: &NodeInstanceKey,
-    revision: GraphRevision,
-    authoritative: f32,
-) -> (RevisionedDraft<f32>, DraftRecovery) {
-    let restored = draft_store.restore(instance, SHADER_FACTOR_FIELD, revision, authoritative);
-    let recovery = restored.recovery();
-    (restored.into_draft(), recovery)
+    let authoritative = shader_factor_from_authoring(&initial).unwrap_or(1.0);
+    let key = RetainedFieldKey::new(SHADER_FACTOR_FIELD)
+        .expect("shader factor field key is a non-empty constant");
+    let factor = RetainedField::mount(
+        binding.read(cx),
+        key,
+        field_store,
+        initial.revision(),
+        authoritative,
+    )
+    .expect("shader node retained field must mount while its binding is live");
+    cx.new(|_| ShaderMultiplyNode::new(binding, factor))
 }
 
 #[must_use]
@@ -1064,18 +744,18 @@ fn read_shader_binding(
     binding: &Entity<OpenGpuiNodeBinding>,
     cx: &mut App,
 ) -> Result<(OpenGpuiNodeAuthoring, f32), ShaderNodeError> {
-    let authoring = binding.read(cx).authoring().map_err(|error| {
-        ShaderNodeError::BindingUnavailable {
-            message: error.to_string(),
-        }
-    })?;
+    let authoring =
+        binding
+            .read(cx)
+            .authoring()
+            .map_err(|error| ShaderNodeError::BindingUnavailable {
+                message: error.to_string(),
+            })?;
     let factor = shader_factor_from_authoring(&authoring)?;
     Ok((authoring, factor))
 }
 
-fn shader_factor_from_authoring(
-    authoring: &OpenGpuiNodeAuthoring,
-) -> Result<f32, ShaderNodeError> {
+fn shader_factor_from_authoring(authoring: &OpenGpuiNodeAuthoring) -> Result<f32, ShaderNodeError> {
     ensure_shader_kind(authoring.node_id(), authoring.node())?;
     Ok(finite_f32(
         authoring.node().data.get(SHADER_FACTOR_FIELD),
@@ -1124,19 +804,18 @@ mod tests {
 
     use jellyflow::core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId};
     use jellyflow::runtime::schema::NodeCatalog;
-    use jellyflow::runtime::{GraphRuntime, ViewCloseReason, ViewSessionOptions};
-    use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+    use jellyflow::runtime::{
+        GraphCommandOutcome, GraphRuntime, ViewCloseReason, ViewSessionOptions,
+    };
+    use jellyflow_open_gpui::{
+        OpenGpuiCommandTicketError, OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedFieldPhase,
+        RevisionedField,
+    };
 
     use super::*;
 
     #[test]
-    fn ticket_transport_failures_never_acknowledge_the_factor_draft() {
-        let mut draft = RevisionedDraft::new(23, 1.0);
-        draft.edit_local(2.0);
-        let DraftSubmissionDecision::Submit(intent) = draft.plan_submission_at(23) else {
-            panic!("dirty factor must produce an intent");
-        };
-        let intent = ShaderFactorIntent::from(&intent);
+    fn ticket_transport_failures_are_uncertain_and_block_duplicate_submission() {
         let failures = [
             OpenGpuiCommandTicketError::HostDropped,
             OpenGpuiCommandTicketError::HostClosed {
@@ -1147,76 +826,134 @@ mod tests {
         ];
 
         for failure in failures {
-            let (state, diagnostic) = shader_factor_ticket_failure(intent, failure);
+            let mut field = RevisionedField::new(23, 1.0);
+            field.edit(2.0);
+            let intent = field.plan(23).expect("dirty factor must produce an intent");
+            let settlement = field.settle_ticket(intent.attempt(), Err(failure));
             assert!(matches!(
-                state,
-                ShaderFactorCommandState::NeedsRefresh {
-                    minimum_revision: 23,
-                    ..
-                }
+                settlement,
+                RetainedFieldSettlement::Uncertain { .. }
             ));
-            assert_eq!(draft.pending_attempt(), Some(intent.attempt));
-            assert!(diagnostic.contains("result is uncertain"));
+            assert!(matches!(
+                field.attempt_state(),
+                RetainedFieldAttemptState::Uncertain { .. }
+            ));
+            assert!(matches!(
+                field.plan(23),
+                Err(RetainedFieldError::AttemptPending { .. })
+            ));
+            assert_eq!(field.local(), &2.0);
+            assert!(
+                field
+                    .notice()
+                    .is_some_and(|notice| notice.contains("uncertain"))
+            );
         }
     }
 
     #[test]
+    fn fresh_authoritative_snapshot_resolves_uncertain_factor_without_retry() {
+        let mut field = RevisionedField::new(23, 1.0);
+        field.edit(2.0);
+        let intent = field.plan(23).expect("dirty factor intent");
+        assert!(matches!(
+            field.settle_ticket(
+                intent.attempt(),
+                Err(OpenGpuiCommandTicketError::HostDropped),
+            ),
+            RetainedFieldSettlement::Uncertain { .. }
+        ));
+
+        assert!(matches!(
+            field.observe(24, 2.0),
+            RetainedFieldUpdate::UncertainResolved {
+                submitted_value_is_authoritative: true,
+                ..
+            }
+        ));
+        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
+        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+        assert!(field.notice().is_none());
+    }
+
+    #[test]
     fn snapshot_before_receipt_queues_the_newest_factor_after_acknowledgement() {
-        let mut draft = pending_factor_with_newer_local_value();
-        let attempt = draft.pending_attempt().expect("pending factor attempt");
+        let (mut field, intent) = pending_factor_with_newer_local_value();
 
-        draft.reconcile_remote(24, 2.0);
-        let DraftReceiptDecision::Acknowledged {
-            local_changed_after_submission,
-            ..
-        } = draft.record_self_receipt(attempt, 24)
-        else {
-            panic!("matching snapshot must acknowledge the factor receipt");
-        };
+        assert!(matches!(
+            field.observe(1, 2.0),
+            RetainedFieldUpdate::SnapshotFirst { .. }
+        ));
+        assert!(matches!(
+            field.settle_ticket(intent.attempt(), Ok(applied_factor_outcome(2.0))),
+            RetainedFieldSettlement::Acknowledged {
+                local_changed_after_submission: true,
+                ..
+            }
+        ));
 
-        assert!(local_changed_after_submission);
-        assert_latest_factor_can_be_submitted(draft);
+        assert_latest_factor_can_be_submitted(field);
     }
 
     #[test]
     fn receipt_before_snapshot_queues_the_newest_factor_after_acknowledgement() {
-        let mut draft = pending_factor_with_newer_local_value();
-        let attempt = draft.pending_attempt().expect("pending factor attempt");
+        let (mut field, intent) = pending_factor_with_newer_local_value();
 
         assert!(matches!(
-            draft.record_self_receipt(attempt, 24),
-            DraftReceiptDecision::Recorded { .. }
+            field.settle_ticket(intent.attempt(), Ok(applied_factor_outcome(2.0))),
+            RetainedFieldSettlement::AwaitingSnapshot { .. }
         ));
-        let DraftReconcileDecision::SelfAcknowledged {
-            local_changed_after_submission,
-            ..
-        } = draft.reconcile_remote(24, 2.0)
-        else {
-            panic!("matching factor snapshot must acknowledge the recorded receipt");
-        };
-
-        assert!(local_changed_after_submission);
-        assert_latest_factor_can_be_submitted(draft);
-    }
-
-    fn pending_factor_with_newer_local_value() -> RevisionedDraft<f32> {
-        let mut draft = RevisionedDraft::new(23, 1.0);
-        draft.edit_local(2.0);
         assert!(matches!(
-            draft.plan_submission_at(23),
-            DraftSubmissionDecision::Submit(_)
+            field.observe(1, 2.0),
+            RetainedFieldUpdate::Acknowledged {
+                local_changed_after_submission: true,
+                ..
+            }
         ));
-        draft.edit_local(3.0);
-        draft
+
+        assert_latest_factor_can_be_submitted(field);
     }
 
-    fn assert_latest_factor_can_be_submitted(mut draft: RevisionedDraft<f32>) {
-        assert_eq!(draft.local(), &3.0);
-        assert_eq!(draft.phase(), DraftPhase::Dirty);
-        let DraftSubmissionDecision::Submit(intent) = draft.plan_submission_at(24) else {
-            panic!("acknowledged dirty factor must produce the next intent");
-        };
+    fn pending_factor_with_newer_local_value() -> (RevisionedField<f32>, RetainedFieldIntent<f32>) {
+        let mut field = RevisionedField::new(0, 1.0);
+        field.edit(2.0);
+        let intent = field.plan(0).expect("dirty factor intent");
+        field.edit(3.0);
+        (field, intent)
+    }
+
+    fn assert_latest_factor_can_be_submitted(mut field: RevisionedField<f32>) {
+        assert_eq!(field.local(), &3.0);
+        assert_eq!(field.phase(), RetainedFieldPhase::Dirty);
+        let intent = field
+            .plan(1)
+            .expect("acknowledged dirty factor must produce the next intent");
         assert_eq!(intent.value(), &3.0);
+    }
+
+    fn applied_factor_outcome(value: f32) -> GraphCommandOutcome {
+        let mut catalog = NodeCatalog::new();
+        catalog
+            .register(catalog_spec())
+            .expect("register shader multiply kind");
+        let graph = pending_factor_graph(&catalog);
+        let runtime = GraphRuntime::builder(catalog)
+            .build(graph)
+            .expect("valid shader receipt graph");
+        let snapshot = runtime.snapshot().expect("initial shader snapshot");
+        let node = snapshot
+            .graph()
+            .node(&pending_factor_node_id())
+            .expect("shader receipt node");
+        let next_data = shader_data_with_factor(pending_factor_node_id(), node, value)
+            .expect("valid shader factor data");
+        runtime
+            .execute(GraphCommand::set_node_data(
+                snapshot.revision(),
+                pending_factor_node_id(),
+                next_data,
+            ))
+            .expect("apply shader factor command")
     }
 
     #[open_gpui::test]
@@ -1236,7 +973,7 @@ mod tests {
             .expect("attach shader factor view");
         let captured = Rc::new(RefCell::new(None::<Entity<ShaderMultiplyNode>>));
         let captured_for_factory = Rc::clone(&captured);
-        let draft_store = ShaderDraftStore::new();
+        let draft_store = ShaderFieldStore::new();
         let mut registry = OpenGpuiNodeRegistry::builder();
         registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
             let node = mount_shader_multiply(binding, draft_store.clone(), cx);
@@ -1259,13 +996,17 @@ mod tests {
         cx.update_entity(&node, |node, cx| {
             node.edit_factor(2.0, cx);
             assert!(matches!(
-                node.factor_command,
-                ShaderFactorCommandState::InFlight(_)
+                node.factor.field().attempt_state(),
+                RetainedFieldAttemptState::Pending { .. }
             ));
             node.edit_factor(3.0, cx);
-            assert_eq!(node.factor.local(), &3.0);
+            assert_eq!(node.factor.field().local(), &3.0);
             assert_eq!(
-                node.factor.pending_attempt().map(DraftAttempt::get),
+                node.factor
+                    .field()
+                    .attempt_state()
+                    .attempt()
+                    .map(RetainedFieldAttempt::get),
                 Some(1)
             );
         });
@@ -1278,10 +1019,13 @@ mod tests {
         assert_eq!(pending_factor_value(snapshot.graph()), 3.0);
         assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
         cx.read_entity(&node, |node, _| {
-            assert_eq!(node.factor.local(), &3.0);
-            assert_eq!(node.factor.phase(), DraftPhase::Clean);
-            assert!(node.factor.pending_attempt().is_none());
-            assert!(node.factor_command.is_idle());
+            assert_eq!(node.factor.field().local(), &3.0);
+            assert_eq!(node.factor.field().phase(), RetainedFieldPhase::Clean);
+            assert_eq!(
+                node.factor.field().attempt_state(),
+                RetainedFieldAttemptState::Idle
+            );
+            assert!(node.factor.field().notice().is_none());
             assert!(node.diagnostic.is_none());
         });
 
@@ -1296,8 +1040,8 @@ mod tests {
             2.0
         );
         cx.read_entity(&node, |node, _| {
-            assert_eq!(node.factor.local(), &2.0);
-            assert_eq!(node.factor.phase(), DraftPhase::Clean);
+            assert_eq!(node.factor.field().local(), &2.0);
+            assert_eq!(node.factor.field().phase(), RetainedFieldPhase::Clean);
         });
     }
 
@@ -1318,7 +1062,7 @@ mod tests {
             .expect("attach shader conflict view");
         let captured = Rc::new(RefCell::new(None::<Entity<ShaderMultiplyNode>>));
         let captured_for_factory = Rc::clone(&captured);
-        let draft_store = ShaderDraftStore::new();
+        let draft_store = ShaderFieldStore::new();
         let mut registry = OpenGpuiNodeRegistry::builder();
         registry.register(SHADER_MULTIPLY_RENDERER, move |binding, _window, cx| {
             let node = mount_shader_multiply(binding, draft_store.clone(), cx);
@@ -1339,10 +1083,10 @@ mod tests {
             .expect("mounted shader conflict node");
 
         cx.update_entity(&node, |node, cx| {
-            node.factor.edit_local(2.0);
+            node.factor.field_mut().edit(2.0);
             assert!(matches!(
-                node.factor.reconcile_remote(1, 3.0),
-                DraftReconcileDecision::Conflict { .. }
+                node.factor.field_mut().observe(1, 3.0),
+                RetainedFieldUpdate::Conflict
             ));
             node.preview_expanded = true;
             cx.notify();

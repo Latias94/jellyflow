@@ -5,7 +5,7 @@ use open_gpui::{Hsla, rgb, rgba};
 /// Default diameter of an idle native port marker in screen pixels.
 pub const OPEN_GPUI_DEFAULT_PORT_MARKER_DIAMETER: f32 = 10.0;
 
-/// Default diameter of a hovered native port marker in screen pixels.
+/// Default diameter of emphasized native port chrome and its stable layout slot in screen pixels.
 pub const OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER: f32 = 12.0;
 
 /// Default minimum port hit diameter in screen pixels.
@@ -164,7 +164,7 @@ pub struct OpenGpuiGraphMetrics {
     pub guide_width: f32,
     /// Idle port marker diameter.
     pub port_marker_diameter: f32,
-    /// Hovered port marker diameter.
+    /// Emphasized port-marker diameter and stable outer layout-slot diameter.
     pub port_hover_marker_diameter: f32,
     /// Minimum port hit diameter.
     pub port_hit_diameter: f32,
@@ -245,6 +245,9 @@ impl OpenGpuiGraphMetrics {
             .all(|value| value.is_finite() && value > 0.0)
             && self.port_hover_marker_diameter >= self.port_marker_diameter
             && self.port_hit_diameter >= self.port_hover_marker_diameter
+            && self.edge_ordinary_width < self.edge_hovered_width
+            && self.edge_hovered_width < self.edge_selected_width
+            && self.edge_selected_width <= self.edge_active_width
             && self.reconnect_hit_diameter >= self.reconnect_handle_diameter
             && self.edge_label_corner_radius.is_finite()
             && self.edge_label_corner_radius >= 0.0
@@ -331,6 +334,21 @@ mod tests {
 
         let metrics = OpenGpuiGraphMetrics {
             reconnect_hit_diameter: 8.0,
+            ..OpenGpuiGraphMetrics::default()
+        };
+        assert!(!metrics.is_valid());
+    }
+
+    #[test]
+    fn edge_widths_preserve_the_visual_emphasis_hierarchy() {
+        let metrics = OpenGpuiGraphMetrics {
+            edge_hovered_width: OPEN_GPUI_DEFAULT_EDGE_ORDINARY_WIDTH,
+            ..OpenGpuiGraphMetrics::default()
+        };
+        assert!(!metrics.is_valid());
+
+        let metrics = OpenGpuiGraphMetrics {
+            edge_active_width: OPEN_GPUI_DEFAULT_EDGE_HOVERED_WIDTH,
             ..OpenGpuiGraphMetrics::default()
         };
         assert!(!metrics.is_valid());

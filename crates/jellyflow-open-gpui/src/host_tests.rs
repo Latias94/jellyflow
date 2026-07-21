@@ -997,6 +997,107 @@ fn edge_layer_budget_is_clamped_to_the_defensive_native_limit() {
     );
 }
 
+#[test]
+fn endpoint_geometry_fallbacks_are_deduplicated_in_host_diagnostics_and_stats() {
+    let runtime = GraphRuntime::builder(catalog())
+        .build(routed_graph())
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal()
+            .expect("valid empty registry"),
+        viewport(),
+    );
+
+    host.record_endpoint_geometry_diagnostics(
+        vec!["layout revision 3 endpoint fallback selected PublishedPort".to_owned()],
+        1,
+    );
+    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 1);
+    assert_eq!(
+        host.last_diagnostic().map(|diagnostic| diagnostic.kind()),
+        Some(super::OpenGpuiSceneHostDiagnosticKind::EndpointGeometry)
+    );
+
+    host.record_endpoint_geometry_diagnostics(
+        vec!["layout revision 3 endpoint fallback selected PublishedPort".to_owned()],
+        1,
+    );
+    assert_eq!(
+        host.stats().endpoint_geometry_fallbacks(),
+        1,
+        "the same retained fallback must not inflate telemetry every frame",
+    );
+
+    host.record_endpoint_geometry_diagnostics(
+        vec!["layout revision 4 endpoint fallback selected ExplicitFallback".to_owned()],
+        2,
+    );
+    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 3);
+    assert!(
+        host.last_diagnostic()
+            .is_some_and(|diagnostic| diagnostic.message().contains("additional endpoint"))
+    );
+}
+
+#[test]
+fn committed_wire_endpoints_match_the_exact_same_revision_port_publication() {
+    let (graph, edges) = bounded_edge_graph(1, 0);
+    let edge = edges[0];
+    let runtime = GraphRuntime::builder(catalog())
+        .build(graph)
+        .expect("valid graph");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("attach view");
+    publish_all_edge_geometry(&view, std::iter::empty());
+    let graph = view.graph_snapshot().expect("graph snapshot");
+    let graph_edge = graph.graph().edge(&edge).expect("published edge");
+    let source_port = graph_edge.from;
+    let target_port = graph_edge.to;
+    let geometry = view.geometry_snapshot().expect("geometry snapshot");
+    let layout_revision = geometry.layout_revision();
+    let source_geometry = geometry.port(source_port).expect("source geometry");
+    let target_geometry = geometry.port(target_port).expect("target geometry");
+    let mut host = OpenGpuiSceneHost::new(
+        view,
+        OpenGpuiNodeRegistry::builder()
+            .seal()
+            .expect("valid empty registry"),
+        viewport(),
+    );
+
+    let wires = host.scene_wires().expect("published wire plan");
+    let wire = wires.published.first().expect("one published wire");
+
+    assert_eq!(wire.edge, edge);
+    assert_eq!(wire.source_endpoint.point(), source_geometry.route_anchor());
+    assert_eq!(wire.source_endpoint.outward(), source_geometry.outward());
+    assert_eq!(wire.target_endpoint.point(), target_geometry.route_anchor());
+    assert_eq!(wire.target_endpoint.outward(), target_geometry.outward());
+    assert_eq!(
+        wire.source_endpoint.source(),
+        super::endpoint_resolver::PublishedEndpointSource::PublishedRoute
+    );
+    assert_eq!(
+        wire.target_endpoint.source(),
+        super::endpoint_resolver::PublishedEndpointSource::PublishedRoute
+    );
+    assert_eq!(
+        wire.source_endpoint.identity().layout_revision(),
+        layout_revision
+    );
+    assert_eq!(wire.source_endpoint.identity().port(), source_port);
+    assert_eq!(wire.target_endpoint.identity().port(), target_port);
+    assert_eq!(wire.source_endpoint.diagnostic(), None);
+    assert_eq!(wire.target_endpoint.diagnostic(), None);
+    assert_eq!(host.stats().endpoint_geometry_fallbacks(), 0);
+}
+
 #[open_gpui::test]
 fn edge_layer_stays_empty_without_fresh_endpoint_geometry(cx: &mut open_gpui::TestAppContext) {
     let runtime = GraphRuntime::builder(catalog())

@@ -6,16 +6,16 @@ use jellyflow::core::{
 };
 use jellyflow::runtime::io::GraphFile;
 use jellyflow::runtime::{
-    GraphCommand, GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, TopologyEdit,
+    GraphCommand, GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, TopologyEdit, TopologyPort,
     ViewSessionOptions,
 };
 use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 use open_gpui_canvas_jellyflow::nodes::{
-    ConditionBranchAction, NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND,
-    WorkflowBranch, condition_branches, native_node_catalog, native_node_registry,
-    plan_condition_branch_action, workflow_condition_add_selector,
-    workflow_condition_branch_selector, workflow_condition_node_id,
+    ConditionCaseAction, NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND,
+    WorkflowCase, WorkflowNodeError, condition_cases, condition_outputs, native_node_catalog,
+    native_node_registry, plan_condition_case_action, workflow_condition_add_selector,
+    workflow_condition_case_selector, workflow_condition_else_selector, workflow_condition_node_id,
     workflow_condition_remove_selector, workflow_condition_scroll_selector,
     workflow_condition_up_selector, workflow_demo_graph, workflow_llm_node_id,
     workflow_model_conflict_selector, workflow_model_option_selector,
@@ -25,10 +25,10 @@ use open_gpui_canvas_jellyflow::nodes::{
 };
 use open_gpui_ui_components::gpui_adapter::init_text_input;
 
-const ADDED_BRANCH_ID: &str = "branch-fallback";
-const ADDED_BRANCH_PORT: u128 = 0xd1fa_1103;
-const CONCURRENT_BRANCH_ID: &str = "branch-concurrent";
-const CONCURRENT_BRANCH_PORT: u128 = 0xd1fa_1104;
+const ADDED_CASE_ID: &str = "branch-fallback";
+const ADDED_CASE_PORT: u128 = 0xd1fa_1103;
+const CONCURRENT_CASE_ID: &str = "branch-concurrent";
+const CONCURRENT_CASE_PORT: u128 = 0xd1fa_1104;
 const OVERVIEW_NODE_SELECTOR: &str = "jellyflow-overview-node";
 
 fn native_runtime(graph: Graph) -> Result<GraphRuntime, GraphRuntimeError> {
@@ -105,7 +105,10 @@ fn catalog_default_workflow_nodes_mount_without_product_side_data_repair(
             &NodeKindKey::new(WORKFLOW_CONDITION_KIND),
             condition,
             CanvasPoint { x: 460.0, y: 40.0 },
-            [PortId::from_u128(0xd1fa_4201)],
+            [
+                PortId::from_u128(0xd1fa_4201),
+                PortId::from_u128(0xd1fa_4202),
+            ],
         )
         .expect("default workflow condition");
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xd1fa_4000));
@@ -165,11 +168,15 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
                 .is_some_and(|port| port.key.0 == "input")
         })
         .expect("condition input port");
-    let first_branch = condition_branches(&snapshot, condition)
+    let first_branch = condition_cases(&snapshot, condition)
         .expect("condition branches")
         .into_iter()
         .next()
         .expect("first condition branch");
+    let else_branch = condition_outputs(&snapshot, condition)
+        .expect("condition outputs")
+        .else_branch()
+        .clone();
     drop(snapshot);
     let view = runtime
         .attach_view(ViewSessionOptions::default())
@@ -185,14 +192,24 @@ fn condition_header_input_port_stays_clear_of_the_first_branch_row(
         .debug_bounds(&workflow_port_selector(input))
         .expect("condition header input marker");
     let first_branch_marker = cx
-        .debug_bounds(&workflow_condition_branch_selector(
+        .debug_bounds(&workflow_condition_case_selector(
             condition,
             first_branch.port_id(),
         ))
         .expect("first condition branch marker");
+    let else_marker = cx
+        .debug_bounds(&workflow_condition_else_selector(
+            condition,
+            else_branch.port_id(),
+        ))
+        .expect("immutable Else marker");
     assert!(
         input_marker.origin.y + input_marker.size.height + px(12.0) <= first_branch_marker.origin.y,
         "the fixed input port must remain in the header instead of sharing the first branch row"
+    );
+    assert!(
+        else_marker.origin.y > first_branch_marker.origin.y,
+        "Else must render after every editable case"
     );
 
     let geometry = weak_view.geometry_snapshot().expect("workflow geometry");
@@ -233,8 +250,20 @@ fn workflow_demo_fixed_ports_match_the_native_catalog() {
         let spec = catalog.get(&node.kind).expect("workflow kind in catalog");
         assert_eq!(node.size, spec.default_size());
         assert!(node.ports.len() >= spec.ports().len());
-        for (port_id, port_spec) in node.ports.iter().zip(spec.ports()) {
-            let port = graph.port(port_id).expect("workflow fixed port");
+        for port_spec in spec.ports() {
+            let port_id = node
+                .ports
+                .iter()
+                .copied()
+                .find(|port_id| {
+                    graph.port(port_id).is_some_and(|port| {
+                        &port.key == port_spec.key()
+                            && port.dir == port_spec.direction()
+                            && port.kind == port_spec.kind()
+                    })
+                })
+                .expect("workflow fixed port by catalog identity");
+            let port = graph.port(&port_id).expect("workflow fixed port");
             assert_eq!(port.node, node_id);
             assert_eq!(&port.key, port_spec.key());
             assert_eq!(port.dir, port_spec.direction());
@@ -242,11 +271,18 @@ fn workflow_demo_fixed_ports_match_the_native_catalog() {
             assert_eq!(port.capacity, port_spec.capacity());
             assert_eq!(port.ty.as_ref(), port_spec.ty());
         }
+        if node_id == workflow_condition_node_id() {
+            let last = node.ports.last().and_then(|port| graph.port(port));
+            assert!(
+                last.is_some_and(|port| port.key.0 == "else"),
+                "the immutable Else port stays after every dynamic case",
+            );
+        }
     }
 }
 
 #[open_gpui::test]
-fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
+fn native_workflow_controls_commit_graph_facts_and_publish_real_case_ports(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
@@ -278,7 +314,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
         .debug_bounds(&workflow_model_selector(llm))
         .expect("native model select");
     let initial = host_runtime.snapshot().unwrap();
-    let initial_branches = condition_branches(&initial, condition).unwrap();
+    let initial_branches = condition_cases(&initial, condition).unwrap();
     let initial_condition_size = initial
         .graph()
         .node(&condition)
@@ -287,7 +323,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
     assert_eq!(initial_branches.len(), 2);
     for branch in &initial_branches {
         assert!(
-            cx.debug_bounds(&workflow_condition_branch_selector(
+            cx.debug_bounds(&workflow_condition_case_selector(
                 condition,
                 branch.port_id()
             ))
@@ -344,7 +380,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
         .expect("native add-branch button");
     cx.simulate_click(add.center(), Default::default());
     assert_eq!(
-        condition_branches(&host_runtime.snapshot().unwrap(), condition)
+        condition_cases(&host_runtime.snapshot().unwrap(), condition)
             .unwrap()
             .len(),
         3,
@@ -352,9 +388,9 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
     );
     draw(cx);
     let updated = host_runtime.snapshot().unwrap();
-    let branches = condition_branches(&updated, condition).unwrap();
+    let branches = condition_cases(&updated, condition).unwrap();
     assert_eq!(branches.len(), 3);
-    assert_eq!(updated.graph().node(&condition).unwrap().ports.len(), 4);
+    assert_eq!(updated.graph().node(&condition).unwrap().ports.len(), 5);
     let updated_condition_size = updated
         .graph()
         .node(&condition)
@@ -388,7 +424,7 @@ fn native_workflow_controls_commit_graph_facts_and_publish_real_branch_ports(
 }
 
 #[open_gpui::test]
-fn native_condition_branch_list_scrolls_without_changing_the_canvas_viewport(
+fn native_condition_case_list_scrolls_without_changing_the_canvas_viewport(
     cx: &mut open_gpui::TestAppContext,
 ) {
     cx.update(init_text_input);
@@ -411,9 +447,9 @@ fn native_condition_branch_list_scrolls_without_changing_the_canvas_viewport(
         draw(cx);
     }
 
-    let branches = condition_branches(&runtime.snapshot().unwrap(), condition).unwrap();
+    let branches = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     let first_branch = branches.first().expect("first condition branch");
-    let first_selector = workflow_condition_branch_selector(condition, first_branch.port_id());
+    let first_selector = workflow_condition_case_selector(condition, first_branch.port_id());
     let first_before = cx
         .debug_bounds(&first_selector)
         .expect("first branch before scrolling");
@@ -455,7 +491,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     let condition = workflow_condition_node_id();
     let initial = runtime.snapshot().unwrap();
     let initial_graph = frozen_graph_value(initial.graph());
-    let initial_branches = condition_branches(&initial, condition).unwrap();
+    let initial_branches = condition_cases(&initial, condition).unwrap();
     let first = initial_branches[0].clone();
     let connected = initial_branches[1].clone();
     let initial_edge_count = initial.graph().edges().len();
@@ -478,7 +514,7 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
     let after_up = runtime.snapshot().unwrap();
     assert_eq!(after_up.revision(), initial.revision() + 1);
     assert_eq!(
-        condition_branches(&after_up, condition).unwrap(),
+        condition_cases(&after_up, condition).unwrap(),
         vec![connected.clone(), first.clone()]
     );
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
@@ -546,11 +582,11 @@ fn native_condition_up_and_remove_buttons_preserve_atomic_topology_history(
         "removing a visible branch must shrink the content-authoritative condition node"
     );
     assert_eq!(
-        condition_branches(&after_remove, condition).unwrap(),
+        condition_cases(&after_remove, condition).unwrap(),
         vec![first.clone()]
     );
     assert!(after_remove.graph().port(&connected.port_id()).is_none());
-    assert_eq!(after_remove.graph().edges().len(), initial_edge_count - 1);
+    assert_eq!(after_remove.graph().edges().len(), initial_edge_count);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);
     assert_eq!(runtime.history_state().unwrap().redo_len(), 0);
     let geometry = weak_view.geometry_snapshot().unwrap();
@@ -752,16 +788,16 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
 
     let condition = workflow_condition_node_id();
     let remote_snapshot = remote_view.graph_snapshot().unwrap();
-    let concurrent = WorkflowBranch::new(
-        CONCURRENT_BRANCH_ID,
+    let concurrent = WorkflowCase::new(
+        CONCURRENT_CASE_ID,
         "Needs review",
-        PortId::from_u128(CONCURRENT_BRANCH_PORT),
+        PortId::from_u128(CONCURRENT_CASE_PORT),
     )
     .unwrap();
-    let remote_add = plan_condition_branch_action(
+    let remote_add = plan_condition_case_action(
         &remote_snapshot,
         condition,
-        ConditionBranchAction::Add(concurrent.clone()),
+        ConditionCaseAction::Add(concurrent.clone()),
         IncidentEdgePolicy::Reject,
     )
     .unwrap();
@@ -792,7 +828,7 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
         .debug_bounds(&condition_retry_selector(condition))
         .expect("stale condition intent exposes explicit Retry after refresh");
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
-    let refreshed = condition_branches(&runtime.snapshot().unwrap(), condition).unwrap();
+    let refreshed = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     assert_eq!(refreshed.len(), 3);
     assert_eq!(refreshed.last(), Some(&concurrent));
 
@@ -809,10 +845,10 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
         cx.debug_bounds(&condition_retry_selector(condition))
             .is_none()
     );
-    let committed = condition_branches(&runtime.snapshot().unwrap(), condition).unwrap();
+    let committed = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     assert_eq!(committed.len(), 4);
     assert_eq!(committed[2], concurrent);
-    assert!(committed[3].id().starts_with("branch-"));
+    assert!(committed[3].id().starts_with("case-"));
     assert!(
         runtime
             .snapshot()
@@ -1032,7 +1068,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     let option_selector = workflow_model_option_selector(llm, "claude-3.7-sonnet");
     let prompt_selector = workflow_prompt_selector(llm);
     let condition_branch =
-        condition_branches(&runtime.snapshot().unwrap(), condition).unwrap()[0].port_id();
+        condition_cases(&runtime.snapshot().unwrap(), condition).unwrap()[0].port_id();
     let baseline = runtime.snapshot().unwrap();
     let baseline_revision = baseline.revision();
     let baseline_graph = frozen_graph_value(baseline.graph());
@@ -1068,7 +1104,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
     assert!(cx.debug_bounds(&prompt_selector).is_some());
     assert!(cx.debug_bounds(&option_selector).is_some());
     assert!(
-        cx.debug_bounds(&workflow_condition_branch_selector(
+        cx.debug_bounds(&workflow_condition_case_selector(
             condition,
             condition_branch,
         ))
@@ -1118,7 +1154,7 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
             .is_some()
     );
     assert!(
-        cx.debug_bounds(&workflow_condition_branch_selector(
+        cx.debug_bounds(&workflow_condition_case_selector(
             condition,
             condition_branch,
         ))
@@ -1143,27 +1179,93 @@ fn model_overlay_lease_preserves_native_workflow_across_semantic_zoom(
 }
 
 #[test]
-fn condition_branch_actions_are_atomic_stable_and_exactly_undoable() {
+fn condition_else_is_stable_last_and_outside_the_case_action_domain() {
     let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
     let condition = workflow_condition_node_id();
     let initial = runtime.snapshot().unwrap();
-    let initial_branches = condition_branches(&initial, condition).unwrap();
-    let stable_ports: Vec<_> = initial_branches
-        .iter()
-        .map(WorkflowBranch::port_id)
-        .collect();
+    let outputs = condition_outputs(&initial, condition).unwrap();
+    let else_port = outputs.else_branch().port_id();
+    assert_eq!(outputs.else_branch().label(), "Else");
+    assert_eq!(
+        initial.graph().node(&condition).unwrap().ports.last(),
+        Some(&else_port),
+        "Else must be the final output regardless of case count"
+    );
+    assert_eq!(
+        initial.graph().port(&else_port).unwrap().key.0,
+        "else",
+        "Else is a fixed semantic port, not a case encoded in node data"
+    );
+    let data = &initial.graph().node(&condition).unwrap().data;
+    assert!(data.get("branches").is_none());
+    assert_eq!(
+        data.get("cases")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(outputs.cases().len())
+    );
+    assert_eq!(data["else_branch"]["label"], "Else");
+
+    let remove_else = plan_condition_case_action(
+        &initial,
+        condition,
+        ConditionCaseAction::Remove {
+            case_id: "else".to_owned(),
+        },
+        IncidentEdgePolicy::Cascade,
+    );
+    assert!(matches!(
+        remove_else,
+        Err(WorkflowNodeError::CaseNotFound { case_id }) if case_id == "else"
+    ));
+    assert_eq!(runtime.snapshot().unwrap().revision(), initial.revision());
+}
+
+#[test]
+fn condition_topology_transaction_rolls_back_data_when_port_replacement_is_rejected() {
+    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
+    let condition = workflow_condition_node_id();
+    let before = runtime.snapshot().unwrap();
+    let before_graph = frozen_graph_value(before.graph());
+    let mut changed_data = before.graph().node(&condition).unwrap().data.clone();
+    changed_data["title"] = serde_json::json!("must roll back");
+    let invalid = GraphCommand::topology(
+        before.revision(),
+        TopologyEdit::new()
+            .set_node_data(condition, changed_data)
+            .replace_node_ports(
+                condition,
+                std::iter::empty::<TopologyPort>(),
+                IncidentEdgePolicy::Reject,
+            ),
+    );
+
+    assert!(runtime.execute(invalid).unwrap().rejection().is_some());
+    let after = runtime.snapshot().unwrap();
+    assert_eq!(after.revision(), before.revision());
+    assert_eq!(frozen_graph_value(after.graph()), before_graph);
+    assert_eq!(runtime.history_state().unwrap().undo_len(), 0);
+}
+
+#[test]
+fn condition_case_actions_are_atomic_stable_and_exactly_undoable() {
+    let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
+    let condition = workflow_condition_node_id();
+    let initial = runtime.snapshot().unwrap();
+    let initial_branches = condition_cases(&initial, condition).unwrap();
+    let stable_ports: Vec<_> = initial_branches.iter().map(WorkflowCase::port_id).collect();
     let connected_branch = initial_branches[1].clone();
-    let added = WorkflowBranch::new(
-        ADDED_BRANCH_ID,
+    let added = WorkflowCase::new(
+        ADDED_CASE_ID,
         "Fallback",
-        PortId::from_u128(ADDED_BRANCH_PORT),
+        PortId::from_u128(ADDED_CASE_PORT),
     )
     .unwrap();
 
-    let add = plan_condition_branch_action(
+    let add = plan_condition_case_action(
         &initial,
         condition,
-        ConditionBranchAction::Add(added.clone()),
+        ConditionCaseAction::Add(added.clone()),
         IncidentEdgePolicy::Reject,
     )
     .unwrap();
@@ -1175,22 +1277,30 @@ fn condition_branch_actions_are_atomic_stable_and_exactly_undoable() {
     assert_eq!(runtime.snapshot().unwrap().revision(), 1);
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     let after_add = runtime.snapshot().unwrap();
-    let branches = condition_branches(&after_add, condition).unwrap();
+    let branches = condition_cases(&after_add, condition).unwrap();
+    let else_port = condition_outputs(&after_add, condition)
+        .unwrap()
+        .else_branch()
+        .port_id();
+    assert_eq!(
+        after_add.graph().node(&condition).unwrap().ports.last(),
+        Some(&else_port)
+    );
     assert_eq!(
         branches
             .iter()
             .take(2)
-            .map(WorkflowBranch::port_id)
+            .map(WorkflowCase::port_id)
             .collect::<Vec<_>>(),
         stable_ports
     );
     assert_eq!(branches[2], added);
 
-    let reorder = plan_condition_branch_action(
+    let reorder = plan_condition_case_action(
         &after_add,
         condition,
-        ConditionBranchAction::Reorder {
-            branch_id: ADDED_BRANCH_ID.to_owned(),
+        ConditionCaseAction::Reorder {
+            case_id: ADDED_CASE_ID.to_owned(),
             index: 0,
         },
         IncidentEdgePolicy::Reject,
@@ -1206,15 +1316,15 @@ fn condition_branch_actions_are_atomic_stable_and_exactly_undoable() {
     let before_remove = runtime.snapshot().unwrap();
     let before_remove_graph = frozen_graph_value(before_remove.graph());
     assert_eq!(
-        condition_branches(&before_remove, condition).unwrap()[0],
+        condition_cases(&before_remove, condition).unwrap()[0],
         added
     );
 
-    let remove = plan_condition_branch_action(
+    let remove = plan_condition_case_action(
         &before_remove,
         condition,
-        ConditionBranchAction::Remove {
-            branch_id: connected_branch.id().to_owned(),
+        ConditionCaseAction::Remove {
+            case_id: connected_branch.id().to_owned(),
         },
         IncidentEdgePolicy::Cascade,
     )
@@ -1235,8 +1345,20 @@ fn condition_branch_actions_are_atomic_stable_and_exactly_undoable() {
             .is_none()
     );
     assert_eq!(
+        condition_outputs(&after_remove, condition)
+            .unwrap()
+            .else_branch()
+            .port_id(),
+        else_port
+    );
+    assert_eq!(
+        after_remove.graph().node(&condition).unwrap().ports.last(),
+        Some(&else_port)
+    );
+    assert_eq!(
         after_remove.graph().edges().len(),
-        before_remove.graph().edges().len() - 1
+        before_remove.graph().edges().len(),
+        "removing a case must not disturb the immutable Else edge"
     );
 
     runtime
@@ -1264,36 +1386,36 @@ fn condition_branch_actions_are_atomic_stable_and_exactly_undoable() {
 }
 
 #[test]
-fn stale_view_replans_branch_intent_without_overwriting_remote_addition() {
+fn stale_view_replans_case_intent_without_overwriting_remote_addition() {
     let runtime = native_runtime(workflow_demo_graph().unwrap()).unwrap();
     let view_a = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let view_b = runtime.attach_view(ViewSessionOptions::default()).unwrap();
     let condition = workflow_condition_node_id();
     let base_a = view_a.graph_snapshot().unwrap();
     let base_b = view_b.graph_snapshot().unwrap();
-    let initial = condition_branches(&base_a, condition).unwrap();
+    let initial = condition_cases(&base_a, condition).unwrap();
     let reordered_id = initial[1].id().to_owned();
-    let reorder_intent = ConditionBranchAction::Reorder {
-        branch_id: reordered_id.clone(),
+    let reorder_intent = ConditionCaseAction::Reorder {
+        case_id: reordered_id.clone(),
         index: 0,
     };
-    let stale_reorder = plan_condition_branch_action(
+    let stale_reorder = plan_condition_case_action(
         &base_a,
         condition,
         reorder_intent.clone(),
         IncidentEdgePolicy::Reject,
     )
     .unwrap();
-    let concurrent = WorkflowBranch::new(
-        CONCURRENT_BRANCH_ID,
+    let concurrent = WorkflowCase::new(
+        CONCURRENT_CASE_ID,
         "Needs review",
-        PortId::from_u128(CONCURRENT_BRANCH_PORT),
+        PortId::from_u128(CONCURRENT_CASE_PORT),
     )
     .unwrap();
-    let remote_add = plan_condition_branch_action(
+    let remote_add = plan_condition_case_action(
         &base_b,
         condition,
-        ConditionBranchAction::Add(concurrent.clone()),
+        ConditionCaseAction::Add(concurrent.clone()),
         IncidentEdgePolicy::Reject,
     )
     .unwrap();
@@ -1310,7 +1432,7 @@ fn stale_view_replans_branch_intent_without_overwriting_remote_addition() {
     assert!(conflict.footprint().nodes.contains(&condition));
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
 
-    let recovered = plan_condition_branch_action(
+    let recovered = plan_condition_case_action(
         conflict.current(),
         condition,
         reorder_intent,
@@ -1323,7 +1445,7 @@ fn stale_view_replans_branch_intent_without_overwriting_remote_addition() {
         .applied()
         .expect("replanned intent applies");
     let final_snapshot = view_a.graph_snapshot().unwrap();
-    let final_branches = condition_branches(&final_snapshot, condition).unwrap();
+    let final_branches = condition_cases(&final_snapshot, condition).unwrap();
     assert_eq!(final_branches[0].id(), reordered_id);
     assert_eq!(final_branches.last(), Some(&concurrent));
     assert_eq!(runtime.history_state().unwrap().undo_len(), 2);

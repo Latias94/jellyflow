@@ -273,7 +273,7 @@ impl DraftRecovery {
     }
 }
 
-/// Adapter-local snapshot held by `ExternalizedDraftStore` while a retained owner is reclaimed.
+/// Adapter-local snapshot held by `RetainedFieldStore` while a retained owner is reclaimed.
 ///
 /// A pending attempt is diagnostic state only. Restoring or dispatching it is
 /// deliberately outside this type so retirement cannot retry a graph command.
@@ -320,10 +320,6 @@ pub struct DraftRestore<T> {
 }
 
 impl<T> DraftRestore<T> {
-    pub fn draft(&self) -> &RevisionedDraft<T> {
-        &self.draft
-    }
-
     pub const fn recovery(&self) -> DraftRecovery {
         self.recovery
     }
@@ -447,6 +443,28 @@ where
 
     pub fn pending_attempt(&self) -> Option<DraftAttempt> {
         self.pending.as_ref().map(|pending| pending.intent.attempt)
+    }
+
+    pub(crate) fn pending_expected_revision(&self) -> Option<GraphRevision> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.intent.expected_revision)
+    }
+
+    pub(crate) fn pending_value(&self) -> Option<&T> {
+        self.pending.as_ref().map(|pending| &pending.intent.value)
+    }
+
+    pub(crate) fn pending_accepted_revision(&self) -> Option<GraphRevision> {
+        self.pending
+            .as_ref()
+            .and_then(|pending| pending.accepted_revision)
+    }
+
+    pub(crate) fn pending_matching_snapshot_revision(&self) -> Option<GraphRevision> {
+        self.pending
+            .as_ref()
+            .and_then(|pending| pending.matching_snapshot_revision)
     }
 
     /// Captures adapter-local state without transferring ownership or creating a retryable

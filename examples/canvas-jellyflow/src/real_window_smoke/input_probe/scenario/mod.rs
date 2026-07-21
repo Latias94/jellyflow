@@ -18,9 +18,14 @@ pub(super) fn advance(
     surface_size: ViewSize,
 ) -> Result<Option<SmokeInputEvidence>, &'static str> {
     match probe.phase {
-        ProbePhase::Fit
-        | ProbePhase::FitWait
+        ProbePhase::CaptureZoom
+        | ProbePhase::CaptureZoomWait
         | ProbePhase::Capture
+        | ProbePhase::Fit
+        | ProbePhase::FitWait
+        | ProbePhase::RestoreFit
+        | ProbePhase::RestoreFitWait
+        | ProbePhase::PlanInput
         | ProbePhase::NodePress
         | ProbePhase::NodeMove
         | ProbePhase::NodeWaitActive

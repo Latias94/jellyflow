@@ -84,15 +84,17 @@ pub enum OpenGpuiPortMarkerCue {
 
 /// Fully resolved immutable style for one default native port marker.
 ///
-/// `visual_diameter` describes only the painted marker. `minimum_hit_diameter` is a separate value
-/// intended for [`crate::OpenGpuiPortHandle::with_minimum_hit_diameter`]; the marker never creates
-/// a pointer target or expands its own layout bounds.
+/// `layout_diameter` is the state-invariant outer slot, while `visual_diameter` describes only the
+/// centered painted marker. `minimum_hit_diameter` is a separate value intended for
+/// [`crate::authoring::OpenGpuiPortHandle::with_minimum_hit_diameter`]; the semantic wrapper grows
+/// its hitbox without changing either layout or route-anchor geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenGpuiPortMarkerStyle {
     visual_state: OpenGpuiPortVisualState,
     fill_color: Hsla,
     border_color: Hsla,
     cue_color: Hsla,
+    layout_diameter: f32,
     visual_diameter: f32,
     minimum_hit_diameter: f32,
     border_width: f32,
@@ -123,6 +125,15 @@ impl OpenGpuiPortMarkerStyle {
     #[must_use]
     pub const fn cue_color(self) -> Hsla {
         self.cue_color
+    }
+
+    /// Returns the state-invariant outer layout-slot diameter in screen pixels.
+    ///
+    /// Route geometry is measured from this slot, so hover and candidate feedback cannot move an
+    /// attached edge endpoint.
+    #[must_use]
+    pub const fn layout_diameter(self) -> f32 {
+        self.layout_diameter
     }
 
     /// Returns the painted marker diameter in screen pixels.
@@ -176,8 +187,9 @@ impl OpenGpuiGraphTheme {
             OPEN_GPUI_DEFAULT_PORT_HOVER_MARKER_DIAMETER,
         )
         .max(idle_diameter);
+        let layout_diameter = emphasized_diameter;
         let visual_diameter = if visual_state.is_emphasized() {
-            emphasized_diameter
+            layout_diameter
         } else {
             idle_diameter
         };
@@ -185,7 +197,7 @@ impl OpenGpuiGraphTheme {
             self.metrics.port_hit_diameter,
             OPEN_GPUI_DEFAULT_PORT_HIT_DIAMETER,
         )
-        .max(visual_diameter);
+        .max(layout_diameter);
         let (fill_color, border_color) = match visual_state {
             OpenGpuiPortVisualState::Idle => (self.palette.canvas, self.palette.port_idle),
             OpenGpuiPortVisualState::Connected => {
@@ -211,6 +223,7 @@ impl OpenGpuiGraphTheme {
             fill_color,
             border_color,
             cue_color: self.palette.port_invalid,
+            layout_diameter,
             visual_diameter,
             minimum_hit_diameter,
             border_width: if visual_state.is_emphasized() {
@@ -272,29 +285,31 @@ impl OpenGpuiPortMarker {
 impl RenderOnce for OpenGpuiPortMarker {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let style = self.theme.resolve_port_marker_style(&self.presentation);
-        let diameter = style.visual_diameter();
-        let mut marker = div()
+        let layout_diameter = style.layout_diameter();
+        let visual_diameter = style.visual_diameter();
+        let mut visual = div()
             .relative()
             .flex()
             .items_center()
             .justify_center()
-            .w(px(diameter))
-            .h(px(diameter))
+            .w(px(visual_diameter))
+            .h(px(visual_diameter))
             .flex_none()
             .rounded_full()
             .border(px(style.border_width()))
             .border_color(style.border_color())
             .bg(style.fill_color());
         if style.has_dashed_border() {
-            marker = marker.border_dashed();
+            visual = visual.border_dashed();
         }
 
-        match style.cue() {
-            OpenGpuiPortMarkerCue::None => marker,
+        visual = match style.cue() {
+            OpenGpuiPortMarkerCue::None => visual,
             OpenGpuiPortMarkerCue::InvalidCross => {
-                let cue_size = (diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS);
+                let cue_size =
+                    (visual_diameter * PORT_MARKER_CUE_SCALE).max(PORT_MARKER_CUE_THICKNESS);
                 let cue_offset = (cue_size - PORT_MARKER_CUE_THICKNESS) * 0.5;
-                marker.child(
+                visual.child(
                     div()
                         .relative()
                         .w(px(cue_size))
@@ -319,7 +334,17 @@ impl RenderOnce for OpenGpuiPortMarker {
                         ),
                 )
             }
-        }
+        };
+
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(layout_diameter))
+            .h(px(layout_diameter))
+            .flex_none()
+            .child(visual)
     }
 }
 
@@ -409,9 +434,40 @@ mod tests {
         let hovered = theme
             .resolve_port_marker_style(&OpenGpuiPortInteractionState::idle().with_hovered(true));
 
+        assert_eq!(idle.layout_diameter(), 12.0);
+        assert_eq!(hovered.layout_diameter(), 12.0);
         assert_eq!(idle.visual_diameter(), 10.0);
         assert_eq!(hovered.visual_diameter(), 12.0);
         assert_eq!(idle.minimum_hit_diameter(), 22.0);
         assert_eq!(hovered.minimum_hit_diameter(), 22.0);
+    }
+
+    #[test]
+    fn every_interaction_state_keeps_one_layout_slot_and_external_hit_target() {
+        let theme = OpenGpuiGraphTheme::default();
+        let invalid = OpenGpuiPortCandidateState::invalid(Vec::<Diagnostic>::new());
+        let states = [
+            OpenGpuiPortInteractionState::idle(),
+            OpenGpuiPortInteractionState::idle().with_connected(true),
+            OpenGpuiPortInteractionState::idle().with_hovered(true),
+            OpenGpuiPortInteractionState::idle().with_focused(true),
+            OpenGpuiPortInteractionState::idle().with_candidate(OpenGpuiPortCandidateState::Source),
+            OpenGpuiPortInteractionState::idle()
+                .with_candidate(OpenGpuiPortCandidateState::ValidTarget),
+            OpenGpuiPortInteractionState::idle().with_candidate(invalid),
+            OpenGpuiPortInteractionState::idle().with_disabled(true),
+        ];
+        let styles = states.map(|state| theme.resolve_port_marker_style(&state));
+
+        assert!(styles.iter().all(|style| style.layout_diameter() == 12.0));
+        assert!(
+            styles
+                .iter()
+                .all(|style| style.minimum_hit_diameter() == 22.0)
+        );
+        assert_eq!(
+            styles.map(OpenGpuiPortMarkerStyle::visual_diameter),
+            [10.0, 10.0, 12.0, 12.0, 12.0, 12.0, 12.0, 10.0]
+        );
     }
 }

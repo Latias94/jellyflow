@@ -19,10 +19,10 @@ The window also mounts an application-owned native blackboard beside the graph. 
 symbols directly from `GraphRuntime` snapshots and submits revision-checked `SymbolEdit` commands;
 the adapter does not define a portable blackboard widget or descriptor.
 
-Workflow and shader fields share application-owned `ExternalizedDraftStore<T>` handles. The app
-binds those stores to its `ViewSession` and injects them into native node factories, so a dirty field
-can survive protected-cache overflow without moving product state into the headless runtime or
-retrying an interrupted command.
+Workflow and shader fields share application-owned `RetainedFieldStore<T>` handles. Each native
+field mounts a `RetainedField<T>` with an exact node incarnation and automatically binds the store
+to its view. Dirty values can survive protected-cache overflow without moving product state into the
+headless runtime, restoring IME state, or retrying an interrupted command.
 
 Dropping a shader wire on empty canvas opens another application-owned Open GPUI surface. It uses
 the host's inert create-from-wire request, semantic candidate query, and atomic commit APIs, then

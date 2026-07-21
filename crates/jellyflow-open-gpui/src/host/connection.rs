@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasPoint, EdgeId, NodeId, PortDirection};
+use jellyflow::core::{CanvasPoint, EdgeId, Graph, NodeId, PortDirection, PortId};
 use jellyflow::runtime::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointPosition, EdgePath, EdgePosition, HandlePosition,
-    bezier_edge_path, handle_anchor_position, resolve_edge_route_path,
+    bezier_edge_path, resolve_edge_route_path,
 };
 use jellyflow::runtime::schema::NodeCatalogInstantiationError;
 use jellyflow::runtime::{
@@ -26,6 +26,10 @@ use crate::interaction::{
 use crate::port_handle::{OpenGpuiHostPortHoverListener, OpenGpuiHostPortListener};
 
 use super::OpenGpuiSceneHost;
+use super::endpoint_resolver::{
+    ExplicitEndpointFallback, PublishedEndpointDiagnostic, PublishedEndpointResolver,
+    PublishedRouteEndpointIdentity, ResolvedEndpoint,
+};
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::lifecycle::NodeChanges;
 
@@ -628,7 +632,7 @@ impl OpenGpuiSceneHost {
     }
 
     fn connection_start(
-        &self,
+        &mut self,
         owner: &OpenGpuiPortDragOwner,
         drag_intent: PortConnectionDragIntent,
     ) -> Option<ConnectionInteractionStart> {
@@ -645,7 +649,19 @@ impl OpenGpuiSceneHost {
         let intent =
             ConnectionInteractionStart::intent_from_port_drag(drag_intent, new_edge, mode)?;
         let geometry = self.view.geometry_snapshot().ok()?;
-        let fixed = self.fixed_connection_endpoint(&geometry, intent)?;
+        let snapshot = self.view.graph_snapshot().ok()?;
+        let resolver = PublishedEndpointResolver::new(&geometry);
+        let fixed = self.resolve_intent_port_endpoint(
+            &resolver,
+            snapshot.graph(),
+            intent,
+            intent.fixed_port(),
+        )?;
+        let diagnostic = fixed.diagnostic();
+        let fixed = fixed.position();
+        if let Some(diagnostic) = diagnostic {
+            self.record_endpoint_geometry_diagnostics(vec![diagnostic.to_string()], 1);
+        }
         ConnectionInteractionStart::from_port_drag_intent(
             drag_intent,
             new_edge,
@@ -656,33 +672,28 @@ impl OpenGpuiSceneHost {
         )
     }
 
-    fn fixed_connection_endpoint(
+    fn resolve_intent_port_endpoint(
         &self,
-        geometry: &GeometrySnapshot,
+        resolver: &PublishedEndpointResolver<'_>,
+        graph: &Graph,
         intent: ConnectionGestureIntent,
-    ) -> Option<EdgeEndpointPosition> {
-        if let Some(port) = geometry.port(intent.fixed_port()) {
-            return Some(EdgeEndpointPosition {
-                point: port.route_anchor(),
-                position: port.outward(),
-            });
-        }
+        port: PortId,
+    ) -> Option<ResolvedEndpoint> {
+        let route = intent_route_endpoint(intent, port);
+        let fallback = self.explicit_endpoint_fallback(resolver, graph, port);
+        resolver.resolve_port(port, route, fallback)
+    }
 
-        if let ConnectionGestureIntent::Reconnect { edge, endpoint, .. } = intent
-            && let Some(route) = geometry.route(edge)
-        {
-            let endpoints = route.facts().endpoints;
-            return Some(match endpoint {
-                EdgeEndpoint::From => endpoints.target,
-                EdgeEndpoint::To => endpoints.source,
-            });
-        }
-
-        let snapshot = self.view.graph_snapshot().ok()?;
-        let graph = snapshot.graph();
-        let port = graph.port(&intent.fixed_port())?;
+    pub(super) fn explicit_endpoint_fallback(
+        &self,
+        resolver: &PublishedEndpointResolver<'_>,
+        graph: &Graph,
+        port: PortId,
+    ) -> Option<ExplicitEndpointFallback> {
+        let port = graph.port(&port)?;
         let node = graph.node(&port.node)?;
-        let bounds = geometry
+        let bounds = resolver
+            .geometry()
             .node(port.node)
             .filter(|geometry| geometry.is_fresh())
             .map(|geometry| geometry.bounds())
@@ -694,11 +705,8 @@ impl OpenGpuiSceneHost {
                 })?;
                 node.bounds_for_size(size)
             })?;
-        handle_anchor_position(
-            bounds,
-            None,
-            HandlePosition::fallback_for_direction(port.dir),
-        )
+        resolver
+            .explicit_node_box_fallback(bounds, HandlePosition::fallback_for_direction(port.dir))
     }
 
     fn interaction_position_for_canvas(&self, canvas: CanvasPoint) -> Option<InteractionPosition> {
@@ -885,7 +893,7 @@ impl OpenGpuiSceneHost {
     }
 
     pub(super) fn connection_preview_plan(
-        &self,
+        &mut self,
         geometry: &GeometrySnapshot,
     ) -> Option<OpenGpuiConnectionPreviewPlan> {
         let presentation = self.interaction_owner.presentation();
@@ -893,34 +901,47 @@ impl OpenGpuiSceneHost {
         let snapshot = self.view.graph_snapshot().ok()?;
         let graph = snapshot.graph();
         let intent = connection.intent();
-        let fixed = geometry
-            .port(intent.fixed_port())
-            .map(|port| EdgeEndpointPosition {
-                point: port.route_anchor(),
-                position: port.outward(),
-            })
-            .unwrap_or(EdgeEndpointPosition {
-                point: connection.fixed_anchor(),
-                position: connection.fixed_outward(),
-            });
+        let resolver = PublishedEndpointResolver::new(geometry);
+        let mut endpoint_diagnostics = Vec::new();
+        let mut endpoint_fallbacks = 0usize;
+        let fixed =
+            self.resolve_intent_port_endpoint(&resolver, graph, intent, intent.fixed_port())?;
+        collect_endpoint_diagnostic(
+            fixed.diagnostic(),
+            &mut endpoint_diagnostics,
+            &mut endpoint_fallbacks,
+        );
+        let fixed = fixed.position();
         let moving = match connection.probe() {
-            ConnectionProbe::Valid { target, .. } => geometry
-                .port(target.port())
-                .map(|port| EdgeEndpointPosition {
-                    point: port.route_anchor(),
-                    position: port.outward(),
-                })
-                .unwrap_or(EdgeEndpointPosition {
-                    point: target.route_anchor(),
-                    position: target.outward(),
-                }),
-            ConnectionProbe::None | ConnectionProbe::Invalid { .. } => EdgeEndpointPosition {
-                point: connection.pointer().canvas(),
-                position: intent
+            ConnectionProbe::Valid { target, .. } => {
+                let fallback = self.explicit_endpoint_fallback(&resolver, graph, target.port());
+                let target = resolver.resolve_port(target.port(), None, fallback)?;
+                collect_endpoint_diagnostic(
+                    target.diagnostic(),
+                    &mut endpoint_diagnostics,
+                    &mut endpoint_fallbacks,
+                );
+                target.position()
+            }
+            ConnectionProbe::None | ConnectionProbe::Invalid { .. } => {
+                let position = intent
                     .detached_port()
-                    .and_then(|port| geometry.port(port).map(|port| port.outward()))
-                    .unwrap_or_else(|| opposite_handle_position(fixed.position)),
-            },
+                    .and_then(|port| {
+                        let detached =
+                            self.resolve_intent_port_endpoint(&resolver, graph, intent, port)?;
+                        collect_endpoint_diagnostic(
+                            detached.diagnostic(),
+                            &mut endpoint_diagnostics,
+                            &mut endpoint_fallbacks,
+                        );
+                        Some(detached.outward())
+                    })
+                    .unwrap_or_else(|| opposite_handle_position(fixed.position));
+                EdgeEndpointPosition {
+                    point: connection.pointer().canvas(),
+                    position,
+                }
+            }
         };
 
         let path = match intent {
@@ -955,10 +976,60 @@ impl OpenGpuiSceneHost {
                 resolve_edge_route_path(graph.edge(&edge)?, endpoints)?.path
             }
         };
+        if endpoint_fallbacks > 0 {
+            self.record_endpoint_geometry_diagnostics(endpoint_diagnostics, endpoint_fallbacks);
+        }
         Some(OpenGpuiConnectionPreviewPlan {
             path,
             suppressed_edge: connection.suppressed_edge(),
         })
+    }
+}
+
+fn intent_route_endpoint(
+    intent: ConnectionGestureIntent,
+    port: PortId,
+) -> Option<PublishedRouteEndpointIdentity> {
+    let ConnectionGestureIntent::Reconnect {
+        edge,
+        endpoint,
+        detached_port,
+        fixed_port,
+        ..
+    } = intent
+    else {
+        return None;
+    };
+    if port == detached_port {
+        return Some(PublishedRouteEndpointIdentity::new(edge, endpoint));
+    }
+    if port == fixed_port {
+        return Some(PublishedRouteEndpointIdentity::new(
+            edge,
+            opposite_edge_endpoint(endpoint),
+        ));
+    }
+    None
+}
+
+fn opposite_edge_endpoint(endpoint: EdgeEndpoint) -> EdgeEndpoint {
+    match endpoint {
+        EdgeEndpoint::From => EdgeEndpoint::To,
+        EdgeEndpoint::To => EdgeEndpoint::From,
+    }
+}
+
+fn collect_endpoint_diagnostic(
+    diagnostic: Option<PublishedEndpointDiagnostic>,
+    messages: &mut Vec<String>,
+    total: &mut usize,
+) {
+    let Some(diagnostic) = diagnostic else {
+        return;
+    };
+    *total = (*total).saturating_add(1);
+    if messages.len() < 16 {
+        messages.push(diagnostic.to_string());
     }
 }
 

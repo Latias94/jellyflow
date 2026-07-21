@@ -22,6 +22,41 @@ impl RealWindowSmokeProbe {
             }
             ProbePhase::FitWait => {
                 if geometry_fits_surface(view, expectations, surface_size)? {
+                    self.capture_fit = Some(
+                        view.viewport_transform()
+                            .map_err(|_| "input_viewport_read_failed")?,
+                    );
+                    self.transition(ProbePhase::CaptureZoom);
+                    Ok(None)
+                } else {
+                    self.wait_or_timeout()
+                }
+            }
+            ProbePhase::CaptureZoom => {
+                let current = view
+                    .viewport_transform()
+                    .map_err(|_| "input_viewport_read_failed")?;
+                let center = CanvasPoint {
+                    x: surface_size.width * 0.5,
+                    y: surface_size.height * 0.5,
+                };
+                let canvas_center = current.canvas_point_at_screen(center);
+                let zoom = self.config.zoom().value();
+                let pan = CanvasPoint {
+                    x: center.x / zoom - canvas_center.x,
+                    y: center.y / zoom - canvas_center.y,
+                };
+                view.set_viewport(pan, zoom)
+                    .map_err(|_| "input_capture_zoom_failed")?;
+                window.refresh();
+                self.transition(ProbePhase::CaptureZoomWait);
+                Ok(None)
+            }
+            ProbePhase::CaptureZoomWait => {
+                let current = view
+                    .viewport_transform()
+                    .map_err(|_| "input_viewport_read_failed")?;
+                if (current.zoom - self.config.zoom().value()).abs() <= f32::EPSILON {
                     self.transition(ProbePhase::Capture);
                     Ok(None)
                 } else {
@@ -29,7 +64,28 @@ impl RealWindowSmokeProbe {
                 }
             }
             ProbePhase::Capture => {
-                self.capture(window, view, expectations, surface_size)?;
+                self.capture_visual(window, surface_size)?;
+                self.transition(ProbePhase::RestoreFit);
+                Ok(None)
+            }
+            ProbePhase::RestoreFit => {
+                let transform = self.capture_fit.ok_or("input_capture_fit_missing")?;
+                view.set_viewport(transform.pan, transform.zoom)
+                    .map_err(|_| "input_restore_fit_failed")?;
+                window.refresh();
+                self.transition(ProbePhase::RestoreFitWait);
+                Ok(None)
+            }
+            ProbePhase::RestoreFitWait => {
+                if geometry_fits_surface(view, expectations, surface_size)? {
+                    self.transition(ProbePhase::PlanInput);
+                    Ok(None)
+                } else {
+                    self.wait_or_timeout()
+                }
+            }
+            ProbePhase::PlanInput => {
+                self.plan_input(window, view, expectations, surface_size)?;
                 self.transition(ProbePhase::NodePress);
                 Ok(None)
             }

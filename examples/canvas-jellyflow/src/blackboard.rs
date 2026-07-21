@@ -10,8 +10,8 @@ use jellyflow::runtime::{
     RuntimeFactKey, RuntimePatchKind, SymbolEdit,
 };
 use jellyflow_open_gpui::{
-    DraftAttempt, DraftConflictResolution, DraftPhase, DraftResolutionDecision,
-    DraftSubmissionDecision, DraftSubmissionIntent, RevisionedDraft,
+    RetainedFieldAttempt, RetainedFieldAttemptState, RetainedFieldConflictChoice,
+    RetainedFieldIntent, RetainedFieldPhase, RetainedFieldResolution, RevisionedField,
 };
 use open_gpui::{
     Context, InteractiveElement, ParentElement, Render, StatefulInteractiveElement, Styled, Task,
@@ -214,7 +214,7 @@ pub struct NativeBlackboard {
     source_task: Option<Task<()>>,
     source_attempt: u64,
     active_attempt: Option<u64>,
-    drafts: BTreeMap<SymbolId, RevisionedDraft<String>>,
+    drafts: BTreeMap<SymbolId, RevisionedField<String>>,
     draft_diagnostic: Option<String>,
 }
 
@@ -310,12 +310,13 @@ impl NativeBlackboard {
     }
 
     fn publish_snapshot(&mut self, snapshot: GraphSnapshot) {
-        self.drafts.retain(|id, draft| {
+        self.drafts.retain(|id, field| {
             let Some(symbol) = snapshot.graph().symbol(id) else {
                 return false;
             };
-            draft.reconcile_remote(snapshot.revision(), symbol.name.clone());
-            draft.phase() != DraftPhase::Clean || draft.pending_attempt().is_some()
+            field.observe(snapshot.revision(), symbol.name.clone());
+            field.phase() != RetainedFieldPhase::Clean
+                || !matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
         });
         self.resource = if snapshot.graph().symbols().is_empty() {
             BlackboardResourceState::Empty
@@ -359,11 +360,11 @@ impl NativeBlackboard {
         match &self.resource {
             BlackboardResourceState::Ready(snapshot) => match snapshot.graph().symbol(&symbol) {
                 Some(authoritative) => {
-                    let draft = self.drafts.entry(symbol).or_insert_with(|| {
-                        RevisionedDraft::new(snapshot.revision(), authoritative.name.clone())
+                    let field = self.drafts.entry(symbol).or_insert_with(|| {
+                        RevisionedField::new(snapshot.revision(), authoritative.name.clone())
                     });
-                    draft.reconcile_remote(snapshot.revision(), authoritative.name.clone());
-                    draft.edit_local(value);
+                    field.observe(snapshot.revision(), authoritative.name.clone());
+                    field.edit(value);
                     self.draft_diagnostic = None;
                 }
                 None => {
@@ -403,7 +404,7 @@ impl NativeBlackboard {
     fn plan_name_submission(
         &mut self,
         symbol: SymbolId,
-    ) -> Result<(DraftSubmissionIntent<String>, Symbol), BlackboardPlanError> {
+    ) -> Result<(RetainedFieldIntent<String>, Symbol), BlackboardPlanError> {
         let snapshot = self
             .load_latest_snapshot()
             .ok_or(BlackboardPlanError::Resource)?;
@@ -412,35 +413,38 @@ impl NativeBlackboard {
             .symbol(&symbol)
             .cloned()
             .ok_or_else(|| BlackboardPlanError::Draft("symbol no longer exists".to_owned()))?;
-        let draft = self.drafts.get_mut(&symbol).ok_or_else(|| {
+        let field = self.drafts.get_mut(&symbol).ok_or_else(|| {
             BlackboardPlanError::Draft("symbol has no pending blackboard edit".to_owned())
         })?;
-        draft.reconcile_remote(snapshot.revision(), current.name.clone());
-        let name = draft.local().trim().to_owned();
+        field.observe(snapshot.revision(), current.name.clone());
+        let name = field.local().trim().to_owned();
         if name.is_empty() {
             return Err(BlackboardPlanError::Draft(
                 "symbol name must not be empty".to_owned(),
             ));
         }
-        draft.edit_local(name);
-        let intent = if draft.conflict().is_some() {
-            match draft.resolve_at(DraftConflictResolution::ReapplyLocal, snapshot.revision()) {
-                DraftResolutionDecision::Reapply(intent) => intent,
-                other => {
+        field.edit(name);
+        let intent = if field.conflict().is_some() {
+            match field.resolve(
+                RetainedFieldConflictChoice::ReapplyLocal,
+                snapshot.revision(),
+            ) {
+                Ok(RetainedFieldResolution::Reapply(intent)) => intent,
+                Ok(other) => {
                     return Err(BlackboardPlanError::Draft(format!(
-                        "blackboard reapply rejected: {other:?}"
+                        "blackboard reapply did not produce an intent: {other:?}"
+                    )));
+                }
+                Err(error) => {
+                    return Err(BlackboardPlanError::Draft(format!(
+                        "blackboard reapply rejected: {error}"
                     )));
                 }
             }
         } else {
-            match draft.plan_submission_at(snapshot.revision()) {
-                DraftSubmissionDecision::Submit(intent) => intent,
-                DraftSubmissionDecision::Rejected(rejection) => {
-                    return Err(BlackboardPlanError::Draft(format!(
-                        "blackboard apply rejected: {rejection:?}"
-                    )));
-                }
-            }
+            field.plan(snapshot.revision()).map_err(|error| {
+                BlackboardPlanError::Draft(format!("blackboard apply rejected: {error}"))
+            })?
         };
         let updated = Symbol {
             name: intent.value().clone(),
@@ -452,59 +456,44 @@ impl NativeBlackboard {
     fn handle_submission_outcome(
         &mut self,
         symbol: SymbolId,
-        attempt: DraftAttempt,
+        attempt: RetainedFieldAttempt,
         outcome: Result<GraphCommandOutcome, BlackboardCommandError>,
     ) {
         match outcome {
-            Ok(GraphCommandOutcome::Applied(receipt)) => {
-                self.acknowledge_submission(symbol, attempt, receipt.revision());
-            }
-            Ok(GraphCommandOutcome::Noop(noop)) => {
-                self.acknowledge_submission(symbol, attempt, noop.revision());
-            }
-            Ok(GraphCommandOutcome::Conflict(conflict)) => {
-                if let Some(draft) = self.drafts.get_mut(&symbol)
-                    && let Some(current) = conflict.current().graph().symbol(&symbol)
-                {
-                    draft.reject_stale(
-                        attempt,
-                        conflict.current().revision(),
-                        current.name.clone(),
-                    );
-                }
-                self.draft_diagnostic = Some(format!(
-                    "symbol changed at revision {}; review the current value, then explicitly reapply",
-                    conflict.current().revision()
-                ));
-            }
-            Ok(GraphCommandOutcome::Rejected(rejection)) => {
-                if let Some(draft) = self.drafts.get_mut(&symbol) {
-                    draft.reject_submission(attempt);
-                }
-                self.draft_diagnostic = Some(rejection.message().to_owned());
-            }
+            Ok(outcome) => self.settle_submission(symbol, attempt, outcome),
             Err(error) => {
-                if let Some(draft) = self.drafts.get_mut(&symbol) {
-                    draft.reject_submission(attempt);
+                let result = self.drafts.get_mut(&symbol).map(|field| {
+                    field.mark_uncertain(
+                        attempt,
+                        format!(
+                            "symbol command outcome is uncertain: {error}; wait for an authoritative refresh"
+                        ),
+                    )
+                });
+                if let Some(Err(state_error)) = result {
+                    self.draft_diagnostic = Some(format!(
+                        "could not retain uncertain symbol attempt: {state_error}"
+                    ));
                 }
-                self.draft_diagnostic = Some(error.to_string());
             }
         }
     }
 
-    fn acknowledge_submission(&mut self, symbol: SymbolId, attempt: DraftAttempt, revision: u64) {
-        {
-            let Some(draft) = self.drafts.get_mut(&symbol) else {
-                return;
-            };
-            draft.record_self_receipt(attempt, revision);
-        }
+    fn settle_submission(
+        &mut self,
+        symbol: SymbolId,
+        attempt: RetainedFieldAttempt,
+        outcome: GraphCommandOutcome,
+    ) {
+        let Some(field) = self.drafts.get_mut(&symbol) else {
+            return;
+        };
+        field.settle_ticket(attempt, Ok(outcome));
         self.load_latest_snapshot();
-        if self
-            .drafts
-            .get(&symbol)
-            .is_some_and(|draft| draft.phase() == DraftPhase::Clean)
-        {
+        if self.drafts.get(&symbol).is_some_and(|field| {
+            field.phase() == RetainedFieldPhase::Clean
+                && matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
+        }) {
             self.drafts.remove(&symbol);
         }
         self.draft_diagnostic = None;
@@ -520,14 +509,20 @@ impl NativeBlackboard {
             .symbol(&symbol)
             .ok_or_else(|| "symbol no longer exists".to_owned())
             .and_then(|current| {
-                let draft = self
+                let field = self
                     .drafts
                     .get_mut(&symbol)
                     .ok_or_else(|| "symbol has no pending blackboard edit".to_owned())?;
-                draft.reconcile_remote(snapshot.revision(), current.name.clone());
-                match draft.resolve_at(DraftConflictResolution::AcceptRemote, snapshot.revision()) {
-                    DraftResolutionDecision::AcceptedRemote { .. } => Ok(()),
-                    other => Err(format!("blackboard accept-remote rejected: {other:?}")),
+                field.observe(snapshot.revision(), current.name.clone());
+                match field.resolve(
+                    RetainedFieldConflictChoice::AcceptRemote,
+                    snapshot.revision(),
+                ) {
+                    Ok(RetainedFieldResolution::AcceptedRemote { .. }) => Ok(()),
+                    Ok(other) => Err(format!(
+                        "blackboard accept-remote did not accept remote: {other:?}"
+                    )),
+                    Err(error) => Err(format!("blackboard accept-remote rejected: {error}")),
                 }
             });
         match result {
@@ -566,9 +561,18 @@ impl Render for NativeBlackboard {
                 let phase = self
                     .drafts
                     .get(&id)
-                    .map_or(DraftPhase::Clean, RevisionedDraft::phase);
-                let dirty = phase != DraftPhase::Clean;
-                let conflicted = matches!(phase, DraftPhase::Conflict);
+                    .map_or(RetainedFieldPhase::Clean, RevisionedField::phase);
+                let dirty = phase != RetainedFieldPhase::Clean;
+                let conflicted = matches!(phase, RetainedFieldPhase::Conflict);
+                let can_submit = self.drafts.get(&id).is_some_and(|field| {
+                    matches!(field.attempt_state(), RetainedFieldAttemptState::Idle)
+                        && (field.can_submit() || conflicted)
+                });
+                let field_notice = self
+                    .drafts
+                    .get(&id)
+                    .and_then(RevisionedField::notice)
+                    .map(str::to_owned);
                 let input_panel = cx.weak_entity();
                 let apply_panel = cx.weak_entity();
                 let accept_panel = cx.weak_entity();
@@ -649,7 +653,7 @@ impl Render for NativeBlackboard {
                                                 ButtonVariant::Ghost
                                             })
                                             .xsmall()
-                                            .disabled(!dirty)
+                                            .disabled(!can_submit)
                                             .on_click(
                                                 move |_, window, cx| {
                                                     let _ = apply_panel.update(cx, |panel, cx| {
@@ -682,6 +686,9 @@ impl Render for NativeBlackboard {
                                         },
                                     ),
                                 )
+                        }))
+                        .children(field_notice.map(|message| {
+                            div().text_xs().text_color(rgb(0xff8b84)).child(message)
                         })),
                 );
             }

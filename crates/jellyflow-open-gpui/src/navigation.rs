@@ -6,6 +6,7 @@ const DEFAULT_MAX_ZOOM: f32 = 4.0;
 const DEFAULT_WHEEL_ZOOM_SENSITIVITY: f32 = 0.005;
 const DEFAULT_FIT_VIEW_PADDING: f32 = 48.0;
 const DEFAULT_ALIGNMENT_TOLERANCE: f32 = 6.0;
+const DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW: f32 = 1.0;
 const DEFAULT_GRID_SIZE: CanvasSize = CanvasSize {
     width: 20.0,
     height: 20.0,
@@ -54,9 +55,14 @@ impl OpenGpuiNavigationConfig {
     /// Creates the native defaults for an explicit input profile.
     #[must_use]
     pub fn for_profile(profile: OpenGpuiNavigationProfile) -> Self {
+        let interaction = CanvasInteractionConfig {
+            node_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
+            connection_drag_threshold_in_view: DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW,
+            ..CanvasInteractionConfig::default()
+        };
         Self {
             profile,
-            interaction: CanvasInteractionConfig::default(),
+            interaction,
             grid_size_in_canvas: Some(DEFAULT_GRID_SIZE),
             snap_to_grid: false,
             alignment_snap_tolerance_in_view: Some(DEFAULT_ALIGNMENT_TOLERANCE),
@@ -243,6 +249,21 @@ mod tests {
         assert!(!mouse.profile().wheel_pans());
         assert!(trackpad.profile().wheel_pans());
         assert!(blueprint.profile().right_button_pans());
+    }
+
+    #[test]
+    fn native_node_and_connection_drags_arm_after_one_screen_pixel() {
+        let runtime = OpenGpuiNavigationConfig::default().runtime_config();
+
+        assert_eq!(
+            runtime.node_drag_threshold_in_view,
+            DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW
+        );
+        assert_eq!(
+            runtime.connection_drag_threshold_in_view,
+            DEFAULT_NATIVE_DRAG_THRESHOLD_IN_VIEW
+        );
+        assert_eq!(runtime.canvas_drag_threshold_in_view, 3.0);
     }
 
     #[test]
