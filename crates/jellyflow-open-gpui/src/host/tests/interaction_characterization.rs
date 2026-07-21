@@ -212,7 +212,10 @@ fn invalid_connection_preview_uses_the_bounded_non_color_cue(cx: &mut open_gpui:
             .last_connection_preview_paint
             .get()
             .expect("invalid preview paint evidence");
-        assert_eq!(evidence.probe, OpenGpuiConnectionPreviewProbeOutcome::Invalid);
+        assert_eq!(
+            evidence.probe,
+            OpenGpuiConnectionPreviewProbeOutcome::Invalid
+        );
         assert_eq!(evidence.paint_key, invalid.path_batch_key());
         assert!(evidence.paint_key.has_invalid_cue());
         assert_ne!(
