@@ -15,22 +15,40 @@ use jellyflow_runtime::runtime::adapter_protocol::conformance::{
     ConformanceCandidate as TraceCandidate, ConformanceEffect as TraceEffect,
     ConformanceGeometry as TraceGeometry, ConformanceOwnership as TraceOwnership,
     ConformancePhase as TracePhase, ConformanceScenario as CanonicalInteractionTrace,
-    ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
-    ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket, NormalizedObservation,
-    canonical_scenarios, compare_observations,
+    ConformanceScenarioId as TraceScenarioId, ConformanceSettlement as TraceReceipt,
+    ConformanceTarget as TraceTarget, ConformanceTerminal as TraceTerminal,
+    ConformanceTicket as TraceTicket, NormalizedObservation, canonical_scenarios,
+    compare_observations,
 };
 use jellyflow_runtime::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
-    CanvasPressTarget, CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart,
-    ConnectionProbe, ConnectionSearchSelection, EdgeEndpoint, FrameRequest, FreshGraphMutation,
-    GraphRuntime, HandlePosition, InteractionTerminalReason, InteractionTicketId, RendererStamp,
-    SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
+    ApplyPipelineError, CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase,
+    CanvasPressFallback, CanvasPressTarget, CommandSettlement, ConnectionGestureIntent,
+    ConnectionInteractionStart, ConnectionProbe, ConnectionSearchSelection, EdgeEndpoint,
+    FrameRequest, FreshGraphMutation, GraphCommand, GraphCommandOutcome, GraphRuntime,
+    GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot, HandlePosition,
+    InteractionTerminalReason, InteractionTicketId, RendererStamp, SelectionMode, TopologyEdit,
+    ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
 
 #[test]
 fn egui_native_events_replay_every_canonical_interaction_trace() {
     for trace in canonical_scenarios() {
-        EguiTraceRunner::new().replay(&trace);
+        EguiTraceRunner::for_scenario(trace.id).replay(&trace);
+    }
+}
+
+struct RejectCanonicalCommand;
+
+impl GraphRuntimeMiddleware for RejectCanonicalCommand {
+    fn before_command(
+        &mut self,
+        _snapshot: GraphRuntimeMiddlewareSnapshot,
+        _command: &GraphCommand,
+    ) -> Result<(), ApplyPipelineError> {
+        Err(ApplyPipelineError::Rejected {
+            message: "canonical egui command rejected".to_owned(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -117,11 +135,27 @@ struct EguiTraceRunner {
     pointer: Pos2,
     ticket: Option<InteractionTicketId>,
     mutation: Option<FreshGraphMutation>,
+    baseline_revision: u64,
+    excluded_revision_delta: u64,
+    prefix_held: bool,
 }
 
 impl EguiTraceRunner {
     fn new() -> Self {
-        let state = EguiTraceState::new();
+        Self::for_settlement(None)
+    }
+
+    fn for_scenario(id: TraceScenarioId) -> Self {
+        Self::for_settlement(scenario_settlement(id))
+    }
+
+    fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
+        let state = EguiTraceState::for_settlement(settlement);
+        let baseline_revision = state
+            .runtime
+            .snapshot()
+            .expect("canonical egui baseline")
+            .revision();
         let pointer = state.anchors.source_pos();
         let harness = Harness::builder()
             .with_size(Vec2::new(900.0, 500.0))
@@ -131,6 +165,9 @@ impl EguiTraceRunner {
             pointer,
             ticket: None,
             mutation: None,
+            baseline_revision,
+            excluded_revision_delta: 0,
+            prefix_held: false,
         }
     }
 
@@ -154,12 +191,20 @@ impl EguiTraceRunner {
             TraceInput::MoveToCandidate(candidate) => self.move_to_candidate(candidate),
             TraceInput::Release => self.release(),
             TraceInput::SelectSearchCandidate => self.select_search_result(),
+            TraceInput::QueuePrefix => {
+                assert!(!self.prefix_held, "canonical prefix is already held");
+                self.prefix_held = true;
+                TraceEffect::None
+            }
+            TraceInput::DrainPrefix => self.drain_prefix(),
             TraceInput::AdvanceFrame => {
                 self.harness.step();
                 let output = self.take_output();
                 self.capture_semantic_effect(output, false)
             }
             TraceInput::Settle(receipt) => self.settle(receipt),
+            TraceInput::LoseCapture => self.lose_capture(),
+            TraceInput::ReplaceOwner => self.replace_owner(),
             TraceInput::Cancel(reason) => self.cancel(reason),
             TraceInput::RetireSource => {
                 self.state_mut().response_visible = false;
@@ -265,37 +310,117 @@ impl EguiTraceRunner {
     }
 
     fn settle(&mut self, receipt: TraceReceipt) -> TraceEffect {
+        assert!(
+            !self.prefix_held,
+            "command transport cannot bypass a held prefix"
+        );
         let ticket = self.ticket.take().expect("trace submitted one command");
         let mutation = self.mutation.take().expect("trace captured one mutation");
-        if receipt == TraceReceipt::Applied {
-            let snapshot = self
-                .state()
-                .runtime
-                .snapshot()
-                .expect("fresh egui trace snapshot");
-            let command = mutation
-                .into_command(&snapshot)
-                .expect("egui trace mutation binds")
-                .expect("applied egui trace mutation is not a noop");
-            self.state()
-                .runtime
-                .execute(command)
-                .expect("egui trace command executes")
-                .applied()
-                .expect("applied settlement installs the mutation");
-        }
+        let settlement = self.dispatch_mutation(receipt, mutation);
         let ctx = self.harness.ctx.clone();
         let state = self.harness.state_mut();
         state
             .interaction
-            .settle(&state.view, &ctx, ticket, settlement(receipt))
+            .settle(&state.view, &ctx, ticket, settlement)
             .expect("receipt settles");
-        match receipt {
-            TraceReceipt::Applied | TraceReceipt::Noop => TraceEffect::None,
-            TraceReceipt::Rejected | TraceReceipt::Conflict | TraceReceipt::TransportFailure => {
-                TraceEffect::RestorePresentation
-            }
+        match settlement {
+            CommandSettlement::Applied | CommandSettlement::Noop => TraceEffect::None,
+            CommandSettlement::Rejected
+            | CommandSettlement::Conflict
+            | CommandSettlement::TransportFailure => TraceEffect::RestorePresentation,
         }
+    }
+
+    fn dispatch_mutation(
+        &mut self,
+        requested: TraceReceipt,
+        mutation: FreshGraphMutation,
+    ) -> CommandSettlement {
+        let snapshot = self
+            .state()
+            .runtime
+            .snapshot()
+            .expect("fresh egui transport snapshot");
+        let emitted = mutation
+            .into_command(&snapshot)
+            .expect("egui transport binds the emitted mutation")
+            .expect("canonical emitted mutation is not a no-op");
+        if requested == TraceReceipt::TransportFailure {
+            let (sender, receiver) = std::sync::mpsc::channel::<GraphCommandOutcome>();
+            drop(sender);
+            return receiver
+                .recv()
+                .map_or(CommandSettlement::TransportFailure, |_| {
+                    panic!("a disconnected transport cannot produce a receipt")
+                });
+        }
+        let command = match requested {
+            TraceReceipt::Noop => GraphCommand::set_node_data(
+                snapshot.revision(),
+                self.state().ids.source_node,
+                snapshot
+                    .graph()
+                    .node(&self.state().ids.source_node)
+                    .expect("canonical source node")
+                    .data
+                    .clone(),
+            ),
+            TraceReceipt::Conflict => {
+                self.execute_external_revision("conflict");
+                emitted
+            }
+            TraceReceipt::Applied | TraceReceipt::Rejected => emitted,
+            TraceReceipt::TransportFailure => unreachable!("handled before command dispatch"),
+        };
+        command_settlement(self.state().runtime.execute(command))
+    }
+
+    fn drain_prefix(&mut self) -> TraceEffect {
+        assert!(
+            self.prefix_held,
+            "canonical prefix must be queued before draining"
+        );
+        self.execute_external_revision("prefix");
+        self.prefix_held = false;
+        TraceEffect::None
+    }
+
+    fn execute_external_revision(&mut self, reason: &str) {
+        let snapshot = self
+            .state()
+            .runtime
+            .snapshot()
+            .expect("external egui transport snapshot");
+        let command = GraphCommand::set_node_data(
+            snapshot.revision(),
+            self.state().ids.invalid_node,
+            serde_json::json!({ "external": reason }),
+        );
+        self.state()
+            .runtime
+            .execute(command)
+            .expect("external egui transport command executes")
+            .applied()
+            .expect("external egui transport command applies");
+        self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
+    }
+
+    fn lose_capture(&mut self) -> TraceEffect {
+        self.harness.event(Event::PointerGone);
+        self.harness.step();
+        let output = self.take_output();
+        assert!(output.released_native_ownership());
+        TraceEffect::ReleaseNativeOwnership
+    }
+
+    fn replace_owner(&mut self) -> TraceEffect {
+        let successor = Id::new("foreign-egui-owner");
+        self.state_mut().steal_capture = true;
+        self.harness.step();
+        let output = self.take_output();
+        assert!(output.released_native_ownership());
+        assert_eq!(self.harness.ctx.dragged_id(), Some(successor));
+        TraceEffect::ReleaseNativeOwnership
     }
 
     fn cancel(&mut self, reason: TraceCancelReason) -> TraceEffect {
@@ -431,7 +556,9 @@ impl EguiTraceRunner {
             .runtime
             .snapshot()
             .expect("egui trace runtime remains available")
-            .revision();
+            .revision()
+            .saturating_sub(self.baseline_revision)
+            .saturating_sub(self.excluded_revision_delta);
         let geometry = if presentation.phase() == CanvasInteractionPhase::Closed {
             TraceGeometry::Unavailable
         } else {
@@ -445,6 +572,8 @@ impl EguiTraceRunner {
             graph_revision_delta,
             geometry,
         );
+        observation.optimistic_presentation = self.ticket.is_some()
+            && (presentation.connection().is_some() || presentation.node_drag().is_some());
         observation.terminal = presentation.terminal().map(trace_terminal);
         observation
     }
@@ -520,6 +649,10 @@ struct EguiTraceState {
 
 impl EguiTraceState {
     fn new() -> Self {
+        Self::for_settlement(None)
+    }
+
+    fn for_settlement(settlement: Option<TraceReceipt>) -> Self {
         let ids = TraceGraphIds::new();
         let anchors = TraceAnchors::new();
         let mut builder = GraphBuilder::new(GraphId::from_u128(1));
@@ -557,6 +690,16 @@ impl EguiTraceState {
         let runtime = GraphRuntime::builder(Default::default())
             .build(builder.build().expect("trace graph"))
             .expect("trace runtime");
+        let runtime = match settlement {
+            Some(TraceReceipt::Rejected) => runtime.with_middleware(RejectCanonicalCommand),
+            Some(
+                TraceReceipt::Applied
+                | TraceReceipt::Noop
+                | TraceReceipt::Conflict
+                | TraceReceipt::TransportFailure,
+            )
+            | None => runtime,
+        };
         let view = runtime
             .attach_view(ViewSessionOptions::default())
             .expect("trace view");
@@ -720,13 +863,34 @@ fn paint_native_evidence(ui: &Ui, state: &EguiTraceState) {
     }
 }
 
-fn settlement(receipt: TraceReceipt) -> CommandSettlement {
-    match receipt {
-        TraceReceipt::Applied => CommandSettlement::Applied,
-        TraceReceipt::Noop => CommandSettlement::Noop,
-        TraceReceipt::Rejected => CommandSettlement::Rejected,
-        TraceReceipt::Conflict => CommandSettlement::Conflict,
-        TraceReceipt::TransportFailure => CommandSettlement::TransportFailure,
+fn command_settlement(
+    outcome: Result<GraphCommandOutcome, jellyflow_runtime::GraphRuntimeError>,
+) -> CommandSettlement {
+    match outcome {
+        Ok(GraphCommandOutcome::Applied(_)) => CommandSettlement::Applied,
+        Ok(GraphCommandOutcome::Noop(_)) => CommandSettlement::Noop,
+        Ok(GraphCommandOutcome::Rejected(_)) => CommandSettlement::Rejected,
+        Ok(GraphCommandOutcome::Conflict(_)) => CommandSettlement::Conflict,
+        Err(_) => CommandSettlement::TransportFailure,
+    }
+}
+
+fn scenario_settlement(id: TraceScenarioId) -> Option<TraceReceipt> {
+    match id {
+        TraceScenarioId::NewConnection(settlement)
+        | TraceScenarioId::ReconnectSource(settlement)
+        | TraceScenarioId::ReconnectTarget(settlement)
+        | TraceScenarioId::CreateFromWire(settlement)
+        | TraceScenarioId::NodeDrag(settlement) => Some(settlement),
+        TraceScenarioId::NodeDragPrefixWait
+        | TraceScenarioId::NativeControl
+        | TraceScenarioId::EdgePick
+        | TraceScenarioId::CaptureLost
+        | TraceScenarioId::OwnerReplaced
+        | TraceScenarioId::Escape
+        | TraceScenarioId::OutsideClick
+        | TraceScenarioId::SourceRetired
+        | TraceScenarioId::HostClosed => None,
     }
 }
 

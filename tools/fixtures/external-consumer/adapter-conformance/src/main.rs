@@ -186,6 +186,10 @@ impl ExternalNativeDriver {
             ConformanceAction::Cancel(reason) => LocalNativeEvent::Cancel(reason),
             ConformanceAction::MoveToCandidate(ConformanceCandidate::None)
             | ConformanceAction::SelectSearchCandidate
+            | ConformanceAction::QueuePrefix
+            | ConformanceAction::DrainPrefix
+            | ConformanceAction::LoseCapture
+            | ConformanceAction::ReplaceOwner
             | ConformanceAction::RetireSource
             | ConformanceAction::CloseHost => {
                 panic!("the minimal external driver does not implement {action:?}")
@@ -403,6 +407,8 @@ impl ExternalNativeDriver {
             geometry,
         );
         observation.terminal = presentation.terminal().map(normalized_terminal);
+        observation.optimistic_presentation = self.ticket.is_some()
+            && (presentation.connection().is_some() || presentation.node_drag().is_some());
         observation
     }
 }

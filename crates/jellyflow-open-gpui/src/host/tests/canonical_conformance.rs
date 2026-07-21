@@ -1,5 +1,9 @@
 use super::*;
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll, Waker};
+
 use jellyflow_runtime::runtime::adapter_protocol::conformance::{
     ConformanceAction, ConformanceCancelReason, ConformanceCandidate, ConformanceEffect,
     ConformanceGeometry, ConformanceOwnership, ConformancePhase, ConformanceScenario,
@@ -8,7 +12,7 @@ use jellyflow_runtime::runtime::adapter_protocol::conformance::{
 };
 use open_gpui::{InputEvent, MouseUpEvent};
 
-use crate::command_journal::OpenGpuiCommandOrigin;
+use crate::command_journal::{OpenGpuiCommandOrigin, OpenGpuiCommandPrefixPermit};
 
 fn source_node() -> NodeId {
     NodeId::from_u128(10)
@@ -149,6 +153,8 @@ struct CanonicalDriver {
     pointer: Option<open_gpui::Point<open_gpui::Pixels>>,
     last_effect: ConformanceEffect,
     control_hits: std::rc::Rc<std::cell::Cell<u32>>,
+    prefix_permit: Option<OpenGpuiCommandPrefixPermit>,
+    foreign_capture: Option<HitboxId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +255,8 @@ impl CanonicalDriver {
                 pointer: None,
                 last_effect: ConformanceEffect::None,
                 control_hits,
+                prefix_permit: None,
+                foreign_capture: None,
             },
             cx,
         )
@@ -259,7 +267,10 @@ impl CanonicalDriver {
         match action {
             ConformanceAction::Press(target) => self.press(target, cx),
             ConformanceAction::CrossDragThreshold => {
-                let position = if matches!(self.id, ConformanceScenarioId::NodeDrag(_)) {
+                let position = if matches!(
+                    self.id,
+                    ConformanceScenarioId::NodeDrag(_) | ConformanceScenarioId::NodeDragPrefixWait
+                ) {
                     let start = self.pointer.expect("node drag press position");
                     point(start.x + px(48.0), start.y + px(36.0))
                 } else {
@@ -287,6 +298,8 @@ impl CanonicalDriver {
                         .expect("select canonical search candidate");
                 });
             }
+            ConformanceAction::QueuePrefix => self.queue_prefix(cx),
+            ConformanceAction::DrainPrefix => self.drain_prefix(cx),
             ConformanceAction::AdvanceFrame => {
                 draw_once(cx);
                 self.prepare_injected_receipt(cx);
@@ -297,6 +310,8 @@ impl CanonicalDriver {
                     self.assert_applied_mutation();
                 }
             }
+            ConformanceAction::LoseCapture => self.lose_capture(cx),
+            ConformanceAction::ReplaceOwner => self.replace_owner(cx),
             ConformanceAction::Cancel(ConformanceCancelReason::Escape) => {
                 cx.simulate_keystrokes("escape");
             }
@@ -441,6 +456,58 @@ impl CanonicalDriver {
         panic!("canonical interaction did not settle within retained-frame bound");
     }
 
+    fn queue_prefix(&mut self, cx: &mut open_gpui::VisualTestContext) {
+        assert!(
+            self.prefix_permit.is_none(),
+            "canonical prefix is already held"
+        );
+        let mut barrier = cx.read_entity(&self.host, |host, _| {
+            host.commands
+                .capture_prefix_barrier()
+                .expect("capture canonical prefix")
+        });
+        let mut context = TaskContext::from_waker(Waker::noop());
+        let permit = match Future::poll(Pin::new(&mut barrier), &mut context) {
+            Poll::Ready(Ok(permit)) => permit,
+            Poll::Ready(Err(error)) => panic!("canonical prefix failed: {error}"),
+            Poll::Pending => panic!("empty canonical prefix must be ready"),
+        };
+        self.prefix_permit = Some(permit);
+    }
+
+    fn drain_prefix(&mut self, _cx: &mut open_gpui::VisualTestContext) {
+        let permit = self
+            .prefix_permit
+            .take()
+            .expect("canonical prefix must be queued before draining");
+        let snapshot = self.runtime.snapshot().expect("canonical prefix snapshot");
+        permit
+            .enqueue_detached(
+                GraphCommand::set_node_data(
+                    snapshot.revision(),
+                    invalid_node(),
+                    serde_json::json!({ "external": "prefix" }),
+                ),
+                OpenGpuiCommandOrigin::Binding,
+            )
+            .expect("enqueue canonical prefix command");
+        self.excluded_revision_delta = self.excluded_revision_delta.saturating_add(1);
+    }
+
+    fn lose_capture(&mut self, cx: &mut open_gpui::VisualTestContext) {
+        cx.update(|window, _| window.release_pointer());
+        draw_once(cx);
+        cx.run_until_parked();
+    }
+
+    fn replace_owner(&mut self, cx: &mut open_gpui::VisualTestContext) {
+        let successor = HitboxId::placeholder();
+        cx.update(|window, _| window.capture_pointer(successor));
+        self.foreign_capture = Some(successor);
+        draw_once(cx);
+        cx.run_until_parked();
+    }
+
     fn prepare_injected_receipt(&mut self, cx: &mut open_gpui::VisualTestContext) {
         let Some(settlement) = scenario_settlement(self.id) else {
             return;
@@ -576,6 +643,16 @@ impl CanonicalDriver {
                     CanvasPoint { x: 40.0, y: 80.0 },
                 );
             }
+            ConformanceScenarioId::NodeDragPrefixWait => {
+                assert_ne!(
+                    snapshot
+                        .graph()
+                        .node(&source_node())
+                        .expect("dragged source node")
+                        .pos,
+                    CanvasPoint { x: 40.0, y: 80.0 },
+                );
+            }
             _ => panic!("Applied settlement is only valid for mutation scenarios"),
         }
     }
@@ -604,7 +681,7 @@ impl CanonicalDriver {
     }
 
     fn observe(&self, cx: &mut open_gpui::VisualTestContext) -> NormalizedObservation {
-        let captured = cx.update(|window, _| window.captured_hitbox()).is_some();
+        let captured = cx.update(|window, _| window.captured_hitbox());
         cx.read_entity(&self.host, |host, _| {
             let presentation = host.interaction_presentation();
             let ticket = presentation
@@ -615,7 +692,7 @@ impl CanonicalDriver {
                 phase: normalized_phase(&presentation),
                 effect: self.last_effect,
                 terminal: presentation.terminal().map(normalized_terminal),
-                ownership: if captured {
+                ownership: if captured.is_some() && captured != self.foreign_capture {
                     ConformanceOwnership::Held
                 } else {
                     ConformanceOwnership::Released
@@ -625,6 +702,8 @@ impl CanonicalDriver {
                 } else {
                     ConformanceTicket::None
                 },
+                optimistic_presentation: ticket.is_some()
+                    && (presentation.connection().is_some() || presentation.node_drag().is_some()),
                 graph_revision_delta: self
                     .runtime
                     .snapshot()
@@ -650,6 +729,12 @@ impl CanonicalDriver {
             });
         }
         cx.run_until_parked();
+        if let Some(successor) = self.foreign_capture {
+            cx.update(|window, _| {
+                assert_eq!(window.captured_hitbox(), Some(successor));
+                window.release_pointer();
+            });
+        }
     }
 }
 
@@ -741,8 +826,11 @@ fn scenario_settlement(id: ConformanceScenarioId) -> Option<ConformanceSettlemen
         | ConformanceScenarioId::ReconnectTarget(settlement)
         | ConformanceScenarioId::CreateFromWire(settlement)
         | ConformanceScenarioId::NodeDrag(settlement) => Some(settlement),
-        ConformanceScenarioId::NativeControl
+        ConformanceScenarioId::NodeDragPrefixWait
+        | ConformanceScenarioId::NativeControl
         | ConformanceScenarioId::EdgePick
+        | ConformanceScenarioId::CaptureLost
+        | ConformanceScenarioId::OwnerReplaced
         | ConformanceScenarioId::Escape
         | ConformanceScenarioId::OutsideClick
         | ConformanceScenarioId::SourceRetired

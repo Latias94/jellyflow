@@ -553,6 +553,8 @@ struct TraceHarness {
     ticket: Option<InteractionTicketId>,
     mutation: Option<jellyflow_runtime::FreshGraphMutation>,
     initial_revision: u64,
+    excluded_revision_delta: u64,
+    prefix_held: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -664,6 +666,8 @@ impl TraceHarness {
             ticket: None,
             mutation: None,
             initial_revision: 0,
+            excluded_revision_delta: 0,
+            prefix_held: false,
         }
     }
 
@@ -679,6 +683,30 @@ impl TraceHarness {
 
     fn apply(&mut self, input: TraceInput) -> TraceEffect {
         match input {
+            TraceInput::QueuePrefix => {
+                assert!(!self.prefix_held, "the canonical trace holds one prefix");
+                self.prefix_held = true;
+                TraceEffect::None
+            }
+            TraceInput::DrainPrefix => {
+                assert!(
+                    self.prefix_held,
+                    "the canonical trace queued a prefix first"
+                );
+                let snapshot = self.runtime.snapshot().expect("fresh trace snapshot");
+                self.runtime
+                    .execute(GraphCommand::set_node_data(
+                        snapshot.revision(),
+                        self.ids.invalid_node,
+                        serde_json::json!({ "external_prefix": true }),
+                    ))
+                    .expect("the unrelated prefix command executes")
+                    .applied()
+                    .expect("the unrelated prefix command mutates the graph");
+                self.excluded_revision_delta += 1;
+                self.prefix_held = false;
+                TraceEffect::None
+            }
             TraceInput::Press(target) => self.press(target),
             TraceInput::CrossDragThreshold => {
                 self.pointer = normalized_position(&self.view, self.anchors.empty);
@@ -736,6 +764,10 @@ impl TraceHarness {
                     reason,
                     TraceCancelReason::Escape | TraceCancelReason::OutsideClick
                 ));
+                self.session.cancel();
+                TraceEffect::ReleaseNativeOwnership
+            }
+            TraceInput::LoseCapture | TraceInput::ReplaceOwner => {
                 self.session.cancel();
                 TraceEffect::ReleaseNativeOwnership
             }
@@ -1009,7 +1041,8 @@ impl TraceHarness {
             .snapshot()
             .expect("trace runtime remains available")
             .revision()
-            .saturating_sub(self.initial_revision);
+            .saturating_sub(self.initial_revision)
+            .saturating_sub(self.excluded_revision_delta);
         let geometry = if presentation.phase() == CanvasInteractionPhase::Closed {
             TraceGeometry::Unavailable
         } else {
@@ -1024,6 +1057,8 @@ impl TraceHarness {
             geometry,
         );
         observation.terminal = presentation.terminal().map(trace_terminal);
+        observation.optimistic_presentation = self.ticket.is_some()
+            && (presentation.connection().is_some() || presentation.node_drag().is_some());
         observation
     }
 

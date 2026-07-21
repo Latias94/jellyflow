@@ -594,7 +594,9 @@ impl EguiCanvasInteraction {
 
     fn release_native_ownership(&mut self, ctx: &Context, output: &mut EguiInteractionOutput) {
         if self.native_capture {
-            ctx.stop_dragging();
+            if ctx.dragged_id() == self.tracked_response {
+                ctx.stop_dragging();
+            }
             self.native_capture = false;
             output.released_native_ownership = true;
         }

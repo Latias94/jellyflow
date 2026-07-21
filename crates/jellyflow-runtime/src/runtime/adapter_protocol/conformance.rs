@@ -13,8 +13,11 @@ pub enum ConformanceScenarioId {
     ReconnectTarget(ConformanceSettlement),
     CreateFromWire(ConformanceSettlement),
     NodeDrag(ConformanceSettlement),
+    NodeDragPrefixWait,
     NativeControl,
     EdgePick,
+    CaptureLost,
+    OwnerReplaced,
     Escape,
     OutsideClick,
     SourceRetired,
@@ -72,8 +75,12 @@ pub enum ConformanceAction {
     MoveToCandidate(ConformanceCandidate),
     Release,
     SelectSearchCandidate,
+    QueuePrefix,
+    DrainPrefix,
     AdvanceFrame,
     Settle(ConformanceSettlement),
+    LoseCapture,
+    ReplaceOwner,
     Cancel(ConformanceCancelReason),
     RetireSource,
     CloseHost,
@@ -147,6 +154,7 @@ pub struct NormalizedObservation {
     pub terminal: Option<ConformanceTerminal>,
     pub ownership: ConformanceOwnership,
     pub ticket: ConformanceTicket,
+    pub optimistic_presentation: bool,
     pub graph_revision_delta: u64,
     pub geometry: ConformanceGeometry,
 }
@@ -167,6 +175,7 @@ impl NormalizedObservation {
             terminal: None,
             ownership,
             ticket,
+            optimistic_presentation: false,
             graph_revision_delta,
             geometry,
         }
@@ -175,6 +184,12 @@ impl NormalizedObservation {
     #[must_use]
     pub const fn with_terminal(mut self, terminal: ConformanceTerminal) -> Self {
         self.terminal = Some(terminal);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_optimistic_presentation(mut self) -> Self {
+        self.optimistic_presentation = true;
         self
     }
 }
@@ -302,6 +317,8 @@ pub fn canonical_scenarios() -> Vec<ConformanceScenario> {
     }
     scenarios.push(native_control_scenario());
     scenarios.push(edge_pick_scenario());
+    scenarios.push(node_drag_prefix_wait_scenario());
+    scenarios.extend(capture_ownership_scenarios());
     scenarios.extend(terminal_ownership_scenarios());
     scenarios
 }
@@ -448,6 +465,40 @@ pub fn node_drag_scenario(settlement: ConformanceSettlement) -> ConformanceScena
     }
 }
 
+/// Exercises an application-owned command prefix without allowing the optimistic drag to jump.
+#[must_use]
+pub fn node_drag_prefix_wait_scenario() -> ConformanceScenario {
+    ConformanceScenario {
+        id: ConformanceScenarioId::NodeDragPrefixWait,
+        display_name: "node-drag-prefix-wait",
+        steps: vec![
+            released_step(
+                ConformanceAction::QueuePrefix,
+                ConformancePhase::Idle,
+                ConformanceEffect::None,
+            ),
+            held_step(
+                ConformanceAction::Press(ConformanceTarget::NodeDragHandle),
+                ConformancePhase::Armed,
+                ConformanceEffect::None,
+            ),
+            held_step(
+                ConformanceAction::CrossDragThreshold,
+                ConformancePhase::NodeDrag,
+                ConformanceEffect::None,
+            ),
+            pending_step(
+                ConformanceAction::Release,
+                ConformanceEffect::SubmitNodeMove,
+            ),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
+            pending_step(ConformanceAction::DrainPrefix, ConformanceEffect::None),
+            pending_step(ConformanceAction::AdvanceFrame, ConformanceEffect::None),
+            settlement_step(ConformanceSettlement::Applied, ConformancePhase::Idle),
+        ],
+    }
+}
+
 #[must_use]
 pub fn native_control_scenario() -> ConformanceScenario {
     ConformanceScenario {
@@ -476,6 +527,63 @@ pub fn edge_pick_scenario() -> ConformanceScenario {
                 ConformanceAction::Release,
                 ConformancePhase::Idle,
                 ConformanceEffect::None,
+            ),
+        ],
+    }
+}
+
+/// Returns native ownership replacement and loss scenarios shared by real adapters.
+#[must_use]
+pub fn capture_ownership_scenarios() -> [ConformanceScenario; 2] {
+    [
+        capture_terminal_scenario(
+            ConformanceScenarioId::CaptureLost,
+            "capture-lost",
+            ConformanceAction::LoseCapture,
+        ),
+        capture_terminal_scenario(
+            ConformanceScenarioId::OwnerReplaced,
+            "owner-replaced",
+            ConformanceAction::ReplaceOwner,
+        ),
+    ]
+}
+
+fn capture_terminal_scenario(
+    id: ConformanceScenarioId,
+    display_name: &'static str,
+    terminal_action: ConformanceAction,
+) -> ConformanceScenario {
+    ConformanceScenario {
+        id,
+        display_name,
+        steps: vec![
+            held_step(
+                ConformanceAction::Press(ConformanceTarget::SourcePort),
+                ConformancePhase::Armed,
+                ConformanceEffect::None,
+            ),
+            held_step(
+                ConformanceAction::CrossDragThreshold,
+                ConformancePhase::ConnectionDrag,
+                ConformanceEffect::ProbeConnection,
+            ),
+            terminal_step(
+                terminal_action,
+                ConformanceTerminal::Cancelled,
+                ConformanceGeometry::Available,
+            ),
+            ConformanceStep::new(
+                ConformanceAction::AdvanceFrame,
+                NormalizedObservation::new(
+                    ConformancePhase::Idle,
+                    ConformanceEffect::None,
+                    ConformanceOwnership::Released,
+                    ConformanceTicket::None,
+                    0,
+                    ConformanceGeometry::Available,
+                )
+                .with_terminal(ConformanceTerminal::Cancelled),
             ),
         ],
     }
@@ -536,20 +644,28 @@ fn terminal_scenario(
                 ConformancePhase::ConnectionDrag,
                 ConformanceEffect::ProbeConnection,
             ),
-            ConformanceStep::new(
-                terminal_action,
-                NormalizedObservation::new(
-                    ConformancePhase::Idle,
-                    ConformanceEffect::ReleaseNativeOwnership,
-                    ConformanceOwnership::Released,
-                    ConformanceTicket::None,
-                    0,
-                    geometry,
-                )
-                .with_terminal(terminal),
-            ),
+            terminal_step(terminal_action, terminal, geometry),
         ],
     }
+}
+
+const fn terminal_step(
+    action: ConformanceAction,
+    terminal: ConformanceTerminal,
+    geometry: ConformanceGeometry,
+) -> ConformanceStep {
+    ConformanceStep::new(
+        action,
+        NormalizedObservation::new(
+            ConformancePhase::Idle,
+            ConformanceEffect::ReleaseNativeOwnership,
+            ConformanceOwnership::Released,
+            ConformanceTicket::None,
+            0,
+            geometry,
+        )
+        .with_terminal(terminal),
+    )
 }
 
 const fn held_step(
@@ -598,7 +714,8 @@ const fn pending_step(action: ConformanceAction, effect: ConformanceEffect) -> C
             ConformanceTicket::Pending,
             0,
             ConformanceGeometry::Available,
-        ),
+        )
+        .with_optimistic_presentation(),
     )
 }
 
