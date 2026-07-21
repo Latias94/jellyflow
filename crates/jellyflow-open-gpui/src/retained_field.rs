@@ -15,7 +15,9 @@ use crate::draft::{
     DraftRestore, DraftSubmissionDecision, DraftSubmissionIntent, DraftSubmissionKind,
     RevisionedDraft,
 };
-pub use crate::draft_store::{RetainedFieldStore, RetainedFieldStoreError};
+pub use crate::draft_store::{
+    OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY, RetainedFieldStore, RetainedFieldStoreError,
+};
 
 const RETAINED_FIELD_KEY_MAX_BYTES: usize = 128;
 
@@ -452,23 +454,7 @@ where
         } = self.attempt_state
             && revision > expected_revision
         {
-            let submitted_is_authoritative = self
-                .draft
-                .pending_value()
-                .is_some_and(|submitted| *submitted == authoritative);
-            if submitted_is_authoritative {
-                self.draft.reject_submission(attempt.0);
-                self.draft.reconcile_remote(revision, authoritative);
-            } else {
-                self.draft.reject_stale(attempt.0, revision, authoritative);
-            }
-            self.attempt_state = RetainedFieldAttemptState::Idle;
-            self.notice = None;
-            return RetainedFieldUpdate::UncertainResolved {
-                attempt,
-                revision,
-                submitted_value_is_authoritative: submitted_is_authoritative,
-            };
+            return self.apply_fresh_uncertain_resolution(attempt, revision, authoritative);
         }
 
         let decision = self.draft.reconcile_remote(revision, authoritative);
@@ -750,14 +736,38 @@ where
         Ok(RetainedFieldSettlement::Uncertain { attempt, message })
     }
 
+    /// Resolves an uncertain command only from a snapshot strictly newer than its expectation.
+    ///
+    /// Older or equal revisions return [`RetainedFieldError::UncertainSnapshotNotFresh`] and
+    /// leave the attempt, notice, and local/authoritative values unchanged.
     pub fn resolve_uncertain_from_fresh(
         &mut self,
         revision: GraphRevision,
         authoritative: T,
     ) -> Result<RetainedFieldUpdate, RetainedFieldError> {
-        let RetainedFieldAttemptState::Uncertain { attempt, .. } = self.attempt_state else {
+        let RetainedFieldAttemptState::Uncertain {
+            attempt,
+            expected_revision,
+        } = self.attempt_state
+        else {
             return Err(RetainedFieldError::NoUncertainAttempt);
         };
+        if revision <= expected_revision {
+            return Err(RetainedFieldError::UncertainSnapshotNotFresh {
+                attempt,
+                observed_revision: revision,
+                expected_revision,
+            });
+        }
+        Ok(self.apply_fresh_uncertain_resolution(attempt, revision, authoritative))
+    }
+
+    fn apply_fresh_uncertain_resolution(
+        &mut self,
+        attempt: RetainedFieldAttempt,
+        revision: GraphRevision,
+        authoritative: T,
+    ) -> RetainedFieldUpdate {
         let submitted_is_authoritative = self
             .draft
             .pending_value()
@@ -770,11 +780,11 @@ where
         }
         self.attempt_state = RetainedFieldAttemptState::Idle;
         self.notice = None;
-        Ok(RetainedFieldUpdate::UncertainResolved {
+        RetainedFieldUpdate::UncertainResolved {
             attempt,
             revision,
             submitted_value_is_authoritative: submitted_is_authoritative,
-        })
+        }
     }
 
     pub(crate) fn reducer(&self) -> &RevisionedDraft<T> {
@@ -1039,6 +1049,14 @@ pub enum RetainedFieldError {
     AttemptMismatch { attempt: RetainedFieldAttempt },
     #[error("retained field has no uncertain attempt")]
     NoUncertainAttempt,
+    #[error(
+        "uncertain retained field snapshot revision {observed_revision} is not newer than expected revision {expected_revision} for attempt {attempt:?}"
+    )]
+    UncertainSnapshotNotFresh {
+        attempt: RetainedFieldAttempt,
+        observed_revision: GraphRevision,
+        expected_revision: GraphRevision,
+    },
     #[error("retained field mount is retired")]
     Retired,
     #[error("retained field mount is closed: {reason:?}")]
@@ -1205,6 +1223,46 @@ mod tests {
         );
         assert_eq!(field.phase(), RetainedFieldPhase::Clean);
         assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+    }
+
+    #[test]
+    fn explicit_uncertain_resolution_rejects_non_fresh_evidence_without_mutation() {
+        let (mut field, intent) = dirty_field();
+        field
+            .mark_uncertain(intent.attempt(), "unknown outcome")
+            .expect("mark uncertain");
+
+        for observed_revision in [6, 7] {
+            assert!(matches!(
+                field.resolve_uncertain_from_fresh(observed_revision, "stale".to_owned()),
+                Err(RetainedFieldError::UncertainSnapshotNotFresh {
+                    attempt,
+                    observed_revision: actual,
+                    expected_revision: 7,
+                }) if attempt == intent.attempt() && actual == observed_revision
+            ));
+            assert_eq!(
+                field.attempt_state(),
+                RetainedFieldAttemptState::Uncertain {
+                    attempt: intent.attempt(),
+                    expected_revision: 7,
+                }
+            );
+            assert_eq!(field.local(), "submitted");
+            assert_eq!(field.remote(), "remote");
+            assert!(field.notice().is_some());
+        }
+
+        assert!(matches!(
+            field.resolve_uncertain_from_fresh(8, "submitted".to_owned()),
+            Ok(RetainedFieldUpdate::UncertainResolved {
+                revision: 8,
+                submitted_value_is_authoritative: true,
+                ..
+            })
+        ));
+        assert_eq!(field.attempt_state(), RetainedFieldAttemptState::Idle);
+        assert_eq!(field.phase(), RetainedFieldPhase::Clean);
     }
 
     #[test]

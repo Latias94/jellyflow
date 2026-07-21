@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::rc::{Rc, Weak};
 
 use jellyflow_core::NodeId;
@@ -9,6 +10,9 @@ use jellyflow_runtime::{
 };
 
 use crate::draft::{DraftPhase, DraftRestore, ExternalizedDraft, RevisionedDraft};
+
+/// Default maximum number of externalized field identities retained by one store.
+pub const OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY: usize = 1_024;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct RetainedFieldStoreKey {
@@ -34,6 +38,7 @@ struct RetainedFieldStoreState<T> {
     bindings: BTreeMap<ViewId, RetainedFieldStoreBinding>,
     entries: BTreeMap<(ViewId, NodeId), BTreeMap<RetainedFieldStoreKey, ExternalizedDraft<T>>>,
     len: usize,
+    capacity: usize,
 }
 
 impl<T> Default for RetainedFieldStoreState<T> {
@@ -42,11 +47,21 @@ impl<T> Default for RetainedFieldStoreState<T> {
             bindings: BTreeMap::new(),
             entries: BTreeMap::new(),
             len: 0,
+            capacity: OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY,
         }
     }
 }
 
 impl<T> RetainedFieldStoreState<T> {
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
+        Self {
+            bindings: BTreeMap::new(),
+            entries: BTreeMap::new(),
+            len: 0,
+            capacity: capacity.get(),
+        }
+    }
+
     fn handle_view_event(&mut self, view: ViewId, event: ViewSessionEvent) {
         match event {
             ViewSessionEvent::RuntimePatched { patch } => {
@@ -80,12 +95,75 @@ impl<T> RetainedFieldStoreState<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::rc::Rc;
 
-    use jellyflow_core::{GraphBuilder, GraphId};
-    use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
+    use jellyflow_core::{
+        CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
+    };
+    use jellyflow_runtime::{
+        FrameRequest, GraphRuntime, NodeInstanceKey, RendererStamp, ViewSession, ViewSessionOptions,
+    };
 
-    use super::RetainedFieldStore;
+    use super::{RetainedFieldStore, RetainedFieldStoreError};
+    use crate::draft::{DraftPhase, RevisionedDraft};
+
+    fn node_id() -> NodeId {
+        NodeId::from_u128(0x0057_07e1)
+    }
+
+    fn runtime_with_node() -> GraphRuntime {
+        let mut graph = GraphBuilder::new(GraphId::from_u128(0x0057_07e2));
+        graph.insert_node(
+            node_id(),
+            Node {
+                kind: NodeKindKey::new("test.retained-field-store"),
+                kind_version: 1,
+                pos: CanvasPoint::default(),
+                origin: None,
+                selectable: None,
+                draggable: None,
+                connectable: None,
+                deletable: None,
+                parent: None,
+                extent: None,
+                expand_parent: None,
+                size: Some(CanvasSize {
+                    width: 180.0,
+                    height: 100.0,
+                }),
+                hidden: false,
+                collapsed: false,
+                ports: Vec::new(),
+                data: serde_json::Value::Null,
+            },
+        );
+        GraphRuntime::builder(Default::default())
+            .build(graph.build().expect("retained field store graph"))
+            .expect("retained field store runtime")
+    }
+
+    fn instance_for(view: &ViewSession) -> NodeInstanceKey {
+        let frame = view
+            .frame(FrameRequest::new(
+                CanvasRect {
+                    origin: CanvasPoint { x: -10.0, y: -10.0 },
+                    size: CanvasSize {
+                        width: 300.0,
+                        height: 200.0,
+                    },
+                },
+                RendererStamp::new("test.retained-field-store", 1),
+            ))
+            .expect("retained field store frame");
+        frame.nodes()[0].instance().clone()
+    }
+
+    fn dirty_draft(local: &str) -> RevisionedDraft<String> {
+        let mut draft = RevisionedDraft::new(1, "remote".to_owned());
+        draft.edit_local(local.to_owned());
+        draft
+    }
 
     #[test]
     fn clone_reuses_bindings_and_the_last_handle_releases_state() {
@@ -146,6 +224,143 @@ mod tests {
         second.close().expect("close second view");
         assert!(store.state.borrow().bindings.is_empty());
     }
+
+    #[test]
+    fn capacity_rejects_a_new_identity_without_evicting_existing_draft() {
+        let runtime = runtime_with_node();
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("retained field store view");
+        let instance = instance_for(&view);
+        let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
+        store
+            .ensure_bound(view.id(), &view.downgrade())
+            .expect("bind retained field store");
+
+        assert!(
+            store
+                .externalize_overflow(&instance, "first", &dirty_draft("first local"))
+                .expect("externalize first draft")
+        );
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.capacity(), 1);
+        assert_eq!(
+            store
+                .externalize_overflow(&instance, "second", &dirty_draft("second local"))
+                .expect_err("a new identity must not evict the first draft"),
+            RetainedFieldStoreError::CapacityExceeded { capacity: 1 }
+        );
+        assert_eq!(store.len(), 1);
+
+        let absent = store
+            .restore(&instance, "second", 2, "second remote".to_owned())
+            .expect("restore absent second field")
+            .into_draft();
+        assert_eq!(absent.local(), "second remote");
+        assert_eq!(absent.phase(), DraftPhase::Clean);
+        assert_eq!(store.len(), 1);
+
+        let preserved = store
+            .restore(&instance, "first", 2, "first remote".to_owned())
+            .expect("restore preserved first field")
+            .into_draft();
+        assert_eq!(preserved.local(), "first local");
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn exact_identity_refresh_is_allowed_at_capacity_and_restores_latest_draft() {
+        let runtime = runtime_with_node();
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("retained field store view");
+        let instance = instance_for(&view);
+        let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
+        store
+            .ensure_bound(view.id(), &view.downgrade())
+            .expect("bind retained field store");
+
+        store
+            .externalize_overflow(&instance, "field", &dirty_draft("first local"))
+            .expect("externalize first draft");
+        store
+            .externalize_overflow(&instance, "field", &dirty_draft("latest local"))
+            .expect("refresh exact field at capacity");
+        assert_eq!(store.len(), 1);
+
+        let restored = store
+            .restore(&instance, "field", 2, "remote".to_owned())
+            .expect("restore latest draft")
+            .into_draft();
+        assert_eq!(restored.local(), "latest local");
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn repeated_externalize_restore_cycles_keep_capacity_accounting_exact() {
+        let runtime = runtime_with_node();
+        let view = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("retained field store view");
+        let instance = instance_for(&view);
+        let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
+        store
+            .ensure_bound(view.id(), &view.downgrade())
+            .expect("bind retained field store");
+
+        for cycle in 0..64 {
+            let local = format!("local {cycle}");
+            store
+                .externalize_overflow(&instance, "field", &dirty_draft(&local))
+                .expect("externalize cycle draft");
+            assert_eq!(store.len(), 1);
+
+            let restored = store
+                .restore(&instance, "field", 2, "remote".to_owned())
+                .expect("restore cycle draft")
+                .into_draft();
+            assert_eq!(restored.local(), &local);
+            assert!(store.is_empty());
+        }
+    }
+
+    #[test]
+    fn terminal_view_retirement_releases_capacity_for_another_view() {
+        let runtime = runtime_with_node();
+        let first = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("first retained field store view");
+        let second = runtime
+            .attach_view(ViewSessionOptions::default())
+            .expect("second retained field store view");
+        let first_instance = instance_for(&first);
+        let second_instance = instance_for(&second);
+        let store = RetainedFieldStore::with_capacity(NonZeroUsize::new(1).unwrap());
+        store
+            .ensure_bound(first.id(), &first.downgrade())
+            .expect("bind first retained field store view");
+        store
+            .ensure_bound(second.id(), &second.downgrade())
+            .expect("bind second retained field store view");
+
+        store
+            .externalize_overflow(&first_instance, "field", &dirty_draft("first local"))
+            .expect("externalize first view draft");
+        assert!(matches!(
+            store.externalize_overflow(&second_instance, "field", &dirty_draft("second local"),),
+            Err(RetainedFieldStoreError::CapacityExceeded { capacity: 1 })
+        ));
+
+        first.close().expect("retire first view");
+        assert!(store.is_empty());
+        store
+            .externalize_overflow(&second_instance, "field", &dirty_draft("second local"))
+            .expect("reuse capacity after first view retirement");
+        assert_eq!(store.len(), 1);
+
+        second.close().expect("retire second view");
+        assert!(store.is_empty());
+    }
 }
 
 impl<T> Drop for RetainedFieldStoreState<T> {
@@ -161,14 +376,18 @@ impl<T> Drop for RetainedFieldStoreState<T> {
 pub enum RetainedFieldStoreError {
     #[error("retained field store is not bound to view {view:?}")]
     NotBound { view: ViewId },
+    #[error("retained field store capacity {capacity} is exhausted")]
+    CapacityExceeded { capacity: usize },
 }
 
 /// Application-owned overflow storage for retained native fields of one value type.
 ///
 /// A mounted retained field binds its weak view capability exactly once per view. Every clone
 /// shares those bindings. A terminal view event clears only that view's fields, and the final store
-/// clone automatically unsubscribes every remaining live binding. The store never revives
-/// framework tasks, IME state, or interrupted commands.
+/// clone automatically unsubscribes every remaining live binding. Capacity is global across those
+/// clones and views, and defaults to [`OPEN_GPUI_DEFAULT_RETAINED_FIELD_STORE_CAPACITY`]. The store
+/// never silently evicts an unsaved draft and never revives framework tasks, IME state, or
+/// interrupted commands.
 #[derive(Clone)]
 pub struct RetainedFieldStore<T> {
     state: Rc<RefCell<RetainedFieldStoreState<T>>>,
@@ -181,6 +400,7 @@ impl<T> std::fmt::Debug for RetainedFieldStore<T> {
             .debug_struct("RetainedFieldStore")
             .field("bound_views", &state.bindings.len())
             .field("len", &state.len)
+            .field("capacity", &state.capacity)
             .finish()
     }
 }
@@ -194,8 +414,23 @@ impl<T> Default for RetainedFieldStore<T> {
 }
 
 impl<T: 'static> RetainedFieldStore<T> {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates a store with an explicit global externalized-field capacity.
+    ///
+    /// Capacity is shared by every clone and bound view. At capacity, refreshing an existing
+    /// exact field identity remains valid, while adding another identity returns
+    /// [`RetainedFieldStoreError::CapacityExceeded`] without evicting an unsaved draft.
+    #[must_use]
+    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(RetainedFieldStoreState::with_capacity(
+                capacity,
+            ))),
+        }
     }
 
     pub(crate) fn ensure_bound(
@@ -229,10 +464,17 @@ impl<T: 'static> RetainedFieldStore<T> {
         Ok(())
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.state.borrow().len
     }
 
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.state.borrow().capacity
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -266,7 +508,7 @@ where
         if draft.phase() == DraftPhase::Clean && draft.pending_attempt().is_none() {
             return Ok(state.remove(&key));
         }
-        state.insert(key, draft.externalized_snapshot());
+        state.insert(key, draft.externalized_snapshot())?;
         Ok(true)
     }
 
@@ -364,13 +606,22 @@ impl<T> RetainedFieldStoreState<T> {
         &mut self,
         key: RetainedFieldStoreKey,
         draft: ExternalizedDraft<T>,
-    ) -> Option<ExternalizedDraft<T>> {
+    ) -> Result<Option<ExternalizedDraft<T>>, RetainedFieldStoreError> {
         let bucket = (key.instance.view(), key.instance.node());
+        let already_present = self
+            .entries
+            .get(&bucket)
+            .is_some_and(|entries| entries.contains_key(&key));
+        if !already_present && self.len >= self.capacity {
+            return Err(RetainedFieldStoreError::CapacityExceeded {
+                capacity: self.capacity,
+            });
+        }
         let previous = self.entries.entry(bucket).or_default().insert(key, draft);
         if previous.is_none() {
             self.len = self.len.saturating_add(1);
         }
-        previous
+        Ok(previous)
     }
 
     fn take(&mut self, key: &RetainedFieldStoreKey) -> Option<ExternalizedDraft<T>> {
