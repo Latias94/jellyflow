@@ -897,7 +897,7 @@ impl OpenGpuiCommandJournal {
     }
 
     pub(crate) fn collect_next_batch(
-        &self,
+        self: &Rc<Self>,
         collector: &FeedbackCollector,
     ) -> Result<Option<OpenGpuiCommandBatch>, OpenGpuiCommandCollectError> {
         let mut state = self
@@ -940,7 +940,10 @@ impl OpenGpuiCommandJournal {
             phase: InFlightPhase::Collected,
             entries,
         });
-        Ok(Some(OpenGpuiCommandBatch { id }))
+        Ok(Some(OpenGpuiCommandBatch {
+            id,
+            journal: Rc::downgrade(self),
+        }))
     }
 
     pub(crate) fn mark_submitted(
@@ -996,6 +999,36 @@ impl OpenGpuiCommandJournal {
             .into_iter()
             .map(|entry| OpenGpuiCompletedCommand::new(entry, Err(error())))
             .collect())
+    }
+
+    fn abandon_batch(&self, batch_id: u64) {
+        let phase = self.state.try_borrow().ok().and_then(|state| {
+            state
+                .in_flight
+                .as_ref()
+                .filter(|batch| batch.id == batch_id)
+                .map(|batch| batch.phase)
+        });
+        let Some(phase) = phase else {
+            return;
+        };
+        let Ok(entries) = self.take_batch(batch_id, Some(phase)) else {
+            return;
+        };
+        let completed = entries
+            .into_iter()
+            .map(|entry| {
+                let error = match phase {
+                    InFlightPhase::Collected => OpenGpuiCommandTicketError::FramePreparation {
+                        message: "native command batch was dropped during frame preparation"
+                            .to_owned(),
+                    },
+                    InFlightPhase::Submitted => OpenGpuiCommandTicketError::FeedbackOutcomeUnknown,
+                };
+                OpenGpuiCompletedCommand::new(entry, Err(error))
+            })
+            .collect();
+        resolve_command_tickets(self.defer_completions(completed));
     }
 
     pub(crate) fn begin_close(
@@ -1273,9 +1306,27 @@ impl Drop for OpenGpuiCommandJournal {
     }
 }
 
-#[derive(Debug)]
+#[must_use = "command batches must remain alive until receipt pairing or close transfer"]
 pub(crate) struct OpenGpuiCommandBatch {
     id: u64,
+    journal: Weak<OpenGpuiCommandJournal>,
+}
+
+impl std::fmt::Debug for OpenGpuiCommandBatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenGpuiCommandBatch")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for OpenGpuiCommandBatch {
+    fn drop(&mut self) {
+        if let Some(journal) = self.journal.upgrade() {
+            journal.abandon_batch(self.id);
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1510,6 +1561,80 @@ mod tests {
                 .expect("collect replacement batch")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn dropping_collected_batch_terminalizes_ticket_and_releases_journal() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut abandoned_ticket = journal
+            .enqueue(command(0, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("abandoned collected ticket");
+        let batch = journal
+            .collect_next_batch(&collector(&view))
+            .expect("collect abandoned batch")
+            .expect("abandoned batch");
+
+        drop(batch);
+
+        assert_eq!(journal.capacity_usage(), (0, 0, 0));
+        assert!(!journal.has_pending());
+        assert!(matches!(
+            ready_ticket(&mut abandoned_ticket),
+            Err(OpenGpuiCommandTicketError::FramePreparation { .. })
+        ));
+        assert!(matches!(poll_ticket(&mut abandoned_ticket), Poll::Pending));
+
+        let mut retry_ticket = journal
+            .enqueue(command(0, 2), OpenGpuiCommandOrigin::Binding)
+            .expect("retry after abandoned collected batch");
+        resolve_completed(submit_next_batch(&journal, &view));
+        assert!(
+            ready_ticket(&mut retry_ticket)
+                .expect("retry ticket transport")
+                .applied()
+                .is_some()
+        );
+        assert_eq!(journal.capacity_usage(), (0, 0, 0));
+    }
+
+    #[test]
+    fn dropping_submitted_batch_terminalizes_unknown_ticket_and_releases_journal() {
+        let (_runtime, view) = runtime_and_view();
+        let journal = OpenGpuiCommandJournal::new();
+        let mut abandoned_ticket = journal
+            .enqueue(command(0, 1), OpenGpuiCommandOrigin::Binding)
+            .expect("abandoned submitted ticket");
+        let collector = collector(&view);
+        let batch = journal
+            .collect_next_batch(&collector)
+            .expect("collect submitted batch")
+            .expect("submitted batch");
+        journal
+            .mark_submitted(&batch)
+            .expect("mark submitted batch");
+
+        drop(batch);
+
+        assert_eq!(journal.capacity_usage(), (0, 0, 0));
+        assert!(!journal.has_pending());
+        assert!(matches!(
+            ready_ticket(&mut abandoned_ticket),
+            Err(OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+        ));
+        assert!(matches!(poll_ticket(&mut abandoned_ticket), Poll::Pending));
+
+        let mut retry_ticket = journal
+            .enqueue(command(0, 2), OpenGpuiCommandOrigin::Binding)
+            .expect("retry after abandoned submitted batch");
+        resolve_completed(submit_next_batch(&journal, &view));
+        assert!(
+            ready_ticket(&mut retry_ticket)
+                .expect("retry ticket transport")
+                .applied()
+                .is_some()
+        );
+        assert_eq!(journal.capacity_usage(), (0, 0, 0));
     }
 
     #[test]
@@ -2024,7 +2149,7 @@ mod tests {
             .enqueue(command(0, 1), OpenGpuiCommandOrigin::Binding)
             .expect("collected ticket");
         let batch_collector = collector(&view);
-        journal
+        let _batch_lease = journal
             .collect_next_batch(&batch_collector)
             .expect("collect first close command")
             .expect("collected close batch");
@@ -2155,7 +2280,7 @@ mod tests {
     }
 
     fn submit_next_batch(
-        journal: &OpenGpuiCommandJournal,
+        journal: &Rc<OpenGpuiCommandJournal>,
         view: &ViewSession,
     ) -> Vec<OpenGpuiCompletedCommand> {
         let collector = collector(view);

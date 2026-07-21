@@ -31,6 +31,13 @@ pub(super) enum LayoutReceiptAction {
     Reject,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenGpuiFrameTransactionFault {
+    AfterStateTake,
+    AfterFeedbackSubmission,
+}
+
 pub(super) fn layout_receipt_action(status: LayoutNodeStatus) -> LayoutReceiptAction {
     match status {
         LayoutNodeStatus::Published | LayoutNodeStatus::Unchanged => LayoutReceiptAction::Benign,
@@ -75,6 +82,8 @@ pub(super) struct OpenGpuiFrameTransaction {
     measurements: Rc<OpenGpuiPendingMeasurements>,
     commands: Rc<OpenGpuiCommandJournal>,
     scheduled: Cell<bool>,
+    #[cfg(test)]
+    fault: Cell<Option<OpenGpuiFrameTransactionFault>>,
 }
 
 struct OpenGpuiFrameTransactionState {
@@ -97,6 +106,8 @@ impl OpenGpuiFrameTransaction {
             measurements,
             commands,
             scheduled: Cell::new(false),
+            #[cfg(test)]
+            fault: Cell::new(None),
         }
     }
 
@@ -130,6 +141,8 @@ impl OpenGpuiFrameTransaction {
                 command_pairing_error: None,
             };
         };
+        #[cfg(test)]
+        self.panic_at_fault(OpenGpuiFrameTransactionFault::AfterStateTake);
         let (layouts, measurement_errors) = self.measurements.seal_layouts().into_parts();
         let feedback: Result<_, OpenGpuiFrameTransactionError> = (|| {
             for layout in layouts {
@@ -165,6 +178,8 @@ impl OpenGpuiFrameTransaction {
             view.submit_feedback(feedback)
         })) {
             Ok(Ok(receipt)) => {
+                #[cfg(test)]
+                self.panic_at_fault(OpenGpuiFrameTransactionFault::AfterFeedbackSubmission);
                 let disposition = frame_receipt_disposition(&receipt);
                 let (commands, command_pairing_error) =
                     state.complete_commands(&self.commands, receipt);
@@ -200,6 +215,19 @@ impl OpenGpuiFrameTransaction {
                 measurement_errors,
                 command_pairing_error: None,
             },
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_fault(&self, fault: OpenGpuiFrameTransactionFault) {
+        self.fault.set(Some(fault));
+    }
+
+    #[cfg(test)]
+    fn panic_at_fault(&self, fault: OpenGpuiFrameTransactionFault) {
+        if self.fault.get() == Some(fault) {
+            self.fault.set(None);
+            panic!("injected native frame transaction fault at {fault:?}");
         }
     }
 

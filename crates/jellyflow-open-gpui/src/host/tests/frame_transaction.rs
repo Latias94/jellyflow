@@ -8,7 +8,8 @@ use crate::command_journal::{
 use crate::port_handle::OpenGpuiPendingMeasurements;
 
 use super::super::frame_feedback::{
-    OpenGpuiFrameTransaction, OpenGpuiFrameTransactionError, OpenGpuiFrameTransactionSubmission,
+    OpenGpuiFrameTransaction, OpenGpuiFrameTransactionError, OpenGpuiFrameTransactionFault,
+    OpenGpuiFrameTransactionSubmission,
 };
 use super::*;
 
@@ -154,6 +155,67 @@ fn dropping_frame_transaction_defers_internal_origin_for_host_settlement() {
     ));
     assert!(journal.take_deferred_completions().is_empty());
     assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+}
+
+#[test]
+fn unwind_after_frame_state_take_terminalizes_batch_and_allows_retry() {
+    let (runtime, view, journal, mut ticket, transaction) = command_transaction("prepare-unwind");
+    transaction.inject_fault(OpenGpuiFrameTransactionFault::AfterStateTake);
+
+    let panic =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| transaction.submit(&view)));
+
+    assert!(panic.is_err());
+    assert_eq!(runtime.snapshot().expect("unsubmitted graph").revision(), 0);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+    assert!(!journal.has_pending());
+    assert!(matches!(
+        poll_command_ticket(&mut ticket),
+        Err(crate::OpenGpuiCommandTicketError::FramePreparation { .. })
+    ));
+    assert_command_ticket_pending_at(&mut ticket, "after preparation unwind settled it once");
+
+    let mut retry = submit_command_transaction(&view, &journal, 0, "prepare-unwind-retry");
+    assert_eq!(
+        poll_command_ticket(&mut retry)
+            .expect("retry command ticket")
+            .applied()
+            .expect("retry command applied")
+            .revision(),
+        1
+    );
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+}
+
+#[test]
+fn unwind_after_feedback_submission_terminalizes_batch_and_allows_retry() {
+    let (runtime, view, journal, mut ticket, transaction) =
+        command_transaction("post-submit-unwind");
+    transaction.inject_fault(OpenGpuiFrameTransactionFault::AfterFeedbackSubmission);
+
+    let panic =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| transaction.submit(&view)));
+
+    assert!(panic.is_err());
+    assert_eq!(runtime.snapshot().expect("submitted graph").revision(), 1);
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
+    assert!(!journal.has_pending());
+    assert!(matches!(
+        poll_command_ticket(&mut ticket),
+        Err(crate::OpenGpuiCommandTicketError::FeedbackOutcomeUnknown)
+    ));
+    assert_command_ticket_pending_at(&mut ticket, "after submitted unwind settled it once");
+
+    let mut retry = submit_command_transaction(&view, &journal, 1, "post-submit-unwind-retry");
+    assert_eq!(
+        poll_command_ticket(&mut retry)
+            .expect("retry command ticket")
+            .applied()
+            .expect("retry command applied")
+            .revision(),
+        2
+    );
+    assert_eq!(journal.capacity_usage(), (0, 0, 0));
 }
 
 #[open_gpui::test]
@@ -354,6 +416,52 @@ fn command_transaction(
     let transaction =
         OpenGpuiFrameTransaction::new(collector, measurements, Rc::clone(&journal), batch);
     (runtime, view, journal, ticket, transaction)
+}
+
+fn submit_command_transaction(
+    view: &ViewSession,
+    journal: &Rc<OpenGpuiCommandJournal>,
+    revision: u64,
+    label: &str,
+) -> crate::OpenGpuiCommandTicket {
+    let ticket = journal
+        .enqueue(
+            GraphCommand::set_node_data(
+                revision,
+                NodeId::from_u128(10),
+                serde_json::json!({ "transaction": label }),
+            ),
+            OpenGpuiCommandOrigin::Binding,
+        )
+        .expect("queued retry transaction command");
+    let frame = view
+        .frame(FrameRequest::new(
+            viewport(),
+            RendererStamp::new(RENDERER, 1),
+        ))
+        .expect("retry transaction frame");
+    let collector = frame.collector();
+    let batch = journal
+        .collect_next_batch(&collector)
+        .expect("collect retry transaction batch");
+    let measurements = Rc::new(OpenGpuiPendingMeasurements::new(
+        frame.nodes(),
+        frame.transform(),
+        BTreeMap::new(),
+        0,
+    ));
+    let transaction =
+        OpenGpuiFrameTransaction::new(collector, measurements, Rc::clone(journal), batch);
+    let mut result = transaction.submit(view);
+    assert!(matches!(
+        result.submission,
+        OpenGpuiFrameTransactionSubmission::Submitted(_)
+    ));
+    result
+        .take_command_settlement()
+        .expect("retry transaction settles its batch");
+    resolve_binding_commands(journal.take_deferred_completions());
+    ticket
 }
 
 fn install_collected_transaction(
