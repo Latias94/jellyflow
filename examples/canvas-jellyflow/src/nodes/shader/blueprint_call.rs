@@ -24,7 +24,9 @@ use open_gpui::{
 use open_gpui_ui_components::{Button, ButtonVariant};
 
 use super::{ShaderNodeError, ShaderPort, port_element};
-use crate::nodes::topology_attempt::{TopologyAttempt, TopologyAttemptPhase};
+use crate::nodes::topology_attempt::{
+    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest,
+};
 
 pub const BLUEPRINT_CALL_KIND: &str = "blueprint.call";
 pub const BLUEPRINT_CALL_RENDERER: &str = "jellyflow.open-gpui.blueprint.call";
@@ -188,30 +190,34 @@ impl BlueprintCallNode {
         if self.topology.phase() != TopologyAttemptPhase::Idle {
             return;
         }
-        self.enqueue_intent(
-            BlueprintPinIntent {
+        self.enqueue_request(
+            TopologyDispatchRequest::new(BlueprintPinIntent {
                 action,
                 incident_edges,
-            },
+            }),
             cx,
         );
         cx.notify();
     }
 
     fn retry(&mut self, cx: &mut Context<Self>) {
-        let intent = match self.topology.phase() {
+        let retry = match self.topology.phase() {
             TopologyAttemptPhase::Recoverable => self.topology.retry(),
             TopologyAttemptPhase::Uncertain => self.topology.confirm_uncertain_retry(),
             _ => None,
         };
-        let Some(intent) = intent else {
+        let Some(retry) = retry else {
             return;
         };
-        self.enqueue_intent(intent, cx);
+        self.enqueue_request(TopologyDispatchRequest::retry(retry), cx);
         cx.notify();
     }
 
-    fn enqueue_intent(&mut self, intent: BlueprintPinIntent, cx: &mut Context<Self>) {
+    fn enqueue_request(
+        &mut self,
+        request: TopologyDispatchRequest<BlueprintPinIntent>,
+        cx: &mut Context<Self>,
+    ) {
         let authoring = match self.binding.read(cx).authoring() {
             Ok(authoring) => authoring,
             Err(error) => {
@@ -221,7 +227,21 @@ impl BlueprintCallNode {
             }
         };
         let ports = collect_bound_ports(&authoring);
-        if blueprint_action_satisfied(self.node_id, authoring.node(), &ports, &intent.action) {
+        if blueprint_action_satisfied(
+            self.node_id,
+            authoring.node(),
+            &ports,
+            &request.intent().action,
+        ) {
+            self.topology
+                .observe(authoring.instance(), authoring.revision(), |intent| {
+                    blueprint_action_satisfied(
+                        self.node_id,
+                        authoring.node(),
+                        &ports,
+                        &intent.action,
+                    )
+                });
             self.diagnostic = None;
             return;
         }
@@ -230,8 +250,8 @@ impl BlueprintCallNode {
             self.node_id,
             authoring.node(),
             &ports,
-            intent.action.clone(),
-            intent.incident_edges,
+            request.intent().action.clone(),
+            request.intent().incident_edges,
         );
         let command = match command {
             Ok(command) => command,
@@ -243,7 +263,7 @@ impl BlueprintCallNode {
         let activity = self.binding.read(cx).activity().clone();
         let dispatch = self
             .topology
-            .dispatch(authoring, command, intent, &activity, cx);
+            .dispatch(authoring, command, request, &activity, cx);
         let dispatch = match dispatch {
             Ok(dispatch) => dispatch,
             Err(error) => {

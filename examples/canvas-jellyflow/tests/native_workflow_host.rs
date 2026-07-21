@@ -824,13 +824,39 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
     let conflict_revision = runtime.snapshot().unwrap().revision();
     assert!(conflict_revision > mounted_revision);
     draw(cx);
-    let retry = cx
-        .debug_bounds(&condition_retry_selector(condition))
-        .expect("stale condition intent exposes explicit Retry after refresh");
+    assert!(
+        cx.debug_bounds(&condition_retry_selector(condition))
+            .is_some(),
+        "stale condition intent exposes explicit Retry after refresh",
+    );
     assert_eq!(runtime.history_state().unwrap().undo_len(), 1);
     let refreshed = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     assert_eq!(refreshed.len(), 3);
     assert_eq!(refreshed.last(), Some(&concurrent));
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.stats().protected_leases(), 1);
+    });
+
+    cx.update_entity(&host, |host, cx| {
+        host.set_frame_bounds(offscreen_viewport());
+        cx.notify();
+    });
+    draw(cx);
+    cx.read_entity(&host, |host, _| {
+        assert!(host.stats().parked_nodes() >= 1);
+        assert_eq!(host.stats().protected_instances(), 1);
+        assert_eq!(host.stats().protected_leases(), 1);
+    });
+
+    cx.update_entity(&host, |host, cx| {
+        host.set_frame_bounds(viewport());
+        cx.notify();
+    });
+    draw(cx);
+    let retry = cx
+        .debug_bounds(&condition_retry_selector(condition))
+        .expect("recoverable topology intent survives parking and remounting");
 
     draw(cx);
     draw(cx);
@@ -845,6 +871,10 @@ fn stale_condition_add_waits_for_refresh_and_explicit_retry_without_render_resub
         cx.debug_bounds(&condition_retry_selector(condition))
             .is_none()
     );
+    cx.read_entity(&host, |host, _| {
+        assert_eq!(host.stats().protected_instances(), 0);
+        assert_eq!(host.stats().protected_leases(), 0);
+    });
     let committed = condition_cases(&runtime.snapshot().unwrap(), condition).unwrap();
     assert_eq!(committed.len(), 4);
     assert_eq!(committed[2], concurrent);

@@ -25,7 +25,9 @@ use open_gpui_ui_components::{Button, ButtonVariant};
 use super::WORKFLOW_PORT_DIAMETER;
 use super::{WorkflowNodeError, WorkflowNodeStatus, WorkflowPort, workflow_alert, workflow_header};
 use crate::nodes::native_graph_theme;
-use crate::nodes::topology_attempt::{TopologyAttempt, TopologyAttemptPhase};
+use crate::nodes::topology_attempt::{
+    TopologyAttempt, TopologyAttemptPhase, TopologyDispatchRequest,
+};
 
 pub const WORKFLOW_CONDITION_KIND: &str = "workflow.condition";
 pub const WORKFLOW_CONDITION_RENDERER: &str = "jellyflow.open-gpui.workflow.condition";
@@ -164,11 +166,11 @@ impl WorkflowConditionNode {
         if self.topology.phase() != TopologyAttemptPhase::Idle {
             return;
         }
-        self.enqueue_intent(
-            ConditionCaseIntent {
+        self.enqueue_request(
+            TopologyDispatchRequest::new(ConditionCaseIntent {
                 action,
                 incident_edges,
-            },
+            }),
             cx,
         );
         cx.notify();
@@ -199,19 +201,23 @@ impl WorkflowConditionNode {
     }
 
     fn retry(&mut self, cx: &mut Context<Self>) {
-        let intent = match self.topology.phase() {
+        let retry = match self.topology.phase() {
             TopologyAttemptPhase::Recoverable => self.topology.retry(),
             TopologyAttemptPhase::Uncertain => self.topology.confirm_uncertain_retry(),
             _ => None,
         };
-        let Some(intent) = intent else {
+        let Some(retry) = retry else {
             return;
         };
-        self.enqueue_intent(intent, cx);
+        self.enqueue_request(TopologyDispatchRequest::retry(retry), cx);
         cx.notify();
     }
 
-    fn enqueue_intent(&mut self, intent: ConditionCaseIntent, cx: &mut Context<Self>) {
+    fn enqueue_request(
+        &mut self,
+        request: TopologyDispatchRequest<ConditionCaseIntent>,
+        cx: &mut Context<Self>,
+    ) {
         let authoring = match self.binding.read(cx).authoring() {
             Ok(authoring) => authoring,
             Err(error) => {
@@ -227,7 +233,11 @@ impl WorkflowConditionNode {
                 return;
             }
         };
-        if condition_action_satisfied(&cases, &intent.action) {
+        if condition_action_satisfied(&cases, &request.intent().action) {
+            self.topology
+                .observe(authoring.instance(), authoring.revision(), |intent| {
+                    condition_action_satisfied(&cases, &intent.action)
+                });
             self.diagnostic = None;
             return;
         }
@@ -240,8 +250,8 @@ impl WorkflowConditionNode {
             self.node_id,
             authoring.node(),
             &ports,
-            intent.action.clone(),
-            intent.incident_edges,
+            request.intent().action.clone(),
+            request.intent().incident_edges,
         );
         let command = match command {
             Ok(command) => command,
@@ -253,7 +263,7 @@ impl WorkflowConditionNode {
         let activity = self.binding.read(cx).activity().clone();
         let dispatch = self
             .topology
-            .dispatch(authoring, command, intent, &activity, cx);
+            .dispatch(authoring, command, request, &activity, cx);
         let dispatch = match dispatch {
             Ok(dispatch) => dispatch,
             Err(error) => {
