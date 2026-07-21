@@ -41,7 +41,8 @@ manifests or public boundaries.
 The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
 independent adapters. Its contracts live in public types, executable conformance, protocol tests,
 and migration tests. Real-window smoke belongs in the single flagship product through `--smoke`
-and `--workflow --smoke`.
+and `--workflow --smoke`; CI runs both at capture zooms `0.5`, `1`, and `2` and retains all
+interaction-state screenshots.
 
 ## Runtime Interaction Strategy
 

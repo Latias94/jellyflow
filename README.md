@@ -116,6 +116,23 @@ See:
 Dynamic handles must be real graph `Port` records with stable `PortId`s. Adapter-local visual
 handles never enter routing, hit testing, or graph transactions.
 
+## Run The Product Example
+
+The Open GPUI product workspace contains both flagship native graphs. On macOS, run Shader Graph
+with:
+
+```sh
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked
+```
+
+Run the Dify-style workflow with:
+
+```sh
+cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked -- --workflow
+```
+
 ## View Protocol
 
 Each native canvas attaches an independent `ViewSession` to a shared `GraphRuntime`:

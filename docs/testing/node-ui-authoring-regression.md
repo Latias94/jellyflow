@@ -23,10 +23,11 @@ contracts.
 
 The dropped-wire search is intentionally application-owned. The Open GPUI host exposes only the
 revision-bound request, semantic candidate query, local overlay anchor, cancellation, and atomic
-commit operations. The example supplies the native text input and candidate rows, filters against
-its own `NodeCatalog`, and verifies empty results, stale refresh diagnostics, retry, Escape, and
-outside-click cancellation. A future adapter can build a different search surface without taking
-on this UI or introducing a shared widget DSL.
+commit operations. The example supplies an asynchronous, cancellation-by-drop provider plus native
+text input and candidate rows, filters against its own `NodeCatalog`, and verifies loading without
+blocking controls, empty results, source error/retry, stale generations, Escape, outside-click
+cancellation, and host-close cancellation. A future adapter can build a different search surface
+without taking on this UI or introducing a shared widget DSL.
 
 Dynamic handles are valid only when backed by stable graph `PortId`s. Product components must derive
 connected state from `ViewSession::port_connection_facts` or binding reads; they must not maintain a
@@ -39,8 +40,10 @@ connection lifecycle, draft reconciliation, activity leases, accessibility, fall
 retention. Its tests cover:
 
 - complete root and real-port measurement through native prepaint;
-- one-shot, deferred, ordered feedback and stale withdrawal;
-- control/port/node/canvas/overlay input precedence and pointer-capture cleanup;
+- one-shot, deferred, ordered feedback, stale withdrawal, and batch settlement across dropped or
+  panicking frame preparation and outcome-unknown submission;
+- control/port/node/canvas/overlay input precedence, command-prefix waiting, optimistic drag
+  presentation, capture loss, successor ownership, late-release suppression, and cleanup;
 - focused and IME-composing draft conflicts with accept, discard, and explicit reapply paths;
 - culling, parking, hard retirement, protected-owner overflow, and terminal view closure;
 - missing, duplicate, empty, and failing renderer registrations;
@@ -72,9 +75,12 @@ must have no diagnostic or close reason.
 
 The gate runs the production `open_gpui_platform::application()` entrypoint, not a test platform.
 Each process emits one `JELLYFLOW_REAL_WINDOW_SMOKE` marker containing the mode, surface dimensions,
-retained lifecycle counts, feedback counts, and diagnostic state. That marker and the process exit
-status are auditable evidence even when macOS screen-capture permission is unavailable. Screenshots
-are optional and do not replace the structured gate.
+retained lifecycle counts, feedback counts, and diagnostic state. Shader and Workflow run with
+capture zooms `0.5`, `1`, and `2`. Each run records initial, selected, connection-preview,
+connection-committed, reconnect-selected, reconnect-preview, reconnect-committed, search-open, and
+final frames. Every checkpoint repeats complete geometry and nonblank per-node paint validation;
+the process marker and exit status remain the behavioral authority, while CI uploads the PNG matrix
+for visual inspection of overlap, extra selection boxes, endpoint shifts, and route discontinuity.
 
 ## Runtime contracts
 
@@ -118,13 +124,18 @@ cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
   --workspace --all-targets --locked -- -D warnings
 
-# Real-window Shader Graph smoke
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke
-
-# Real-window Dify workflow smoke
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
-  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
+# Build once, then run the complete visual and interaction matrix.
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml \
+  -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+mkdir -p target/real-window-smoke
+for zoom in 0.5 1 2; do
+  JELLYFLOW_SMOKE_CAPTURE_DIR=target/real-window-smoke JELLYFLOW_SMOKE_ZOOM="$zoom" \
+    python3 tools/run_with_timeout.py --timeout-seconds 60 -- \
+    examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --smoke
+  JELLYFLOW_SMOKE_CAPTURE_DIR=target/real-window-smoke JELLYFLOW_SMOKE_ZOOM="$zoom" \
+    python3 tools/run_with_timeout.py --timeout-seconds 60 -- \
+    examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --workflow --smoke
+done
 ```
 
 The Open GPUI executable is the only product example. `jellyflow-egui` and the external

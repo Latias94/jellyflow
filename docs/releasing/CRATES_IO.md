@@ -31,12 +31,16 @@ cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --l
 cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+# Run Shader and Workflow smoke at JELLYFLOW_SMOKE_ZOOM=0.5, 1, and 2 as documented in
+# docs/testing/node-ui-authoring-regression.md, with JELLYFLOW_SMOKE_CAPTURE_DIR set.
 git diff --check
 ```
 
 The CI workflow runs common gates on pull requests and pushes. The reusable
-release preflight workflow additionally verifies versions and writes package
-file lists as artifacts for release review. The package-derived consumer smoke
+release preflight workflow additionally verifies versions, runs the six-process Open GPUI
+real-window matrix, and writes package lists plus 54 interaction-state screenshots as artifacts for
+release review. The package-derived consumer smoke
 assembles all five `.crate` archives, serves them from a temporary sparse
 registry, and compiles a locked external consumer. Its dependency declarations
 contain versions and a registry name, never workspace or path dependencies.

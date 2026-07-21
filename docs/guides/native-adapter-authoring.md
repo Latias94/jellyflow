@@ -41,12 +41,21 @@ For each native frame:
 2. Reconcile native node instances against exact node incarnation and renderer identity.
 3. Render or lay out native content without mutating graph or view authority.
 4. Publish complete node and real-port geometry through the frame's feedback collector.
-5. Submit the collector exactly once, including explicit invalid or omitted layout outcomes.
-6. Process command receipts and the next authoritative frame before replacing published geometry.
+5. Transfer at most one ordered native command batch into the frame transaction.
+6. Submit the collector and batch exactly once, including explicit invalid or omitted layout
+   outcomes.
+7. Process command receipts and the next authoritative frame before replacing published geometry.
 
 Never retain a graph borrow, `ViewSession` borrow, adapter frame, or feedback collector across native
 frames or asynchronous task boundaries. Keep the last authoritative geometry visible while newer
-feedback is incomplete or rejected.
+feedback is incomplete or rejected. A layout failure must not discard a valid command batch. If a
+collected batch cannot reach submission, settle it as a definite frame-preparation failure; if
+submission began but its outcome cannot be observed, settle it as outcome-unknown. Host close,
+retirement, panic unwinding, and dropped frame work must all release the batch exactly once.
+
+Content-derived size measurements are observations, not same-frame mutations. Queue a stable,
+revision-bound size intent only after render so it enters a later frame and cannot feed back into
+the measurement that produced it.
 
 ## Native Nodes And Ports
 
@@ -67,6 +76,13 @@ gutters. The runtime does not infer collision-free native content layout.
 Build a `GraphCommand` from one owned, coherent facts view and preserve its expected revision.
 Enqueue it once. Do not rewrite the revision, merge with newer state, or retry automatically.
 
+When a native interaction emits a graph mutation after earlier native commands, capture an ordered
+command-prefix barrier before releasing its optimistic presentation. Wait only for commands in that
+captured prefix, then insert the interaction mutation ahead of later suffix work. Cancellation,
+capture loss, owner replacement, retirement, and close must abandon the reservation explicitly.
+Native pointer ownership may pass to a successor component; a late release from the old owner must
+not clear the successor's capture or presentation.
+
 Distinguish failures by evidence:
 
 - A validation or enqueue failure before journal admission means the command was not dispatched.
@@ -76,6 +92,12 @@ Distinguish failures by evidence:
 
 Retirement, host close, task cancellation, and externalized native state must never replay a pending
 command.
+
+Application-owned asynchronous providers, such as connection search, receive owned authoritative
+input before leaving the UI thread. Invoke and poll them on the framework's background executor,
+make cancellation observable by dropping their future, and key publication by both semantic request
+identity and product load generation. A cancelled, retired, or host-closed generation cannot update
+the next search surface.
 
 ## Input And Focus
 
@@ -110,8 +132,10 @@ events, frames, capture, focus, geometry feedback, command receipts, retirement,
 calling the semantic session directly is not adapter conformance.
 
 At minimum, cover new connections, both reconnect endpoints, node dragging, cancellation,
-selection, conflicts, rejections, uncertain outcomes, node retirement, and host close. Add lifecycle
-and resource-bound tests specific to the framework without moving those framework details into the
+selection, conflicts, rejections, uncertain outcomes, command-prefix waiting, capture loss, owner
+replacement, node retirement, and host close. Assertions must include optimistic presentation and
+terminal receipt/cleanup observations, not only the final graph snapshot. Add lifecycle and
+resource-bound tests specific to the framework without moving those framework details into the
 shared contract.
 
 See `jellyflow-open-gpui` and `jellyflow-egui` for production adapter implementations, and the
