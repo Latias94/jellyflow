@@ -50,7 +50,7 @@ impl PendingFrame {
     ///
     /// Returns `true` when revision continuity was lost and the frame had to fall back to a global
     /// geometry impact.
-    pub(super) fn observe_patch(&mut self, patch: &RuntimePatch) -> bool {
+    pub(super) fn observe_patch(&mut self, patch: &RuntimePatch) -> (bool, u64) {
         merge_patch_impact(
             &mut self.geometry_impact,
             &mut self.impact_through_revision,
@@ -65,17 +65,19 @@ fn merge_patch_impact(
     through_revision: &mut GraphRevision,
     document_epoch: DocumentEpoch,
     patch: &RuntimePatch,
-) -> bool {
+) -> (bool, u64) {
     let fallback = patch.document_epoch() != document_epoch
         || patch.from_revision() != *through_revision
         || patch.kind() == crate::runtime::graph_runtime::RuntimePatchKind::DocumentReset;
     if fallback {
         impact.make_global();
+        *through_revision = patch.to_revision();
+        (true, 0)
     } else {
-        impact.merge(patch.geometry_impact());
+        let records_merged = impact.merge(patch.geometry_impact());
+        *through_revision = patch.to_revision();
+        (false, records_merged)
     }
-    *through_revision = patch.to_revision();
-    fallback
 }
 
 pub(super) struct PendingLayout {
@@ -574,6 +576,7 @@ impl ViewSession {
             let mut geometry_impact = pending.geometry_impact.clone();
             let mut impact_through_revision = pending.impact_through_revision;
             let mut impact_patches_merged = 0_u64;
+            let mut impact_records_merged = 0_u64;
             let mut impact_global_fallbacks = 0_u64;
             let mut receipts = (0..feedback.operations.len())
                 .map(|_| None)
@@ -603,14 +606,16 @@ impl ViewSession {
                         if let Ok(outcome) = &outcome
                             && let Some(applied) = outcome.applied()
                         {
-                            impact_global_fallbacks = impact_global_fallbacks.saturating_add(
-                                u64::from(merge_patch_impact(
-                                    &mut geometry_impact,
-                                    &mut impact_through_revision,
-                                    pending.document_epoch,
-                                    applied.patch(),
-                                )),
+                            let (fallback, records_merged) = merge_patch_impact(
+                                &mut geometry_impact,
+                                &mut impact_through_revision,
+                                pending.document_epoch,
+                                applied.patch(),
                             );
+                            impact_global_fallbacks =
+                                impact_global_fallbacks.saturating_add(u64::from(fallback));
+                            impact_records_merged =
+                                impact_records_merged.saturating_add(records_merged);
                             impact_patches_merged = impact_patches_merged.saturating_add(1);
                         }
                         receipts[operation_index] = Some(FeedbackOperationReceipt::Command {
@@ -647,9 +652,11 @@ impl ViewSession {
                     geometry_impact.make_global();
                     impact_global_fallbacks = impact_global_fallbacks.saturating_add(1);
                 }
-                state
-                    .derived
-                    .record_geometry_impact_merge(impact_patches_merged, impact_global_fallbacks);
+                state.derived.record_geometry_impact_merge(
+                    impact_patches_merged,
+                    impact_records_merged,
+                    impact_global_fallbacks,
+                );
                 let global_stale = current.document_epoch() != pending.document_epoch
                     || state.transform_revision != pending.transform_revision
                     || state.environment != pending.environment

@@ -154,28 +154,32 @@ impl GeometryImpact {
                 .any(|edge| self.incident_edges.contains(&edge))
     }
 
-    pub(crate) fn merge(&mut self, other: &Self) {
+    pub(crate) fn merge(&mut self, other: &Self) -> u64 {
         if self.global {
-            return;
+            return 0;
         }
         if other.global {
             self.make_global();
-            return;
+            return 0;
         }
-        let non_translation_nodes = self
-            .nodes
-            .difference(&self.translation_only_nodes)
-            .chain(other.nodes.difference(&other.translation_only_nodes))
-            .copied()
-            .collect::<BTreeSet<_>>();
-        self.translation_only_nodes
-            .extend(other.translation_only_nodes.iter().copied());
-        self.translation_only_nodes
-            .retain(|node| !non_translation_nodes.contains(node));
-        self.nodes.extend(other.nodes.iter().copied());
+        for node in other.nodes.iter().copied() {
+            let inserted = self.nodes.insert(node);
+            if other.translation_only_nodes.contains(&node) {
+                if inserted {
+                    self.translation_only_nodes.insert(node);
+                }
+            } else {
+                self.translation_only_nodes.remove(&node);
+            }
+        }
         self.ports.extend(other.ports.iter().copied());
         self.incident_edges
             .extend(other.incident_edges.iter().copied());
+        other
+            .nodes
+            .len()
+            .saturating_add(other.ports.len())
+            .saturating_add(other.incident_edges.len()) as u64
     }
 
     pub(crate) fn make_global(&mut self) {

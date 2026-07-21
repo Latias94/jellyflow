@@ -399,6 +399,32 @@ fn multi_view_pending_impacts_are_scoped_per_candidate() {
 }
 
 #[test]
+fn ten_thousand_pending_single_node_patches_merge_each_affected_record_once() {
+    let (graph, nodes) = graph_with_nodes(10_000);
+    let runtime = GraphRuntime::builder(Default::default())
+        .build(graph)
+        .unwrap();
+    let session = runtime.attach_view(ViewSessionOptions::default()).unwrap();
+    let _pending_frame = session.frame(request()).unwrap();
+
+    for (revision, node) in nodes.iter().copied().enumerate() {
+        let outcome = runtime
+            .execute(GraphCommand::set_node_data(
+                revision as u64,
+                node,
+                serde_json::json!({ "revision": revision }),
+            ))
+            .unwrap();
+        assert!(matches!(outcome, GraphCommandOutcome::Applied(_)));
+    }
+
+    let stats = session.stats().unwrap();
+    assert_eq!(stats.geometry_impact_patches_merged, 10_000);
+    assert_eq!(stats.geometry_impact_records_merged, 10_000);
+    assert_eq!(stats.geometry_impact_global_fallbacks, 0);
+}
+
+#[test]
 fn new_edge_route_is_removed_when_impacted_endpoint_layout_is_withdrawn() {
     let (graph, ids) = graph_with_routed_edge();
     let runtime = GraphRuntime::builder(Default::default())

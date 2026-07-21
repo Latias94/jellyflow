@@ -324,6 +324,7 @@ pub struct ViewSessionStats {
     pub node_binding_notifications: u64,
     pub spatial_updates: u64,
     pub geometry_impact_patches_merged: u64,
+    pub geometry_impact_records_merged: u64,
     pub geometry_impact_global_fallbacks: u64,
     pub layout_impact_candidates_checked: u64,
     pub layout_impact_candidates_stale: u64,
@@ -1338,10 +1339,10 @@ impl ViewShared {
             || (patch.impact().sanitize_view_state && state.patch_may_change_selection(patch));
         let selection_before = sanitize_selection.then(|| state.facts.selection());
         if let Some(pending) = state.pending_frame.as_mut() {
-            let fallback = pending.observe_patch(patch);
+            let (fallback, records_merged) = pending.observe_patch(patch);
             state
                 .derived
-                .record_geometry_impact_merge(1, u64::from(fallback));
+                .record_geometry_impact_merge(1, records_merged, u64::from(fallback));
         }
         state.seen_revision = patch.to_revision();
         state.control_stats.runtime_patches = state.control_stats.runtime_patches.saturating_add(1);

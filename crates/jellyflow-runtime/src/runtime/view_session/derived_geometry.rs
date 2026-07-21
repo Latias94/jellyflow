@@ -354,11 +354,20 @@ impl DerivedGeometry {
         self.stats
     }
 
-    pub(super) fn record_geometry_impact_merge(&mut self, patches: u64, fallbacks: u64) {
+    pub(super) fn record_geometry_impact_merge(
+        &mut self,
+        patches: u64,
+        records: u64,
+        fallbacks: u64,
+    ) {
         self.stats.geometry_impact_patches_merged = self
             .stats
             .geometry_impact_patches_merged
             .saturating_add(patches);
+        self.stats.geometry_impact_records_merged = self
+            .stats
+            .geometry_impact_records_merged
+            .saturating_add(records);
         self.stats.geometry_impact_global_fallbacks = self
             .stats
             .geometry_impact_global_fallbacks
