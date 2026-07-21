@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,10 +19,61 @@ RELEASE_TAG_SCRIPT = ROOT / "scripts" / "verify-release-tag-unchanged.sh"
 RELEASE_CRATES = ROOT / "scripts" / "release-crates.txt"
 RELEASE_VERSION_SCRIPT = ROOT / "scripts" / "release-version.py"
 ROOT_MANIFEST = ROOT / "Cargo.toml"
+WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
+LICENSE_FILES = ("LICENSE-MIT", "LICENSE-APACHE")
+PINNED_ACTIONS = {
+    "actions/checkout": ("d23441a48e516b6c34aea4fa41551a30e30af803", "v6"),
+    "actions/upload-artifact": (
+        "b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+        "v6",
+    ),
+    "dtolnay/rust-toolchain": (
+        "f133eefe930d61f0d9371efd474daf0125ed3dd1",
+        "1.95.0",
+    ),
+    "Swatinem/rust-cache": ("e18b497796c12c097a38f9edb9d0641fb99eee32", "v2"),
+    "taiki-e/install-action": (
+        "37ba67210166984a515120020147f0b4ae3b8667",
+        "nextest",
+    ),
+}
+USES_PATTERN = re.compile(
+    r"^\s*(?:-\s*)?uses:\s+(?P<target>\S+)(?:\s+#\s*(?P<label>\S+))?\s*$"
+)
 
 
 def workflow_source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def external_workflow_uses() -> list[tuple[Path, int, str, str, str | None]]:
+    references = []
+    workflows = sorted(
+        path
+        for path in WORKFLOW_DIRECTORY.iterdir()
+        if path.suffix in {".yml", ".yaml"}
+    )
+    for workflow in workflows:
+        for line_number, line in enumerate(workflow_source(workflow).splitlines(), start=1):
+            match = USES_PATTERN.fullmatch(line)
+            if match is None:
+                if "uses:" in line and not line.lstrip().startswith("#"):
+                    raise AssertionError(
+                        f"{workflow.relative_to(ROOT)}:{line_number} must use canonical uses syntax"
+                    )
+                continue
+            target = match.group("target")
+            if target.startswith("./"):
+                continue
+            action, separator, revision = target.rpartition("@")
+            if not separator:
+                raise AssertionError(
+                    f"{workflow.relative_to(ROOT)}:{line_number} has an unversioned action {target!r}"
+                )
+            references.append(
+                (workflow, line_number, action, revision, match.group("label"))
+            )
+    return references
 
 
 def trigger_source(source: str) -> str:
@@ -175,6 +227,34 @@ esac
 
 
 class ReleaseWorkflowTrustTests(unittest.TestCase):
+    def test_external_workflow_actions_use_verified_immutable_revisions(self) -> None:
+        references = external_workflow_uses()
+        observed_actions = set()
+
+        self.assertTrue(references, "workflows must exercise the action pinning policy")
+        for workflow, line_number, action, revision, label in references:
+            location = f"{workflow.relative_to(ROOT)}:{line_number}"
+            self.assertRegex(
+                revision,
+                r"\A[0-9a-f]{40}\Z",
+                f"{location} must pin {action} to a full commit SHA",
+            )
+            self.assertIn(
+                action,
+                PINNED_ACTIONS,
+                f"{location} uses {action} without a reviewed upstream pin",
+            )
+            expected_revision, expected_label = PINNED_ACTIONS[action]
+            self.assertEqual(revision, expected_revision, location)
+            self.assertEqual(
+                label,
+                expected_label,
+                f"{location} must retain its human-readable source ref",
+            )
+            observed_actions.add(action)
+
+        self.assertEqual(observed_actions, set(PINNED_ACTIONS))
+
     def test_publication_uses_a_default_branch_repository_dispatch(self) -> None:
         release = workflow_source(RELEASE_WORKFLOW)
         preflight = workflow_source(PREFLIGHT_WORKFLOW)
@@ -309,6 +389,43 @@ class ReleaseWorkflowTrustTests(unittest.TestCase):
             self.assertIn(
                 "mapfile -t crates < scripts/release-crates.txt",
                 workflow_source(workflow),
+            )
+
+    def test_release_crate_archives_include_canonical_dual_license_texts(self) -> None:
+        crates = RELEASE_CRATES.read_text(encoding="utf-8").splitlines()
+        canonical_licenses = {
+            name: (ROOT / name).read_bytes() for name in LICENSE_FILES
+        }
+
+        for crate in crates:
+            crate_root = ROOT / "crates" / crate
+            for name, canonical in canonical_licenses.items():
+                self.assertEqual(
+                    (crate_root / name).read_bytes(),
+                    canonical,
+                    f"{crate}/{name} must match the workspace license text",
+                )
+
+            result = subprocess.run(
+                [
+                    "cargo",
+                    "package",
+                    "--locked",
+                    "--allow-dirty",
+                    "--list",
+                    "--package",
+                    crate,
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            packaged_files = set(result.stdout.splitlines())
+            self.assertTrue(
+                set(LICENSE_FILES).issubset(packaged_files),
+                f"{crate} package omitted a license file: {sorted(packaged_files)}",
             )
 
     def test_release_version_rejects_a_removed_package_cleanly(self) -> None:
