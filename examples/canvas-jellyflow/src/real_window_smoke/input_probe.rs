@@ -136,6 +136,33 @@ impl RealWindowSmokeProbe {
         capture_visual_frame(window, surface_size, screenshot_path.as_deref())
     }
 
+    fn capture_checkpoint(
+        &mut self,
+        window: &mut Window,
+        view: &WeakViewSession,
+        surface_size: ViewSize,
+        state: SmokeCaptureState,
+    ) -> Result<(), &'static str> {
+        let graph = view
+            .graph_snapshot()
+            .map_err(|_| "input_graph_snapshot_failed")?;
+        let expectations = SmokeExpectations::from_graph(graph.graph());
+        let screenshot_path = self.config.capture_path(self.demo, state);
+        let (_, _, geometry, paint) = inspect_current_frame(
+            window,
+            view,
+            &expectations,
+            surface_size,
+            screenshot_path.as_deref(),
+        )?;
+        if let Some(reason) = paint.failure_reason() {
+            return Err(reason);
+        }
+        self.geometry = Some(geometry);
+        self.paint = Some(paint);
+        Ok(())
+    }
+
     fn plan_input(
         &mut self,
         window: &mut Window,
@@ -192,38 +219,6 @@ impl RealWindowSmokeProbe {
         self.compact_layout = self.config.surface_matches(surface_size);
         self.geometry = Some(geometry);
         self.paint = Some(paint);
-        Ok(())
-    }
-
-    fn refresh_evidence(
-        &mut self,
-        window: &mut Window,
-        view: &WeakViewSession,
-        expectations: &SmokeExpectations,
-        surface_size: ViewSize,
-    ) -> Result<(), &'static str> {
-        let (_, _, geometry, paint) =
-            inspect_current_frame(window, view, expectations, surface_size, None)?;
-        self.geometry = Some(geometry);
-        self.paint = Some(paint);
-        Ok(())
-    }
-
-    fn validate_current_frame(
-        &self,
-        window: &mut Window,
-        view: &WeakViewSession,
-        surface_size: ViewSize,
-    ) -> Result<(), &'static str> {
-        let graph = view
-            .graph_snapshot()
-            .map_err(|_| "input_graph_snapshot_failed")?;
-        let expectations = SmokeExpectations::from_graph(graph.graph());
-        let (_, _, _, paint) =
-            inspect_current_frame(window, view, &expectations, surface_size, None)?;
-        if let Some(reason) = paint.failure_reason() {
-            return Err(reason);
-        }
         Ok(())
     }
 

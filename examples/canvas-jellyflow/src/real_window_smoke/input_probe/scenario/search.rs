@@ -72,6 +72,12 @@ impl RealWindowSmokeProbe {
                 }
                 let search_has_focus = surface.read(cx).connection_search_has_focus(window, cx);
                 if search_active && request_present && search_has_focus {
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::SearchOpen,
+                    )?;
                     self.search_opened = true;
                     self.search_focus_moved = true;
                     self.transition(ProbePhase::SearchEscape);
@@ -105,7 +111,7 @@ impl RealWindowSmokeProbe {
                 if request_closed && interaction_closed && focus_restored {
                     self.search_cancelled = true;
                     self.search_focus_restored = true;
-                    self.validate_current_frame(window, view, surface_size)?;
+                    self.capture_checkpoint(window, view, surface_size, SmokeCaptureState::Final)?;
                     self.final_frame_validated = true;
                     self.transition(ProbePhase::Complete);
                     self.complete()

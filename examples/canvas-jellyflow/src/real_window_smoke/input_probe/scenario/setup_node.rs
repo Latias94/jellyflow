@@ -134,7 +134,12 @@ impl RealWindowSmokeProbe {
                     dragged_geometry_status(view, expectations, plan)?;
                 let interaction_settled = interaction_is_settled(surface, cx);
                 if moved && node_geometry_converged && routes_converged && interaction_settled {
-                    self.refresh_evidence(window, view, expectations, surface_size)?;
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::Selected,
+                    )?;
                     self.node_dragged = true;
                     self.transition(ProbePhase::PanPress);
                     Ok(None)

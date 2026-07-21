@@ -102,15 +102,25 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
 
-      - name: Open GPUI Shader Graph real-window smoke
+      - name: Open GPUI real-window smoke matrix
         if: runner.os == 'macOS'
         timeout-minutes: 10
-        run: python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --smoke
+        env:
+          JELLYFLOW_SMOKE_CAPTURE_DIR: target/real-window-smoke
+        run: |
+          set -euo pipefail
+          for zoom in 0.5 1 2; do
+            JELLYFLOW_SMOKE_ZOOM="$zoom" python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --smoke
+            JELLYFLOW_SMOKE_ZOOM="$zoom" python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --workflow --smoke
+          done
 
-      - name: Open GPUI Dify workflow real-window smoke
-        if: runner.os == 'macOS'
-        timeout-minutes: 10
-        run: python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --workflow --smoke
+      - name: Upload Open GPUI real-window evidence
+        if: runner.os == 'macOS' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: open-gpui-real-window-smoke
+          path: target/real-window-smoke/*.png
+          if-no-files-found: error
 
       - name: Package file lists
         if: matrix.release_gates

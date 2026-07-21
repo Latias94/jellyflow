@@ -7,6 +7,7 @@ impl RealWindowSmokeProbe {
         cx: &mut App,
         surface: &Entity<NativeGraphSurface>,
         view: &WeakViewSession,
+        surface_size: ViewSize,
     ) -> Result<Option<SmokeInputEvidence>, &'static str> {
         match self.phase {
             ProbePhase::ReconnectEdgePress => {
@@ -41,9 +42,12 @@ impl RealWindowSmokeProbe {
                     .selection()
                     .map_err(|_| "input_selection_read_failed")?;
                 if selection.edges().contains(&edge) && route_selected {
-                    window
-                        .render_to_image()
-                        .map_err(|_| "input_reconnect_chrome_render_failed")?;
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::ReconnectSelected,
+                    )?;
                     self.transition(ProbePhase::ReconnectPress);
                     Ok(None)
                 } else {
@@ -88,6 +92,12 @@ impl RealWindowSmokeProbe {
                 if let Some(reason) = connection_candidate_failure(surface, cx, target) {
                     self.wait_with_reason(reason)
                 } else {
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::ReconnectPreview,
+                    )?;
                     self.transition(ProbePhase::ReconnectRelease);
                     Ok(None)
                 }
@@ -113,6 +123,12 @@ impl RealWindowSmokeProbe {
                             EdgeEndpoint::To => model.to == reconnect.target,
                         });
                 if applied && interaction_is_settled(surface, cx) {
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::ReconnectCommitted,
+                    )?;
                     self.reconnect_applied = true;
                     self.transition(ProbePhase::SearchPress);
                     Ok(None)

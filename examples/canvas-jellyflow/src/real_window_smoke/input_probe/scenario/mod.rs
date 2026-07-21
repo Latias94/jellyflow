@@ -53,7 +53,9 @@ pub(super) fn advance(
         | ProbePhase::ConnectMove
         | ProbePhase::ConnectWaitCandidate
         | ProbePhase::ConnectRelease
-        | ProbePhase::ConnectWaitCommitted => probe.advance_connect(window, cx, surface, view),
+        | ProbePhase::ConnectWaitCommitted => {
+            probe.advance_connect(window, cx, surface, view, surface_size)
+        }
         ProbePhase::ReconnectEdgePress
         | ProbePhase::ReconnectEdgeRelease
         | ProbePhase::ReconnectEdgeWaitSelected
@@ -61,7 +63,9 @@ pub(super) fn advance(
         | ProbePhase::ReconnectMove
         | ProbePhase::ReconnectWaitCandidate
         | ProbePhase::ReconnectRelease
-        | ProbePhase::ReconnectWaitCommitted => probe.advance_reconnect(window, cx, surface, view),
+        | ProbePhase::ReconnectWaitCommitted => {
+            probe.advance_reconnect(window, cx, surface, view, surface_size)
+        }
         ProbePhase::SearchPress
         | ProbePhase::SearchMove
         | ProbePhase::SearchWaitDrag

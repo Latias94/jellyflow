@@ -57,6 +57,14 @@ impl SmokeZoom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SmokeCaptureState {
     Initial,
+    Selected,
+    ConnectionPreview,
+    ConnectionCommitted,
+    ReconnectSelected,
+    ReconnectPreview,
+    ReconnectCommitted,
+    SearchOpen,
+    Final,
 }
 
 #[cfg(any(test, feature = "real-window-smoke"))]
@@ -64,6 +72,14 @@ impl SmokeCaptureState {
     const fn file_label(self) -> &'static str {
         match self {
             Self::Initial => "initial",
+            Self::Selected => "selected",
+            Self::ConnectionPreview => "connection-preview",
+            Self::ConnectionCommitted => "connection-committed",
+            Self::ReconnectSelected => "reconnect-selected",
+            Self::ReconnectPreview => "reconnect-preview",
+            Self::ReconnectCommitted => "reconnect-committed",
+            Self::SearchOpen => "search-open",
+            Self::Final => "final",
         }
     }
 }
@@ -288,12 +304,27 @@ mod tests {
         ])
         .expect("capture config");
 
-        assert_eq!(
-            config.capture_path("workflow", SmokeCaptureState::Initial),
-            Some(PathBuf::from(
-                "target/captures/jellyflow-workflow-1440x900-z2-initial.png"
-            ))
-        );
+        for (state, label) in [
+            (SmokeCaptureState::Initial, "initial"),
+            (SmokeCaptureState::Selected, "selected"),
+            (SmokeCaptureState::ConnectionPreview, "connection-preview"),
+            (
+                SmokeCaptureState::ConnectionCommitted,
+                "connection-committed",
+            ),
+            (SmokeCaptureState::ReconnectSelected, "reconnect-selected"),
+            (SmokeCaptureState::ReconnectPreview, "reconnect-preview"),
+            (SmokeCaptureState::ReconnectCommitted, "reconnect-committed"),
+            (SmokeCaptureState::SearchOpen, "search-open"),
+            (SmokeCaptureState::Final, "final"),
+        ] {
+            assert_eq!(
+                config.capture_path("workflow", state),
+                Some(PathBuf::from(format!(
+                    "target/captures/jellyflow-workflow-1440x900-z2-{label}.png"
+                )))
+            );
+        }
     }
 
     #[test]

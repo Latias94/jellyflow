@@ -7,6 +7,7 @@ impl RealWindowSmokeProbe {
         cx: &mut App,
         surface: &Entity<NativeGraphSurface>,
         view: &WeakViewSession,
+        surface_size: ViewSize,
     ) -> Result<Option<SmokeInputEvidence>, &'static str> {
         match self.phase {
             ProbePhase::ConnectPress => {
@@ -34,6 +35,12 @@ impl RealWindowSmokeProbe {
                 if let Some(reason) = connection_candidate_failure(surface, cx, target) {
                     self.wait_with_reason(reason)
                 } else {
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::ConnectionPreview,
+                    )?;
                     self.transition(ProbePhase::ConnectRelease);
                     Ok(None)
                 }
@@ -55,6 +62,12 @@ impl RealWindowSmokeProbe {
                 if let Some(created) = created.filter(|edge| *edge != plan.edge)
                     && interaction_is_settled(surface, cx)
                 {
+                    self.capture_checkpoint(
+                        window,
+                        view,
+                        surface_size,
+                        SmokeCaptureState::ConnectionCommitted,
+                    )?;
                     self.created_edge = Some(created);
                     self.connection_created = true;
                     self.transition(ProbePhase::SecondEdgePress);
