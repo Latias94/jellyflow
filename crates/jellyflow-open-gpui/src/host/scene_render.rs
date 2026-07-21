@@ -4,6 +4,8 @@ use std::rc::Rc;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
+#[cfg(test)]
+use jellyflow_core::EdgeKind;
 use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId};
 use jellyflow_runtime::runtime::geometry::{
     EdgePath, EdgePathAnchor, EdgePathSample, EdgePosition, EdgeRouteFacts, PathCommand,
@@ -46,6 +48,8 @@ use crate::interaction::{
 
 use super::OpenGpuiSceneHost;
 use super::connection::OpenGpuiConnectionPreviewPlan;
+#[cfg(test)]
+use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
 use super::diagnostics::OpenGpuiEdgeLayerOverflow;
 use super::edge_layer::{
     OpenGpuiEdgePaintBatch, OpenGpuiEdgePaintItemKey, OpenGpuiEdgePaintPlanKey,
@@ -201,6 +205,17 @@ pub(super) struct OpenGpuiConnectionPreviewEvidence {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct OpenGpuiConnectionPreviewPaintEvidence {
+    pub(super) edge_kind: EdgeKind,
+    pub(super) probe: OpenGpuiConnectionPreviewProbeOutcome,
+    pub(super) paint_key: OpenGpuiEdgePainterBatchKey,
+    pub(super) stroke_width: f32,
+    pub(super) source_marker: OpenGpuiEdgeMarkerShape,
+    pub(super) target_marker: OpenGpuiEdgeMarkerShape,
+}
+
+#[cfg(test)]
 pub(super) struct OpenGpuiSceneEvidence {
     pub(super) last_layers: Cell<Option<[OpenGpuiSceneLayer; 7]>>,
     pub(super) last_planned_wire_count: Cell<usize>,
@@ -209,6 +224,7 @@ pub(super) struct OpenGpuiSceneEvidence {
     pub(super) first_non_empty_paint_pass: Cell<Option<u64>>,
     pub(super) last_painted_wire_count: Cell<usize>,
     pub(super) last_connection_preview: Cell<Option<OpenGpuiConnectionPreviewEvidence>>,
+    pub(super) last_connection_preview_paint: Cell<Option<OpenGpuiConnectionPreviewPaintEvidence>>,
     pub(super) last_painted_connection_preview_count: Cell<usize>,
     pub(super) painted_wire_counts: RefCell<Vec<usize>>,
     pub(super) last_scene_phase: Cell<Option<OpenGpuiSceneGesturePhase>>,
@@ -226,6 +242,7 @@ impl OpenGpuiSceneEvidence {
             first_non_empty_paint_pass: Cell::new(None),
             last_painted_wire_count: Cell::new(0),
             last_connection_preview: Cell::new(None),
+            last_connection_preview_paint: Cell::new(None),
             last_painted_connection_preview_count: Cell::new(0),
             painted_wire_counts: RefCell::new(Vec::new()),
             last_scene_phase: Cell::new(None),
@@ -1462,60 +1479,65 @@ impl OpenGpuiSceneHost {
     fn render_preview_layer(
         &self,
         connection_preview: Option<OpenGpuiConnectionPreviewPlan>,
-        geometry: GeometrySnapshot,
         transform: ViewportTransform,
     ) -> AnyElement {
         #[cfg(test)]
-        self.scene_evidence
-            .last_painted_connection_preview_count
-            .set(0);
+        {
+            self.scene_evidence.last_connection_preview_paint.set(None);
+            self.scene_evidence
+                .last_painted_connection_preview_count
+                .set(0);
+        }
         let mut preview_layer = div().absolute().size_full();
         if let Some(connection_preview) = connection_preview {
-            let resolved = connection_preview
-                .suppressed_edge
-                .and_then(|edge| geometry.route(edge))
-                .map(|route| {
-                    self.edge_painters.resolve(
-                        route.facts().edge_kind,
-                        OpenGpuiEdgeVisualState::Preview,
-                        &route.facts().presentation,
-                        &self.graph_theme,
-                    )
-                });
-            let preview_style = resolved.map_or_else(
-                || {
-                    self.graph_theme
-                        .resolve_edge_style(OpenGpuiEdgeVisualState::Preview, None)
+            let OpenGpuiConnectionPreviewPlan {
+                path: preview_path,
+                edge_kind,
+                presentation,
+                probe,
+                suppressed_edge: _,
+            } = connection_preview;
+            let resolved = self.edge_painters.resolve(
+                edge_kind,
+                OpenGpuiEdgeVisualState::Preview,
+                &presentation,
+                &self.graph_theme,
+            );
+            let resolved = if probe.is_invalid() {
+                resolved.with_invalid_connection_cue()
+            } else {
+                resolved
+            };
+            let preview_style = resolved.style();
+            let path_batch_key = resolved.path_batch_key();
+            let source_marker = resolved.source_marker().shape();
+            let target_marker = resolved.target_marker().shape();
+            #[cfg(test)]
+            self.scene_evidence.last_connection_preview_paint.set(Some(
+                OpenGpuiConnectionPreviewPaintEvidence {
+                    edge_kind,
+                    probe,
+                    paint_key: path_batch_key,
+                    stroke_width: preview_style.stroke_width(),
+                    source_marker,
+                    target_marker,
                 },
-                |recipe| recipe.style(),
-            );
-            let path_batch_key = resolved.map_or_else(
-                || OpenGpuiEdgePainterBatchKey::native_fallback(preview_style.batch_key()),
-                |recipe| recipe.path_batch_key(),
-            );
-            let source_marker = resolved
-                .map(|recipe| recipe.source_marker().shape())
-                .unwrap_or(OpenGpuiEdgeMarkerShape::None);
-            let target_marker = resolved
-                .map(|recipe| recipe.target_marker().shape())
-                .unwrap_or(OpenGpuiEdgeMarkerShape::None);
-            let label = resolved
-                .and_then(|recipe| recipe.label())
-                .and_then(|label| {
-                    let anchor = match label.anchor() {
-                        EdgeLabelAnchor::Source => EdgePathAnchor::Progress(0.2),
-                        EdgeLabelAnchor::Center => EdgePathAnchor::Center,
-                        EdgeLabelAnchor::Target => EdgePathAnchor::Progress(0.8),
-                    };
-                    connection_preview.path.sample(anchor).ok().map(|sample| {
-                        OpenGpuiPreparedEdgeLabel {
-                            text: label.text().to_owned(),
-                            point: sample.point,
-                            appearance: label.appearance(),
-                        }
+            ));
+            let label = resolved.label().and_then(|label| {
+                let anchor = match label.anchor() {
+                    EdgeLabelAnchor::Source => EdgePathAnchor::Progress(0.2),
+                    EdgeLabelAnchor::Center => EdgePathAnchor::Center,
+                    EdgeLabelAnchor::Target => EdgePathAnchor::Progress(0.8),
+                };
+                preview_path
+                    .sample(anchor)
+                    .ok()
+                    .map(|sample| OpenGpuiPreparedEdgeLabel {
+                        text: label.text().to_owned(),
+                        point: sample.point,
+                        appearance: label.appearance(),
                     })
-                });
-            let preview_path = connection_preview.path;
+            });
             let marker_diameter = self.graph_theme.metrics.edge_marker_diameter;
             #[cfg(test)]
             let paint_evidence = self.scene_evidence.clone();
@@ -1773,8 +1795,7 @@ impl OpenGpuiSceneHost {
             .child(self.render_grid_layer(transform))
             .child(self.render_edge_layer(&wires, transform))
             .into_any_element();
-        let preview_layer =
-            self.render_preview_layer(connection_preview, wires.geometry.clone(), transform);
+        let preview_layer = self.render_preview_layer(connection_preview, transform);
         let edge_chrome_layer = self.render_edge_chrome_layer(&wires, transform);
         let mut focus_entries = Vec::new();
         let node_layer =

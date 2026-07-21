@@ -21,7 +21,7 @@ use open_gpui::{
 };
 
 use crate::authoring::OpenGpuiPortHandle;
-use crate::chrome::OpenGpuiEdgeVisualState;
+use crate::chrome::{OpenGpuiEdgeMarkerShape, OpenGpuiEdgeVisualState};
 use crate::command_journal::OPEN_GPUI_COMMAND_JOURNAL_CAPACITY;
 use crate::interaction::{
     OpenGpuiPortActivationEvent, OpenGpuiPortActivationSource, OpenGpuiPortDragCancelReason,
@@ -34,6 +34,7 @@ use crate::{
     OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeSizePolicy,
 };
 
+use super::connection::OpenGpuiConnectionPreviewProbeOutcome;
 use super::scene_render::{edge_path_endpoints, visit_edge_chrome_wires_in_paint_order};
 use super::{
     LayoutReceiptAction, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY, OPEN_GPUI_SCENE_LAYER_ORDER,
@@ -52,6 +53,7 @@ mod canonical_conformance;
 mod frame_transaction;
 
 const KIND: &str = "test.scene-layer-node";
+const EXEC_KIND: &str = "test.scene-layer-exec-node";
 const RENDERER: &str = "test.native.scene-layer-node";
 
 struct RoutedNode {
@@ -6693,6 +6695,27 @@ fn unconnected_graph() -> jellyflow_core::Graph {
     graph.build().expect("valid graph")
 }
 
+fn exec_unconnected_graph() -> jellyflow_core::Graph {
+    let source = NodeId::from_u128(10);
+    let target = NodeId::from_u128(11);
+    let output = PortId::from_u128(20);
+    let input = PortId::from_u128(21);
+    let mut graph = GraphBuilder::new(GraphId::from_u128(1));
+    let mut source_node = node(CanvasPoint { x: 40.0, y: 80.0 }, output);
+    source_node.kind = NodeKindKey::new(EXEC_KIND);
+    let mut target_node = node(CanvasPoint { x: 360.0, y: 80.0 }, input);
+    target_node.kind = NodeKindKey::new(EXEC_KIND);
+    graph.insert_node(source, source_node);
+    graph.insert_node(target, target_node);
+    let mut output_port = port(source, "output", PortDirection::Out);
+    output_port.kind = PortKind::Exec;
+    let mut input_port = port(target, "input", PortDirection::In);
+    input_port.kind = PortKind::Exec;
+    graph.insert_port(output, output_port);
+    graph.insert_port(input, input_port);
+    graph.build().expect("valid exec graph")
+}
+
 fn content_size_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
@@ -6943,6 +6966,28 @@ fn catalog() -> NodeCatalog {
                 .build(),
         )
         .expect("unique node kind");
+    catalog
+        .register(
+            NodeKindSpec::builder(EXEC_KIND, "Scene layer exec node", RENDERER)
+                .default_size(CanvasSize {
+                    width: 180.0,
+                    height: 100.0,
+                })
+                .port(jellyflow_runtime::schema::NodePortSpec::new(
+                    "input",
+                    PortDirection::In,
+                    PortKind::Exec,
+                    PortCapacity::Single,
+                ))
+                .port(jellyflow_runtime::schema::NodePortSpec::new(
+                    "output",
+                    PortDirection::Out,
+                    PortKind::Exec,
+                    PortCapacity::Single,
+                ))
+                .build(),
+        )
+        .expect("unique exec node kind");
     catalog
 }
 

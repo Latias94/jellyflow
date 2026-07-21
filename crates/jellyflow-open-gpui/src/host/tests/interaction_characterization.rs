@@ -67,6 +67,216 @@ fn reconnect_commit_suppresses_old_edge_without_preview_flicker(
 }
 
 #[open_gpui::test]
+fn new_connection_preview_reuses_the_eventual_exec_edge_recipe(cx: &mut open_gpui::TestAppContext) {
+    let (runtime, host, cx) = mount_connection_scene_for_graph(cx, exec_unconnected_graph());
+    draw(cx);
+
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("exec output bounds");
+    let input = cx
+        .debug_bounds("jellyflow-test-input-port")
+        .expect("exec input bounds");
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(input.center(), Some(MouseButton::Left), Default::default());
+    draw(cx);
+
+    let preview = cx.update_entity(&host, |host, _| {
+        let edge = host
+            .interaction_presentation()
+            .connection()
+            .expect("active exec connection")
+            .intent()
+            .edge();
+        let geometry = host.view.geometry_snapshot().expect("preview geometry");
+        let plan = host
+            .connection_preview_plan(&geometry)
+            .expect("exec preview plan");
+        assert_eq!(plan.probe, OpenGpuiConnectionPreviewProbeOutcome::Valid);
+        let recipe = host.edge_painters.resolve(
+            plan.edge_kind,
+            OpenGpuiEdgeVisualState::Preview,
+            &plan.presentation,
+            &host.graph_theme,
+        );
+        let evidence = host
+            .scene_evidence
+            .last_connection_preview_paint
+            .get()
+            .expect("resolved exec preview recipe");
+        assert_eq!(evidence.edge_kind, EdgeKind::Exec);
+        assert_eq!(evidence.probe, OpenGpuiConnectionPreviewProbeOutcome::Valid);
+        assert_eq!(evidence.target_marker, OpenGpuiEdgeMarkerShape::Arrow);
+        assert_eq!(evidence.paint_key, recipe.path_batch_key());
+        let painter = recipe.painter();
+        let tone = recipe.style().tone();
+        let stroke_pattern = recipe.path_batch_key().stroke_pattern();
+        let source_marker = recipe.source_marker();
+        let target_marker = recipe.target_marker();
+        (
+            edge,
+            plan.edge_kind,
+            plan.presentation,
+            painter,
+            tone,
+            stroke_pattern,
+            source_marker,
+            target_marker,
+        )
+    });
+
+    cx.simulate_mouse_up(input.center(), MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    draw(cx);
+    draw(cx);
+
+    let snapshot = runtime.snapshot().expect("committed exec graph");
+    let edge = snapshot
+        .graph()
+        .edge(&preview.0)
+        .expect("preview edge identity is committed");
+    assert_eq!(edge.kind, EdgeKind::Exec);
+    let committed = cx.read_entity(&host, |host, _| {
+        let geometry = host.view.geometry_snapshot().expect("committed geometry");
+        let facts = geometry
+            .route(preview.0)
+            .expect("committed exec route")
+            .facts();
+        let recipe = host.edge_painters.resolve(
+            facts.edge_kind,
+            OpenGpuiEdgeVisualState::Ordinary,
+            &facts.presentation,
+            &host.graph_theme,
+        );
+        (
+            facts.edge_kind,
+            facts.presentation.clone(),
+            recipe.painter(),
+            recipe.style().tone(),
+            recipe.path_batch_key().stroke_pattern(),
+            recipe.source_marker(),
+            recipe.target_marker(),
+        )
+    });
+
+    assert_eq!(preview.1, committed.0);
+    assert_eq!(preview.2, committed.1);
+    assert_eq!(preview.3, committed.2);
+    assert_eq!(preview.4, committed.3);
+    assert_eq!(preview.5, committed.4);
+    assert_eq!(preview.6, committed.5);
+    assert_eq!(preview.7, committed.6);
+}
+
+#[open_gpui::test]
+fn invalid_connection_preview_uses_the_bounded_non_color_cue(cx: &mut open_gpui::TestAppContext) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, occupied_input_graph());
+    draw(cx);
+
+    let source = cx
+        .debug_bounds("jellyflow-test-replacement-output-port")
+        .expect("replacement output bounds");
+    let invalid_target = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("same-direction output bounds");
+    cx.simulate_mouse_down(source.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(
+        invalid_target.center(),
+        Some(MouseButton::Left),
+        Default::default(),
+    );
+    draw(cx);
+
+    cx.update_entity(&host, |host, _| {
+        assert!(matches!(
+            host.interaction_presentation()
+                .connection()
+                .expect("invalid connection presentation")
+                .probe(),
+            jellyflow_runtime::ConnectionProbe::Invalid { .. }
+        ));
+        let geometry = host.view.geometry_snapshot().expect("invalid geometry");
+        let plan = host
+            .connection_preview_plan(&geometry)
+            .expect("invalid preview plan");
+        assert_eq!(plan.probe, OpenGpuiConnectionPreviewProbeOutcome::Invalid);
+        let base = host.edge_painters.resolve(
+            plan.edge_kind,
+            OpenGpuiEdgeVisualState::Preview,
+            &plan.presentation,
+            &host.graph_theme,
+        );
+        let invalid = base.with_invalid_connection_cue();
+        let evidence = host
+            .scene_evidence
+            .last_connection_preview_paint
+            .get()
+            .expect("invalid preview paint evidence");
+        assert_eq!(evidence.probe, OpenGpuiConnectionPreviewProbeOutcome::Invalid);
+        assert_eq!(evidence.paint_key, invalid.path_batch_key());
+        assert!(evidence.paint_key.has_invalid_cue());
+        assert_ne!(
+            evidence.paint_key.stroke_pattern(),
+            base.path_batch_key().stroke_pattern(),
+        );
+        assert_eq!(invalid.with_invalid_connection_cue(), invalid);
+    });
+
+    release_held_connection(&host, invalid_target.center(), cx);
+}
+
+#[open_gpui::test]
+fn connection_preview_keeps_screen_space_recipe_at_half_one_and_two_x_zoom(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    let (_runtime, host, cx) = mount_connection_scene_for_graph(cx, unconnected_graph());
+    draw(cx);
+
+    let output = cx
+        .debug_bounds("jellyflow-test-output-port")
+        .expect("output bounds");
+    let pointer = point(px(700.0), px(500.0));
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Default::default());
+    draw(cx);
+
+    let mut expected = None;
+    for zoom in [0.5, 1.0, 2.0] {
+        cx.update_entity(&host, |host, _| {
+            host.view
+                .set_viewport(CanvasPoint::default(), zoom)
+                .expect("set preview zoom");
+        });
+        cx.run_until_parked();
+        draw(cx);
+        let evidence = cx.read_entity(&host, |host, _| {
+            host.scene_evidence
+                .last_connection_preview_paint
+                .get()
+                .expect("preview paint evidence at zoom")
+        });
+        assert_eq!(
+            evidence.probe,
+            OpenGpuiConnectionPreviewProbeOutcome::Unresolved,
+            "zoom={zoom}",
+        );
+        let recipe = (
+            evidence.paint_key,
+            evidence.stroke_width,
+            evidence.source_marker,
+            evidence.target_marker,
+        );
+        if let Some(expected) = expected {
+            assert_eq!(recipe, expected, "zoom={zoom}");
+        } else {
+            expected = Some(recipe);
+        }
+    }
+
+    release_held_connection(&host, pointer, cx);
+}
+
+#[open_gpui::test]
 fn query_from_replaced_interaction_generation_is_inert_before_view_access(
     cx: &mut open_gpui::TestAppContext,
 ) {

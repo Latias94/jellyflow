@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::rc::Rc;
 
-use jellyflow_core::{CanvasPoint, EdgeId, Graph, NodeId, PortDirection, PortId};
+use jellyflow_core::{CanvasPoint, Edge, EdgeId, EdgeKind, Graph, NodeId, PortDirection, PortId};
 use jellyflow_runtime::runtime::geometry::{
-    BezierEdgeOptions, EdgeEndpointPosition, EdgePath, EdgePosition, HandlePosition,
-    bezier_edge_path, resolve_edge_route_path,
+    EdgeEndpointPosition, EdgePath, EdgePosition, EdgePresentationFacts, HandlePosition,
+    resolve_edge_route_path,
 };
 use jellyflow_runtime::schema::NodeCatalogInstantiationError;
 use jellyflow_runtime::{
@@ -33,8 +34,32 @@ use super::endpoint_resolver::{
 use super::focus_navigation::OpenGpuiGraphFocusTarget;
 use super::lifecycle::NodeChanges;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenGpuiConnectionPreviewProbeOutcome {
+    Unresolved,
+    Valid,
+    Invalid,
+}
+
+impl OpenGpuiConnectionPreviewProbeOutcome {
+    const fn from_probe(probe: &ConnectionProbe) -> Self {
+        match probe {
+            ConnectionProbe::None => Self::Unresolved,
+            ConnectionProbe::Valid { .. } => Self::Valid,
+            ConnectionProbe::Invalid { .. } => Self::Invalid,
+        }
+    }
+
+    pub(super) const fn is_invalid(self) -> bool {
+        matches!(self, Self::Invalid)
+    }
+}
+
 pub(super) struct OpenGpuiConnectionPreviewPlan {
     pub(super) path: EdgePath,
+    pub(super) edge_kind: EdgeKind,
+    pub(super) presentation: EdgePresentationFacts,
+    pub(super) probe: OpenGpuiConnectionPreviewProbeOutcome,
     pub(super) suppressed_edge: Option<EdgeId>,
 }
 
@@ -944,9 +969,14 @@ impl OpenGpuiSceneHost {
             }
         };
 
-        let path = match intent {
+        let (endpoints, preview_edge) = match intent {
             ConnectionGestureIntent::Connect { source, .. } => {
-                let endpoints = match graph.port(&source)?.dir {
+                let source = graph.port(&source)?;
+                let target_port = connection
+                    .probe()
+                    .target()
+                    .map_or(intent.fixed_port(), |target| target.port());
+                let endpoints = match source.dir {
                     PortDirection::Out => EdgePosition {
                         source: fixed,
                         target: moving,
@@ -956,11 +986,14 @@ impl OpenGpuiSceneHost {
                         target: fixed,
                     },
                 };
-                bezier_edge_path(
-                    endpoints.source,
-                    endpoints.target,
-                    BezierEdgeOptions::default(),
-                )?
+                let (from, to) = match source.dir {
+                    PortDirection::Out => (intent.fixed_port(), target_port),
+                    PortDirection::In => (target_port, intent.fixed_port()),
+                };
+                (
+                    endpoints,
+                    Cow::Owned(Edge::new(source.kind.edge_kind(), from, to)),
+                )
             }
             ConnectionGestureIntent::Reconnect { edge, endpoint, .. } => {
                 let endpoints = match endpoint {
@@ -973,14 +1006,18 @@ impl OpenGpuiSceneHost {
                         target: moving,
                     },
                 };
-                resolve_edge_route_path(graph.edge(&edge)?, endpoints)?.path
+                (endpoints, Cow::Borrowed(graph.edge(&edge)?))
             }
         };
+        let route = resolve_edge_route_path(preview_edge.as_ref(), endpoints)?;
         if endpoint_fallbacks > 0 {
             self.record_endpoint_geometry_diagnostics(endpoint_diagnostics, endpoint_fallbacks);
         }
         Some(OpenGpuiConnectionPreviewPlan {
-            path,
+            path: route.path,
+            edge_kind: route.edge_kind,
+            presentation: route.presentation,
+            probe: OpenGpuiConnectionPreviewProbeOutcome::from_probe(connection.probe()),
             suppressed_edge: connection.suppressed_edge(),
         })
     }
