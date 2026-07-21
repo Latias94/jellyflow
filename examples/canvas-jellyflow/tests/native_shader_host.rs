@@ -1,5 +1,10 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll, Waker};
 
 use jellyflow_core::types::TypeDesc;
 use jellyflow_core::{
@@ -23,8 +28,8 @@ use open_gpui_canvas_jellyflow::connection_search::{
     NATIVE_CONNECTION_SEARCH_BACKDROP_SELECTOR, NATIVE_CONNECTION_SEARCH_DIAGNOSTIC_SELECTOR,
     NATIVE_CONNECTION_SEARCH_EMPTY_SELECTOR, NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR,
     NATIVE_CONNECTION_SEARCH_RESULTS_SELECTOR, NATIVE_CONNECTION_SEARCH_RETRY_SELECTOR,
-    NATIVE_CONNECTION_SEARCH_SELECTOR, NATIVE_GRAPH_SURFACE_SELECTOR, NativeConnectionSearchSource,
-    NativeConnectionSearchSourceError, NativeGraphSurface,
+    NATIVE_CONNECTION_SEARCH_SELECTOR, NATIVE_GRAPH_SURFACE_SELECTOR, NativeConnectionSearchFuture,
+    NativeConnectionSearchSource, NativeConnectionSearchSourceError, NativeGraphSurface,
     native_connection_search_candidate_selector, native_connection_search_input_selector,
 };
 use open_gpui_canvas_jellyflow::nodes::{
@@ -744,18 +749,18 @@ fn shader_native_search_rebinds_a_stale_candidate_before_one_atomic_commit(
 }
 
 struct FailOnceConnectionSearchSource {
-    attempts: Cell<u8>,
+    attempts: AtomicU8,
 }
 
 impl FailOnceConnectionSearchSource {
     fn new() -> Self {
         Self {
-            attempts: Cell::new(0),
+            attempts: AtomicU8::new(0),
         }
     }
 
     fn attempts(&self) -> u8 {
-        self.attempts.get()
+        self.attempts.load(Ordering::SeqCst)
     }
 }
 
@@ -763,19 +768,128 @@ impl NativeConnectionSearchSource for FailOnceConnectionSearchSource {
     fn candidates(
         &self,
         _request: ConnectionSearchRequest,
-        query: &mut dyn FnMut() -> Result<
-            CreateFromWireCandidates,
-            NativeConnectionSearchSourceError,
-        >,
-    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError> {
-        let attempt = self.attempts.get();
-        self.attempts.set(attempt.saturating_add(1));
-        if attempt == 0 {
-            return Err(NativeConnectionSearchSourceError::new(
-                "application-owned candidate query failed",
-            ));
+        authoritative: CreateFromWireCandidates,
+    ) -> NativeConnectionSearchFuture {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if attempt == 0 {
+                Err(NativeConnectionSearchSourceError::new(
+                    "application-owned candidate query failed",
+                ))
+            } else {
+                Ok(authoritative)
+            }
+        })
+    }
+}
+
+#[derive(Default)]
+struct DeferredConnectionSearchSource {
+    attempts: Mutex<Vec<Arc<DeferredConnectionSearchAttempt>>>,
+}
+
+impl DeferredConnectionSearchSource {
+    fn attempts(&self) -> usize {
+        self.attempts
+            .lock()
+            .expect("deferred search attempts lock")
+            .len()
+    }
+
+    fn attempt(&self, index: usize) -> Arc<DeferredConnectionSearchAttempt> {
+        Arc::clone(
+            self.attempts
+                .lock()
+                .expect("deferred search attempts lock")
+                .get(index)
+                .expect("deferred search attempt"),
+        )
+    }
+}
+
+impl NativeConnectionSearchSource for DeferredConnectionSearchSource {
+    fn candidates(
+        &self,
+        _request: ConnectionSearchRequest,
+        authoritative: CreateFromWireCandidates,
+    ) -> NativeConnectionSearchFuture {
+        let attempt = Arc::new(DeferredConnectionSearchAttempt::new(authoritative));
+        self.attempts
+            .lock()
+            .expect("deferred search attempts lock")
+            .push(Arc::clone(&attempt));
+        Box::pin(DeferredConnectionSearchFuture { attempt })
+    }
+}
+
+struct DeferredConnectionSearchAttempt {
+    state: Mutex<DeferredConnectionSearchAttemptState>,
+    dropped: AtomicBool,
+}
+
+struct DeferredConnectionSearchAttemptState {
+    authoritative: Option<CreateFromWireCandidates>,
+    result: Option<Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>>,
+    waker: Option<Waker>,
+}
+
+impl DeferredConnectionSearchAttempt {
+    fn new(authoritative: CreateFromWireCandidates) -> Self {
+        Self {
+            state: Mutex::new(DeferredConnectionSearchAttemptState {
+                authoritative: Some(authoritative),
+                result: None,
+                waker: None,
+            }),
+            dropped: AtomicBool::new(false),
         }
-        query()
+    }
+
+    fn complete_successfully(&self) {
+        let waker = {
+            let mut state = self.state.lock().expect("deferred search attempt lock");
+            let authoritative = state
+                .authoritative
+                .take()
+                .expect("deferred search authoritative candidates");
+            state.result = Some(Ok(authoritative));
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn was_dropped(&self) -> bool {
+        self.dropped.load(Ordering::SeqCst)
+    }
+}
+
+struct DeferredConnectionSearchFuture {
+    attempt: Arc<DeferredConnectionSearchAttempt>,
+}
+
+impl Future for DeferredConnectionSearchFuture {
+    type Output = Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let mut state = self
+            .attempt
+            .state
+            .lock()
+            .expect("deferred search attempt lock");
+        if let Some(result) = state.result.take() {
+            Poll::Ready(result)
+        } else {
+            state.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for DeferredConnectionSearchFuture {
+    fn drop(&mut self) {
+        self.attempt.dropped.store(true, Ordering::SeqCst);
     }
 }
 
@@ -802,8 +916,8 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("shader query-recovery view");
-    let search_source = Rc::new(FailOnceConnectionSearchSource::new());
-    let source_observer = Rc::clone(&search_source);
+    let search_source = Arc::new(FailOnceConnectionSearchSource::new());
+    let source_observer = Arc::clone(&search_source);
     let (surface, cx) = cx.add_window_view(move |_, cx| {
         NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
     });
@@ -891,6 +1005,167 @@ fn shader_native_search_recovers_after_candidate_query_failure_without_mutation(
 }
 
 #[open_gpui::test]
+fn slow_connection_search_source_keeps_native_controls_responsive(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("slow-search shader runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("slow-search shader view");
+    let search_source = Arc::new(DeferredConnectionSearchSource::default());
+    let source_observer = Arc::clone(&search_source);
+    let (_surface, cx) = cx.add_window_view(move |_, cx| {
+        NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
+    });
+    draw(cx);
+
+    open_shader_output_search(cx);
+    assert_eq!(source_observer.attempts(), 1);
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_some(),
+        "a pending provider must leave a paintable loading surface",
+    );
+
+    let input = cx
+        .debug_bounds(native_connection_search_input_selector())
+        .expect("slow-search input remains interactive");
+    cx.simulate_click(input.center(), Default::default());
+    cx.simulate_input("Blueprint");
+    draw(cx);
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_some(),
+        "typing while the provider is pending must not block the UI executor",
+    );
+
+    source_observer.attempt(0).complete_successfully();
+    draw(cx);
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_some(),
+    );
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_none(),
+    );
+}
+
+#[open_gpui::test]
+fn cancelled_search_drops_its_provider_and_rejects_its_result_from_the_next_generation(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("cancelled-search shader runtime");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("cancelled-search shader view");
+    let search_source = Arc::new(DeferredConnectionSearchSource::default());
+    let source_observer = Arc::clone(&search_source);
+    let (surface, cx) = cx.add_window_view(move |_, cx| {
+        NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
+    });
+    draw(cx);
+
+    open_shader_output_search(cx);
+    let first_request = cx.read_entity(&surface, |surface, cx| {
+        surface
+            .host()
+            .read(cx)
+            .connection_search_request()
+            .expect("first deferred search request")
+    });
+    let first_attempt = source_observer.attempt(0);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(first_attempt.was_dropped());
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+
+    open_shader_output_search(cx);
+    let second_request = cx.read_entity(&surface, |surface, cx| {
+        surface
+            .host()
+            .read(cx)
+            .connection_search_request()
+            .expect("second deferred search request")
+    });
+    assert_ne!(first_request.generation(), second_request.generation());
+    assert_eq!(source_observer.attempts(), 2);
+
+    first_attempt.complete_successfully();
+    draw(cx);
+    assert!(
+        cx.debug_bounds(NATIVE_CONNECTION_SEARCH_LOADING_SELECTOR)
+            .is_some(),
+        "the cancelled generation must not publish into the active generation",
+    );
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_none(),
+    );
+
+    source_observer.attempt(1).complete_successfully();
+    draw(cx);
+    assert!(
+        cx.debug_bounds(&native_connection_search_candidate_selector(
+            BLUEPRINT_CALL_KIND,
+            "value",
+        ))
+        .is_some(),
+    );
+}
+
+#[open_gpui::test]
+fn closing_the_host_cancels_a_pending_connection_search_provider(
+    cx: &mut open_gpui::TestAppContext,
+) {
+    cx.update(init_text_input);
+    let runtime = native_runtime(shader_graph()).expect("closing-search shader runtime");
+    let before = runtime.snapshot().expect("pre-close shader snapshot");
+    let view = runtime
+        .attach_view(ViewSessionOptions::default())
+        .expect("closing-search shader view");
+    let search_source = Arc::new(DeferredConnectionSearchSource::default());
+    let source_observer = Arc::clone(&search_source);
+    let (surface, cx) = cx.add_window_view(move |_, cx| {
+        NativeGraphSurface::new_with_search_source(view, native_registry(cx), search_source, cx)
+    });
+    draw(cx);
+
+    open_shader_output_search(cx);
+    let attempt = source_observer.attempt(0);
+    let host = cx.read_entity(&surface, |surface, _| surface.host().clone());
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| host.close_in_window(window, cx))
+            .expect("close host with a pending product search");
+    });
+    draw(cx);
+
+    assert!(attempt.was_dropped());
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+    cx.read_entity(&surface, |surface, cx| {
+        let host = surface.host().read(cx);
+        assert_eq!(
+            host.close_reason(),
+            Some(jellyflow_runtime::ViewCloseReason::HostClosed)
+        );
+        assert!(host.connection_search_request().is_none());
+    });
+
+    attempt.complete_successfully();
+    draw(cx);
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_none());
+    assert!(before.ptr_eq(&runtime.snapshot().expect("post-close shader snapshot")));
+}
+
+#[open_gpui::test]
 fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bounds(
     cx: &mut open_gpui::TestAppContext,
 ) {
@@ -899,8 +1174,8 @@ fn compact_product_canvas_keeps_search_error_retry_ready_and_empty_states_in_bou
     let view = runtime
         .attach_view(ViewSessionOptions::default())
         .expect("compact shader search view");
-    let search_source = Rc::new(FailOnceConnectionSearchSource::new());
-    let source_observer = Rc::clone(&search_source);
+    let search_source = Arc::new(FailOnceConnectionSearchSource::new());
+    let source_observer = Arc::clone(&search_source);
     let captured_surface = Rc::new(RefCell::new(None));
     let surface_capture = Rc::clone(&captured_surface);
     let (_root, cx) = cx.add_window_view(move |_, cx| {
@@ -2158,6 +2433,20 @@ fn focus_shader_preview_control(cx: &mut open_gpui::VisualTestContext) -> open_g
     draw(cx);
     cx.update(|window, cx| window.focused(cx))
         .expect("shader preview focus")
+}
+
+fn open_shader_output_search(cx: &mut open_gpui::VisualTestContext) {
+    let output = cx
+        .debug_bounds(&shader_port_selector(output_id()))
+        .expect("native shader output");
+    cx.simulate_mouse_down(output.center(), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(
+        point(px(700.0), px(500.0)),
+        MouseButton::Left,
+        Default::default(),
+    );
+    draw(cx);
+    assert!(cx.debug_bounds(NATIVE_CONNECTION_SEARCH_SELECTOR).is_some());
 }
 
 fn open_occupied_shader_input_search(

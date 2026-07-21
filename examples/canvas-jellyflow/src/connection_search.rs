@@ -1,5 +1,7 @@
 use std::fmt;
-use std::rc::Rc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use jellyflow_open_gpui::{OpenGpuiConnectionSearchError, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
@@ -96,16 +98,27 @@ fn finite_non_negative(value: f32) -> f32 {
     }
 }
 
-/// Application-owned source for one revision-bound create-from-wire query.
-pub trait NativeConnectionSearchSource {
+/// Background result for one application-owned connection-search load.
+pub type NativeConnectionSearchFuture = Pin<
+    Box<
+        dyn Future<Output = Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>>
+            + Send
+            + 'static,
+    >,
+>;
+
+/// Application-owned asynchronous source for one revision-bound create-from-wire query.
+///
+/// Jellyflow obtains `authoritative` from the host on the UI thread, then invokes and polls this
+/// source on Open GPUI's background executor. Implementations must not access Open GPUI entities or
+/// window state. Dropping the returned future must cancel any work that should not outlive the
+/// search surface.
+pub trait NativeConnectionSearchSource: Send + Sync + 'static {
     fn candidates(
         &self,
         request: ConnectionSearchRequest,
-        query: &mut dyn FnMut() -> Result<
-            CreateFromWireCandidates,
-            NativeConnectionSearchSourceError,
-        >,
-    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>;
+        authoritative: CreateFromWireCandidates,
+    ) -> NativeConnectionSearchFuture;
 }
 
 /// Product-level candidate-source failure shown by the native search surface.
@@ -137,12 +150,9 @@ impl NativeConnectionSearchSource for RuntimeConnectionSearchSource {
     fn candidates(
         &self,
         _request: ConnectionSearchRequest,
-        query: &mut dyn FnMut() -> Result<
-            CreateFromWireCandidates,
-            NativeConnectionSearchSourceError,
-        >,
-    ) -> Result<CreateFromWireCandidates, NativeConnectionSearchSourceError> {
-        query()
+        authoritative: CreateFromWireCandidates,
+    ) -> NativeConnectionSearchFuture {
+        Box::pin(async move { Ok(authoritative) })
     }
 }
 
@@ -153,7 +163,7 @@ impl NativeConnectionSearchSource for RuntimeConnectionSearchSource {
 pub struct NativeGraphSurface {
     host: Entity<OpenGpuiSceneHost>,
     catalog: NodeCatalog,
-    search_source: Rc<dyn NativeConnectionSearchSource>,
+    search_source: Arc<dyn NativeConnectionSearchSource>,
     query_controller: Entity<TextInputController>,
     search: Option<NativeConnectionSearch>,
     focus_search_on_next_render: bool,
@@ -507,14 +517,14 @@ impl NativeConnectionSearchState<CreateFromWireCandidates> {
 impl NativeGraphSurface {
     #[must_use]
     pub fn new(view: ViewSession, registry: OpenGpuiNodeRegistry, cx: &mut Context<Self>) -> Self {
-        Self::new_with_search_source(view, registry, Rc::new(RuntimeConnectionSearchSource), cx)
+        Self::new_with_search_source(view, registry, Arc::new(RuntimeConnectionSearchSource), cx)
     }
 
     #[must_use]
     pub fn new_with_search_source(
         view: ViewSession,
         registry: OpenGpuiNodeRegistry,
-        search_source: Rc<dyn NativeConnectionSearchSource>,
+        search_source: Arc<dyn NativeConnectionSearchSource>,
         cx: &mut Context<Self>,
     ) -> Self {
         let catalog = view.catalog().clone();
@@ -669,22 +679,42 @@ impl NativeGraphSurface {
         }
     }
 
-    fn load_search(
-        &mut self,
+    fn query_search_candidates(
+        &self,
         request: ConnectionSearchRequest,
         generation: NativeSearchLoadGeneration,
         window: &mut Window,
         cx: &mut Context<Self>,
+    ) -> Option<Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>> {
+        let search_is_current = self.search.as_ref().is_some_and(|search| {
+            search.request == request && search.state.pending_load() == Some(generation)
+        });
+        if !search_is_current || self.host.read(cx).connection_search_request() != Some(request) {
+            return None;
+        }
+        Some(
+            self.host
+                .update(cx, |host, cx| {
+                    host.connection_search_candidates(request, window, cx)
+                })
+                .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string())),
+        )
+    }
+
+    fn publish_search_result(
+        &mut self,
+        request: ConnectionSearchRequest,
+        generation: NativeSearchLoadGeneration,
+        result: Result<CreateFromWireCandidates, NativeConnectionSearchSourceError>,
+        cx: &mut Context<Self>,
     ) {
-        let host = self.host.clone();
-        let source = Rc::clone(&self.search_source);
-        let mut query = || {
-            host.update(cx, |host, cx| {
-                host.connection_search_candidates(request, window, cx)
-            })
-            .map_err(|error| NativeConnectionSearchSourceError::new(error.to_string()))
-        };
-        let result = source.candidates(request, &mut query);
+        let search_is_current = self.search.as_ref().is_some_and(|search| {
+            search.request == request && search.state.pending_load() == Some(generation)
+        });
+        if !search_is_current || self.host.read(cx).connection_search_request() != Some(request) {
+            return;
+        }
+        self.search_load_task = None;
         let result = result
             .map(|candidates| {
                 let rows = Self::candidate_rows(&self.catalog, &candidates);
@@ -725,20 +755,35 @@ impl NativeGraphSurface {
             return;
         }
         let window_handle = window.window_handle();
+        let source = Arc::clone(&self.search_source);
         self.search_load_task = Some(cx.spawn(async move |surface, cx| {
             cx.background_executor().timer(Duration::ZERO).await;
-            let _ = cx.update(|cx| {
-                window_handle.update(cx, |_, window, cx| {
-                    let _ = surface.update(cx, |surface, cx| {
-                        surface.search_load_task = None;
-                        if surface.search.as_ref().is_some_and(|search| {
-                            search.request == request
-                                && search.state.pending_load() == Some(generation)
-                        }) {
-                            surface.load_search(request, generation, window, cx);
-                        }
-                    });
-                })
+            let Some(authoritative) = cx.update(|cx| {
+                let Ok(query) = window_handle.update(cx, |_, window, cx| {
+                    surface.update(cx, |surface, cx| {
+                        surface.query_search_candidates(request, generation, window, cx)
+                    })
+                }) else {
+                    return None;
+                };
+                query.ok().flatten()
+            }) else {
+                return;
+            };
+            let result = match authoritative {
+                Ok(authoritative) => {
+                    cx.background_executor()
+                        .spawn(async move { source.candidates(request, authoritative).await })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            cx.update(|cx| {
+                surface
+                    .update(cx, |surface, cx| {
+                        surface.publish_search_result(request, generation, result, cx);
+                    })
+                    .ok();
             });
         }));
     }
@@ -800,15 +845,16 @@ impl NativeGraphSurface {
             cx.notify();
             return;
         }
-        let Some(generation) = self
+        if self
             .search
             .as_mut()
             .and_then(|search| search.state.begin_retry())
-        else {
+            .is_none()
+        {
             return;
-        };
+        }
         self.search_load_task = None;
-        self.load_search(request, generation, window, cx);
+        self.schedule_search_load(request, window, cx);
     }
 
     fn commit_candidate(
