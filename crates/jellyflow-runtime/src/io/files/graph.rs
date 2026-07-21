@@ -289,35 +289,15 @@ impl GraphFile {
         limits: PersistenceLimits,
     ) -> Result<Self, GraphFileError> {
         limits.ensure(PersistenceResource::FileBytes, bytes.len())?;
-        let envelope_result =
-            deserialize_json_envelope_with_limits::<GraphFileVersionEnvelope>(bytes, limits);
-        let envelope = match envelope_result {
-            Ok(envelope) => envelope,
-            Err(BoundedJsonDecodeError::Parse(source)) => {
-                let legacy_header =
-                    match deserialize_json_with_limits::<serde_json::Value>(bytes, limits) {
-                        Ok(value) => legacy_node_schema_header(&value),
-                        Err(BoundedJsonDecodeError::Limit(source)) => {
-                            return Err(GraphFileError::ResourceLimit(source));
-                        }
-                        Err(BoundedJsonDecodeError::Parse(_)) => None,
-                    };
-                if let Some((kind, latest_kind_version)) = legacy_header {
-                    return Err(GraphFileError::UnsupportedLegacyNodeSchema {
+        let envelope =
+            deserialize_json_envelope_with_limits::<GraphFileVersionEnvelope>(bytes, limits)
+                .map_err(|error| match error {
+                    BoundedJsonDecodeError::Parse(source) => GraphFileError::Parse {
                         path: path.display().to_string(),
-                        kind,
-                        latest_kind_version,
-                    });
-                }
-                return Err(GraphFileError::Parse {
-                    path: path.display().to_string(),
-                    source,
-                });
-            }
-            Err(BoundedJsonDecodeError::Limit(source)) => {
-                return Err(GraphFileError::ResourceLimit(source));
-            }
-        };
+                        source,
+                    },
+                    BoundedJsonDecodeError::Limit(source) => GraphFileError::ResourceLimit(source),
+                })?;
         if envelope.graph_version != GRAPH_FILE_VERSION {
             return Err(GraphFileError::UnsupportedEnvelopeVersion {
                 found: envelope.graph_version,
@@ -388,32 +368,6 @@ struct GraphVersionEnvelope {
     graph_version: u32,
 }
 
-fn legacy_node_schema_header(value: &serde_json::Value) -> Option<(String, u32)> {
-    let object = value.as_object()?;
-    let kind = object.get("kind")?.as_str()?;
-    let latest_kind_version = object
-        .get("latest_kind_version")?
-        .as_u64()?
-        .try_into()
-        .ok()?;
-    object.get("title")?.as_str()?;
-
-    const LEGACY_UI_FIELDS: [&str; 8] = [
-        "layout_budget",
-        "surface_slots",
-        "repeatable_collections",
-        "actions",
-        "menus",
-        "inspectors",
-        "blackboards",
-        "chrome",
-    ];
-    LEGACY_UI_FIELDS
-        .iter()
-        .any(|field| object.contains_key(*field))
-        .then(|| (kind.to_owned(), latest_kind_version))
-}
-
 pub(crate) type GraphFileSaveFault = AtomicSaveFault;
 
 /// Errors for reading/writing graph files.
@@ -434,15 +388,6 @@ pub enum GraphFileError {
     /// A configured persistence resource budget was exceeded.
     #[error(transparent)]
     ResourceLimit(#[from] PersistenceLimitError),
-    /// A serialized descriptor from the removed portable UI schema was supplied as a graph file.
-    #[error(
-        "legacy NodeSchema descriptor `{kind}` at kind version {latest_kind_version} is not a supported graph document: {path}"
-    )]
-    UnsupportedLegacyNodeSchema {
-        path: String,
-        kind: String,
-        latest_kind_version: u32,
-    },
     /// Write failure.
     #[error("failed to write graph file: {path}")]
     Write {

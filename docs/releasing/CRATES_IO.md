@@ -8,10 +8,9 @@ Jellyflow is a Cargo workspace with five publishable crates:
 4. `jellyflow-egui`
 5. `jellyflow-open-gpui`
 
-`jellyflow-layout` depends on `jellyflow-core`, and `jellyflow-runtime` depends on
-`jellyflow-core` and `jellyflow-layout`. Both UI adapters depend directly on
-`jellyflow-core` and `jellyflow-runtime`; neither adapter depends on the other
-or on an unused layout package. Publish and dry-run checks must respect that order.
+`jellyflow-layout` and `jellyflow-runtime` each depend directly on `jellyflow-core`. Both UI
+adapters depend directly on `jellyflow-core` and `jellyflow-runtime`; neither adapter depends on
+the other or on the optional layout package. Publish and dry-run checks use the order above.
 
 ## Release Gates
 
@@ -30,6 +29,7 @@ python3 tools/check_external_consumer_smoke.py
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
 # Run Shader and Workflow smoke at JELLYFLOW_SMOKE_ZOOM=0.5, 1, and 2 as documented in

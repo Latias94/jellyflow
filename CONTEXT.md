@@ -87,6 +87,7 @@ Adapter-facing gates:
 ```text
 cargo nextest run -p jellyflow-open-gpui
 cargo nextest run -p jellyflow-egui
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \

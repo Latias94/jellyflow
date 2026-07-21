@@ -64,9 +64,12 @@ fn plan_builtin_layout(graph: &Graph) -> Result<LayoutResult, jellyflow_layout::
 }
 ```
 
-Applications using `jellyflow-runtime` pass the result to `layout_result_to_command` with the
-expected graph revision. This keeps every layout write on the same `GraphCommand` path as other
-document mutations.
+Applications using `jellyflow-runtime` map `result.nodes` to
+`NodeGeometryEdit::new(position.node).with_position(position.pos)`, then build one
+`GraphCommand::set_node_geometry` with the expected graph revision. Validate application-built
+results for duplicate or foreign node identities before enqueueing them. This keeps every layout
+write on the same explicit command path as other document mutations without coupling the runtime
+to a layout engine.
 
 For interactive editors, keep product-specific behavior in custom engines. A radial, freeform, or
 mind-map engine can implement `LayoutEngine`, use `LayoutContext` for measured sizes or pinned

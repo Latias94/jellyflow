@@ -196,8 +196,7 @@ The supported persisted-file API likewise does not return a raw `Graph` without 
 including node or edge `focusable` fields, are intentionally incompatible and return a structured
 `UnsupportedEnvelopeVersion` error before payload decoding; removed fields are never silently
 dropped during decoding. Within V2, registered node-kind migrations remain atomic and
-unknown node kinds remain round-trippable. The removed UI descriptor/DSL Rust and JSON APIs are
-likewise intentionally incompatible.
+unknown node kinds remain round-trippable.
 
 ## Development
 

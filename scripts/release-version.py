@@ -20,7 +20,6 @@ if not PUBLISHABLE_CRATES:
     raise RuntimeError("the ordered release crate set is empty")
 WORKSPACE_INTERNAL_DEPENDENCIES = (
     "jellyflow-core",
-    "jellyflow-layout",
     "jellyflow-runtime",
 )
 PRODUCT_MANIFEST = ROOT / "examples" / "canvas-jellyflow" / "Cargo.toml"

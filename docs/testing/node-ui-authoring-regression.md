@@ -121,6 +121,7 @@ cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --no-fail-fast
+cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml \
   --workspace --all-targets --locked -- -D warnings
 

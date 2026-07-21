@@ -21,7 +21,6 @@ homepage = "https://github.com/Latias94/jellyflow"
 [workspace.dependencies]
 dugong = "0.8.0-alpha.1"
 jellyflow-core = { version = "0.4.0", path = "crates/jellyflow-core" }
-jellyflow-layout = { version = "0.4.0", path = "crates/jellyflow-layout" }
 jellyflow-runtime = { version = "0.4.0", path = "crates/jellyflow-runtime" }
 libc = "0.2"
 lyon = "1.0"

@@ -45,7 +45,7 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Made dirty workflow and shader drafts externalizable into application-owned stores when protected
   capacity is exhausted; remount restores exact node identities without replaying pending submits.
 - Updated CI, package validation, external consumer smoke, release ordering, and documentation for
-  the six publishable crates and the nested Open GPUI product workspace.
+  the five publishable crates and the nested Open GPUI product workspace.
 
 ## [0.3.0] - 2026-07-07
 

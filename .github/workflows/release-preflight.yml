@@ -132,6 +132,9 @@ jobs:
       - name: Test
         run: cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast --status-level fail --final-status-level fail
 
+      - name: Doctests
+        run: cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
+
       - name: Clippy
         run: cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
 

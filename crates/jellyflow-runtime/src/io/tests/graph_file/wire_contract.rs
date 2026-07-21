@@ -64,28 +64,6 @@ fn graph_file_rejects_plain_graph_root() {
 }
 
 #[test]
-fn graph_file_rejects_legacy_node_schema_descriptor_without_rewriting_it() {
-    let path = graph_fixture_path("legacy-node-schema-descriptor.json");
-    let source_bytes = std::fs::read(&path).expect("read committed legacy schema fixture");
-
-    let error = GraphFile::load_canonical_json(&path, &NodeCatalog::new()).unwrap_err();
-
-    assert!(matches!(
-        error,
-        CanonicalGraphFileError::File(GraphFileError::UnsupportedLegacyNodeSchema {
-            ref kind,
-            latest_kind_version: 3,
-            ..
-        }) if kind == "legacy.workflow.llm"
-    ));
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        source_bytes,
-        "rejecting a legacy descriptor must not rewrite or partially migrate it"
-    );
-}
-
-#[test]
 fn graph_file_rejects_future_envelope_before_decoding_its_payload() {
     let path = graph_fixture_path("future-graph-envelope.json");
     let source_bytes = std::fs::read(&path).expect("read committed future-envelope fixture");
