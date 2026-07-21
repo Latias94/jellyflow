@@ -1,11 +1,11 @@
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasPoint, CanvasRect};
-use jellyflow::runtime::CanvasInteractionPhase;
-use jellyflow::runtime::runtime::viewport::{
+use jellyflow_core::{CanvasPoint, CanvasRect};
+use jellyflow_runtime::CanvasInteractionPhase;
+use jellyflow_runtime::runtime::viewport::{
     ViewportPanRequest, ViewportZoomRequest, pan_viewport, zoom_viewport,
 };
-use jellyflow::runtime::{
+use jellyflow_runtime::{
     CanvasInteractionError, CanvasInteractionUpdate, CanvasPressFallback, CanvasPressTarget,
     InteractionOwner, NodeDragStart, NodeInstanceKey, SelectionBaseline, SelectionMode, ViewDelta,
 };

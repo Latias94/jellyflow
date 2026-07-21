@@ -5,9 +5,9 @@ use std::hash::Hash;
 use std::rc::Rc;
 
 use egui::{Context, Id, Pos2, Rect, Response, Ui, UiBuilder, Vec2};
-use jellyflow::core::{NodeId, NodeKindKey, PortDirection, PortId};
-use jellyflow::runtime::runtime::geometry::HandlePosition;
-use jellyflow::runtime::{
+use jellyflow_core::{NodeId, NodeKindKey, PortDirection, PortId};
+use jellyflow_runtime::runtime::geometry::HandlePosition;
+use jellyflow_runtime::{
     AdapterFrame, DocumentEpoch, FeedbackCollector, FeedbackCollectorError, FeedbackReceipt,
     FeedbackSubmissionError, FrameMaterializationError, FrameNode, FrameRequest, GraphCommand,
     GraphRevision, NodeInstanceKey, NodeLayout, NodeLayoutBuilderError, RuntimePatch,
@@ -33,10 +33,10 @@ impl EguiNativeFrameHost {
         let lifecycle = Rc::new(RefCell::new(EguiNativeLifecycle {
             document_epoch: initial_snapshot
                 .as_ref()
-                .map(jellyflow::runtime::GraphSnapshot::document_epoch),
+                .map(jellyflow_runtime::GraphSnapshot::document_epoch),
             observed_revision: initial_snapshot
                 .as_ref()
-                .map(jellyflow::runtime::GraphSnapshot::revision),
+                .map(jellyflow_runtime::GraphSnapshot::revision),
             ..EguiNativeLifecycle::default()
         }));
         let weak_lifecycle = Rc::downgrade(&lifecycle);
@@ -95,7 +95,7 @@ impl EguiNativeFrameHost {
 
     /// Renders one frame while keeping unresolved-renderer handling inside the egui adapter.
     ///
-    /// Return `None` when the requested [`RendererStamp`](jellyflow::runtime::RendererStamp) has no
+    /// Return `None` when the requested [`RendererStamp`](jellyflow_runtime::RendererStamp) has no
     /// application renderer. The host then renders a diagnostic node and measures every real frame
     /// port, so unknown semantic kinds remain inspectable and connectable without interpreting or
     /// mutating their opaque graph payload.
@@ -902,10 +902,10 @@ fn egui_rect_to_view(rect: Rect, scene_origin: Pos2) -> ViewRect {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::core::{
+    use jellyflow_core::{
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId,
     };
-    use jellyflow::runtime::{
+    use jellyflow_runtime::{
         FrameMaterializationBudget, GraphCommand, GraphRuntime, IncidentEdgePolicy, RendererStamp,
         TopologyEdit, ViewSessionOptions,
     };

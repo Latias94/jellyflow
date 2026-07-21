@@ -19,7 +19,6 @@ adapter-conformance = []
 
 [dependencies]
 jellyflow-core.workspace = true
-jellyflow-layout.workspace = true
 rpds.workspace = true
 serde.workspace = true
 serde_json.workspace = true

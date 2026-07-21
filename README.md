@@ -3,8 +3,8 @@
 Headless node-graph runtime for native Rust UI frameworks.
 
 [![CI](https://github.com/Latias94/jellyflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Latias94/jellyflow/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/jellyflow.svg)](https://crates.io/crates/jellyflow)
-[![Documentation](https://docs.rs/jellyflow/badge.svg)](https://docs.rs/jellyflow)
+[![Crates.io](https://img.shields.io/crates/v/jellyflow-runtime.svg)](https://crates.io/crates/jellyflow-runtime)
+[![Documentation](https://docs.rs/jellyflow-runtime/badge.svg)](https://docs.rs/jellyflow-runtime)
 
 Jellyflow separates an authoritative graph runtime from framework-owned component trees:
 
@@ -27,14 +27,15 @@ witness. Jellyflow does not define a portable widget tree or cross-framework nod
 | `jellyflow-core` | Portable graph facts, stable IDs, validation, type descriptors, and mutation footprints. |
 | `jellyflow-layout` | Optional headless layout engines and custom layout registration. |
 | `jellyflow-runtime` | `GraphRuntime`, `ViewSession`, revisioned commands, private mutation/history kernel, semantic catalog, persistence, frames, and geometry. |
-| `jellyflow` | Thin facade over core, layout, and runtime. |
 | `jellyflow-open-gpui` | Retained Open GPUI registry, scene host, binding, measurement, input, activity, and draft lifecycle. |
 | `jellyflow-egui` | Immediate-mode frame/feedback adapter and conformance witness. |
 
 ## Quickstart
 
 ```rust
-use jellyflow::prelude::*;
+use jellyflow_core::{Graph, GraphId};
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
 
 let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
 let view = runtime.attach_view(ViewSessionOptions::default())?;
@@ -48,7 +49,9 @@ Graph writes are revision checked. A stale command returns the current owned sna
 footprint; Jellyflow never silently retries or merges application intent.
 
 ```rust
-# use jellyflow::prelude::*;
+# use jellyflow_core::{Graph, GraphId};
+# use jellyflow_runtime::schema::NodeCatalog;
+# use jellyflow_runtime::{GraphCommand, GraphCommandOutcome, GraphRuntime, TopologyEdit};
 # let runtime = GraphRuntime::builder(NodeCatalog::new()).build(Graph::new(GraphId::new()))?;
 let outcome = runtime.execute(GraphCommand::topology(
     runtime.snapshot()?.revision(),
@@ -63,7 +66,8 @@ After an adapter resolves drag, resize, or layout interaction policy, commit the
 geometry atomically with one batch command:
 
 ```rust
-# use jellyflow::prelude::*;
+# use jellyflow_core::{CanvasPoint, CanvasSize, NodeId};
+# use jellyflow_runtime::{GraphCommand, NodeGeometryEdit};
 # let revision = 0;
 # let first = NodeId::new();
 # let second = NodeId::new();
@@ -106,8 +110,8 @@ revisioned geometry commands rather than render-time mutation.
 See:
 
 - `examples/canvas-jellyflow`: retained workflow and typed shader nodes.
-- `templates/native-adapter`: minimal framework-neutral frame/layout/feedback contract.
 - `crates/jellyflow-egui`: immediate-mode adapter witness without product-level widget parity.
+- `docs/guides/native-adapter-authoring.md`: direct-dependency adapter ownership and conformance guide.
 
 Dynamic handles must be real graph `Port` records with stable `PortId`s. Adapter-local visual
 handles never enter routing, hit testing, or graph transactions.
@@ -148,9 +152,9 @@ Register the application's known kinds and migrators before loading a persisted 
 file loader returns a `CanonicalGraph`, which is the persisted-document input to the runtime:
 
 ```rust
-use jellyflow::runtime::io::GraphFile;
-use jellyflow::runtime::schema::NodeCatalog;
-use jellyflow::GraphRuntime;
+use jellyflow_runtime::io::GraphFile;
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::GraphRuntime;
 
 let catalog = NodeCatalog::new(); // Register application kinds and migrators here.
 let document = GraphFile::load_canonical_json("workflow.jellyflow.json", &catalog)?;
@@ -173,8 +177,8 @@ The supported persisted-file API likewise does not return a raw `Graph` without 
 
 `GraphFile` writes and accepts the current V2 envelope. Released Jellyflow 0.3 V1 documents,
 including node or edge `focusable` fields, are intentionally incompatible and return a structured
-`UnsupportedEnvelopeVersion` error before payload decoding; no V1 compatibility facade or silent
-field-dropping migration is provided. Within V2, registered node-kind migrations remain atomic and
+`UnsupportedEnvelopeVersion` error before payload decoding; removed fields are never silently
+dropped during decoding. Within V2, registered node-kind migrations remain atomic and
 unknown node kinds remain round-trippable. The removed UI descriptor/DSL Rust and JSON APIs are
 likewise intentionally incompatible.
 
@@ -188,7 +192,6 @@ cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_no_legacy_ui_surfaces.py
 python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
@@ -198,11 +201,6 @@ Native adapter gates:
 ```sh
 cargo nextest run -p jellyflow-open-gpui --locked
 cargo nextest run -p jellyflow-egui --locked
-
-cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
-cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
-cargo clippy --manifest-path templates/native-adapter/Cargo.toml \
-  --workspace --all-targets --locked -- -D warnings
 
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --no-fail-fast
@@ -214,6 +212,6 @@ windowing, focus, IME, GPU, and platform dependencies.
 ## Links
 
 - [Publishing guide](docs/releasing/CRATES_IO.md)
-- [Native-host refactor plan](docs/plans/2026-07-12-001-refactor-headless-native-node-host-plan.md)
-- [Custom-node architecture research](docs/research/2026-07-11-headless-custom-node-ui-architecture.md)
+- [Native adapter authoring guide](docs/guides/native-adapter-authoring.md)
+- [Native node regression gates](docs/testing/node-ui-authoring-regression.md)
 - Dual MIT or Apache-2.0 license: [MIT](LICENSE-MIT), [Apache-2.0](LICENSE-APACHE)

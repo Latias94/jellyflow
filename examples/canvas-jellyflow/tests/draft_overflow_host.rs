@@ -2,16 +2,16 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, PortId,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeRegistry, OpenGpuiSceneHost,
     RetainedField, RetainedFieldKey, RetainedFieldRetention,
 };
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 use open_gpui_canvas_jellyflow::nodes::{
     NativeNodeResources, WORKFLOW_LLM_KIND, native_node_catalog, register_native_nodes,
@@ -271,7 +271,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn overflow_graph() -> jellyflow::core::Graph {
+fn overflow_graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xd1af_7000));
     for index in 0..INITIAL_NODES + CHURN_NODES {
         graph.insert_node(node_id(index), overflow_node_record(index));
@@ -338,7 +338,7 @@ fn focus_overflow_catalog() -> NodeCatalog {
     catalog
 }
 
-fn focus_overflow_graph() -> jellyflow::core::Graph {
+fn focus_overflow_graph() -> jellyflow_core::Graph {
     let catalog = focus_overflow_catalog();
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xd1af_9000));
     for index in 0..OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {

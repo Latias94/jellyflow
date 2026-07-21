@@ -1,12 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::accessibility::{
     OPEN_GPUI_DIAGNOSTIC_ROLE, OPEN_GPUI_EDGE_ROLE, OPEN_GPUI_INTERACTIVE_PORT_ROLE,
     OPEN_GPUI_NODE_ROLE, OPEN_GPUI_RECONNECT_HANDLE_ROLE, OPEN_GPUI_SCENE_ROLE,
@@ -14,6 +12,8 @@ use jellyflow_open_gpui::accessibility::{
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Role, Styled, Window, div};
 
 const KIND: &str = "test.accessible-node";
@@ -104,7 +104,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     graph.insert_node(
         node_id(),

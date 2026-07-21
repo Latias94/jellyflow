@@ -19,7 +19,6 @@ PUBLISHABLE_CRATES = tuple(
 if not PUBLISHABLE_CRATES:
     raise RuntimeError("the ordered release crate set is empty")
 WORKSPACE_INTERNAL_DEPENDENCIES = (
-    "jellyflow",
     "jellyflow-core",
     "jellyflow-layout",
     "jellyflow-runtime",
@@ -133,8 +132,12 @@ def main() -> int:
     if args.command == "crate-version":
         if args.crate is None:
             parser.error("crate-version requires --crate")
-        print(crate_version(args.crate))
-        return 0
+        try:
+            print(crate_version(args.crate))
+            return 0
+        except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+            print(f"::error::{error}", file=sys.stderr)
+            return 1
     raise AssertionError(args.command)
 
 

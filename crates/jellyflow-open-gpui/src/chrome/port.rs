@@ -358,7 +358,7 @@ fn positive_or(value: f32, fallback: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::runtime::Diagnostic;
+    use jellyflow_runtime::Diagnostic;
 
     use super::*;
 

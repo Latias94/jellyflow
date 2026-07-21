@@ -1,9 +1,9 @@
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, NodeId, NodeKindKey, PortId,
     Symbol, SymbolId,
 };
-use jellyflow::runtime::schema::NodeCatalog;
+use jellyflow_runtime::schema::NodeCatalog;
 use open_gpui_canvas_jellyflow::nodes::SHADER_MULTIPLY_KIND;
 
 pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> {
@@ -77,7 +77,7 @@ pub(crate) fn shader_demo_graph(catalog: &NodeCatalog) -> Result<Graph, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow::runtime::GraphRuntime;
+    use jellyflow_runtime::GraphRuntime;
     use open_gpui_canvas_jellyflow::ShaderGraphProfile;
     use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
 

@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use jellyflow::core::{EdgeKind, EdgeLabelAnchor};
-use jellyflow::runtime::runtime::geometry::EdgePresentationFacts;
+use jellyflow_core::{EdgeKind, EdgeLabelAnchor};
+use jellyflow_runtime::runtime::geometry::EdgePresentationFacts;
 
 use super::edge::{
     OpenGpuiEdgeBatchKey, OpenGpuiEdgeStyle, OpenGpuiEdgeTone, OpenGpuiEdgeVisualState,

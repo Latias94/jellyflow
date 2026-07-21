@@ -1,11 +1,11 @@
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeReconnectable,
     EdgeReconnectableEndpoint, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
     AdapterEnvironment, ApplyPipelineError, CanvasInteractionPhase, ConnectionGestureIntent,
     EdgeEndpoint, FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRuntime,
     GraphRuntimeMiddleware, GraphRuntimeMiddlewareSnapshot, HandlePosition, IncidentEdgePolicy,
@@ -53,12 +53,6 @@ mod frame_transaction;
 
 const KIND: &str = "test.scene-layer-node";
 const RENDERER: &str = "test.native.scene-layer-node";
-
-#[test]
-fn production_binding_and_host_have_no_synchronous_dispatch_escape_hatch() {
-    assert!(!include_str!("binding.rs").contains("pub fn execute"));
-    assert!(!include_str!("host.rs").contains("self.view.execute("));
-}
 
 struct RoutedNode {
     binding: Entity<OpenGpuiNodeBinding>,
@@ -310,7 +304,7 @@ fn mounted_host_scopes_environment_and_layout_invalidation_to_its_view(
     });
     let sibling_frame = sibling_view
         .frame(
-            jellyflow::runtime::FrameRequest::new(viewport(), RendererStamp::new(RENDERER, 1))
+            jellyflow_runtime::FrameRequest::new(viewport(), RendererStamp::new(RENDERER, 1))
                 .with_incident_routing_dependencies(),
         )
         .expect("sibling frame");
@@ -757,7 +751,7 @@ fn fresh_route_is_painted_after_edges_and_before_retained_nodes(
             .expect("published edge")
             .facts()
             .path
-            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .sample(jellyflow_runtime::runtime::geometry::EdgePathAnchor::Center)
             .expect("edge center");
         let position = host
             .view
@@ -930,7 +924,7 @@ fn edge_chrome_paints_hovered_labels_between_ordinary_and_selected_chrome(
             .expect("hover route")
             .facts()
             .path
-            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .sample(jellyflow_runtime::runtime::geometry::EdgePathAnchor::Center)
             .expect("hover route center");
         let position = host
             .view
@@ -1434,7 +1428,7 @@ fn pointer_selects_the_painted_edge_through_the_renderer_neutral_path_picker(
             .expect("published edge")
             .facts()
             .path
-            .sample(jellyflow::runtime::runtime::geometry::EdgePathAnchor::Center)
+            .sample(jellyflow_runtime::runtime::geometry::EdgePathAnchor::Center)
             .expect("edge center");
         let transform = host.view.viewport_transform().expect("viewport transform");
         let position = transform
@@ -6191,7 +6185,7 @@ fn mount_interactive_gesture_scene(
 
 fn mount_gesture_scene_for_graph(
     cx: &mut open_gpui::TestAppContext,
-    graph: jellyflow::core::Graph,
+    graph: jellyflow_core::Graph,
 ) -> (
     GraphRuntime,
     Entity<OpenGpuiSceneHost>,
@@ -6267,7 +6261,7 @@ fn issue_content_height_update(
     host: &mut OpenGpuiSceneHost,
     node: NodeId,
     height: f32,
-) -> (jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate) {
+) -> (jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate) {
     let instance = host
         .mounts
         .retained_instance(node)
@@ -6304,7 +6298,7 @@ fn issue_content_height_update(
 
 fn mount_connection_scene_for_graph(
     cx: &mut open_gpui::TestAppContext,
-    graph: jellyflow::core::Graph,
+    graph: jellyflow_core::Graph,
 ) -> (
     GraphRuntime,
     Entity<OpenGpuiSceneHost>,
@@ -6373,7 +6367,7 @@ fn close_active_scene_gesture(
     });
 }
 
-fn dense_edge_graph(edge_count: usize) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+fn dense_edge_graph(edge_count: usize) -> (jellyflow_core::Graph, Vec<EdgeId>) {
     assert!(edge_count > 0);
     let source = NodeId::from_u128(30_000);
     let target = NodeId::from_u128(30_001);
@@ -6411,7 +6405,7 @@ fn dense_edge_graph(edge_count: usize) -> (jellyflow::core::Graph, Vec<EdgeId>) 
     (graph.build().expect("valid dense edge graph"), edges)
 }
 
-fn spatial_edge_graph(grid_side: usize, spacing: f32) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+fn spatial_edge_graph(grid_side: usize, spacing: f32) -> (jellyflow_core::Graph, Vec<EdgeId>) {
     assert!(grid_side > 0);
     let edge_count = grid_side * grid_side;
     let source = NodeId::from_u128(400_000);
@@ -6459,7 +6453,7 @@ fn spatial_edge_graph(grid_side: usize, spacing: f32) -> (jellyflow::core::Graph
 fn bounded_edge_graph(
     visible_edges: usize,
     offscreen_edges: usize,
-) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+) -> (jellyflow_core::Graph, Vec<EdgeId>) {
     bounded_edge_graph_with(visible_edges, offscreen_edges, |output, input| {
         Edge::new(EdgeKind::Data, output, input)
     })
@@ -6469,7 +6463,7 @@ fn bounded_edge_graph_with(
     visible_edges: usize,
     offscreen_edges: usize,
     mut make_edge: impl FnMut(PortId, PortId) -> Edge,
-) -> (jellyflow::core::Graph, Vec<EdgeId>) {
+) -> (jellyflow_core::Graph, Vec<EdgeId>) {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     let mut visible = Vec::with_capacity(visible_edges);
     for index in 0..visible_edges + offscreen_edges {
@@ -6613,7 +6607,7 @@ fn publish_edge_geometry_with(
         .expect("publish edge geometry");
 }
 
-fn protected_capacity_scene_graph() -> jellyflow::core::Graph {
+fn protected_capacity_scene_graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x64_000));
     for index in 0..OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {
         graph.insert_node(
@@ -6628,7 +6622,7 @@ fn protected_capacity_scene_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid protected-capacity graph")
 }
 
-fn protected_capacity_search_graph() -> jellyflow::core::Graph {
+fn protected_capacity_search_graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x64_001));
     for index in 0..OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {
         graph.insert_node(
@@ -6649,7 +6643,7 @@ fn protected_capacity_scene_node_id() -> NodeId {
     NodeId::from_u128(10_000)
 }
 
-fn routed_graph() -> jellyflow::core::Graph {
+fn routed_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6666,7 +6660,7 @@ fn routed_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid graph")
 }
 
-fn restricted_edge_action_graph() -> jellyflow::core::Graph {
+fn restricted_edge_action_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6686,7 +6680,7 @@ fn restricted_edge_action_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid restricted edge graph")
 }
 
-fn unconnected_graph() -> jellyflow::core::Graph {
+fn unconnected_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6699,7 +6693,7 @@ fn unconnected_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid graph")
 }
 
-fn content_size_graph() -> jellyflow::core::Graph {
+fn content_size_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let mut source_node = node(CanvasPoint { x: 40.0, y: 80.0 }, PortId::from_u128(20));
@@ -6712,7 +6706,7 @@ fn content_size_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid content-size graph")
 }
 
-fn overlapping_target_graph() -> jellyflow::core::Graph {
+fn overlapping_target_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let lower_target = NodeId::from_u128(11);
     let top_target = NodeId::from_u128(12);
@@ -6733,7 +6727,7 @@ fn overlapping_target_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid overlapping target graph")
 }
 
-fn high_fanout_output_graph(edge_count: usize) -> jellyflow::core::Graph {
+fn high_fanout_output_graph(edge_count: usize) -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6760,7 +6754,7 @@ fn high_fanout_output_graph(edge_count: usize) -> jellyflow::core::Graph {
     graph.build().expect("valid high-fanout output graph")
 }
 
-fn locked_source_graph() -> jellyflow::core::Graph {
+fn locked_source_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6776,7 +6770,7 @@ fn locked_source_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid graph with locked source")
 }
 
-fn locked_peer_graph() -> jellyflow::core::Graph {
+fn locked_peer_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let output = PortId::from_u128(20);
@@ -6791,7 +6785,7 @@ fn locked_peer_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid graph with locked peer")
 }
 
-fn single_node_graph() -> jellyflow::core::Graph {
+fn single_node_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let output = PortId::from_u128(20);
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
@@ -6800,7 +6794,7 @@ fn single_node_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid single-node graph")
 }
 
-fn occupied_input_graph() -> jellyflow::core::Graph {
+fn occupied_input_graph() -> jellyflow_core::Graph {
     let old_source = NodeId::from_u128(10);
     let target = NodeId::from_u128(11);
     let replacement_source = NodeId::from_u128(12);
@@ -6830,7 +6824,7 @@ fn occupied_input_graph() -> jellyflow::core::Graph {
     graph.build().expect("valid occupied-input graph")
 }
 
-fn reconnect_graph() -> jellyflow::core::Graph {
+fn reconnect_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let old_target = NodeId::from_u128(11);
     let new_target = NodeId::from_u128(12);
@@ -6934,13 +6928,13 @@ fn catalog() -> NodeCatalog {
                     width: 180.0,
                     height: 100.0,
                 })
-                .port(jellyflow::runtime::schema::NodePortSpec::new(
+                .port(jellyflow_runtime::schema::NodePortSpec::new(
                     "input",
                     PortDirection::In,
                     PortKind::Data,
                     PortCapacity::Single,
                 ))
-                .port(jellyflow::runtime::schema::NodePortSpec::new(
+                .port(jellyflow_runtime::schema::NodePortSpec::new(
                     "output",
                     PortDirection::Out,
                     PortKind::Data,

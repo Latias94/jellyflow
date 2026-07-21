@@ -1,16 +1,16 @@
 mod condition;
 mod llm;
 
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{
     CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, GraphValidationError,
     NodeId, NodeKindKey, PortDirection, PortId,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
 use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use jellyflow_open_gpui::accessibility::OPEN_GPUI_DIAGNOSTIC_ROLE;
 use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
 use open_gpui::{
     AnyElement, Div, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
     SharedString, Stateful, StatefulInteractiveElement, Styled, div, px, rgb,
@@ -389,8 +389,8 @@ pub fn workflow_demo_graph() -> Result<Graph, Vec<GraphValidationError>> {
         .expect("workflow condition fixture must match its fixed catalog ports");
     let mut graph = GraphBuilder::new(GraphId::from_u128(WORKFLOW_GRAPH_ID));
     graph.insert_symbol(
-        jellyflow::core::SymbolId::from_u128(WORKFLOW_GRAPH_ID + 1),
-        jellyflow::core::Symbol {
+        jellyflow_core::SymbolId::from_u128(WORKFLOW_GRAPH_ID + 1),
+        jellyflow_core::Symbol {
             name: "customer_intent".to_owned(),
             ty: Some(TypeDesc::String),
             default_value: Some(serde_json::json!("unknown")),

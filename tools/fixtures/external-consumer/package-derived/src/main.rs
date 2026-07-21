@@ -3,12 +3,12 @@ use std::error::Error;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jellyflow::{GraphId, GraphRuntime, ViewSessionOptions, layout};
 use jellyflow_core::{
-    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, NodeId, NodeKindKey, PortCapacity,
+    CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeId, NodeKindKey, PortCapacity,
     PortDirection, PortId, PortKey, PortKind,
 };
 use jellyflow_egui::{EguiNativeFrameHost, egui};
+use jellyflow_layout as layout;
 use jellyflow_open_gpui::authoring::{OpenGpuiNodeBinding, OpenGpuiPortHandle};
 use jellyflow_open_gpui::chrome::{
     OpenGpuiEdgeLabelAppearance, OpenGpuiEdgeMarkerShape, OpenGpuiEdgePainterRecipe,
@@ -24,8 +24,9 @@ use jellyflow_runtime::schema::{
     NodeCatalog, NodeKindMigrateError, NodeKindMigrator, NodeKindSpec, NodePortSpec,
 };
 use jellyflow_runtime::{
-    FrameRequest, GraphCommand, HandlePosition, IncidentEdgePolicy, PublishedPortOutcome,
-    RendererStamp, TopologyEdit, TopologyPort, ViewPoint, ViewRect, ViewSize,
+    FrameRequest, GraphCommand, GraphRuntime, HandlePosition, IncidentEdgePolicy,
+    PublishedPortOutcome, RendererStamp, TopologyEdit, TopologyPort, ViewPoint, ViewRect,
+    ViewSessionOptions, ViewSize,
 };
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,

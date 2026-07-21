@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jellyflow::core::{EdgeId, NodeId, PortId};
-use jellyflow::runtime::EdgeEndpoint;
+use jellyflow_core::{EdgeId, NodeId, PortId};
+use jellyflow_runtime::EdgeEndpoint;
 use open_gpui::{Context, FocusHandle, Window};
 
 use crate::semantic_zoom::OpenGpuiNodePresentation;

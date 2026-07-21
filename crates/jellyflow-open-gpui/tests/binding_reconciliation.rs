@@ -1,16 +1,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphCommand, GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
     OpenGpuiNodeRegistry, OpenGpuiSceneHost, OpenGpuiSceneHostStats,
 };
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{GraphCommand, GraphRuntime, ViewSessionOptions};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Styled, Window, div};
 
 const NODE_COUNT: usize = 10_000;
@@ -211,7 +211,7 @@ fn uncaptured_registry() -> OpenGpuiNodeRegistry {
     registry.seal().expect("valid test registry")
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x51_000));
     for index in 0..NODE_COUNT {
         graph.insert_node(

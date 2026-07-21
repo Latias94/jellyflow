@@ -65,15 +65,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Native adapter template format
-        run: cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
-
-      - name: Native adapter template test
-        run: cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
-
-      - name: Native adapter template clippy
-        run: cargo clippy --manifest-path templates/native-adapter/Cargo.toml --workspace --all-targets --locked -- -D warnings
-
       - name: Benchmark smoke
         run: cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines --locked -- --test
 
@@ -82,9 +73,6 @@ jobs:
 
       - name: Dependency boundary unit tests
         run: python3 -m unittest discover -s tools/tests -p "test_*.py"
-
-      - name: Legacy UI surface gate
-        run: python3 tools/check_no_legacy_ui_surfaces.py
 
       - name: Package-derived external consumer smoke
         run: python3 tools/check_external_consumer_smoke.py

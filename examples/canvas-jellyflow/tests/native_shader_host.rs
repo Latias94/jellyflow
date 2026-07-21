@@ -1,19 +1,19 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, EdgeId, Graph, GraphBuilder, GraphId,
     NodeGraphConnectionMode, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
-use jellyflow::runtime::{
+use jellyflow_open_gpui::{
+    OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
+};
+use jellyflow_runtime::{
     CanvasInteractionPhase, ConnectionEdit, ConnectionGestureIntent, ConnectionSearchRequest,
     CreateFromWireCandidates, Diagnostic, DiagnosticTarget, GraphCommand, GraphProfile,
     GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, InteractionTerminalReason, TopologyEdit,
     ViewSessionOptions,
-};
-use jellyflow_open_gpui::{
-    OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus, OpenGpuiSceneHost,
 };
 use open_gpui::{
     AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, div, point, px,
@@ -2224,7 +2224,7 @@ fn assert_original_shader_edge(runtime: &GraphRuntime) {
     assert_eq!(edge.to, input_a_id());
 }
 
-fn shader_graph() -> jellyflow::core::Graph {
+fn shader_graph() -> jellyflow_core::Graph {
     let catalog = native_node_catalog().expect("native catalog");
     let node = catalog
         .instantiate_node_with_ids(
@@ -2263,7 +2263,7 @@ fn shader_graph() -> jellyflow::core::Graph {
     graph.build().expect("shader graph")
 }
 
-fn two_catalog_shader_nodes(source_output_type: TypeDesc) -> jellyflow::core::Graph {
+fn two_catalog_shader_nodes(source_output_type: TypeDesc) -> jellyflow_core::Graph {
     let catalog = native_node_catalog().expect("native catalog");
     let source = catalog
         .instantiate_node_with_ids(
@@ -2303,7 +2303,7 @@ fn two_catalog_shader_nodes(source_output_type: TypeDesc) -> jellyflow::core::Gr
     graph.build().expect("catalog shader graph")
 }
 
-fn blueprint_graph() -> jellyflow::core::Graph {
+fn blueprint_graph() -> jellyflow_core::Graph {
     let catalog = native_node_catalog().expect("native catalog");
     let blueprint = catalog
         .instantiate_node_with_ids(
@@ -2320,7 +2320,7 @@ fn blueprint_graph() -> jellyflow::core::Graph {
     graph_from_creations(GraphId::from_u128(0x6200), [blueprint])
 }
 
-fn blueprint_graph_with_source() -> jellyflow::core::Graph {
+fn blueprint_graph_with_source() -> jellyflow_core::Graph {
     let catalog = native_node_catalog().expect("native catalog");
     let source = catalog
         .instantiate_node_with_ids(
@@ -2347,8 +2347,8 @@ fn blueprint_graph_with_source() -> jellyflow::core::Graph {
 
 fn graph_from_creations<const N: usize>(
     graph_id: GraphId,
-    creations: [jellyflow::runtime::schema::NodeCreation; N],
-) -> jellyflow::core::Graph {
+    creations: [jellyflow_runtime::schema::NodeCreation; N],
+) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(graph_id);
     for creation in creations {
         let (node_id, node, ports) = creation.into_parts();
@@ -2521,7 +2521,7 @@ fn shader_node_data() -> serde_json::Value {
     })
 }
 
-fn assert_fresh_input_geometry(view: &jellyflow::runtime::WeakViewSession) {
+fn assert_fresh_input_geometry(view: &jellyflow_runtime::WeakViewSession) {
     let geometry = view.geometry_snapshot().expect("shader geometry");
     let input = geometry.port(input_a_id()).expect("typed input geometry");
     assert_eq!(input.node(), node_id());

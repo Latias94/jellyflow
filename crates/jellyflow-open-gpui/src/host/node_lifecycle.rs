@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasRect, NodeId};
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasRect, NodeId};
+use jellyflow_runtime::{
     CanvasInteractionPhase, FrameNode, InteractionOwner, NodeInstanceKey, ViewCloseReason,
     ViewSessionError,
 };
@@ -40,7 +40,7 @@ pub(super) struct MountedNode {
     pub(super) scale_state: OpenGpuiNodeScaleState,
     pub(super) size_state: OpenGpuiNodeSizeState,
     pub(super) content_epoch: u64,
-    binding_revision: jellyflow::runtime::GraphRevision,
+    binding_revision: jellyflow_runtime::GraphRevision,
     pub(super) bounds: CanvasRect,
     pub(super) accessible_name: String,
     pub(super) selected: bool,
@@ -178,7 +178,7 @@ impl OpenGpuiSceneHost {
     pub(super) fn reconcile_frame(
         &mut self,
         frame: &[FrameNode],
-        document_epoch: jellyflow::runtime::DocumentEpoch,
+        document_epoch: jellyflow_runtime::DocumentEpoch,
         zoom: f32,
         measurements: &Rc<OpenGpuiPendingMeasurements>,
         window: &mut Window,
@@ -337,7 +337,7 @@ impl OpenGpuiSceneHost {
     fn advance_binding(
         &mut self,
         binding: &Entity<OpenGpuiNodeBinding>,
-        revision: jellyflow::runtime::GraphRevision,
+        revision: jellyflow_runtime::GraphRevision,
         cx: &mut Context<Self>,
     ) {
         binding.update(cx, |binding, cx| {

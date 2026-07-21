@@ -38,10 +38,10 @@ use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::schema::NodeCatalog;
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeGraphConnectionMode, PortId};
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::{
     AdapterEnvironment, CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionSession,
     FrameMaterializationBudget, FrameMaterializationError, FrameMaterializationOverflow,
     FrameRequest, RendererStamp, ViewCloseReason, ViewPoint, ViewRect, ViewSession,
@@ -131,9 +131,9 @@ pub struct OpenGpuiSceneHost {
     ready_node_size_prefixes: VecDeque<OpenGpuiCommandPrefixBarrierResult>,
     scene_origin: Option<open_gpui::Point<Pixels>>,
     scene_transform: Option<ViewportTransform>,
-    hovered_node: Option<jellyflow::core::NodeId>,
+    hovered_node: Option<jellyflow_core::NodeId>,
     hovered_port: Option<PortId>,
-    document_epoch: Option<jellyflow::runtime::DocumentEpoch>,
+    document_epoch: Option<jellyflow_runtime::DocumentEpoch>,
     adapter_environment_epoch: u64,
     terminal_reason: Option<ViewCloseReason>,
     lifecycle_bridge: Option<HostLifecycleBridge>,

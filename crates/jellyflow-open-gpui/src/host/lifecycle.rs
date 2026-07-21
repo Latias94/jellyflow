@@ -4,8 +4,8 @@ use std::future::poll_fn;
 use std::rc::Rc;
 use std::task::{Poll, Waker};
 
-use jellyflow::core::NodeId;
-use jellyflow::runtime::{
+use jellyflow_core::NodeId;
+use jellyflow_runtime::{
     GraphRevision, NodeIncarnation, NodeInstanceKey, ViewCloseOutcome, ViewCloseReason,
     ViewCloseRequest, ViewSession, ViewSessionError, ViewSessionEvent, ViewSubscriptionToken,
 };

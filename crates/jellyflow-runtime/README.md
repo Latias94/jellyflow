@@ -67,7 +67,7 @@ subsequently modified catalog is rejected without side effects.
 `GraphFile::save_json` writes the current V2 envelope and applies the default `PersistenceLimits`
 before atomically replacing the target. Released Jellyflow 0.3 V1 graph documents are intentionally
 incompatible and return `GraphFileError::UnsupportedEnvelopeVersion` before payload decoding; the
-runtime does not expose a V1 facade or discard removed focusability fields. Applications with
+runtime rejects V1 instead of discarding removed focusability fields. Applications with
 custom persistence budgets should pass the same limits to `save_json_with_limits` and
 `load_canonical_json_with_limits`. `ViewSessionSeedFile` decode and load operations accept only the
 current versioned seed format and return a sanitized `ViewSessionSeed`.

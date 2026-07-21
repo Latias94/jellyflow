@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use jellyflow::core::PortId;
-use jellyflow::runtime::Diagnostic;
+use jellyflow_core::PortId;
+use jellyflow_runtime::Diagnostic;
 
 /// Adapter-local level of detail used to present one native node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -479,7 +479,7 @@ fn diagnostics_equal(left: &[Diagnostic], right: &[Diagnostic]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::runtime::{DiagnosticSeverity, DiagnosticTarget};
+    use jellyflow_runtime::{DiagnosticSeverity, DiagnosticTarget};
 
     use super::*;
 

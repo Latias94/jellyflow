@@ -1,14 +1,14 @@
 use egui::{Sense, Ui, Vec2};
 use egui_kittest::Harness;
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId,
     Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::runtime::geometry::HandlePosition;
-use jellyflow::runtime::{
+use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
+use jellyflow_runtime::runtime::geometry::HandlePosition;
+use jellyflow_runtime::{
     FrameRequest, GraphRuntime, LayoutNodeStatus, RendererStamp, ViewSessionOptions,
 };
-use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
 
 const STRUCTURED_RENDERER: &str = "test.egui.structured-native";
 

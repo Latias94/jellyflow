@@ -1,12 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasSize, Node, NodeId, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
-};
-use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{
-    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
-    TopologyPort,
 };
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
@@ -15,6 +10,11 @@ use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeRegistrationPolicy,
     OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
+};
+use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::{
+    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
+    TopologyPort,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
@@ -1203,7 +1203,7 @@ fn case_key(case_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jellyflow::runtime::GraphRuntime;
+    use jellyflow_runtime::GraphRuntime;
 
     #[test]
     fn legacy_branch_schema_is_rejected_instead_of_silently_migrated() {

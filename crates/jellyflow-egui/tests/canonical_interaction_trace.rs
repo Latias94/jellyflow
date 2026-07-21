@@ -2,17 +2,10 @@ use egui::{
     Color32, Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2,
 };
 use egui_kittest::Harness;
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
     NodeGraphConnectionMode, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
     PortKey, PortKind,
-};
-use jellyflow::runtime::{
-    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
-    CanvasPressTarget, CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart,
-    ConnectionProbe, ConnectionSearchSelection, EdgeEndpoint, FrameRequest, FreshGraphMutation,
-    GraphRuntime, HandlePosition, InteractionTerminalReason, InteractionTicketId, RendererStamp,
-    SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
 use jellyflow_egui::{
     EguiCanvasInteraction, EguiInteractionError, EguiInteractionOutput, EguiInteractionQueryKind,
@@ -25,6 +18,13 @@ use jellyflow_runtime::runtime::adapter_protocol::conformance::{
     ConformanceSettlement as TraceReceipt, ConformanceTarget as TraceTarget,
     ConformanceTerminal as TraceTerminal, ConformanceTicket as TraceTicket, NormalizedObservation,
     canonical_scenarios, compare_observations,
+};
+use jellyflow_runtime::{
+    CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionPhase, CanvasPressFallback,
+    CanvasPressTarget, CommandSettlement, ConnectionGestureIntent, ConnectionInteractionStart,
+    ConnectionProbe, ConnectionSearchSelection, EdgeEndpoint, FrameRequest, FreshGraphMutation,
+    GraphRuntime, HandlePosition, InteractionTerminalReason, InteractionTicketId, RendererStamp,
+    SelectionMode, TopologyEdit, ViewPoint, ViewRect, ViewSession, ViewSessionOptions, ViewSize,
 };
 
 #[test]

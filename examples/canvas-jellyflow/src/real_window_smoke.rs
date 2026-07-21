@@ -8,13 +8,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 #[cfg(any(test, feature = "real-window-smoke"))]
-use jellyflow::core::{CanvasPoint, CanvasRect};
-use jellyflow::core::{EdgeId, Graph, NodeId, PortId};
+use jellyflow_core::{CanvasPoint, CanvasRect};
+use jellyflow_core::{EdgeId, Graph, NodeId, PortId};
 #[cfg(any(test, feature = "real-window-smoke"))]
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
 #[cfg(feature = "real-window-smoke")]
-use jellyflow::runtime::{GeometrySnapshot, PublishedPortOutcome};
-use jellyflow::runtime::{ViewSize, WeakViewSession};
+use jellyflow_runtime::{GeometrySnapshot, PublishedPortOutcome};
+use jellyflow_runtime::{ViewSize, WeakViewSession};
 use open_gpui::{AnyWindowHandle, App, Entity};
 #[cfg(any(test, feature = "real-window-smoke"))]
 use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
@@ -1019,7 +1019,7 @@ fn emit_smoke_marker(marker: &str) {
 mod tests {
     use super::*;
     use crate::demo_fixture::shader_demo_graph;
-    use jellyflow::core::CanvasSize;
+    use jellyflow_core::CanvasSize;
     use open_gpui_canvas_jellyflow::nodes::native_node_catalog;
 
     const IMAGE_WIDTH: u32 = 118;

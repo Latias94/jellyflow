@@ -26,8 +26,8 @@ portable widget tree or a cross-framework node UI DSL.
 - The scene host's internal connection coordinator manages generation-bound drag, search,
   reconnect, cancellation, freshness checks, and revisioned command creation. The host performs
   the graph query and dispatches the returned command.
-- Draft and activity modules model dirty composition, conflict resolution, focus/capture leases,
-  culling, and terminal retirement without persisting framework state in the graph.
+- Retained-field and activity owners model dirty composition, conflict resolution, focus/capture
+  leases, culling, and terminal retirement without persisting framework state in the graph.
 
 ## Register a native node
 
@@ -153,12 +153,12 @@ node retirement, document replacement, and terminal view closure revoke leases, 
 overlays, subscriptions, and geometry.
 
 The adapter keeps a bounded cache (256 eligible parked entries and 64 protected activity owners by
-default). Focused, composing, captured, overlay, and dirty-draft nodes are protected or explicitly
-externalized/cancelled before eviction.
+default). Focused, composing, captured, overlay, and dirty retained-field nodes are protected or
+explicitly externalized/cancelled before eviction.
 
 Applications that preserve dirty product fields across protected-capacity overflow own a shared
 `RetainedFieldStore<T>` and pass clones into their node factories. Each mounted `RetainedField<T>`
-binds that store to its weak view capability automatically and owns draft activity, ticket
+binds that store to its weak view capability automatically and owns edit activity, ticket
 settlement, externalization, and restoration. Restore is keyed by the exact view, node, renderer,
 incarnation, and field identity; it reports `RetainedFieldRecovery` without recreating IME ownership
 or replaying an interrupted graph command. Node reincarnation and terminal view closure remove

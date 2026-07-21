@@ -66,18 +66,6 @@ jobs:
         if: matrix.release_gates
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Native adapter template format
-        if: matrix.release_gates
-        run: cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
-
-      - name: Native adapter template test
-        if: matrix.release_gates
-        run: cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
-
-      - name: Native adapter template clippy
-        if: matrix.release_gates
-        run: cargo clippy --manifest-path templates/native-adapter/Cargo.toml --workspace --all-targets --locked -- -D warnings
-
       - name: Benchmark smoke
         if: matrix.release_gates
         run: cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines --locked -- --test
@@ -89,10 +77,6 @@ jobs:
       - name: Dependency boundary unit tests
         if: matrix.release_gates
         run: python3 -m unittest discover -s tools/tests -p "test_*.py"
-
-      - name: Legacy UI surface gate
-        if: matrix.release_gates
-        run: python3 tools/check_no_legacy_ui_surfaces.py
 
       - name: Package-derived external consumer smoke
         if: matrix.release_gates

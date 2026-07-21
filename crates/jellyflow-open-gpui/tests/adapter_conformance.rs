@@ -2,19 +2,19 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    AdapterEnvironment, GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome,
-    TopologyEdit, TopologyPort, ViewSessionEvent, ViewSessionOptions, WeakViewSession,
 };
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortSide,
 };
 use jellyflow_open_gpui::{OpenGpuiCommandTicketResult, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    AdapterEnvironment, GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome,
+    TopologyEdit, TopologyPort, ViewSessionEvent, ViewSessionOptions, WeakViewSession,
+};
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render, Styled, Window, div, px,
 };
@@ -521,7 +521,7 @@ fn geometry_is_withdrawn(view: &WeakViewSession, node: NodeId) -> bool {
         .is_none_or(|geometry| !geometry.is_fresh() && geometry.ports().is_empty())
 }
 
-fn assert_other_view_isolated(view: &jellyflow::runtime::ViewSession) {
+fn assert_other_view_isolated(view: &jellyflow_runtime::ViewSession) {
     assert!(
         view.geometry_snapshot()
             .expect("other view geometry")

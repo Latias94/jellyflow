@@ -15,7 +15,8 @@ categories = ["gui", "visualization"]
 
 [dependencies]
 egui = "0.34.3"
-jellyflow.workspace = true
+jellyflow-core.workspace = true
+jellyflow-runtime.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -1,16 +1,16 @@
 use egui::{ComboBox, Response, Sense, TextEdit, Ui, Vec2, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::runtime::geometry::HandlePosition;
-use jellyflow::runtime::{
+use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
+use jellyflow_runtime::runtime::geometry::HandlePosition;
+use jellyflow_runtime::{
     AdapterEnvironment, FeedbackOperationReceipt, FrameBoundsSource, FrameRequest, GraphCommand,
     GraphRuntime, GraphSnapshot, IncidentEdgePolicy, LayoutNodeStatus, RendererStamp, TopologyEdit,
     TopologyPort, ViewSession, ViewSessionOptions,
 };
-use jellyflow_egui::{EguiNativeFrameHost, EguiNativeFrameOutcome};
 
 const TRACER_RENDERER_KEY: &str = "test.adapter-conformance.native";
 

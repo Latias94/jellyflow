@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 #[cfg(any(test, feature = "real-window-smoke"))]
-use jellyflow::runtime::ViewSize;
+use jellyflow_runtime::ViewSize;
 use open_gpui_canvas_jellyflow::blackboard::NATIVE_BLACKBOARD_WIDTH;
 
 const DEFAULT_WINDOW_WIDTH: u32 = 960;

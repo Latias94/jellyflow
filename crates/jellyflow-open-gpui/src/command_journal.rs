@@ -5,14 +5,14 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::task::{Context, Poll, Waker};
 
-use jellyflow::runtime::{
+use jellyflow_runtime::{
     FeedbackCollector, FeedbackCollectorError, FeedbackReceipt, FeedbackSubmissionError,
     GraphCommand, GraphCommandOutcome, GraphRuntimeError, NodeInstanceKey, ViewCloseReason,
     ViewCloseReceipt, ViewSessionError,
 };
 use open_gpui::{App, EntityId};
 
-use jellyflow::runtime::InteractionTicketId;
+use jellyflow_runtime::InteractionTicketId;
 
 use crate::size_policy::OpenGpuiNodeSizeTicket;
 
@@ -1329,9 +1329,9 @@ impl OpenGpuiCommandCloseDrain {
 
     pub(crate) fn combined_request(
         &self,
-        caller: &jellyflow::runtime::ViewCloseRequest,
-    ) -> jellyflow::runtime::ViewCloseRequest {
-        let mut request = jellyflow::runtime::ViewCloseRequest::new();
+        caller: &jellyflow_runtime::ViewCloseRequest,
+    ) -> jellyflow_runtime::ViewCloseRequest {
+        let mut request = jellyflow_runtime::ViewCloseRequest::new();
         for entry in self
             .collected
             .iter()
@@ -1412,12 +1412,12 @@ pub(crate) fn resolve_command_tickets(
 mod tests {
     use std::task::Poll;
 
-    use jellyflow::core::{
+    use jellyflow_core::{
         CanvasPoint, CanvasRect, CanvasSize, EdgeId, GraphBuilder, GraphId, GroupId, Node, NodeId,
         NodeKindKey,
     };
-    use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-    use jellyflow::runtime::{
+    use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+    use jellyflow_runtime::{
         FrameRequest, GraphRuntime, RendererStamp, ViewCloseRequest, ViewSession,
         ViewSessionOptions,
     };

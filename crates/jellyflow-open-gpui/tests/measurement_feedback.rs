@@ -1,19 +1,19 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    GraphCommand, GraphRuntime, PublishedPortOutcome, ViewCloseReason, ViewSessionOptions,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiContentHeightPolicy,
     OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeSizeConvergence,
     OpenGpuiNodeSizePolicy, OpenGpuiSceneHost, OpenGpuiSceneHostDiagnosticKind,
+};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    GraphCommand, GraphRuntime, PublishedPortOutcome, ViewCloseReason, ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, MouseButton, ParentElement, Render, Styled,
@@ -1615,7 +1615,7 @@ fn assert_hit_contains_visual(hit: CanvasRect, visual: CanvasRect) {
     assert!(hit.origin.y + hit.size.height >= visual.origin.y + visual.size.height);
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let node_id = NodeId::from_u128(10);
     let node = Node {
         kind: NodeKindKey::new(KIND),
@@ -1645,7 +1645,7 @@ fn graph() -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
-fn graph_with_valid_sibling() -> jellyflow::core::Graph {
+fn graph_with_valid_sibling() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::from_detached_graph(graph());
     graph.insert_node(
         NodeId::from_u128(11),
@@ -1674,7 +1674,7 @@ fn graph_with_valid_sibling() -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
-fn graph_with_route_and_valid_sibling() -> jellyflow::core::Graph {
+fn graph_with_route_and_valid_sibling() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::from_detached_graph(graph_with_valid_sibling());
     graph.insert_edge(
         edge_id(),
@@ -1683,7 +1683,7 @@ fn graph_with_route_and_valid_sibling() -> jellyflow::core::Graph {
     graph.build().expect("valid routed sibling graph")
 }
 
-fn graph_with_content_sibling() -> jellyflow::core::Graph {
+fn graph_with_content_sibling() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::from_detached_graph(content_graph());
     graph.insert_node(
         NodeId::from_u128(11),
@@ -1712,7 +1712,7 @@ fn graph_with_content_sibling() -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
-fn content_graph() -> jellyflow::core::Graph {
+fn content_graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::from_detached_graph(graph());
     graph.remove_port(&input_id());
     graph.remove_port(&output_id());

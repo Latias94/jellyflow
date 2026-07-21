@@ -1,5 +1,5 @@
-use jellyflow::core::{EdgeId, PortId};
-use jellyflow::runtime::{NodeInstanceKey, ViewId};
+use jellyflow_core::{EdgeId, PortId};
+use jellyflow_runtime::{NodeInstanceKey, ViewId};
 use open_gpui::{
     Div, ElementId, EntityId, Role, SharedString, Stateful, StatefulInteractiveElement,
 };

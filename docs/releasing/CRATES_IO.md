@@ -1,20 +1,17 @@
 # Publishing To crates.io
 
-Jellyflow is a Cargo workspace with six publishable crates:
+Jellyflow is a Cargo workspace with five publishable crates:
 
 1. `jellyflow-core`
 2. `jellyflow-layout`
 3. `jellyflow-runtime`
-4. `jellyflow`
-5. `jellyflow-egui`
-6. `jellyflow-open-gpui`
+4. `jellyflow-egui`
+5. `jellyflow-open-gpui`
 
-`jellyflow-layout` depends on `jellyflow-core`, `jellyflow-runtime` depends on
-`jellyflow-core` and `jellyflow-layout`, and the top-level `jellyflow` facade
-depends on all three lower-level crates. `jellyflow-egui` depends on the facade
-crate and must publish after it. `jellyflow-open-gpui` also depends on the
-facade and publishes after `jellyflow-egui`. Publish and dry-run checks must
-respect that order.
+`jellyflow-layout` depends on `jellyflow-core`, and `jellyflow-runtime` depends on
+`jellyflow-core` and `jellyflow-layout`. Both UI adapters depend directly on
+`jellyflow-core` and `jellyflow-runtime`; neither adapter depends on the other
+or on an unused layout package. Publish and dry-run checks must respect that order.
 
 ## Release Gates
 
@@ -29,11 +26,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo bench -p jellyflow-layout --features benchmark-internals --bench layout_engines --locked -- --test
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_no_legacy_ui_surfaces.py
 python3 tools/check_external_consumer_smoke.py
-cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
-cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
-cargo clippy --manifest-path templates/native-adapter/Cargo.toml --workspace --all-targets --locked -- -D warnings
 cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
 cargo fmt --manifest-path examples/canvas-jellyflow/Cargo.toml --all -- --check
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
@@ -44,7 +37,7 @@ git diff --check
 The CI workflow runs common gates on pull requests and pushes. The reusable
 release preflight workflow additionally verifies versions and writes package
 file lists as artifacts for release review. The package-derived consumer smoke
-assembles all six `.crate` archives, serves them from a temporary sparse
+assembles all five `.crate` archives, serves them from a temporary sparse
 registry, and compiles a locked external consumer. Its dependency declarations
 contain versions and a registry name, never workspace or path dependencies.
 The production Open GPUI dependency disables default features and does not
@@ -88,7 +81,6 @@ Review the files Cargo would package:
 cargo package --locked --list -p jellyflow-core
 cargo package --locked --list -p jellyflow-layout
 cargo package --locked --list -p jellyflow-runtime
-cargo package --locked --list -p jellyflow
 cargo package --locked --list -p jellyflow-egui
 cargo package --locked --list -p jellyflow-open-gpui
 ```
@@ -114,7 +106,6 @@ Run dry-runs in dependency order:
 cargo publish --locked --dry-run -p jellyflow-core
 cargo publish --locked --dry-run -p jellyflow-layout
 cargo publish --locked --dry-run -p jellyflow-runtime
-cargo publish --locked --dry-run -p jellyflow
 cargo publish --locked --dry-run -p jellyflow-egui
 cargo publish --locked --dry-run -p jellyflow-open-gpui
 ```
@@ -136,7 +127,6 @@ Publish leaf crates first:
 cargo publish --locked -p jellyflow-core
 cargo publish --locked -p jellyflow-layout
 cargo publish --locked -p jellyflow-runtime
-cargo publish --locked -p jellyflow
 cargo publish --locked -p jellyflow-egui
 cargo publish --locked -p jellyflow-open-gpui
 ```
@@ -148,14 +138,12 @@ creates or updates the GitHub Release from the same guarded tag and commit.
 
 Before creating the tag, update `workspace.package.version`, every internal
 workspace dependency constraint, and the nested Open GPUI product package
-version. Refresh the root, `examples/canvas-jellyflow`, and
-`templates/native-adapter` lockfiles, then run:
+version. Refresh the root and `examples/canvas-jellyflow` lockfiles, then run:
 
 ```text
 python3 scripts/release-version.py check --version <version>
 cargo metadata --locked --format-version 1
 cargo metadata --manifest-path examples/canvas-jellyflow/Cargo.toml --locked --format-version 1
-cargo metadata --manifest-path templates/native-adapter/Cargo.toml --locked --format-version 1
 ```
 
 A candidate archive smoke can validate an uncommitted working tree and can

@@ -1,17 +1,17 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{CanvasInteractionPhase, GraphRuntime, ViewSessionOptions};
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OpenGpuiConnectionOptions, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
     OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
 };
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{CanvasInteractionPhase, GraphRuntime, ViewSessionOptions};
 use open_gpui::{
     AppContext, Context, Entity, MouseButton, ParentElement, Render, Styled, Window, deferred, div,
     point, prelude::*, px,
@@ -674,7 +674,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let node = Node {
         kind: NodeKindKey::new(KIND),
         kind_version: 1,

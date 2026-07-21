@@ -1,6 +1,6 @@
-use jellyflow::core::{CanvasPoint, EdgeId, NodeGraphConnectionMode, NodeId, PortId};
-use jellyflow::runtime::runtime::geometry::EdgePathAnchor;
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasPoint, EdgeId, NodeGraphConnectionMode, NodeId, PortId};
+use jellyflow_runtime::runtime::geometry::EdgePathAnchor;
+use jellyflow_runtime::{
     ConnectionEdit, EdgeEndpoint, PublishedPortOutcome, ViewPoint, ViewSize, WeakViewSession,
 };
 

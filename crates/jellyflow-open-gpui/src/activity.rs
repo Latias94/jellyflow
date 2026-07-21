@@ -4,7 +4,7 @@ use std::fmt;
 use std::mem;
 use std::rc::Rc;
 
-use jellyflow::runtime::NodeInstanceKey;
+use jellyflow_runtime::NodeInstanceKey;
 use thiserror::Error;
 
 /// A native resource or interaction that remains owned by a retained node.

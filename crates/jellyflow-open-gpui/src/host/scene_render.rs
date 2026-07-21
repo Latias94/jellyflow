@@ -4,15 +4,13 @@ use std::rc::Rc;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 
-use jellyflow::core::{
-    CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId,
-};
-use jellyflow::runtime::runtime::geometry::{
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, EdgeId, EdgeLabelAnchor, Graph, NodeId};
+use jellyflow_runtime::runtime::geometry::{
     EdgePath, EdgePathAnchor, EdgePathSample, EdgePosition, EdgeRouteFacts, PathCommand,
     resolve_edge_route_path,
 };
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{
     CanvasInteractionPhase, EdgeEndpoint, FeedbackSubmissionError, GeometrySnapshot,
     RouteGeometryRevision, ViewPoint, ViewRect, ViewSessionError, ViewSize,
     VisibleRouteQueryRevision,
@@ -1040,7 +1038,7 @@ impl OpenGpuiSceneHost {
                     if host.update(cx, |host, cx| {
                         host.activate_edge_action(
                             edge,
-                            jellyflow::runtime::SelectionMode::Replace,
+                            jellyflow_runtime::SelectionMode::Replace,
                             window,
                             cx,
                         )
@@ -1063,7 +1061,7 @@ impl OpenGpuiSceneHost {
                         host.update(cx, |host, cx| {
                             host.activate_edge_action(
                                 edge,
-                                jellyflow::runtime::SelectionMode::Replace,
+                                jellyflow_runtime::SelectionMode::Replace,
                                 window,
                                 cx,
                             )
@@ -1092,7 +1090,7 @@ impl OpenGpuiSceneHost {
                             if host.update(cx, |host, cx| {
                                 host.activate_edge_action(
                                     edge,
-                                    jellyflow::runtime::SelectionMode::Replace,
+                                    jellyflow_runtime::SelectionMode::Replace,
                                     window,
                                     cx,
                                 )
@@ -1355,7 +1353,7 @@ impl OpenGpuiSceneHost {
                     if host.update(cx, |host, cx| {
                         host.activate_node_action(
                             node_for_keyboard,
-                            jellyflow::runtime::SelectionMode::Replace,
+                            jellyflow_runtime::SelectionMode::Replace,
                             window,
                             cx,
                         )
@@ -1371,7 +1369,7 @@ impl OpenGpuiSceneHost {
                     if host.update(cx, |host, cx| {
                         host.activate_node_action(
                             node_for_accessibility,
-                            jellyflow::runtime::SelectionMode::Replace,
+                            jellyflow_runtime::SelectionMode::Replace,
                             window,
                             cx,
                         )
@@ -1615,7 +1613,7 @@ impl OpenGpuiSceneHost {
             let guide_width = self.graph_theme.metrics.guide_width;
             for guide in drag.guides() {
                 let line = match guide.axis() {
-                    jellyflow::runtime::AlignmentGuideAxis::Vertical => {
+                    jellyflow_runtime::AlignmentGuideAxis::Vertical => {
                         let canvas_x = guide.canvas_coordinate();
                         let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
                             x: canvas_x,
@@ -1630,7 +1628,7 @@ impl OpenGpuiSceneHost {
                             .w(px(guide_width))
                             .h_full()
                     }
-                    jellyflow::runtime::AlignmentGuideAxis::Horizontal => {
+                    jellyflow_runtime::AlignmentGuideAxis::Horizontal => {
                         let canvas_y = guide.canvas_coordinate();
                         let Some(position) = transform.screen_point_for_canvas(CanvasPoint {
                             x: 0.0,
@@ -2071,7 +2069,7 @@ fn edge_query_bounds(
 }
 
 fn append_dragged_incident_routes(
-    view: &jellyflow::runtime::ViewSession,
+    view: &jellyflow_runtime::ViewSession,
     graph: Option<&Graph>,
     presentation_offsets: &BTreeMap<NodeId, CanvasPoint>,
     routes: &mut Vec<OpenGpuiVisibleRouteIdentity>,

@@ -337,15 +337,15 @@ impl CanonicalDriver {
                 .expect("canonical node drag handle")
                 .center(),
             ConformanceTarget::ReconnectSource => self.edge_endpoint_position(
-                jellyflow::runtime::runtime::geometry::EdgePathAnchor::Source,
+                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Source,
                 cx,
             ),
             ConformanceTarget::ReconnectTarget => self.edge_endpoint_position(
-                jellyflow::runtime::runtime::geometry::EdgePathAnchor::Target,
+                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Target,
                 cx,
             ),
             ConformanceTarget::Edge => self.edge_endpoint_position(
-                jellyflow::runtime::runtime::geometry::EdgePathAnchor::Progress(0.35),
+                jellyflow_runtime::runtime::geometry::EdgePathAnchor::Progress(0.35),
                 cx,
             ),
         };
@@ -405,7 +405,7 @@ impl CanonicalDriver {
 
     fn edge_endpoint_position(
         &self,
-        anchor: jellyflow::runtime::runtime::geometry::EdgePathAnchor,
+        anchor: jellyflow_runtime::runtime::geometry::EdgePathAnchor,
         cx: &mut open_gpui::VisualTestContext,
     ) -> open_gpui::Point<open_gpui::Pixels> {
         cx.read_entity(&self.host, |host, _| {
@@ -654,7 +654,7 @@ impl CanonicalDriver {
 }
 
 fn normalized_phase(
-    presentation: &jellyflow::runtime::CanvasInteractionPresentation,
+    presentation: &jellyflow_runtime::CanvasInteractionPresentation,
 ) -> ConformancePhase {
     match presentation.phase() {
         CanvasInteractionPhase::Idle | CanvasInteractionPhase::Closed => ConformancePhase::Idle,
@@ -789,7 +789,7 @@ fn canonical_scenarios_run_through_real_open_gpui_events_and_frames(
     }
 }
 
-fn canonical_graph(with_edge: bool) -> jellyflow::core::Graph {
+fn canonical_graph(with_edge: bool) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0xCA11));
     for (node_id, position, port_id, key, direction) in [
         (

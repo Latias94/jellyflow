@@ -1,14 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{
     CanvasSize, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey,
     PortKind,
-};
-use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{
-    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
-    TopologyPort,
 };
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeBinding, OpenGpuiPortHandle,
@@ -16,6 +11,11 @@ use jellyflow_open_gpui::authoring::{
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketResult, OpenGpuiContentHeightPolicy, OpenGpuiNodeRegistrationPolicy,
     OpenGpuiNodeRegistryBuilder, OpenGpuiNodeSizePolicy,
+};
+use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::{
+    GraphCommand, GraphRevision, GraphSnapshot, IncidentEdgePolicy, NodeInstanceKey, TopologyEdit,
+    TopologyPort,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, ParentElement, Render,
@@ -851,7 +851,7 @@ fn retired_render_data(instance: NodeInstanceKey) -> BlueprintRenderData {
         node: Node {
             kind: NodeKindKey::new(BLUEPRINT_CALL_KIND),
             kind_version: 1,
-            pos: jellyflow::core::CanvasPoint { x: 0.0, y: 0.0 },
+            pos: jellyflow_core::CanvasPoint { x: 0.0, y: 0.0 },
             origin: None,
             selectable: None,
             draggable: None,
@@ -1295,7 +1295,7 @@ fn type_label(ty: &TypeDesc) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::runtime::{GraphCommandOutcome, GraphRuntime};
+    use jellyflow_runtime::{GraphCommandOutcome, GraphRuntime};
 
     use super::*;
 
@@ -1437,7 +1437,7 @@ mod tests {
             .instantiate_node_with_ids(
                 &NodeKindKey::new(BLUEPRINT_CALL_KIND),
                 test_node_id(),
-                jellyflow::core::CanvasPoint { x: 0.0, y: 0.0 },
+                jellyflow_core::CanvasPoint { x: 0.0, y: 0.0 },
                 [
                     PortId::from_u128(0xb101),
                     PortId::from_u128(0xb102),
@@ -1447,7 +1447,7 @@ mod tests {
             .unwrap();
         let (node_id, node, ports) = creation.into_parts();
         let mut graph =
-            jellyflow::core::GraphBuilder::new(jellyflow::core::GraphId::from_u128(0xb100));
+            jellyflow_core::GraphBuilder::new(jellyflow_core::GraphId::from_u128(0xb100));
         graph.insert_node(node_id, node);
         for (port_id, port) in ports {
             graph.insert_port(port_id, port);

@@ -1,10 +1,10 @@
 # Jellyflow Project Context
 
-Last updated: 2026-07-17
+Last updated: 2026-07-21
 
 This file is the high-signal navigation context for agents working in this repository. Shipped code
-and executable tests define current behavior. The active native-host refactor plan records the
-target architecture and acceptance contract; research records supporting evidence.
+and executable tests define current behavior. The adapter-authoring guide records the current
+ownership boundary; plans and research are historical implementation evidence.
 
 ## Product Intent
 
@@ -38,12 +38,10 @@ manifests or public boundaries.
 
 ## Current Architecture
 
-The active architecture replaces the former portable UI DSL and node-kit direction. Its contracts
-live in public types, versioned protocol and migration tests, and the 2026-07-12 native-host plan.
-`docs/adr/` was intentionally removed rather than maintained as a parallel registry. Do not restore
-deleted galleries, standalone native-smoke glue, or obsolete examples merely because historical
-plans mention them. Real-window smoke belongs in the single flagship product through `--smoke` and
-`--workflow --smoke`.
+The active architecture keeps graph semantics in direct core/runtime dependencies and native UI in
+independent adapters. Its contracts live in public types, executable conformance, protocol tests,
+and migration tests. Real-window smoke belongs in the single flagship product through `--smoke`
+and `--workflow --smoke`.
 
 ## Runtime Interaction Strategy
 
@@ -79,7 +77,6 @@ cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_no_legacy_ui_surfaces.py
 python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
@@ -87,7 +84,6 @@ git diff --check
 Adapter-facing gates:
 
 ```text
-cargo nextest run --manifest-path templates/native-adapter/Cargo.toml
 cargo nextest run -p jellyflow-open-gpui
 cargo nextest run -p jellyflow-egui
 cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
@@ -107,8 +103,8 @@ migration must be explicit, lossless where supported, and rejection-based where 
 
 `GraphFile` writes envelope V2. Released Jellyflow 0.3 V1 documents are an intentional
 incompatibility boundary and fail with structured `UnsupportedEnvelopeVersion` before payload
-decoding; no V1 compatibility alias or lossy focusability migration is supported.
+decoding; no lossy focusability migration is supported.
 
-Do not add compatibility facades merely to preserve stale `NodeGraphStore`, semantic descriptor, or
-adapter-planner APIs. Keep renderer/platform work outside headless crates and prove the replacement
-through protocol, persistence, conformance, and native-adapter tests.
+Do not add broad re-export layers merely to preserve stale APIs. Keep renderer/platform work outside
+headless crates and prove boundaries through protocol, persistence, conformance, direct external
+consumers, and native adapter tests.

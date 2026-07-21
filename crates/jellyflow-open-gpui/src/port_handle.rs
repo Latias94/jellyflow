@@ -3,10 +3,10 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
-use jellyflow::runtime::runtime::geometry::HandlePosition;
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasPoint, CanvasRect, CanvasSize, NodeId, PortDirection, PortId};
+use jellyflow_runtime::runtime::geometry::HandlePosition;
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{
     FrameNode, NodeInstanceKey, NodeLayout, NodeLayoutBuilderError, ViewPoint, ViewRect, ViewSize,
     side_anchor,
 };
@@ -1508,11 +1508,11 @@ fn relative_point(point: ViewPoint, origin: ViewPoint) -> ViewPoint {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::core::{
+    use jellyflow_core::{
         CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, NodeKindKey, Port,
         PortCapacity, PortKey, PortKind,
     };
-    use jellyflow::runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
+    use jellyflow_runtime::{FrameRequest, GraphRuntime, RendererStamp, ViewSessionOptions};
     use open_gpui::accesskit::{Action, Node};
 
     use super::*;
@@ -1619,7 +1619,7 @@ mod tests {
         let mut graph = GraphBuilder::new(GraphId::from_u128(0x23));
         graph.insert_node(
             node_id,
-            jellyflow::core::Node {
+            jellyflow_core::Node {
                 kind: NodeKindKey::new("test.wrapper-identity"),
                 kind_version: 1,
                 pos: CanvasPoint::default(),
@@ -1793,7 +1793,7 @@ mod tests {
         let mut graph = GraphBuilder::new(GraphId::from_u128(0x13));
         graph.insert_node(
             node_id,
-            jellyflow::core::Node {
+            jellyflow_core::Node {
                 kind: NodeKindKey::new("test.root-fallback"),
                 kind_version: 1,
                 pos: CanvasPoint { x: 20.0, y: 30.0 },

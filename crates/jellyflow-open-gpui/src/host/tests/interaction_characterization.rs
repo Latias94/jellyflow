@@ -1,6 +1,6 @@
 use super::*;
 
-use jellyflow::runtime::{CanvasInteractionQuery, EdgePickQuery};
+use jellyflow_runtime::{CanvasInteractionQuery, EdgePickQuery};
 
 #[open_gpui::test]
 fn connection_commit_keeps_exactly_one_preview_across_native_frames(
@@ -82,9 +82,9 @@ fn query_from_replaced_interaction_generation_is_inert_before_view_access(
                 .interaction_position(point(origin.x + px(700.0), origin.y + px(500.0)))
                 .expect("canvas press position");
             let target = || {
-                jellyflow::runtime::CanvasPressTarget::Canvas(
-                    jellyflow::runtime::CanvasPressFallback::Pan {
-                        selection_mode: jellyflow::runtime::SelectionMode::Replace,
+                jellyflow_runtime::CanvasPressTarget::Canvas(
+                    jellyflow_runtime::CanvasPressFallback::Pan {
+                        selection_mode: jellyflow_runtime::SelectionMode::Replace,
                     },
                 )
             };
@@ -185,9 +185,9 @@ fn queued_query_reintroduced_after_close_cannot_mutate_or_enqueue_follow_up_work
             let update = host
                 .interaction_owner
                 .press(
-                    jellyflow::runtime::CanvasPressTarget::Canvas(
-                        jellyflow::runtime::CanvasPressFallback::Pan {
-                            selection_mode: jellyflow::runtime::SelectionMode::Replace,
+                    jellyflow_runtime::CanvasPressTarget::Canvas(
+                        jellyflow_runtime::CanvasPressFallback::Pan {
+                            selection_mode: jellyflow_runtime::SelectionMode::Replace,
                         },
                     ),
                     position,
@@ -339,12 +339,12 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
     draw(cx);
     cx.update(|_, cx| {
         host.update(cx, |host, _| {
-            let session = jellyflow::runtime::CanvasInteractionSession::new(
+            let session = jellyflow_runtime::CanvasInteractionSession::new(
                 host.view.id(),
                 host.view.generation().expect("open host view"),
-                jellyflow::runtime::CanvasInteractionConfig {
+                jellyflow_runtime::CanvasInteractionConfig {
                     query_entry_budget: 1,
-                    ..jellyflow::runtime::CanvasInteractionConfig::default()
+                    ..jellyflow_runtime::CanvasInteractionConfig::default()
                 },
             )
             .expect("valid bounded interaction configuration");
@@ -380,7 +380,7 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
             host.interaction_presentation().phase(),
             CanvasInteractionPhase::ConnectionDrag
         );
-        let Some(jellyflow::runtime::CanvasInteractionQuery::ConnectionProbe { id, .. }) =
+        let Some(jellyflow_runtime::CanvasInteractionQuery::ConnectionProbe { id, .. }) =
             host.interaction_owner.test_front_query()
         else {
             panic!("one-entry first page must leave a probe continuation");
@@ -402,7 +402,7 @@ fn paged_connection_probe_restarts_after_viewport_change_without_cancelling_drag
             CanvasInteractionPhase::ConnectionDrag,
             "a stale continuation must not cancel the semantic drag"
         );
-        let Some(jellyflow::runtime::CanvasInteractionQuery::ConnectionProbe { id, .. }) =
+        let Some(jellyflow_runtime::CanvasInteractionQuery::ConnectionProbe { id, .. }) =
             host.interaction_owner.test_front_query()
         else {
             panic!("stale continuation must restart from page one");
@@ -452,13 +452,13 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
     draw(cx);
     cx.update(|window, cx| {
         host.update(cx, |host, cx| {
-            let session = jellyflow::runtime::CanvasInteractionSession::new(
+            let session = jellyflow_runtime::CanvasInteractionSession::new(
                 host.view.id(),
                 host.view.generation().expect("open host view"),
-                jellyflow::runtime::CanvasInteractionConfig {
+                jellyflow_runtime::CanvasInteractionConfig {
                     edge_pick_radius_in_view: 1_000.0,
                     query_entry_budget: 1,
-                    ..jellyflow::runtime::CanvasInteractionConfig::default()
+                    ..jellyflow_runtime::CanvasInteractionConfig::default()
                 },
             )
             .expect("valid bounded interaction configuration");
@@ -477,7 +477,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
 
     draw_once(cx);
     let stale_id = cx.read_entity(&host, |host, _| {
-        let Some(jellyflow::runtime::CanvasInteractionQuery::EdgePick { id, .. }) =
+        let Some(jellyflow_runtime::CanvasInteractionQuery::EdgePick { id, .. }) =
             host.interaction_owner.test_front_query()
         else {
             panic!("one-entry first page must leave an edge-pick continuation");
@@ -493,7 +493,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
     });
     draw_once(cx);
     let restarted_id = cx.read_entity(&host, |host, _| {
-        let Some(jellyflow::runtime::CanvasInteractionQuery::EdgePick { id, .. }) =
+        let Some(jellyflow_runtime::CanvasInteractionQuery::EdgePick { id, .. }) =
             host.interaction_owner.test_front_query()
         else {
             panic!("stale edge-pick continuation must restart from page one");
@@ -521,7 +521,7 @@ fn paged_edge_pick_restarts_after_paint_order_change_without_terminal_failure(
     });
 }
 
-fn paged_overlapping_target_graph() -> jellyflow::core::Graph {
+fn paged_overlapping_target_graph() -> jellyflow_core::Graph {
     let source = NodeId::from_u128(10);
     let output = PortId::from_u128(20);
     let target_position = CanvasPoint { x: 360.0, y: 80.0 };
@@ -548,7 +548,7 @@ fn hold_released_connection_at_adapter_boundary(
 ) {
     cx.update_entity(host, |host, _| {
         if host.interaction_presentation().phase()
-            == jellyflow::runtime::CanvasInteractionPhase::Committing
+            == jellyflow_runtime::CanvasInteractionPhase::Committing
         {
             host.discard_pending_interaction_submission();
             host.interaction_owner.test_clear_queries();
@@ -571,7 +571,7 @@ fn hold_released_connection_at_adapter_boundary(
             )
         });
         loop {
-            let jellyflow::runtime::CanvasInteractionQuery::ConnectionProbe { id, query, .. } =
+            let jellyflow_runtime::CanvasInteractionQuery::ConnectionProbe { id, query, .. } =
                 pending
             else {
                 panic!("connection release cannot schedule an edge pick");
@@ -589,12 +589,12 @@ fn hold_released_connection_at_adapter_boundary(
             let effects = dispatch.pre_query_effects;
 
             if host.interaction_presentation().phase()
-                == jellyflow::runtime::CanvasInteractionPhase::Committing
+                == jellyflow_runtime::CanvasInteractionPhase::Committing
             {
                 assert!(queries.is_empty());
                 assert!(matches!(
                     effects.as_slice(),
-                    [jellyflow::runtime::CanvasInteractionEffect::SubmitGraph { .. }]
+                    [jellyflow_runtime::CanvasInteractionEffect::SubmitGraph { .. }]
                 ));
                 break;
             }
@@ -631,7 +631,7 @@ fn assert_committing_preview_frame(
         let presentation = host.interaction_presentation();
         assert_eq!(
             presentation.phase(),
-            jellyflow::runtime::CanvasInteractionPhase::Committing,
+            jellyflow_runtime::CanvasInteractionPhase::Committing,
             "frame {frame}: adapter settlement is intentionally pending",
         );
         let connection = presentation

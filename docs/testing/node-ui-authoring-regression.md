@@ -15,7 +15,7 @@ contracts.
 
 | Surface | Required behavior | Primary evidence |
 | --- | --- | --- |
-| Dify workflow | native text/select controls, focus and IME ownership, dirty-draft conflict recovery, stable dynamic branch ports, exact undo/redo, and stale two-view replanning | `examples/canvas-jellyflow/tests/native_workflow_host.rs` |
+| Dify workflow | native text/select controls, focus and IME ownership, retained-field conflict recovery, stable dynamic branch ports, exact undo/redo, and stale two-view replanning | `examples/canvas-jellyflow/tests/native_workflow_host.rs` |
 | Shader / Blueprint | typed real ports, inline values derived from incident edges, dynamic pins, occupied-input replacement, reconnect, create-from-wire search, and structured rejection | `examples/canvas-jellyflow/tests/native_shader_host.rs` plus `crates/jellyflow-open-gpui/src/host_tests.rs` |
 | Graph-symbol blackboard | application-owned native controls, stable `SymbolId`, explicit stale-draft reapply, and exact undo without a portable blackboard descriptor | `examples/canvas-jellyflow/tests/native_blackboard.rs` |
 | Unknown renderer | diagnostic native fallback while opaque node data and all policy-controlled real ports remain intact | `crates/jellyflow-open-gpui/tests/measurement_feedback.rs` and registry tests |
@@ -96,18 +96,16 @@ cargo test --workspace --doc --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/check_no_fret_dependencies.py
 python3 -m unittest discover -s tools/tests -p "test_*.py"
-python3 tools/check_no_legacy_ui_surfaces.py
 python3 tools/check_external_consumer_smoke.py
 git diff --check
 ```
 
-Run the standalone native-adapter template gate separately:
+Run both real adapter witnesses directly:
 
 ```sh
-cargo fmt --manifest-path templates/native-adapter/Cargo.toml --all -- --check
-cargo nextest run --manifest-path templates/native-adapter/Cargo.toml --locked
-cargo clippy --manifest-path templates/native-adapter/Cargo.toml \
-  --workspace --all-targets --locked -- -D warnings
+cargo nextest run -p jellyflow-open-gpui --locked
+cargo nextest run -p jellyflow-egui --locked
+python3 tools/check_external_consumer_smoke.py
 ```
 
 Run the retained Open GPUI product workspace separately:
@@ -129,7 +127,7 @@ cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml \
   -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
 ```
 
-The Open GPUI executable is the only product example. `templates/native-adapter` proves the minimal
-third-party framework boundary, and `jellyflow-egui` proves immediate-mode portability. Old product
-galleries, descriptor projections, action planners, and duplicate adapter examples are intentionally
-deleted rather than carried as compatibility surfaces.
+The Open GPUI executable is the only product example. `jellyflow-egui` and the external
+adapter-conformance consumer prove the independent framework boundary. The authoring obligations for
+future adapters are documented in `docs/guides/native-adapter-authoring.md` and backed by executable
+tests rather than a framework-free implementation.

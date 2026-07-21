@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use jellyflow::core::{NodeId, PortDirection, PortId};
-use jellyflow::runtime::{
+use jellyflow_core::{NodeId, PortDirection, PortId};
+use jellyflow_runtime::{
     FrameNode, GraphRevision, NodeInstanceKey, ViewCloseReason, ViewSessionError, WeakViewSession,
 };
 use open_gpui::{AnyElement, App, Context, FocusHandle, IntoElement};

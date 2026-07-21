@@ -44,5 +44,5 @@ Run its protocol witness tests with:
 cargo nextest run -p jellyflow-egui
 ```
 
-The crate depends directly on `egui`; `jellyflow-core`, `jellyflow-layout`, and `jellyflow-runtime`
-remain UI-framework-free.
+The crate depends directly on `egui`, `jellyflow-core`, and `jellyflow-runtime`. It does not depend
+on a layout engine or the Open GPUI adapter; the headless crates remain UI-framework-free.

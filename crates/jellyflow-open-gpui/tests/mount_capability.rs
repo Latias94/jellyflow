@@ -2,13 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewCloseReason, ViewSessionOptions,
 };
 use jellyflow_open_gpui::authoring::{
     OpenGpuiNodeAuthoring, OpenGpuiNodeAuthoringError, OpenGpuiNodeBinding, OpenGpuiPortHandle,
@@ -16,6 +12,10 @@ use jellyflow_open_gpui::authoring::{
 use jellyflow_open_gpui::{
     OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OpenGpuiNodeDragHandle, OpenGpuiNodeMountError,
     OpenGpuiNodeRegistry, OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    CanvasInteractionPhase, GraphCommand, GraphRuntime, ViewCloseReason, ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -855,7 +855,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn graph_with_nodes(count: usize) -> jellyflow::core::Graph {
+fn graph_with_nodes(count: usize) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x6d_6f_75_6e_74));
     for index in 0..count {
         let id = NodeId::from_u128(index as u128 + 1);

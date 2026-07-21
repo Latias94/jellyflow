@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use std::mem;
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::{EdgeId, PortId};
-use jellyflow::runtime::{EdgeEndpoint, NodeInstanceKey};
+use jellyflow_core::{EdgeId, PortId};
+use jellyflow_runtime::{EdgeEndpoint, NodeInstanceKey};
 use open_gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
     Hitbox, HitboxBehavior, HitboxId, InspectorElementId, InteractiveElement, IntoElement,

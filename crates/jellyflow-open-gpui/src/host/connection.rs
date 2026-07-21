@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasPoint, EdgeId, Graph, NodeId, PortDirection, PortId};
-use jellyflow::runtime::runtime::geometry::{
+use jellyflow_core::{CanvasPoint, EdgeId, Graph, NodeId, PortDirection, PortId};
+use jellyflow_runtime::runtime::geometry::{
     BezierEdgeOptions, EdgeEndpointPosition, EdgePath, EdgePosition, HandlePosition,
     bezier_edge_path, resolve_edge_route_path,
 };
-use jellyflow::runtime::schema::NodeCatalogInstantiationError;
-use jellyflow::runtime::{
+use jellyflow_runtime::schema::NodeCatalogInstantiationError;
+use jellyflow_runtime::{
     CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionPresentation,
     CanvasPressTarget, ConnectionGestureIntent, ConnectionInteractionStart, ConnectionProbe,
     ConnectionSearchRequest, ConnectionSearchSelection, CreateFromWireCandidates, EdgeEndpoint,
@@ -56,7 +56,7 @@ pub enum OpenGpuiConnectionSearchError {
     #[error("selected node kind could not be instantiated")]
     Instantiation(#[from] NodeCatalogInstantiationError),
     #[error("the selected node kind no longer declares port {port:?}")]
-    CandidatePortUnavailable { port: jellyflow::core::PortKey },
+    CandidatePortUnavailable { port: jellyflow_core::PortKey },
     #[error("selected connection search candidate produced no topology")]
     InvalidSelection,
     #[error("connection search interaction failed")]

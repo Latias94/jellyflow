@@ -1,18 +1,18 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    GraphCommand, GraphRuntime, ViewCloseReason, ViewCloseRequest, ViewSessionError,
-    ViewSessionOptions,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiNodeMountError, OpenGpuiNodeRegistry,
     OpenGpuiSceneHost, OpenGpuiSceneHostCloseError,
+};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    GraphCommand, GraphRuntime, ViewCloseReason, ViewCloseRequest, ViewSessionError,
+    ViewSessionOptions,
 };
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, VisualContext, Window, div};
 
@@ -322,7 +322,7 @@ fn factory_retry_selector(node: NodeId) -> String {
     format!("jellyflow-factory-retry-{}", node.0)
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let node = Node {
         kind: NodeKindKey::new(KIND),
         kind_version: 1,

@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{GeometrySnapshot, ViewSize, WeakViewSession};
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{GeometrySnapshot, ViewSize, WeakViewSession};
 use open_gpui::Window;
 
 use super::super::{

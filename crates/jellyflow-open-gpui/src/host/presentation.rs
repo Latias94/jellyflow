@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use jellyflow::runtime::{ConnectionProbe, ViewSessionError};
+use jellyflow_runtime::{ConnectionProbe, ViewSessionError};
 use open_gpui::{Context, Window};
 
 use crate::presentation::{
@@ -116,7 +116,7 @@ impl OpenGpuiSceneHost {
                             OpenGpuiPortInteractionState::idle()
                                 .with_hovered(
                                     interaction.phase()
-                                        == jellyflow::runtime::CanvasInteractionPhase::Idle
+                                        == jellyflow_runtime::CanvasInteractionPhase::Idle
                                         && self.hovered_port == Some(*port),
                                 )
                                 .with_connected(facts.is_connected())

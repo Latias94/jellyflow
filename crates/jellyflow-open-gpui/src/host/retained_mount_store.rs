@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use jellyflow::core::NodeId;
-use jellyflow::runtime::NodeInstanceKey;
+use jellyflow_core::NodeId;
+use jellyflow_runtime::NodeInstanceKey;
 
 pub(super) struct RetainedMountStore<T> {
     active: BTreeMap<NodeInstanceKey, T>,

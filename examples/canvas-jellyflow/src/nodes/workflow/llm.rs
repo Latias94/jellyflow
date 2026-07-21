@@ -1,9 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use jellyflow::core::{CanvasSize, Node, NodeId, PortCapacity, PortDirection, PortKind};
-use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{GraphCommand, GraphRevision};
+use jellyflow_core::{CanvasSize, Node, NodeId, PortCapacity, PortDirection, PortKind};
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
     OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiCommandTicketResult,
@@ -12,6 +10,8 @@ use jellyflow_open_gpui::{
     RetainedFieldRecovery, RetainedFieldResolution, RetainedFieldStore, RetainedFieldSubmitMode,
     RetainedFieldUpdate, RevisionedField,
 };
+use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::{GraphCommand, GraphRevision};
 use open_gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, ParentElement, Render, Styled,
     Subscription, Window, div, px, rgb,
@@ -1204,12 +1204,12 @@ fn reconcile_prompt_composition(field: &mut RevisionedField<String>, composing: 
 mod tests {
     use std::cell::RefCell;
 
-    use jellyflow::core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId, NodeKindKey, PortId};
-    use jellyflow::runtime::{GraphCommandOutcome, GraphRuntime, ViewSessionOptions};
+    use jellyflow_core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId, NodeKindKey, PortId};
     use jellyflow_open_gpui::{
         OPEN_GPUI_DEFAULT_ELIGIBLE_PARKED_CAPACITY, OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY,
         OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedFieldAttemptState,
     };
+    use jellyflow_runtime::{GraphCommandOutcome, GraphRuntime, ViewSessionOptions};
     use open_gpui::{AppContext, EntityInputHandler};
     use open_gpui_ui_components::gpui_adapter::init_text_input;
 
@@ -1521,8 +1521,8 @@ mod tests {
         cx.update(|window, cx| assert!(window.focused(cx).is_none()));
     }
 
-    fn transient_overflow_catalog() -> jellyflow::runtime::schema::NodeCatalog {
-        let mut catalog = jellyflow::runtime::schema::NodeCatalog::new();
+    fn transient_overflow_catalog() -> jellyflow_runtime::schema::NodeCatalog {
+        let mut catalog = jellyflow_runtime::schema::NodeCatalog::new();
         catalog
             .register(catalog_spec())
             .expect("register workflow LLM kind");
@@ -1544,8 +1544,8 @@ mod tests {
     }
 
     fn transient_overflow_graph(
-        catalog: &jellyflow::runtime::schema::NodeCatalog,
-    ) -> jellyflow::core::Graph {
+        catalog: &jellyflow_runtime::schema::NodeCatalog,
+    ) -> jellyflow_core::Graph {
         let mut graph = GraphBuilder::new(GraphId::from_u128(0x7a11_0000));
         for index in 0..OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {
             graph.insert_node(

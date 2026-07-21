@@ -1,12 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    GraphCommand, GraphRevision, GraphRuntime, IncidentEdgePolicy, TopologyEdit, ViewSessionOptions,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
@@ -14,6 +10,10 @@ use jellyflow_open_gpui::{
     OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedField, RetainedFieldConflictChoice,
     RetainedFieldError, RetainedFieldKey, RetainedFieldPhase, RetainedFieldResolution,
     RetainedFieldStore, RetainedFieldUpdate,
+};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    GraphCommand, GraphRevision, GraphRuntime, IncidentEdgePolicy, TopologyEdit, ViewSessionOptions,
 };
 use open_gpui::{
     AppContext, Context, Entity, EntityInputHandler, Focusable, ParentElement, Render, Styled,
@@ -576,7 +576,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     GraphBuilder::new(GraphId::from_u128(0xd4_af7))
         .with_node(
             node_id(),

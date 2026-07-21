@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
-use jellyflow::core::NodeId;
-use jellyflow::runtime::{
+use jellyflow_core::NodeId;
+use jellyflow_runtime::{
     GraphRevision, NodeIncarnation, NodeInstanceKey, ViewId, ViewSessionError, ViewSessionEvent,
     ViewSubscriptionToken, WeakViewSession,
 };
@@ -82,8 +82,8 @@ impl<T> RetainedFieldStoreState<T> {
 mod tests {
     use std::rc::Rc;
 
-    use jellyflow::core::{GraphBuilder, GraphId};
-    use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
+    use jellyflow_core::{GraphBuilder, GraphId};
+    use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
 
     use super::RetainedFieldStore;
 

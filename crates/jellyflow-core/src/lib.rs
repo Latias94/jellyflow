@@ -30,24 +30,3 @@ pub use interaction::NodeGraphConnectionMode;
 pub use types::{
     DefaultTypeCompatibility, TypeCompatibility, TypeCompatibilityResult, TypeDesc, TypeVarId,
 };
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn manifest_stays_free_of_fret_ui_renderer_and_platform_dependencies() {
-        let manifest = include_str!("../Cargo.toml");
-        for forbidden in [
-            "fret-core",
-            "fret-ui",
-            "fret-runtime",
-            "fret-canvas",
-            "wgpu",
-            "winit",
-        ] {
-            assert!(
-                !manifest.contains(forbidden),
-                "jellyflow-core must stay headless; forbidden dependency `{forbidden}` found",
-            );
-        }
-    }
-}

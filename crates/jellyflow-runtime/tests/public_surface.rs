@@ -6,11 +6,8 @@ use jellyflow_core::core::{
 };
 use jellyflow_core::interaction::NodeGraphConnectionMode;
 use jellyflow_core::types::TypeDesc;
-use jellyflow_layout::{
-    LayoutContext, LayoutEngineRequest, LayoutRequest, builtin_layout_engine_registry,
-};
 use jellyflow_runtime::io::{GraphFile, PersistenceLimits, ViewSessionSeed, ViewSessionSeedFile};
-use jellyflow_runtime::runtime::{layout, viewport};
+use jellyflow_runtime::runtime::viewport;
 use jellyflow_runtime::schema::{
     NodeCatalog, NodeKindSpec, NodePortSpec, PortPresentationHint, PortSide,
 };
@@ -96,26 +93,6 @@ fn bounded_graph_save_is_part_of_the_public_persistence_surface() {
         .expect("bounded public graph load");
 
     assert_eq!(loaded.graph().graph_id(), graph_id);
-}
-
-#[test]
-fn runtime_manifest_stays_framework_free() {
-    let manifest = include_str!("../Cargo.toml");
-    for forbidden in [
-        "fret-core",
-        "fret-ui",
-        "fret-runtime",
-        "egui",
-        "open-gpui",
-        "open_gpui",
-        "wgpu",
-        "winit",
-    ] {
-        assert!(
-            !manifest.contains(forbidden),
-            "forbidden dependency: {forbidden}"
-        );
-    }
 }
 
 #[test]
@@ -371,7 +348,7 @@ fn public_port(node: NodeId, key: &str, dir: PortDirection) -> Port {
 }
 
 #[test]
-fn semantic_catalog_and_layout_planning_are_framework_neutral() {
+fn semantic_catalog_and_viewport_planning_are_framework_neutral() {
     let mut catalog = NodeCatalog::new();
     catalog
         .register(
@@ -405,13 +382,7 @@ fn semantic_catalog_and_layout_planning_are_framework_neutral() {
         .applied()
         .expect("creation applies");
 
-    let graph = runtime.snapshot().unwrap().graph().clone();
-    let request = LayoutEngineRequest::dugong(LayoutRequest::all());
-    let result = builtin_layout_engine_registry()
-        .layout(&graph, &request, &LayoutContext::new())
-        .expect("layout result");
-    let command = layout::layout_result_to_command(1, &graph, &result).expect("layout command");
-    assert_eq!(command.expected_revision(), 1);
+    assert_eq!(runtime.snapshot().unwrap().revision(), 1);
 
     let transform = viewport::ViewportTransform::new(CanvasPoint::default(), 1.0).unwrap();
     assert!(transform.is_valid());

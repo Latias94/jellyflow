@@ -1,9 +1,7 @@
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{
     CanvasSize, Node, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKind,
 };
-use jellyflow::runtime::schema::{NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{GraphCommand, GraphRevision};
 use jellyflow_open_gpui::authoring::{OpenGpuiNodeAuthoring, OpenGpuiNodeBinding};
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketResult, OpenGpuiNodeRegistryBuilder, RetainedField, RetainedFieldAttempt,
@@ -11,6 +9,8 @@ use jellyflow_open_gpui::{
     RetainedFieldIntent, RetainedFieldKey, RetainedFieldResolution, RetainedFieldSettlement,
     RetainedFieldStore, RetainedFieldUpdate,
 };
+use jellyflow_runtime::schema::{NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::{GraphCommand, GraphRevision};
 use open_gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
     Styled, Window, div, px, rgb,
@@ -802,14 +802,14 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use jellyflow::core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId};
-    use jellyflow::runtime::schema::NodeCatalog;
-    use jellyflow::runtime::{
-        GraphCommandOutcome, GraphRuntime, ViewCloseReason, ViewSessionOptions,
-    };
+    use jellyflow_core::{CanvasPoint, CanvasRect, GraphBuilder, GraphId};
     use jellyflow_open_gpui::{
         OpenGpuiCommandTicketError, OpenGpuiNodeRegistry, OpenGpuiSceneHost, RetainedFieldPhase,
         RevisionedField,
+    };
+    use jellyflow_runtime::schema::NodeCatalog;
+    use jellyflow_runtime::{
+        GraphCommandOutcome, GraphRuntime, ViewCloseReason, ViewSessionOptions,
     };
 
     use super::*;
@@ -1113,7 +1113,7 @@ mod tests {
         assert!(cx.debug_bounds(SHADER_PREVIEW_VALUE_SELECTOR).is_none());
     }
 
-    fn pending_factor_graph(catalog: &NodeCatalog) -> jellyflow::core::Graph {
+    fn pending_factor_graph(catalog: &NodeCatalog) -> jellyflow_core::Graph {
         let mut graph = GraphBuilder::new(GraphId::from_u128(0x5ade_0000));
         let creation = catalog
             .instantiate_node_with_ids(
@@ -1139,7 +1139,7 @@ mod tests {
         NodeId::from_u128(0x5ade_1000)
     }
 
-    fn pending_factor_value(graph: &jellyflow::core::Graph) -> f32 {
+    fn pending_factor_value(graph: &jellyflow_core::Graph) -> f32 {
         graph.node(&pending_factor_node_id()).unwrap().data[SHADER_FACTOR_FIELD]
             .as_f64()
             .expect("numeric shader factor") as f32

@@ -1,11 +1,11 @@
-use jellyflow::core::{GraphBuilder, GraphId, Node, NodeId, NodeKindKey};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{GraphCommand, GraphCommandOutcome, GraphRuntime};
+use jellyflow_core::{GraphBuilder, GraphId, Node, NodeId, NodeKindKey};
 use jellyflow_open_gpui::{
     OpenGpuiCommandTicketError, RetainedFieldAttemptState, RetainedFieldConflictChoice,
     RetainedFieldError, RetainedFieldPhase, RetainedFieldResolution, RetainedFieldSettlement,
     RetainedFieldSubmitMode, RetainedFieldUpdate, RevisionedField,
 };
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{GraphCommand, GraphCommandOutcome, GraphRuntime};
 
 const KIND: &str = "test.revisioned-field";
 const RENDERER: &str = "test.revisioned.field";

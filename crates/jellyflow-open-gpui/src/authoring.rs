@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use jellyflow::core::{Node, NodeId, Port, PortId};
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{
+use jellyflow_core::{Node, NodeId, Port, PortId};
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{
     GraphCommand, GraphRevision, GraphSnapshot, NodeInstanceKey, PortConnectionSummary,
     ViewCloseReason, ViewSessionError, WeakViewSession,
 };

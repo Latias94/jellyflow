@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use jellyflow::core::NodeId;
-use jellyflow::runtime::{
+use jellyflow_core::NodeId;
+use jellyflow_runtime::{
     CommandSettlement, FeedbackCollector, FeedbackCollectorError, FeedbackOperationReceipt,
     FeedbackReceipt, FeedbackSubmissionError, GraphCommand, GraphCommandOutcome, LayoutNodeStatus,
     NodeGeometryEdit, ViewSession,
@@ -48,19 +48,19 @@ pub(super) fn layout_receipt_action(status: LayoutNodeStatus) -> LayoutReceiptAc
 
 pub(super) struct OpenGpuiFrameReceiptDisposition {
     pub(super) request_next_frame: bool,
-    pub(super) accepted_content_nodes: BTreeSet<jellyflow::core::NodeId>,
+    pub(super) accepted_content_nodes: BTreeSet<jellyflow_core::NodeId>,
     pub(super) rejected_layouts: Vec<(NodeId, LayoutNodeStatus)>,
 }
 
 pub(super) struct PendingNodeSizeSubmission {
-    commands: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
-    follow_up_commands: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+    commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+    follow_up_commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
     prefix_task: Option<Task<()>>,
     prefix_cancellation: Option<OpenGpuiCommandPrefixBarrierCancellation>,
 }
 
 impl PendingNodeSizeSubmission {
-    fn new(commands: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>) -> Self {
+    fn new(commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>) -> Self {
         Self {
             commands,
             follow_up_commands: Vec::new(),
@@ -364,7 +364,7 @@ impl OpenGpuiSceneHost {
     pub(super) fn observe_content_measurements(
         &mut self,
         measurements: &OpenGpuiPendingMeasurements,
-        accepted_nodes: &BTreeSet<jellyflow::core::NodeId>,
+        accepted_nodes: &BTreeSet<jellyflow_core::NodeId>,
     ) -> bool {
         let environment_epoch = measurements.environment_epoch();
         if environment_epoch != self.adapter_environment_epoch {
@@ -399,7 +399,7 @@ impl OpenGpuiSceneHost {
 
     pub(super) fn queue_node_size_updates(
         &mut self,
-        updates: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)>,
+        updates: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)>,
     ) -> bool {
         let mut commands = Vec::new();
         for (instance, update) in updates {
@@ -494,7 +494,7 @@ impl OpenGpuiSceneHost {
 
     fn bind_and_enqueue_node_sizes(
         &mut self,
-        commands: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+        commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
         permit: OpenGpuiCommandPrefixPermit,
     ) {
         let snapshot = match self.view.graph_snapshot() {
@@ -572,7 +572,7 @@ impl OpenGpuiSceneHost {
 
     fn fail_node_size_commands(
         &mut self,
-        commands: Vec<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
+        commands: Vec<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeCommand)>,
         message: String,
     ) {
         self.record_command_diagnostic(message);
@@ -621,10 +621,10 @@ impl OpenGpuiSceneHost {
 
     fn settle_node_size_command(
         &mut self,
-        instance: jellyflow::runtime::NodeInstanceKey,
+        instance: jellyflow_runtime::NodeInstanceKey,
         ticket: OpenGpuiNodeSizeTicket,
         settlement: OpenGpuiNodeSizeSettlement,
-    ) -> Option<(jellyflow::runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)> {
+    ) -> Option<(jellyflow_runtime::NodeInstanceKey, OpenGpuiNodeSizeUpdate)> {
         let mounted = self.mounts.get_mut(&instance)?;
         let update = mounted.size_state.settle(
             mounted.registration_policy.size_policy(),

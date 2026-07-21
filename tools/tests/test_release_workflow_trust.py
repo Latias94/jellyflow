@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -15,6 +16,7 @@ PREFLIGHT_WORKFLOW = ROOT / ".github" / "workflows" / "release-preflight.yml"
 RELEASE_TRUST_SCRIPT = ROOT / "scripts" / "verify-release-source-trust.sh"
 RELEASE_TAG_SCRIPT = ROOT / "scripts" / "verify-release-tag-unchanged.sh"
 RELEASE_CRATES = ROOT / "scripts" / "release-crates.txt"
+RELEASE_VERSION_SCRIPT = ROOT / "scripts" / "release-version.py"
 ROOT_MANIFEST = ROOT / "Cargo.toml"
 
 
@@ -299,7 +301,6 @@ class ReleaseWorkflowTrustTests(unittest.TestCase):
                 "jellyflow-core",
                 "jellyflow-layout",
                 "jellyflow-runtime",
-                "jellyflow",
                 "jellyflow-egui",
                 "jellyflow-open-gpui",
             ],
@@ -309,6 +310,25 @@ class ReleaseWorkflowTrustTests(unittest.TestCase):
                 "mapfile -t crates < scripts/release-crates.txt",
                 workflow_source(workflow),
             )
+
+    def test_release_version_rejects_a_removed_package_cleanly(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(RELEASE_VERSION_SCRIPT),
+                "crate-version",
+                "--crate",
+                "removed-package",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("::error::", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_root_workspace_contains_only_the_release_crates(self) -> None:
         manifest = tomllib.loads(ROOT_MANIFEST.read_text(encoding="utf-8"))

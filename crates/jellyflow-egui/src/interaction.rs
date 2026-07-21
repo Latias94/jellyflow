@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
 use egui::{Context, Event, Id, Key, PointerButton, Pos2, Rect, Response};
-use jellyflow::core::{EdgeId, NodeGraphConnectionMode, NodeId, PortId};
-use jellyflow::runtime::{
+use jellyflow_core::{EdgeId, NodeGraphConnectionMode, NodeId, PortId};
+use jellyflow_runtime::{
     CanvasInteractionConfig, CanvasInteractionEffect, CanvasInteractionError,
     CanvasInteractionPhase, CanvasInteractionPresentation, CanvasInteractionQuery,
     CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget, CommandSettlement,

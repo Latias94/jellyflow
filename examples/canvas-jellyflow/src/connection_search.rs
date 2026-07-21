@@ -2,12 +2,12 @@ use std::fmt;
 use std::rc::Rc;
 use std::time::Duration;
 
-use jellyflow::runtime::schema::NodeCatalog;
-use jellyflow::runtime::{
+use jellyflow_open_gpui::{OpenGpuiConnectionSearchError, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_runtime::schema::NodeCatalog;
+use jellyflow_runtime::{
     CanvasInteractionPhase, ConnectionSearchRequest, ConnectionSearchStatus,
     CreateFromWireCandidates, InteractionTerminalReason, ViewCloseReason, ViewSession, ViewSize,
 };
-use jellyflow_open_gpui::{OpenGpuiConnectionSearchError, OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::prelude::FluentBuilder;
 use open_gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, KeyDownEvent,
@@ -51,7 +51,7 @@ struct NativeConnectionSearchLayout {
 impl NativeConnectionSearchLayout {
     fn resolve(
         surface: ViewSize,
-        anchor: jellyflow::runtime::ViewPoint,
+        anchor: jellyflow_runtime::ViewPoint,
         has_diagnostic: bool,
     ) -> Self {
         let surface_width = finite_non_negative(surface.width);
@@ -219,7 +219,7 @@ struct NativeCandidateIdentity {
 }
 
 impl NativeCandidateIdentity {
-    fn from_candidate(candidate: &jellyflow::runtime::schema::CreateFromWireCandidate) -> Self {
+    fn from_candidate(candidate: &jellyflow_runtime::schema::CreateFromWireCandidate) -> Self {
         Self {
             kind: candidate.node_kind().0.clone(),
             port: candidate.port().0.clone(),
@@ -1249,7 +1249,7 @@ pub fn native_connection_search_candidate_selector(kind: &str, port: &str) -> St
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::runtime::{ViewPoint, ViewSize};
+    use jellyflow_runtime::{ViewPoint, ViewSize};
     use open_gpui::{ParentElement, Render, Styled, VisualContext};
 
     use super::*;

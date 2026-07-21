@@ -4,10 +4,10 @@ mod phase;
 mod planning;
 mod scenario;
 
-use jellyflow::core::{CanvasPoint, EdgeId, PortId};
-use jellyflow::runtime::runtime::geometry::EdgePathAnchor;
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasPoint, EdgeId, PortId};
+use jellyflow_runtime::runtime::geometry::EdgePathAnchor;
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{
     CanvasInteractionPhase, EdgeEndpoint, ViewPoint, ViewSize, WeakViewSession,
 };
 use open_gpui::{
@@ -279,7 +279,7 @@ impl RealWindowSmokeProbe {
 fn interaction_presentation(
     surface: &Entity<NativeGraphSurface>,
     cx: &App,
-) -> jellyflow::runtime::CanvasInteractionPresentation {
+) -> jellyflow_runtime::CanvasInteractionPresentation {
     let host = surface.read(cx).host().clone();
     host.read(cx).interaction_presentation()
 }

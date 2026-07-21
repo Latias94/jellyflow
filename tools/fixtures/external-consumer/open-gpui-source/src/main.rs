@@ -1,12 +1,12 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, EdgeViewDescriptor, GraphBuilder,
     GraphId, NodeId, NodeKindKey, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
-use jellyflow::runtime::{
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
+use jellyflow_runtime::{
     GraphCommand, GraphRuntime, IncidentEdgePolicy, PublishedPortOutcome, TopologyEdit,
     TopologyPort, ViewSessionOptions,
 };

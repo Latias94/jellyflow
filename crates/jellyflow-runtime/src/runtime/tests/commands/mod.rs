@@ -30,7 +30,6 @@ use super::view_session::fixtures::{RoutedGraphIds, graph_with_nodes, graph_with
 mod conflict_history;
 mod connection;
 mod geometry;
-mod layout;
 mod profile;
 mod scale;
 mod symbols;

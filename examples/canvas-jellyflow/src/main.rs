@@ -3,7 +3,7 @@ use std::fmt;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use jellyflow::runtime::{GraphRuntime, ViewSessionOptions};
+use jellyflow_runtime::{GraphRuntime, ViewSessionOptions};
 use open_gpui::{
     App, AppContext, Bounds, Context, Entity, ParentElement, QuitMode, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, rgb, size,

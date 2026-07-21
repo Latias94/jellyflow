@@ -1,15 +1,15 @@
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Graph, GraphBuilder, GraphId, NodeGraphConnectionMode,
     NodeId, NodeKindKey, PortDirection, PortId, PortKind,
 };
-use jellyflow::runtime::io::GraphFile;
-use jellyflow::runtime::{
+use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_runtime::io::GraphFile;
+use jellyflow_runtime::{
     GraphCommand, GraphRuntime, GraphRuntimeError, IncidentEdgePolicy, TopologyEdit, TopologyPort,
     ViewSessionOptions,
 };
-use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
 use open_gpui::{AppContext, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 use open_gpui_canvas_jellyflow::nodes::{
     ConditionCaseAction, NativeNodeResources, WORKFLOW_CONDITION_KIND, WORKFLOW_LLM_KIND,
@@ -1483,7 +1483,7 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn apply_remote_prompt(view: &jellyflow::runtime::ViewSession, value: &str) {
+fn apply_remote_prompt(view: &jellyflow_runtime::ViewSession, value: &str) {
     let snapshot = view.graph_snapshot().unwrap();
     let llm = workflow_llm_node_id();
     let mut data = snapshot.graph().node(&llm).unwrap().data.clone();
@@ -1494,7 +1494,7 @@ fn apply_remote_prompt(view: &jellyflow::runtime::ViewSession, value: &str) {
         .expect("remote prompt update applies");
 }
 
-fn apply_remote_model(view: &jellyflow::runtime::ViewSession, value: &str) {
+fn apply_remote_model(view: &jellyflow_runtime::ViewSession, value: &str) {
     let snapshot = view.graph_snapshot().unwrap();
     let llm = workflow_llm_node_id();
     let mut data = snapshot.graph().node(&llm).unwrap().data.clone();

@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
-use jellyflow::core::{CanvasPoint, NodeId};
-use jellyflow::runtime::runtime::viewport::ViewportTransform;
-use jellyflow::runtime::{
+use jellyflow_core::{CanvasPoint, NodeId};
+use jellyflow_runtime::runtime::viewport::ViewportTransform;
+use jellyflow_runtime::{
     AlignmentSnapQueryOutcome, CanvasInteractionConfig, CanvasInteractionEffect,
     CanvasInteractionError, CanvasInteractionPhase, CanvasInteractionPresentation,
     CanvasInteractionQuery, CanvasInteractionSession, CanvasInteractionUpdate, CanvasPressTarget,

@@ -420,8 +420,9 @@ def jellyflow_open_gpui_source_scenario(repo_root: Path) -> SmokeScenario:
         cargo_toml=external_cargo_toml(
             "jellyflow-open-gpui-external-smoke",
             [
-                f'jellyflow = {{ path = "{(repo_root / "crates/jellyflow").as_posix()}" }}',
+                f'jellyflow-core = {{ path = "{(repo_root / "crates/jellyflow-core").as_posix()}" }}',
                 f'jellyflow-open-gpui = {{ path = "{(repo_root / "crates/jellyflow-open-gpui").as_posix()}" }}',
+                f'jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}',
                 'open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }',
             ],
         ),
@@ -729,21 +730,6 @@ def run_package_consumer_smoke(
     return True
 
 
-def run_template_adapter_smoke(repo_root: Path) -> bool:
-    template_manifest = repo_root / "templates/native-adapter/Cargo.toml"
-    print(f"native adapter template smoke: {template_manifest.parent}", flush=True)
-    run_cargo_manifest(
-        repo_root,
-        template_manifest,
-        cargo_subcommand="test",
-        locked=True,
-    )
-    print("native adapter template protocol test passed")
-    return assert_no_fret_packages(
-        cargo_tree_for_manifest(repo_root, template_manifest, locked=True)
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -778,7 +764,6 @@ def main() -> int:
         for scenario in scenarios:
             project_dir = scenario_project_dir(source_root, scenario, len(scenarios))
             ok = run_source_path_scenario(repo_root, project_dir, scenario) and ok
-        ok = run_template_adapter_smoke(repo_root) and ok
         return 0 if ok else 1
     finally:
         if args.keep:

@@ -4,11 +4,11 @@ mod shader;
 mod topology_attempt;
 mod workflow;
 
-use jellyflow::runtime::schema::{NodeCatalog, NodeCatalogRegistrationError};
 use jellyflow_open_gpui::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease, OpenGpuiGraphTheme,
     OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryBuilder,
 };
+use jellyflow_runtime::schema::{NodeCatalog, NodeCatalogRegistrationError};
 use open_gpui::{App, AppContext, Entity};
 
 use crate::model_options::WorkflowModelOptionsState;

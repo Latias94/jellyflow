@@ -1,6 +1,6 @@
 //! Immediate-mode egui protocol witness for Jellyflow.
 //!
-//! The adapter consumes renderer-neutral [`jellyflow::runtime::ViewSession`] frames, renders
+//! The adapter consumes renderer-neutral [`jellyflow_runtime::ViewSession`] frames, renders
 //! ordinary egui widgets, and returns measured node and real-port geometry through ordered
 //! feedback. Product UI and application state remain outside this crate.
 

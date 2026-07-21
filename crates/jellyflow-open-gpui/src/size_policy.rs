@@ -1,4 +1,4 @@
-use jellyflow::core::CanvasSize;
+use jellyflow_core::CanvasSize;
 
 /// Default material-difference tolerance in canvas units.
 pub const OPEN_GPUI_DEFAULT_SIZE_EPSILON: f32 = 0.5;

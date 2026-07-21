@@ -1,15 +1,15 @@
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId, EdgeKind, GraphBuilder, GraphId, Node,
     NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, GraphRuntime, ViewSessionOptions,
-};
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{OpenGpuiNodeRegistry, OpenGpuiSceneHost};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    DEFAULT_FRAME_ROUTING_DEPENDENCY_BUDGET, GraphRuntime, ViewSessionOptions,
+};
 use open_gpui::{AppContext, Context, Entity, ParentElement, Render, Window, div};
 
 const NODE_COUNT: usize = 10_000;
@@ -108,7 +108,7 @@ fn catalog() -> NodeCatalog {
     catalog
 }
 
-fn star_graph() -> jellyflow::core::Graph {
+fn star_graph() -> jellyflow_core::Graph {
     let hub = NodeId::from_u128(1);
     let hub_port = PortId::from_u128(100_000);
     let mut graph = GraphBuilder::new(GraphId::from_u128(0x52_000));

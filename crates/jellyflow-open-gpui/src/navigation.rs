@@ -1,5 +1,5 @@
-use jellyflow::core::CanvasSize;
-use jellyflow::runtime::{AlignmentSnapConfig, CanvasInteractionConfig};
+use jellyflow_core::CanvasSize;
+use jellyflow_runtime::{AlignmentSnapConfig, CanvasInteractionConfig};
 
 const DEFAULT_MIN_ZOOM: f32 = 0.1;
 const DEFAULT_MAX_ZOOM: f32 = 4.0;

@@ -1,10 +1,10 @@
 use std::fmt;
 
-use jellyflow::core::{CanvasPoint, CanvasRect, EdgeId, PortId};
-use jellyflow::runtime::runtime::geometry::{
+use jellyflow_core::{CanvasPoint, CanvasRect, EdgeId, PortId};
+use jellyflow_runtime::runtime::geometry::{
     EdgeEndpointPosition, EdgePathAnchor, EdgePathSample, HandlePosition, handle_anchor_position,
 };
-use jellyflow::runtime::{EdgeEndpoint, GeometrySnapshot};
+use jellyflow_runtime::{EdgeEndpoint, GeometrySnapshot};
 
 const ENDPOINT_POINT_EPSILON: f32 = 0.001;
 
@@ -438,7 +438,7 @@ fn outward_tangent(outward: HandlePosition) -> CanvasPoint {
 
 #[cfg(test)]
 mod tests {
-    use jellyflow::runtime::runtime::viewport::ViewportTransform;
+    use jellyflow_runtime::runtime::viewport::ViewportTransform;
 
     use super::*;
 

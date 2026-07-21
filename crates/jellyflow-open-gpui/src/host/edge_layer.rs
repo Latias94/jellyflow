@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use jellyflow::core::EdgeId;
-use jellyflow::runtime::{
+use jellyflow_core::EdgeId;
+use jellyflow_runtime::{
     RouteGeometryRevision, ViewRect, ViewSession, ViewSessionError, VisibleRouteCursor,
     VisibleRouteCursorStaleReason, VisibleRouteQuery, VisibleRouteQueryError,
     VisibleRouteQueryOutcome, VisibleRouteQueryRevision, VisibleRouteQueryWork,

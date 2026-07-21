@@ -2189,15 +2189,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "jellyflow"
-version = "0.4.0"
-dependencies = [
- "jellyflow-core",
- "jellyflow-layout",
- "jellyflow-runtime",
-]
-
-[[package]]
 name = "jellyflow-core"
 version = "0.4.0"
 dependencies = [
@@ -2214,7 +2205,7 @@ version = "0.4.0"
 dependencies = [
  "egui",
  "egui_kittest",
- "jellyflow",
+ "jellyflow-core",
  "jellyflow-runtime",
  "serde_json",
  "thiserror 2.0.18",
@@ -2236,7 +2227,7 @@ dependencies = [
 name = "jellyflow-open-gpui"
 version = "0.4.0"
 dependencies = [
- "jellyflow",
+ "jellyflow-core",
  "jellyflow-runtime",
  "lyon",
  "open-gpui",
@@ -2250,7 +2241,6 @@ name = "jellyflow-runtime"
 version = "0.4.0"
 dependencies = [
  "jellyflow-core",
- "jellyflow-layout",
  "libc",
  "rpds",
  "serde",

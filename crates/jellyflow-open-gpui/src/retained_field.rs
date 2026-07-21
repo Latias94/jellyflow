@@ -1,6 +1,6 @@
 use std::fmt;
 
-use jellyflow::runtime::{GraphCommandOutcome, GraphRevision, NodeInstanceKey, ViewCloseReason};
+use jellyflow_runtime::{GraphCommandOutcome, GraphRevision, NodeInstanceKey, ViewCloseReason};
 use open_gpui::Task;
 
 use crate::activity::{
@@ -786,7 +786,7 @@ where
 #[derive(Clone)]
 pub(crate) struct RetainedFieldMountCapability {
     instance: NodeInstanceKey,
-    view: jellyflow::runtime::WeakViewSession,
+    view: jellyflow_runtime::WeakViewSession,
     mount: OpenGpuiMountCapability,
     activity: OpenGpuiNodeActivityRegistry,
 }
@@ -794,7 +794,7 @@ pub(crate) struct RetainedFieldMountCapability {
 impl RetainedFieldMountCapability {
     pub(crate) fn new(
         instance: NodeInstanceKey,
-        view: jellyflow::runtime::WeakViewSession,
+        view: jellyflow_runtime::WeakViewSession,
         mount: OpenGpuiMountCapability,
         activity: OpenGpuiNodeActivityRegistry,
     ) -> Self {
@@ -1044,7 +1044,7 @@ pub enum RetainedFieldError {
     #[error("retained field mount is closed: {reason:?}")]
     Closed { reason: ViewCloseReason },
     #[error(transparent)]
-    View(#[from] jellyflow::runtime::ViewSessionError),
+    View(#[from] jellyflow_runtime::ViewSessionError),
     #[error(transparent)]
     Store(#[from] RetainedFieldStoreError),
     #[error(transparent)]

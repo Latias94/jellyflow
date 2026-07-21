@@ -3,18 +3,18 @@ use std::rc::Rc;
 
 use egui::{Id, Pos2, Rect, Sense, TextEdit, Ui, UiBuilder, Vec2, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable as _};
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
 };
-use jellyflow::runtime::runtime::geometry::HandlePosition;
-use jellyflow::runtime::{
+use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
+use jellyflow_runtime::runtime::geometry::HandlePosition;
+use jellyflow_runtime::{
     FeedbackOperationReceipt, FeedbackSubmissionError, FrameRequest, GraphCommand, GraphRevision,
     GraphRuntime, HistoryState, IncidentEdgePolicy, LayoutNodeStatus, PublishedPortOutcome,
     RendererStamp, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError, ViewSessionEvent,
     ViewSessionOptions,
 };
-use jellyflow_egui::{EguiNativeFrameError, EguiNativeFrameHost, EguiNativeFrameOutcome};
 
 const RENDERER_KEY: &str = "test.egui.native-frame";
 
@@ -1548,7 +1548,7 @@ fn frame_request_with_renderer(renderer_incarnation: u64) -> FrameRequest {
 fn graph_with_ports(
     node_id: NodeId,
     ports: impl IntoIterator<Item = PortId>,
-) -> jellyflow::core::Graph {
+) -> jellyflow_core::Graph {
     let ports = ports.into_iter().collect::<Vec<_>>();
     let node = test_node(ports.clone());
     let mut builder = GraphBuilder::new(GraphId::from_u128(0x8001));

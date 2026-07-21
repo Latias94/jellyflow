@@ -2,9 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use jellyflow::core::types::TypeDesc;
-use jellyflow::core::{GraphBuilder, GraphId, Symbol, SymbolId};
-use jellyflow::runtime::{GraphCommand, GraphRuntime};
+use jellyflow_core::types::TypeDesc;
+use jellyflow_core::{GraphBuilder, GraphId, Symbol, SymbolId};
+use jellyflow_runtime::{GraphCommand, GraphRuntime};
 use open_gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 use open_gpui_canvas_jellyflow::blackboard::{
     BlackboardCommandError, BlackboardSource, BlackboardSourceError, BlackboardSourceSnapshot,
@@ -282,7 +282,7 @@ fn stale_blackboard_draft_requires_an_explicit_reapply_before_overwriting_remote
     runtime
         .execute(GraphCommand::symbols(
             0,
-            jellyflow::runtime::SymbolEdit::new().update(symbol_id, symbol("remote winner")),
+            jellyflow_runtime::SymbolEdit::new().update(symbol_id, symbol("remote winner")),
         ))
         .expect("remote symbol command")
         .applied()
@@ -355,7 +355,7 @@ fn unrelated_graph_revision_advances_blackboard_draft_without_a_false_conflict(
     runtime
         .execute(GraphCommand::symbols(
             0,
-            jellyflow::runtime::SymbolEdit::new().update(unrelated, symbol("changed elsewhere")),
+            jellyflow_runtime::SymbolEdit::new().update(unrelated, symbol("changed elsewhere")),
         ))
         .expect("unrelated symbol command")
         .applied()
@@ -408,7 +408,7 @@ fn accepting_remote_blackboard_value_clears_conflict_without_writing_the_graph(
     runtime
         .execute(GraphCommand::symbols(
             0,
-            jellyflow::runtime::SymbolEdit::new().update(symbol_id, symbol("remote")),
+            jellyflow_runtime::SymbolEdit::new().update(symbol_id, symbol("remote")),
         ))
         .expect("remote symbol command")
         .applied()
@@ -562,7 +562,7 @@ impl BlackboardSource for ControlledBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow::runtime::GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<jellyflow_runtime::GraphCommandOutcome, BlackboardCommandError> {
         self.runtime
             .execute(command)
             .map_err(|error| BlackboardCommandError::new(error.to_string()))
@@ -571,7 +571,7 @@ impl BlackboardSource for ControlledBlackboardSource {
 
 struct UncertainCommitBlackboardSource {
     runtime: Rc<GraphRuntime>,
-    visible: RefCell<jellyflow::runtime::GraphSnapshot>,
+    visible: RefCell<jellyflow_runtime::GraphSnapshot>,
     callback: BlackboardCallbackSlot,
     execute_calls: Cell<usize>,
 }
@@ -625,7 +625,7 @@ impl BlackboardSource for UncertainCommitBlackboardSource {
     fn execute(
         &self,
         command: GraphCommand,
-    ) -> Result<jellyflow::runtime::GraphCommandOutcome, BlackboardCommandError> {
+    ) -> Result<jellyflow_runtime::GraphCommandOutcome, BlackboardCommandError> {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
         self.runtime

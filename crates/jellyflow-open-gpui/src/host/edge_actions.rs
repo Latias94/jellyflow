@@ -1,6 +1,6 @@
-use jellyflow::core::{EdgeId, NodeId};
-use jellyflow::runtime::runtime::geometry::EdgePathAnchor;
-use jellyflow::runtime::{
+use jellyflow_core::{EdgeId, NodeId};
+use jellyflow_runtime::runtime::geometry::EdgePathAnchor;
+use jellyflow_runtime::{
     CanvasPressTarget, ConnectionInteractionStart, EdgeEndpoint, InteractionPosition,
     PublishedEdgeRoute, SelectionMode, ViewPoint,
 };

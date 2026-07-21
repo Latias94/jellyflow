@@ -3,15 +3,9 @@ use std::collections::BTreeMap;
 use std::future;
 use std::rc::Rc;
 
-use jellyflow::core::{
+use jellyflow_core::{
     CanvasPoint, CanvasRect, CanvasSize, GraphBuilder, GraphId, Node, NodeId, NodeKindKey, Port,
     PortCapacity, PortDirection, PortId, PortKey, PortKind,
-};
-use jellyflow::runtime::schema::{NodeCatalog, NodeKindSpec};
-use jellyflow::runtime::{
-    CanvasInteractionPhase, FrameMaterializationBudget, GraphCommand, GraphRuntime,
-    IncidentEdgePolicy, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
-    ViewSessionOptions, WeakViewSession,
 };
 use jellyflow_open_gpui::authoring::OpenGpuiNodeBinding;
 use jellyflow_open_gpui::{
@@ -19,6 +13,12 @@ use jellyflow_open_gpui::{
     OpenGpuiActivityAcquireError, OpenGpuiActivityKind, OpenGpuiActivityLease,
     OpenGpuiNodeActivityRegistry, OpenGpuiNodeRegistry, OpenGpuiPortDragCancelReason,
     OpenGpuiPortDragPhase, OpenGpuiPortEvent, OpenGpuiSceneHost,
+};
+use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec};
+use jellyflow_runtime::{
+    CanvasInteractionPhase, FrameMaterializationBudget, GraphCommand, GraphRuntime,
+    IncidentEdgePolicy, TopologyEdit, TopologyPort, ViewCloseReason, ViewSessionError,
+    ViewSessionOptions, WeakViewSession,
 };
 use open_gpui::{
     AnyWeakEntity, App, AppContext, Context, Entity, InteractiveElement, MouseButton,
@@ -1209,20 +1209,20 @@ fn flush_effect_cycle(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn graph() -> jellyflow::core::Graph {
+fn graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(1));
     graph.insert_node(node_id(), node());
     graph.build().unwrap()
 }
 
-fn cycle_graph(graph_id: GraphId, kind: &str) -> jellyflow::core::Graph {
+fn cycle_graph(graph_id: GraphId, kind: &str) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(graph_id);
     graph.insert_node(node_id(), cycle_node(kind));
     graph.insert_port(cycle_port_id(), cycle_port());
     graph.build().unwrap()
 }
 
-fn graph_with_nodes(count: usize) -> jellyflow::core::Graph {
+fn graph_with_nodes(count: usize) -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(2));
     for index in 0..count {
         graph.insert_node(NodeId::from_u128(index as u128 + 1), node());
@@ -1230,7 +1230,7 @@ fn graph_with_nodes(count: usize) -> jellyflow::core::Graph {
     graph.build().unwrap()
 }
 
-fn protected_capacity_port_graph() -> jellyflow::core::Graph {
+fn protected_capacity_port_graph() -> jellyflow_core::Graph {
     let mut graph = GraphBuilder::new(GraphId::from_u128(3));
     for index in 0..OPEN_GPUI_DEFAULT_PROTECTED_CAPACITY {
         let mut filler = node();

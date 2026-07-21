@@ -1,11 +1,11 @@
 mod blueprint_call;
 mod multiply;
 
-use jellyflow::core::{NodeId, PortDirection, PortId, PortKey};
-use jellyflow::runtime::schema::NodeKindSpec;
+use jellyflow_core::{NodeId, PortDirection, PortId, PortKey};
 use jellyflow_open_gpui::OpenGpuiNodeRegistryBuilder;
 use jellyflow_open_gpui::authoring::OpenGpuiPortHandle;
 use jellyflow_open_gpui::chrome::OpenGpuiPortMarker;
+use jellyflow_runtime::schema::NodeKindSpec;
 use open_gpui::{
     AnyElement, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
 };

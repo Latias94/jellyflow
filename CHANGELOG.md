@@ -33,8 +33,8 @@ The format is based on *Keep a Changelog*, and this project adheres to *Semantic
 - Added the Open GPUI `canvas-jellyflow` product example with Dify-style workflow nodes, dynamic
   condition branches, Shader Graph and Blueprint nodes, occupied-input reconnect, create-from-wire
   search, and an application-owned native blackboard.
-- Added a narrow real egui protocol witness and a framework-neutral native-adapter template without
-  introducing a cross-framework widget trait.
+- Added a narrow real egui protocol witness backed by the same executable adapter contract as the
+  retained Open GPUI adapter.
 - Added deterministic scale, convergence, 256-entry eligible LRU, 64-instance protected overflow, and
   1,000-cycle framework-resource release gates.
 

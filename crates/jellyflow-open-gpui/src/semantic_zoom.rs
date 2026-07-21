@@ -1,6 +1,6 @@
-use jellyflow::core::{CanvasPoint, CanvasSize, PortDirection, PortId};
-use jellyflow::runtime::FrameNode;
-use jellyflow::runtime::schema::NodeCatalog;
+use jellyflow_core::{CanvasPoint, CanvasSize, PortDirection, PortId};
+use jellyflow_runtime::FrameNode;
+use jellyflow_runtime::schema::NodeCatalog;
 use open_gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px};
 
 use crate::binding::OpenGpuiNodeBinding;

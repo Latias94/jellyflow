@@ -1,5 +1,5 @@
-use jellyflow::core::{NodeId, PortDirection};
-use jellyflow::runtime::{
+use jellyflow_core::{NodeId, PortDirection};
+use jellyflow_runtime::{
     FrameMaterializationOverflow, FrameNode, LayoutNodeStatus, NodeInstanceKey,
 };
 use open_gpui::{

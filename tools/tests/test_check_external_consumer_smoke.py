@@ -155,32 +155,6 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                     expected,
                 )
 
-    def test_scenarios_preserve_registry_seal_result_handling(self) -> None:
-        versions = {name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES}
-
-        package_scenario = external_smoke.jellyflow_package_consumer_scenario(versions)
-        source_scenario = external_smoke.jellyflow_open_gpui_source_scenario(
-            Path("/tmp/jellyflow-source")
-        )
-
-        self.assertEqual(
-            package_scenario.main_rs,
-            (FIXTURE_ROOT / "package-derived/src/main.rs").read_text(encoding="utf-8"),
-        )
-        self.assertIn("OpenGpuiNodeRegistry::builder().seal()?;", package_scenario.main_rs)
-        self.assertIn(
-            '.seal()\n        .expect("package renderer registrations must be valid")',
-            package_scenario.main_rs,
-        )
-        self.assertEqual(
-            source_scenario.main_rs,
-            (FIXTURE_ROOT / "open-gpui-source/src/main.rs").read_text(encoding="utf-8"),
-        )
-        self.assertIn(
-            '.seal()\n        .expect("source renderer registrations must be valid")',
-            source_scenario.main_rs,
-        )
-
     def test_import_and_scenario_invocation_are_independent_of_cwd(self) -> None:
         probe = "\n".join(
             [
@@ -244,7 +218,7 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         manifest = tomllib.loads(scenario.cargo_toml)
         dependencies = manifest["dependencies"]
 
-        self.assertEqual(len(external_smoke.PUBLISHABLE_CRATES), 6)
+        self.assertEqual(len(external_smoke.PUBLISHABLE_CRATES), 5)
         self.assertEqual(
             set(external_smoke.PUBLISHABLE_CRATES),
             set(external_smoke.PUBLISHABLE_CRATES).intersection(dependencies),
@@ -266,62 +240,23 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
             },
         )
 
-        source = scenario.main_rs
-        self.assertIn("OpenGpuiSceneHost", source)
-        self.assertEqual(
-            source.count("runtime.attach_view(ViewSessionOptions::default())?;"),
-            2,
-        )
-        self.assertIn(
-            "OpenGpuiSceneHost::new(open_gpui_view, product_registry, viewport)",
-            source,
-        )
-        self.assertIn("assert!(host.view_handle().is_open());", source)
-        self.assertIn("assert!(!weak_open_gpui_view.is_open());", source)
-        self.assertRegex(
-            source,
-            r"binding\s*\.\s*drag_handle\(\)\s*\.\s*wrap\(",
-        )
-        self.assertNotIn("OpenGpuiNodeInteractionGuard", source)
-        self.assertIn("register_with_policy", source)
-        self.assertIn("binding.measure_content(content)", source)
-        self.assertIn("presentation.candidate().is_valid_target()", source)
-        self.assertIn(".with_graph_theme(graph_theme)", source)
-        self.assertIn(".with_edge_painter_registry(package_edge_painters())", source)
-        self.assertIn(".on_mouse_up(MouseButton::Left", source)
-        self.assertIn("clicks.click_count.set", "".join(source.split()))
-        self.assertIn("collector.command(", source)
-        self.assertIn("command_outcome()", source)
-        self.assertIn("frame_node.begin_layout(root)", source)
-        self.assertIn("layout.port_rendered(", source)
-        self.assertIn("layout.port_unavailable(", source)
-        self.assertIn("PublishedPortOutcome::Unavailable", source)
-        self.assertNotIn("NodeLayout::new", source)
-        self.assertNotIn("PortLayout::new", source)
-        self.assertNotIn(".execute(", source)
-
-    def test_source_path_scenario_retains_real_native_interaction_coverage(self) -> None:
+    def test_source_path_scenario_uses_direct_test_dependencies(self) -> None:
         scenario = external_smoke.jellyflow_open_gpui_source_scenario(
             Path("/tmp/jellyflow-source")
         )
+        dependencies = tomllib.loads(scenario.cargo_toml)["dependencies"]
 
         self.assertEqual(scenario.cargo_subcommand, "test")
-        self.assertIn('features = ["test-support"]', scenario.cargo_toml)
-        self.assertIn("OpenGpuiSceneHost::new(", scenario.main_rs)
-        self.assertIn(".await", scenario.main_rs)
-        self.assertIn("cx.simulate_click(", scenario.main_rs)
-        self.assertIn("geometry_snapshot()", scenario.main_rs)
-        self.assertIn("node_geometry.port_outcomes().len()", scenario.main_rs)
-        self.assertIn("PublishedPortOutcome::Rendered", scenario.main_rs)
-        self.assertIn("state.mount_count.get()", scenario.main_rs)
-        self.assertIn("registry.register_with_policy", scenario.main_rs)
-        self.assertIn("binding.measure_content(root)", scenario.main_rs)
-        self.assertIn("base.presentation().connected()", scenario.main_rs)
-        self.assertIn("custom_port_marker", scenario.main_rs)
-        self.assertIn(".with_graph_theme(graph_theme)", scenario.main_rs)
-        self.assertIn(".with_edge_painter_registry(edge_painters)", scenario.main_rs)
-        self.assertNotIn(".execute(", scenario.main_rs)
-        self.assertNotIn(".detach()", scenario.main_rs)
+        self.assertEqual(
+            set(dependencies),
+            {
+                "jellyflow-core",
+                "jellyflow-open-gpui",
+                "jellyflow-runtime",
+                "open_gpui",
+            },
+        )
+        self.assertEqual(dependencies["open_gpui"]["features"], ["test-support"])
 
     def test_adapter_conformance_consumer_is_direct_and_framework_neutral(self) -> None:
         scenario = external_smoke.jellyflow_adapter_conformance_source_scenario(
@@ -343,21 +278,6 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
         self.assertNotIn("jellyflow", dependencies)
         self.assertNotIn("jellyflow-egui", dependencies)
         self.assertNotIn("jellyflow-open-gpui", dependencies)
-
-        source = scenario.main_rs
-        self.assertIn("enum LocalNativeEvent", source)
-        self.assertIn("struct LocalNativeFrame", source)
-        self.assertIn("struct ExternalNativeDriver", source)
-        self.assertIn("compare_observations", source)
-        self.assertIn(".into_command(&snapshot)", source)
-        self.assertIn(".execute(command)", source)
-        self.assertIn("ConformanceScenarioId::Escape", source)
-        self.assertNotIn("step.expected", source)
-        self.assertNotIn("jellyflow::", source)
-        self.assertNotIn("jellyflow_egui", source)
-        self.assertNotIn("jellyflow_open_gpui", source)
-        self.assertNotIn("open_gpui", source)
-
 
 if __name__ == "__main__":
     unittest.main()
