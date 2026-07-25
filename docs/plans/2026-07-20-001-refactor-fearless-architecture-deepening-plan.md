@@ -279,9 +279,10 @@ mutable viewer contract is not Jellyflow's headless protocol.
   the configured invisible hit target, preview and committed routes share anchors, selection adds
   one in-bounds outline, labels do not overlap content, drag release does not jump, and connected
   wires remain visible.
-- AE11. Given an external source consumer and package-derived consumer, both compile and exercise
-  native registration, real-port measurement, frame feedback, and a revisioned command using direct
-  crates only; the workspace contains no facade crate or native-adapter template.
+- AE11. Given an external source consumer and isolated packaged headless, egui, and Open GPUI
+  consumers, all compile and exercise the boundary they import using direct crates only; their
+  exact dependency closures contain no unused layout or cross-framework packages, and the workspace
+  contains no facade crate or native-adapter template.
 - AE12. Given the final repository, no CI, release, README, context, testing doc, script test, or
   lockfile refers to the facade, native-adapter template, or legacy tombstone gate; the retained
   structural and behavioral gates all pass.
@@ -779,7 +780,7 @@ delete distribution and historical proof only after their real replacements are 
 | Retained field abstraction absorbs product meaning | Generic module becomes a form DSL or auto-commit engine | Keep parsing, validation, focus, IME, command selection, and conflict choice in native components; support only proven mechanical lifecycle |
 | Dynamic topology publishes half a port set | Dangling edges, missing geometry, or mismatched drafts | One atomic command/attempt, stable IDs, old authoritative topology during settlement, complete coverage after applied snapshot, undo/redo tests |
 | Visual polish masks geometry disagreement | Marker looks correct while preview/hit/route use fallback | One adapter-local endpoint resolver, diagnostics for fallback, zoom-matrix tests, and real-window connect/reconnect evidence |
-| Broad deletion breaks release or external users | Root tests pass while packages/consumers fail | Direct-crate external source and package-derived fixtures, package/dry-run checks, release script tests, lockfile/source-trust audit, and deletion last |
+| Broad deletion breaks release or external users | Root tests pass while packages/consumers fail | Direct-crate external source and isolated packaged fixtures, package/dry-run checks, release script tests, lockfile/source-trust audit, and deletion last |
 | Scope size obscures regressions | Large final diff is hard to isolate | Dependency-ordered units, focused gates and Conventional Commit per coherent unit, no compatibility lane, final simplify/review passes |
 
 ### Resolved During Planning
@@ -1351,6 +1352,10 @@ delete distribution and historical proof only after their real replacements are 
   - Consolidate the published endpoint priority into one adapter-local resolver used by connection
     preview, committed route/chrome, reconnect, marker placement, and diagnostics. Keep runtime
     geometry authoritative and make incomplete fallback explicit rather than silently divergent.
+  - Paint active and committing previews above committed edge chrome while keeping nodes and
+    overlays above every wire. Route all pointer hover and press through the bounded exact-path
+    edge-pick query; the retained edge midpoint remains only a keyboard/accessibility focus proxy
+    and may not become a second pointer authority.
   - Change the default port marker to a fixed-size slot with a constant center route anchor and a
     separate at-least-22-screen-pixel hit target. Idle, hover, focus, source, valid, invalid,
     connected, and disabled visuals draw inside the slot and may not change its layout bounds,
@@ -1364,6 +1369,23 @@ delete distribution and historical proof only after their real replacements are 
   - Apply inherited 960x640 small-window, 12-screen-pixel safe-area, bounded scrolling, and
     deterministic Tab/Shift-Tab constraints from the canvas-interaction plan rather than treating
     compact/normal bounds as visual-only variants.
+  - Add adapter-local Mouse, Trackpad, Dify, and Blueprint input-binding presets. Keep native key
+    names and buttons out of runtime; map Space-plus-left-drag to pan only inside graph focus,
+    clear held-key state on focus loss/close, and use one configurable modifier policy for node,
+    edge, and marquee selection.
+  - Add one renderer-neutral selection-delete intent that filters authoritative deletion policy,
+    removes selected nodes and edges as one topology command and undo boundary, and avoids duplicate
+    incident-edge removal. Keep group deletion out until the graph model defines its semantics.
+  - Extend the existing renderer-neutral auto-pan clock to marquee selection while preserving the
+    press-time selection baseline and publishing viewport movement before the replacement bounded
+    intersection query.
+  - Expose a blank-canvas context request as an adapter-local application hook. Jellyflow supplies
+    transformed coordinates and input facts but never owns catalog UI, quick-add presentation, or
+    the resulting application topology command.
+  - Give connection targeting separate acquire and release radii with retained candidate identity;
+    direct hits may take priority, while small boundary motion within the release radius may not
+    oscillate the snapped preview. Clear the lock on retirement, revision invalidation, or geometry
+    invalidation.
   - Use deterministic test evidence first, then run real-window shader and workflow probes and
     inspect captures for clipping, overlap, flash, hit feel, selection box, and route continuity.
 
@@ -1398,6 +1420,10 @@ delete distribution and historical proof only after their real replacements are 
     state without changing geometry.
   - Preview and committed connection use the same endpoint, outward normal/tangent, style recipe,
     marker alignment, and continuity across release, prefix wait, receipt, and snapshot.
+  - Straight, Bezier, SmoothStep, and Orthogonal wires share one pointer path at progress 0.2, 0.5,
+    and 0.8 under 0.5/1/2 zoom; overlapping routes honor paint order, and the midpoint focus proxy
+    never changes pointer behavior. Active preview paints above committed edge chrome and below
+    nodes and overlays.
   - Selection/focus/drag chrome paints exactly one geometry-neutral outline inside the current node
     box; selecting a node never creates a second empty rectangle below it.
   - Drag release does not move the node, incident wires remain present, and reconnect never flashes
@@ -1407,6 +1433,15 @@ delete distribution and historical proof only after their real replacements are 
     and content-driven families converge after content/branch/pin additions and removals.
   - Markers meet the invisible target minimum, invalid state is not color-only, keyboard focus and
     accessible names/states are deterministic, and overlay controls do not arm graph gestures.
+  - Delete and Backspace atomically remove every selected deletable node/edge in one revision and
+    undo boundary while retaining forbidden items and ignoring text-input focus. Input presets map
+    native events deterministically; Space pan and selection modifiers do not leak across focus or
+    an active gesture.
+  - Marquee auto-pan covers every viewport edge without changing its selection baseline or exposing
+    partial query results. Blank-canvas context requests contain correct transformed coordinates,
+    lose to node/port/edge/control/overlay ownership, and perform no graph mutation themselves.
+  - Candidate acquire/release hysteresis is invariant at 0.5/1/2 zoom, preserves a target through
+    small boundary jitter, yields to a direct hit, and clears on target retirement or stale geometry.
   - Large edge counts retain culling/batch/cache budgets and pointer movement does not allocate an
     entity per edge or scan the full graph.
   - Real-window shader and workflow probes cover connect, reconnect, search, drag, zoom, pan, and
@@ -1435,7 +1470,7 @@ delete distribution and historical proof only after their real replacements are 
   - both adapter source/tests using facade imports
   - `examples/canvas-jellyflow/Cargo.toml` and affected source/tests
   - `tools/fixtures/external-consumer/open-gpui-source/**`
-  - `tools/fixtures/external-consumer/package-derived/**`
+  - `tools/fixtures/external-consumer/package-{headless,egui,open-gpui}/**`
   - `tools/check_external_consumer_smoke.py`
   - `tools/tests/test_check_external_consumer_smoke.py`
   - `templates/native-adapter/**` (delete)
@@ -1458,9 +1493,11 @@ delete distribution and historical proof only after their real replacements are 
     layout dependency from adapters that do not use it.
   - Rewrite the external Open GPUI source consumer to demonstrate the final narrow Binding,
     arbitrary native registration, real port measurement, frame feedback, and strict command path
-    through direct crates. Keep a package-derived consumer that validates archive dependency closure.
-    Retain and migrate the U1 external adapter-test fixture so it continues to import the runtime
-    test-support contract directly after facade/template deletion.
+    through direct crates. Validate the packaged headless, egui, and Open GPUI boundaries with three
+    minimal locked consumers assembled from one temporary registry, exact dependency-closure
+    assertions, and joint coverage of all candidate archives. Retain and migrate the U1 external
+    adapter-test fixture so it continues to import the runtime test-support contract directly after
+    facade/template deletion.
   - Verify both adapters and consumers before physically deleting the facade crate. Then remove the
     workspace member/dependency, re-export tests, README, package, release order, and all facade
     imports without adding aliases.
@@ -1535,7 +1572,7 @@ delete distribution and historical proof only after their real replacements are 
     positive test or structural gate; no test passes merely because a historical file/name is absent.
   - Root and nested example workspaces format, check, test, document, and lint in their final dependency
     graph.
-  - Open GPUI/egui conformance, external consumers, package-derived archives, and release tooling pass
+  - Open GPUI/egui conformance, external consumers, packaged archives, and release tooling pass
     without facade/template/legacy commands.
   - Shader and workflow real-window smoke plus input probes pass on the final code and produce no
     drag jump, wire disappearance, extra selection box, overlap, endpoint shift, or search focus bug.
@@ -1577,7 +1614,7 @@ delete distribution and historical proof only after their real replacements are 
   conflict, retirement, undo, and redo.
 - **U9:** Search, endpoint, paint, shader/workflow/blackboard host tests and real-window input probes
   pass across 0.5/1/2 zoom and compact/normal bounds.
-- **U10:** Workspace metadata, direct consumer, package-derived consumer, adapter conformance,
+- **U10:** Workspace metadata, direct consumer, three isolated packaged consumers, adapter conformance,
   release-version/order, package archive, and source-trust tests pass after physical deletion.
 - **U11:** Every final root/example/tool/release/real-window/performance gate below passes and no
   deleted operational reference remains on the defined active surfaces.
@@ -1619,8 +1656,9 @@ testing documentation in the same unit before execution; do not silently skip th
 - `cargo metadata` shows only meaningful workspace crates and direct dependency ownership.
 - `cargo tree` proves core/runtime remain UI-framework-free and adapters do not acquire unused
   layout or the other framework transitively.
-- External Open GPUI source, adapter-test, and package-derived consumers compile and exercise the
-  final public authoring, reusable conformance, and adapter protocol surfaces.
+- External Open GPUI source and adapter-test consumers exercise the final public authoring,
+  reusable conformance, and adapter protocol surfaces. Isolated packaged headless, egui, and Open
+  GPUI consumers compile from one temporary registry and prove exact dependency closures.
 - Release crate order, version propagation, package contents, archive dependency closure, and
   source-trust tests contain no facade/template entry.
 - The active-surface deletion audit covers source imports, Cargo manifests/lockfiles, scripts, CI,
@@ -1709,8 +1747,10 @@ testing documentation in the same unit before execution; do not silently skip th
 - [ ] U8 makes Condition branches and Blueprint pins atomic real-port topology under success,
   conflict, retirement, undo, and redo.
 - [ ] U9 completes keyboard/pointer search, fixed endpoint slots and hit targets, unified endpoint
-  resolution, composite visual-state priority, readable batch wires, deliberate node anatomy, and
-  all specified drag/selection/wire/overlap regressions in focused and real-window tests.
+  resolution, composite visual-state priority, readable batch wires, exact full-path picking,
+  preview layering, atomic selection deletion, native input presets, marquee auto-pan, blank-canvas
+  context requests, connection-target hysteresis, deliberate node anatomy, and all specified
+  drag/selection/wire/overlap regressions in focused and real-window tests.
 - [ ] U10 deletes the facade crate and native-adapter template after direct consumers, both real
   adapters, package archives, release automation, authoring documentation, and every active
   facade/template reference are migrated in the same green unit.
