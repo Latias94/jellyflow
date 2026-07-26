@@ -1782,12 +1782,17 @@ cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --l
 cargo nextest run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-fail-fast
 cargo test --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --doc --locked
 cargo clippy --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --all-targets --locked -- -D warnings
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --smoke
-cargo run --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke -- --workflow --smoke
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --no-default-features --bin open-gpui-native-frame-clock-witness
+python3 tools/check_open_gpui_native_frame_clock.py --require-native
+cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
+python3 tools/run_real_window_smoke_matrix.py --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --capture-root target/real-window-smoke-final --timeout-seconds 60 --capture-dir-output target/real-window-smoke-final.output
+python3 tools/check_real_window_smoke_evidence.py --capture-dir-from-output target/real-window-smoke-final.output
 ```
 
-If implementation intentionally changes the real-window CLI, update this contract and the active
-testing documentation in the same unit before execution; do not silently skip the two product flows.
+The matrix command runs eight shader/workflow interaction witnesses across compact/normal bounds and
+0.5/1/2 zoom plus one LOD-threshold witness. The validator requires exact pass receipts and the
+complete screenshot set from the latest unique capture directory; do not replace it with unverified
+single-product smoke runs.
 
 ### Structural and Distribution Gates
 
