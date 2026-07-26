@@ -41,6 +41,11 @@ if not PUBLISHABLE_CRATES:
     raise RuntimeError("the ordered release crate set is empty")
 CRATES_IO_INDEX = "https://github.com/rust-lang/crates.io-index"
 CARGO_COMMAND_TIMEOUT_SECONDS = 20 * 60
+PACKAGE_CONSUMER_NAMES = ("headless", "egui", "open-gpui")
+
+
+def is_jellyflow_release_namespace(name: str) -> bool:
+    return name == "jellyflow" or name.startswith("jellyflow-")
 
 
 def _run_cargo(
@@ -65,6 +70,17 @@ class SmokeScenario:
     cargo_toml: str
     main_rs: str
     cargo_subcommand: str = "run"
+
+
+@dataclass(frozen=True)
+class PackageSmokeScenario:
+    consumer_name: str
+    smoke: SmokeScenario
+    direct_jellyflow_dependencies: frozenset[str]
+    direct_external_dependencies: frozenset[str]
+    expected_jellyflow_closure: frozenset[str]
+    forbidden_packages: frozenset[str]
+    forbidden_package_families: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -149,6 +165,20 @@ def normalized_package_manifest(source_dir: Path) -> dict[str, object]:
         if not isinstance(dependencies, dict):
             continue
         for name, dependency in dependencies.items():
+            package_name = (
+                dependency.get("package", name)
+                if isinstance(dependency, dict)
+                else name
+            )
+            if (
+                isinstance(package_name, str)
+                and is_jellyflow_release_namespace(package_name)
+                and package_name not in PUBLISHABLE_CRATES
+            ):
+                raise RuntimeError(
+                    f"normalized dependency {name} names a Jellyflow package outside the release set "
+                    f"{package_name} in {manifest_path}"
+                )
             if isinstance(dependency, dict) and (
                 "path" in dependency or "workspace" in dependency
             ):
@@ -218,7 +248,7 @@ def assemble_package_archives(
                 f"unexpected package identity in {source_dir / 'Cargo.toml'}: {name} {version}"
             )
         packaged.append(PackagedCrate(crate, version, archive, source_dir))
-    print("candidate archives assembled; package-derived compile verification follows")
+    print("candidate archives assembled; archive-backed compile verification follows")
     return packaged
 
 
@@ -359,11 +389,14 @@ def serve_sparse_registry(
         thread.join()
 
 
-def package_registry_config(index_url: str) -> str:
+def package_registry_config(index_url: str, target_dir: Path) -> str:
     return textwrap.dedent(
         f"""
         [registries.jellyflow-package-archives]
         index = {json.dumps(index_url)}
+
+        [build]
+        target-dir = {json.dumps(str(target_dir))}
         """
     ).strip() + "\n"
 
@@ -391,26 +424,116 @@ def jellyflow_source_path_smoke_scenarios(repo_root: Path) -> list[SmokeScenario
     ]
 
 
-def jellyflow_package_consumer_scenario(versions: dict[str, str]) -> SmokeScenario:
-    """Build one consumer from the temporary package-derived Cargo source."""
-
-    dependencies = [
+def packaged_jellyflow_dependency(name: str, versions: dict[str, str]) -> str:
+    return (
         f'{name} = {{ version = "={versions[name]}", '
         'registry = "jellyflow-package-archives" }'
-        for name in PUBLISHABLE_CRATES
-    ]
-    dependencies.append(
-        'open_gpui = { package = "open-gpui", version = "=0.2.0", '
-        "default-features = false }"
     )
-    dependencies.append('serde_json = "1"')
-    return SmokeScenario(
-        slug="jellyflow-package-derived-external-smoke",
-        cargo_toml=external_cargo_toml(
-            "jellyflow-package-derived-external-smoke", dependencies
+
+
+def jellyflow_package_consumer_scenarios(
+    versions: dict[str, str],
+) -> list[PackageSmokeScenario]:
+    """Build isolated consumers from the temporary archive-backed Cargo source."""
+
+    headless_direct = frozenset({"jellyflow-layout", "jellyflow-runtime"})
+    headless_closure = frozenset(
+        {"jellyflow-core", "jellyflow-layout", "jellyflow-runtime"}
+    )
+    egui_direct = frozenset({"jellyflow-egui"})
+    egui_closure = frozenset(
+        {"jellyflow-core", "jellyflow-egui", "jellyflow-runtime"}
+    )
+    open_gpui_direct = frozenset({"jellyflow-open-gpui"})
+    open_gpui_closure = frozenset(
+        {"jellyflow-core", "jellyflow-open-gpui", "jellyflow-runtime"}
+    )
+    egui_ecosystem = frozenset({"ecolor", "emath", "epaint"})
+
+    return [
+        PackageSmokeScenario(
+            consumer_name="headless",
+            smoke=SmokeScenario(
+                slug="jellyflow-package-headless-smoke",
+                cargo_toml=external_cargo_toml(
+                    "jellyflow-package-headless-smoke",
+                    [
+                        packaged_jellyflow_dependency(name, versions)
+                        for name in sorted(headless_direct)
+                    ],
+                ),
+                main_rs=_load_external_consumer_main_rs("package-headless"),
+            ),
+            direct_jellyflow_dependencies=headless_direct,
+            direct_external_dependencies=frozenset(),
+            expected_jellyflow_closure=headless_closure,
+            forbidden_packages=frozenset(
+                {"jellyflow-egui", "jellyflow-open-gpui"}
+            )
+            | egui_ecosystem,
+            forbidden_package_families=("egui", "gpui", "open-gpui", "wgpu", "winit"),
         ),
-        main_rs=_load_external_consumer_main_rs("package-derived"),
-    )
+        PackageSmokeScenario(
+            consumer_name="egui",
+            smoke=SmokeScenario(
+                slug="jellyflow-package-egui-smoke",
+                cargo_toml=external_cargo_toml(
+                    "jellyflow-package-egui-smoke",
+                    [packaged_jellyflow_dependency("jellyflow-egui", versions)],
+                ),
+                main_rs=_load_external_consumer_main_rs("package-egui"),
+            ),
+            direct_jellyflow_dependencies=egui_direct,
+            direct_external_dependencies=frozenset(),
+            expected_jellyflow_closure=egui_closure,
+            forbidden_packages=frozenset(
+                {"jellyflow-layout", "jellyflow-open-gpui"}
+            ),
+            forbidden_package_families=("gpui", "open-gpui"),
+        ),
+        PackageSmokeScenario(
+            consumer_name="open-gpui",
+            smoke=SmokeScenario(
+                slug="jellyflow-package-open-gpui-smoke",
+                cargo_toml=external_cargo_toml(
+                    "jellyflow-package-open-gpui-smoke",
+                    [
+                        packaged_jellyflow_dependency(
+                            "jellyflow-open-gpui", versions
+                        ),
+                        'open_gpui = { package = "open-gpui", version = "=0.2.0", '
+                        "default-features = false }",
+                    ],
+                ),
+                main_rs=_load_external_consumer_main_rs("package-open-gpui"),
+            ),
+            direct_jellyflow_dependencies=open_gpui_direct,
+            direct_external_dependencies=frozenset({"open_gpui"}),
+            expected_jellyflow_closure=open_gpui_closure,
+            forbidden_packages=frozenset({"jellyflow-egui", "jellyflow-layout"})
+            | egui_ecosystem,
+            forbidden_package_families=("egui",),
+        ),
+    ]
+
+
+def select_package_consumer_scenarios(
+    scenarios: Sequence[PackageSmokeScenario],
+    consumer_names: Sequence[str] | None,
+) -> list[PackageSmokeScenario]:
+    if consumer_names is None:
+        return list(scenarios)
+
+    selected_names = set(consumer_names)
+    if not selected_names:
+        raise ValueError("at least one package consumer must be selected")
+    known_names = {scenario.consumer_name for scenario in scenarios}
+    unknown_names = selected_names - known_names
+    if unknown_names:
+        raise ValueError(f"unknown package consumers: {sorted(unknown_names)}")
+    return [
+        scenario for scenario in scenarios if scenario.consumer_name in selected_names
+    ]
 
 
 def jellyflow_open_gpui_source_scenario(repo_root: Path) -> SmokeScenario:
@@ -594,70 +717,154 @@ def run_source_path_scenario(
     )
 
 
-def assert_registry_only_consumer(manifest_path: Path) -> None:
+def assert_registry_only_consumer(
+    manifest_path: Path,
+    scenario: PackageSmokeScenario,
+    versions: dict[str, str],
+) -> None:
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     if "workspace" in manifest:
-        raise RuntimeError("package-derived consumer must not define a workspace")
+        raise RuntimeError("archive-backed consumer must not define a workspace")
     dependencies = manifest.get("dependencies")
     if not isinstance(dependencies, dict):
         raise RuntimeError(f"consumer dependencies missing from {manifest_path}")
+    expected_dependencies = (
+        scenario.direct_jellyflow_dependencies | scenario.direct_external_dependencies
+    )
+    if dependencies.keys() != expected_dependencies:
+        raise RuntimeError(
+            f"{scenario.smoke.slug} declares {sorted(dependencies)}, expected only "
+            f"{sorted(expected_dependencies)}"
+        )
     for name, dependency in dependencies.items():
         if isinstance(dependency, dict) and (
             "git" in dependency or "path" in dependency or "workspace" in dependency
         ):
             raise RuntimeError(
-                f"package-derived consumer dependency {name} uses a non-registry source"
+                f"archive-backed consumer dependency {name} uses a non-registry source"
             )
-    for name in PUBLISHABLE_CRATES:
+    for name in scenario.direct_jellyflow_dependencies:
         dependency = dependencies.get(name)
         if not isinstance(dependency, dict) or dependency.get("registry") != (
             "jellyflow-package-archives"
         ):
-            raise RuntimeError(f"package-derived dependency {name} bypasses the archive registry")
+            raise RuntimeError(f"archive-backed dependency {name} bypasses the archive registry")
+        if dependency.get("version") != f"={versions[name]}":
+            raise RuntimeError(
+                f"archive-backed dependency {name} does not pin candidate version "
+                f"{versions[name]}"
+            )
     open_gpui = dependencies.get("open_gpui")
-    if not isinstance(open_gpui, dict):
-        raise RuntimeError("package-derived consumer must declare Open GPUI explicitly")
-    features = open_gpui.get("features", [])
-    if isinstance(features, list) and "test-support" in features:
-        raise RuntimeError("package-derived Open GPUI consumer enabled test-support")
-    if open_gpui.get("default-features") is not False:
-        raise RuntimeError("package-derived Open GPUI consumer enabled default features")
+    if open_gpui is not None:
+        if not isinstance(open_gpui, dict):
+            raise RuntimeError("archive-backed Open GPUI dependency must be explicit")
+        if open_gpui.get("package") != "open-gpui" or open_gpui.get("version") != "=0.2.0":
+            raise RuntimeError("archive-backed Open GPUI dependency identity changed")
+        features = open_gpui.get("features", [])
+        if isinstance(features, list) and "test-support" in features:
+            raise RuntimeError("archive-backed Open GPUI consumer enabled test-support")
+        if open_gpui.get("default-features") is not False:
+            raise RuntimeError("archive-backed Open GPUI consumer enabled default features")
 
 
-def assert_packaged_crates_in_tree(
-    tree_output: str, packaged: Iterable[PackagedCrate]
-) -> bool:
-    missing = [
-        f"{package.name} v{package.version}"
-        for package in packaged
-        if f"{package.name} v{package.version}" not in tree_output
-    ]
-    if missing:
-        print(
-            "package-derived consumer omitted packaged crates:\n" + "\n".join(missing),
-            file=sys.stderr,
+def package_names_in_tree(tree_output: str) -> set[str]:
+    packages = set()
+    for line in tree_output.splitlines():
+        fields = line.strip().split()
+        if len(fields) >= 2 and fields[1].startswith("v"):
+            packages.add(fields[0])
+    return packages
+
+
+def assert_package_tree_boundary(
+    tree_output: str, scenario: PackageSmokeScenario
+) -> set[str]:
+    packages = package_names_in_tree(tree_output)
+    allowed_jellyflow_packages = set(PUBLISHABLE_CRATES) | {scenario.smoke.slug}
+    unexpected_jellyflow_packages = {
+        package
+        for package in packages
+        if is_jellyflow_release_namespace(package)
+        and package not in allowed_jellyflow_packages
+    }
+    if unexpected_jellyflow_packages:
+        raise RuntimeError(
+            f"{scenario.smoke.slug} resolved Jellyflow packages outside the release set: "
+            f"{sorted(unexpected_jellyflow_packages)}"
         )
-        return False
-    print("external cargo tree resolves all Jellyflow package archives")
-    return True
+    jellyflow_packages = packages.intersection(PUBLISHABLE_CRATES)
+    if jellyflow_packages != scenario.expected_jellyflow_closure:
+        raise RuntimeError(
+            f"{scenario.smoke.slug} resolved Jellyflow closure "
+            f"{sorted(jellyflow_packages)}, expected "
+            f"{sorted(scenario.expected_jellyflow_closure)}"
+        )
+
+    forbidden = packages.intersection(scenario.forbidden_packages)
+    forbidden.update(
+        package
+        for package in packages
+        for family in scenario.forbidden_package_families
+        if package == family or package.startswith(f"{family}-")
+    )
+    if forbidden:
+        raise RuntimeError(
+            f"{scenario.smoke.slug} crossed its package boundary: {sorted(forbidden)}"
+        )
+
+    print(
+        f"{scenario.smoke.slug} resolves exact Jellyflow closure: "
+        + ", ".join(sorted(jellyflow_packages))
+    )
+    return jellyflow_packages
 
 
 def assert_package_lock_sources(
-    lock_path: Path, index_url: str, packaged: Iterable[PackagedCrate]
+    lock_path: Path,
+    index_url: str,
+    packaged: Iterable[PackagedCrate],
+    expected_names: frozenset[str],
+    consumer_name: str,
 ) -> None:
     lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     entries = lock.get("package", [])
-    expected_identities = {(package.name, package.version) for package in packaged}
+    packaged_by_name = {package.name: package for package in packaged}
+    expected_packages = [packaged_by_name[name] for name in sorted(expected_names)]
+    candidate_identities = {
+        (package.name, package.version) for package in packaged_by_name.values()
+    }
+    allowed_jellyflow_packages = set(PUBLISHABLE_CRATES) | {consumer_name}
+    unexpected_jellyflow_packages = sorted(
+        {
+            entry["name"]
+            for entry in entries
+            if is_jellyflow_release_namespace(entry["name"])
+            and entry["name"] not in allowed_jellyflow_packages
+        }
+    )
+    if unexpected_jellyflow_packages:
+        raise RuntimeError(
+            "lockfile pulled Jellyflow packages outside the release set: "
+            f"{unexpected_jellyflow_packages}"
+        )
     unexpected = [
         (entry["name"], entry["version"], entry.get("source"))
         for entry in entries
         if entry["name"] in PUBLISHABLE_CRATES
-        and (entry["name"], entry["version"]) not in expected_identities
+        and (entry["name"], entry["version"]) not in candidate_identities
     ]
     if unexpected:
         raise RuntimeError(f"lockfile pulled non-candidate Jellyflow packages: {unexpected}")
+    resolved_names = {
+        entry["name"] for entry in entries if entry["name"] in PUBLISHABLE_CRATES
+    }
+    if resolved_names != expected_names:
+        raise RuntimeError(
+            f"lockfile resolved Jellyflow packages {sorted(resolved_names)}, expected "
+            f"{sorted(expected_names)}"
+        )
     expected_source = index_url
-    for package in packaged:
+    for package in expected_packages:
         matches = [
             entry
             for entry in entries
@@ -681,14 +888,20 @@ def run_package_consumer_smoke(
     project_dir: Path,
     index_url: str,
     packaged: list[PackagedCrate],
-) -> bool:
-    versions = {package.name: package.version for package in packaged}
-    scenario = jellyflow_package_consumer_scenario(versions)
-    write_scenario(project_dir, scenario)
-    write_file(project_dir / ".cargo/config.toml", package_registry_config(index_url))
+    scenario: PackageSmokeScenario,
+    target_dir: Path,
+) -> set[str]:
+    write_scenario(project_dir, scenario.smoke)
+    write_file(
+        project_dir / ".cargo/config.toml",
+        package_registry_config(index_url, target_dir),
+    )
     manifest = project_dir / "Cargo.toml"
-    assert_registry_only_consumer(manifest)
-    print(f"package-derived external smoke project: {project_dir}", flush=True)
+    versions = {package.name: package.version for package in packaged}
+    assert_registry_only_consumer(manifest, scenario, versions)
+    print(
+        f"archive-backed {scenario.smoke.slug} project: {project_dir}", flush=True
+    )
     _run_cargo(
         [
             "cargo",
@@ -698,39 +911,86 @@ def run_package_consumer_smoke(
         ],
         cwd=project_dir,
     )
-    assert_package_lock_sources(project_dir / "Cargo.lock", index_url, packaged)
+    assert_package_lock_sources(
+        project_dir / "Cargo.lock",
+        index_url,
+        packaged,
+        scenario.expected_jellyflow_closure,
+        scenario.smoke.slug,
+    )
     tree = cargo_tree_for_manifest(project_dir, manifest, locked=True)
-    open_gpui_features = resolved_package_features(
-        project_dir, manifest, "open-gpui", locked=True
-    )
-    for feature in ("default", "test-support"):
-        if feature in open_gpui_features:
-            print(
-                f"package-derived Open GPUI consumer activated {feature}",
-                file=sys.stderr,
-            )
-            return False
-    print("package-derived Open GPUI consumer excludes default and test-support features")
-    runtime_features = resolved_package_features(
-        project_dir, manifest, "jellyflow-runtime", locked=True
-    )
-    if "adapter-conformance" in runtime_features:
-        print(
-            "package-derived Jellyflow consumer activated adapter-conformance",
-            file=sys.stderr,
+    jellyflow_closure = assert_package_tree_boundary(tree, scenario)
+    if "open_gpui" in scenario.direct_external_dependencies:
+        open_gpui_features = resolved_package_features(
+            project_dir, manifest, "open-gpui", locked=True
         )
-        return False
-    print("package-derived Jellyflow consumer excludes adapter-conformance")
-    if not assert_packaged_crates_in_tree(tree, packaged) or not assert_no_fret_packages(
-        tree
-    ):
-        return False
+        for feature in ("default", "test-support"):
+            if feature in open_gpui_features:
+                raise RuntimeError(
+                    f"archive-backed Open GPUI consumer activated {feature}"
+                )
+        print(
+            "archive-backed Open GPUI consumer excludes default and test-support features"
+        )
+    if "jellyflow-runtime" in scenario.expected_jellyflow_closure:
+        runtime_features = resolved_package_features(
+            project_dir, manifest, "jellyflow-runtime", locked=True
+        )
+        if "adapter-conformance" in runtime_features:
+            raise RuntimeError(
+                "archive-backed Jellyflow consumer activated adapter-conformance"
+            )
+        print("archive-backed Jellyflow consumer excludes adapter-conformance")
+    if not assert_no_fret_packages(tree):
+        raise RuntimeError(f"{scenario.smoke.slug} resolved forbidden Fret packages")
     run_cargo_manifest(project_dir, manifest, locked=True)
-    print("package-derived external consumer compiled from candidate archives")
+    print(f"{scenario.smoke.slug} compiled from candidate archives")
+    return jellyflow_closure
+
+
+def run_package_consumers_smoke(
+    project_root: Path,
+    index_url: str,
+    packaged: list[PackagedCrate],
+    consumer_names: Sequence[str] | None = None,
+) -> bool:
+    versions = {package.name: package.version for package in packaged}
+    scenarios = select_package_consumer_scenarios(
+        jellyflow_package_consumer_scenarios(versions), consumer_names
+    )
+    resolved_union = set()
+    target_dir = project_root / "target"
+    for scenario in scenarios:
+        resolved_union.update(
+            run_package_consumer_smoke(
+                project_root / scenario.smoke.slug,
+                index_url,
+                packaged,
+                scenario,
+                target_dir,
+            )
+        )
+    expected_union = {
+        package
+        for scenario in scenarios
+        for package in scenario.expected_jellyflow_closure
+    }
+    if resolved_union != expected_union:
+        raise RuntimeError(
+            "archive-backed consumer coverage mismatch: "
+            f"resolved {sorted(resolved_union)}, expected {sorted(expected_union)}"
+        )
+    if expected_union == set(PUBLISHABLE_CRATES):
+        print("isolated package consumers cover the complete candidate archive set")
+    else:
+        print(
+            "isolated package consumers cover the selected candidate archive closure: "
+            + ", ".join(sorted(expected_union))
+        )
     return True
 
 
-def main() -> int:
+def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create temporary Cargo projects outside this workspace and exercise the public "
@@ -742,10 +1002,41 @@ def main() -> int:
         action="store_true",
         help="keep the temporary smoke projects for inspection",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--packages-only",
+        action="store_true",
+        help="run archive-backed package consumers without source-path consumers",
+    )
+    parser.add_argument(
+        "--package-consumer",
+        action="append",
+        choices=PACKAGE_CONSUMER_NAMES,
+        help=(
+            "run only the named archive-backed consumer; repeat to select multiple "
+            "consumers (requires --packages-only)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.package_consumer and not args.packages_only:
+        parser.error("--package-consumer requires --packages-only")
+    return args
+
+
+def source_path_scenarios_for_run(
+    repo_root: Path, *, packages_only: bool
+) -> list[SmokeScenario]:
+    if packages_only:
+        return []
+    return jellyflow_source_path_smoke_scenarios(repo_root)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_arguments(argv)
 
     repo_root = ROOT
-    scenarios = jellyflow_source_path_smoke_scenarios(repo_root)
+    source_scenarios = source_path_scenarios_for_run(
+        repo_root, packages_only=args.packages_only
+    )
     temp_root, temp_context = make_temp_root(args.keep)
 
     try:
@@ -755,14 +1046,17 @@ def main() -> int:
         with serve_sparse_registry(
             package_root / "registry", packaged, metadata
         ) as index_url:
-            ok = run_package_consumer_smoke(
-                temp_root / "package-consumer",
+            ok = run_package_consumers_smoke(
+                temp_root / "package-consumers",
                 index_url,
                 packaged,
+                args.package_consumer,
             )
         source_root = temp_root / "source-path-consumers"
-        for scenario in scenarios:
-            project_dir = scenario_project_dir(source_root, scenario, len(scenarios))
+        for scenario in source_scenarios:
+            project_dir = scenario_project_dir(
+                source_root, scenario, len(source_scenarios)
+            )
             ok = run_source_path_scenario(repo_root, project_dir, scenario) and ok
         return 0 if ok else 1
     finally:

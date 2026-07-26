@@ -142,8 +142,10 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
     def test_fixture_loader_reads_checked_in_consumer_sources(self) -> None:
         for fixture_name in (
             "adapter-conformance",
-            "package-derived",
             "open-gpui-source",
+            "package-egui",
+            "package-headless",
+            "package-open-gpui",
         ):
             with self.subTest(fixture_name=fixture_name):
                 expected = (FIXTURE_ROOT / fixture_name / "src/main.rs").read_text(
@@ -154,6 +156,28 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                     external_smoke._load_external_consumer_main_rs(fixture_name),
                     expected,
                 )
+
+    def test_normalized_manifest_rejects_unpublished_jellyflow_dependencies(self) -> None:
+        for package in ("jellyflow", "jellyflow-unknown"):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "Cargo.toml").write_text(
+                    "\n".join(
+                        [
+                            '[package]',
+                            'name = "fixture"',
+                            'version = "0.0.0"',
+                            '',
+                            '[dependencies]',
+                            f'unknown = {{ package = "{package}", version = "0.4" }}',
+                            '',
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "outside the release set"):
+                    external_smoke.normalized_package_manifest(root)
 
     def test_import_and_scenario_invocation_are_independent_of_cwd(self) -> None:
         probe = "\n".join(
@@ -169,8 +193,20 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 "spec.loader.exec_module(module)",
                 "versions = {name: '0.0.0-test' for name in module.PUBLISHABLE_CRATES}",
                 (
-                    "assert module.jellyflow_package_consumer_scenario(versions).main_rs "
-                    "== module._load_external_consumer_main_rs('package-derived')"
+                    "package_scenarios = {scenario.smoke.slug: scenario.smoke "
+                    "for scenario in module.jellyflow_package_consumer_scenarios(versions)}"
+                ),
+                (
+                    "assert package_scenarios['jellyflow-package-headless-smoke'].main_rs "
+                    "== module._load_external_consumer_main_rs('package-headless')"
+                ),
+                (
+                    "assert package_scenarios['jellyflow-package-egui-smoke'].main_rs "
+                    "== module._load_external_consumer_main_rs('package-egui')"
+                ),
+                (
+                    "assert package_scenarios['jellyflow-package-open-gpui-smoke'].main_rs "
+                    "== module._load_external_consumer_main_rs('package-open-gpui')"
                 ),
                 (
                     "assert module.jellyflow_open_gpui_source_scenario("
@@ -211,26 +247,71 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "unsafe member type"):
                     external_smoke.extract_package_archive(archive, root / "out")
 
-    def test_package_scenario_constructs_the_published_open_gpui_host(self) -> None:
+    def test_package_scenarios_isolate_each_published_boundary(self) -> None:
         versions = {name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES}
-
-        scenario = external_smoke.jellyflow_package_consumer_scenario(versions)
-        manifest = tomllib.loads(scenario.cargo_toml)
-        dependencies = manifest["dependencies"]
-
-        self.assertEqual(len(external_smoke.PUBLISHABLE_CRATES), 5)
-        self.assertEqual(
-            set(external_smoke.PUBLISHABLE_CRATES),
-            set(external_smoke.PUBLISHABLE_CRATES).intersection(dependencies),
-        )
-        for name in external_smoke.PUBLISHABLE_CRATES:
-            self.assertEqual(
-                dependencies[name],
-                {
-                    "version": "=0.0.0-test",
-                    "registry": "jellyflow-package-archives",
-                },
+        scenarios = {
+            scenario.smoke.slug: scenario
+            for scenario in external_smoke.jellyflow_package_consumer_scenarios(
+                versions
             )
+        }
+        self.assertEqual(
+            set(scenarios),
+            {
+                "jellyflow-package-egui-smoke",
+                "jellyflow-package-headless-smoke",
+                "jellyflow-package-open-gpui-smoke",
+            },
+        )
+        expected_direct = {
+            "jellyflow-package-egui-smoke": {"jellyflow-egui"},
+            "jellyflow-package-headless-smoke": {
+                "jellyflow-layout",
+                "jellyflow-runtime",
+            },
+            "jellyflow-package-open-gpui-smoke": {
+                "jellyflow-open-gpui",
+                "open_gpui",
+            },
+        }
+        expected_closures = {
+            "jellyflow-package-egui-smoke": {
+                "jellyflow-core",
+                "jellyflow-egui",
+                "jellyflow-runtime",
+            },
+            "jellyflow-package-headless-smoke": {
+                "jellyflow-core",
+                "jellyflow-layout",
+                "jellyflow-runtime",
+            },
+            "jellyflow-package-open-gpui-smoke": {
+                "jellyflow-core",
+                "jellyflow-open-gpui",
+                "jellyflow-runtime",
+            },
+        }
+        for slug, scenario in scenarios.items():
+            with self.subTest(slug=slug):
+                dependencies = tomllib.loads(scenario.smoke.cargo_toml)[
+                    "dependencies"
+                ]
+                self.assertEqual(set(dependencies), expected_direct[slug])
+                self.assertEqual(
+                    set(scenario.expected_jellyflow_closure), expected_closures[slug]
+                )
+                for name in scenario.direct_jellyflow_dependencies:
+                    self.assertEqual(
+                        dependencies[name],
+                        {
+                            "version": "=0.0.0-test",
+                            "registry": "jellyflow-package-archives",
+                        },
+                    )
+
+        dependencies = tomllib.loads(
+            scenarios["jellyflow-package-open-gpui-smoke"].smoke.cargo_toml
+        )["dependencies"]
         self.assertEqual(
             dependencies["open_gpui"],
             {
@@ -238,6 +319,372 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 "version": "=0.2.0",
                 "default-features": False,
             },
+        )
+
+    def test_default_cli_runs_all_package_and_source_path_consumers(self) -> None:
+        args = external_smoke.parse_arguments([])
+        versions = {
+            name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES
+        }
+        package_scenarios = external_smoke.select_package_consumer_scenarios(
+            external_smoke.jellyflow_package_consumer_scenarios(versions),
+            args.package_consumer,
+        )
+        source_scenarios = external_smoke.source_path_scenarios_for_run(
+            Path("/tmp/jellyflow-source"), packages_only=args.packages_only
+        )
+
+        self.assertFalse(args.packages_only)
+        self.assertEqual(
+            {scenario.consumer_name for scenario in package_scenarios},
+            set(external_smoke.PACKAGE_CONSUMER_NAMES),
+        )
+        self.assertEqual(len(source_scenarios), 2)
+
+    def test_packages_only_can_select_the_open_gpui_archive_consumer(self) -> None:
+        args = external_smoke.parse_arguments(
+            ["--packages-only", "--package-consumer", "open-gpui"]
+        )
+        versions = {
+            name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES
+        }
+        scenarios = external_smoke.select_package_consumer_scenarios(
+            external_smoke.jellyflow_package_consumer_scenarios(versions),
+            args.package_consumer,
+        )
+
+        self.assertEqual(
+            [(scenario.consumer_name, scenario.smoke.slug) for scenario in scenarios],
+            [("open-gpui", "jellyflow-package-open-gpui-smoke")],
+        )
+        self.assertEqual(
+            external_smoke.source_path_scenarios_for_run(
+                Path("/tmp/jellyflow-source"), packages_only=args.packages_only
+            ),
+            [],
+        )
+
+    def test_packages_only_without_selection_keeps_all_package_consumers(self) -> None:
+        args = external_smoke.parse_arguments(["--packages-only"])
+        versions = {
+            name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES
+        }
+        scenarios = external_smoke.select_package_consumer_scenarios(
+            external_smoke.jellyflow_package_consumer_scenarios(versions),
+            args.package_consumer,
+        )
+
+        self.assertEqual(
+            {scenario.consumer_name for scenario in scenarios},
+            set(external_smoke.PACKAGE_CONSUMER_NAMES),
+        )
+
+    def test_selected_package_run_uses_the_selected_archive_closure(self) -> None:
+        packaged = [
+            external_smoke.PackagedCrate(
+                name=name,
+                version="0.0.0-test",
+                archive=Path("/tmp") / f"{name}.crate",
+                source_dir=Path("/tmp") / name,
+            )
+            for name in external_smoke.PUBLISHABLE_CRATES
+        ]
+
+        def run_selected(
+            project_dir: Path,
+            index_url: str,
+            candidate_archives: list[external_smoke.PackagedCrate],
+            scenario: external_smoke.PackageSmokeScenario,
+            target_dir: Path,
+        ) -> set[str]:
+            self.assertEqual(scenario.consumer_name, "open-gpui")
+            return set(scenario.expected_jellyflow_closure)
+
+        with patch.object(
+            external_smoke,
+            "run_package_consumer_smoke",
+            side_effect=run_selected,
+        ) as run_consumer:
+            self.assertTrue(
+                external_smoke.run_package_consumers_smoke(
+                    Path("/tmp/package-consumers"),
+                    "sparse+http://127.0.0.1:31415/index/",
+                    packaged,
+                    ["open-gpui"],
+                )
+            )
+
+        run_consumer.assert_called_once()
+
+    def test_package_consumer_selection_requires_packages_only(self) -> None:
+        with (
+            patch.object(sys, "stderr", new=io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            external_smoke.parse_arguments(
+                ["--package-consumer", "open-gpui"]
+            )
+
+    def test_cli_rejects_unknown_package_consumer(self) -> None:
+        with (
+            patch.object(sys, "stderr", new=io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            external_smoke.parse_arguments(
+                ["--packages-only", "--package-consumer", "unknown"]
+            )
+
+    def test_package_tree_boundary_rejects_missing_or_cross_framework_crates(self) -> None:
+        versions = {name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES}
+        scenarios = {
+            scenario.smoke.slug: scenario
+            for scenario in external_smoke.jellyflow_package_consumer_scenarios(
+                versions
+            )
+        }
+        open_gpui = scenarios["jellyflow-package-open-gpui-smoke"]
+        valid_tree = "\n".join(
+            [
+                "jellyflow-package-open-gpui-smoke v0.0.0",
+                "jellyflow-open-gpui v0.0.0-test",
+                "jellyflow-runtime v0.0.0-test",
+                "jellyflow-core v0.0.0-test",
+                "open-gpui v0.2.0",
+            ]
+        )
+        self.assertEqual(
+            external_smoke.assert_package_tree_boundary(valid_tree, open_gpui),
+            set(open_gpui.expected_jellyflow_closure),
+        )
+        with self.assertRaisesRegex(RuntimeError, "expected"):
+            external_smoke.assert_package_tree_boundary(
+                valid_tree.replace("jellyflow-runtime v0.0.0-test\n", ""),
+                open_gpui,
+            )
+        with self.assertRaisesRegex(RuntimeError, "crossed"):
+            external_smoke.assert_package_tree_boundary(
+                valid_tree + "\negui v0.34.3\n",
+                open_gpui,
+            )
+        with self.assertRaisesRegex(RuntimeError, "outside the release set"):
+            external_smoke.assert_package_tree_boundary(
+                valid_tree + "\njellyflow-unknown v0.4.0\n",
+                open_gpui,
+            )
+        with self.assertRaisesRegex(RuntimeError, "outside the release set"):
+            external_smoke.assert_package_tree_boundary(
+                valid_tree + "\njellyflow v0.4.0\n",
+                open_gpui,
+            )
+
+        headless = scenarios["jellyflow-package-headless-smoke"]
+        headless_tree = "\n".join(
+            [
+                "jellyflow-package-headless-smoke v0.0.0",
+                "jellyflow-layout v0.0.0-test",
+                "jellyflow-runtime v0.0.0-test",
+                "jellyflow-core v0.0.0-test",
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "wgpu"):
+            external_smoke.assert_package_tree_boundary(
+                headless_tree + "\nwgpu v28.0.0\n",
+                headless,
+            )
+
+        egui = scenarios["jellyflow-package-egui-smoke"]
+        egui_tree = "\n".join(
+            [
+                "jellyflow-package-egui-smoke v0.0.0",
+                "jellyflow-egui v0.0.0-test",
+                "jellyflow-runtime v0.0.0-test",
+                "jellyflow-core v0.0.0-test",
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "open-gpui"):
+            external_smoke.assert_package_tree_boundary(
+                egui_tree + "\nopen-gpui v0.2.0\n",
+                egui,
+            )
+
+    @staticmethod
+    def _package_lock_fixture(root: Path) -> list[external_smoke.PackagedCrate]:
+        packaged = []
+        for name in external_smoke.PUBLISHABLE_CRATES:
+            archive = root / f"{name}.crate"
+            archive.write_bytes(name.encode("utf-8"))
+            packaged.append(
+                external_smoke.PackagedCrate(
+                    name=name,
+                    version="0.0.0-test",
+                    archive=archive,
+                    source_dir=root / name,
+                )
+            )
+        return packaged
+
+    @staticmethod
+    def _package_lock_text(
+        packaged: list[external_smoke.PackagedCrate],
+        names: set[str],
+        index_url: str,
+        *,
+        source_overrides: dict[str, str] | None = None,
+        checksum_overrides: dict[str, str] | None = None,
+        version_overrides: dict[str, str] | None = None,
+        duplicate_names: tuple[str, ...] = (),
+    ) -> str:
+        packaged_by_name = {package.name: package for package in packaged}
+        source_overrides = source_overrides or {}
+        checksum_overrides = checksum_overrides or {}
+        version_overrides = version_overrides or {}
+
+        def package_entry(name: str) -> list[str]:
+            package = packaged_by_name[name]
+            checksum = checksum_overrides.get(
+                name, external_smoke.sha256_file(package.archive)
+            )
+            return [
+                "",
+                "[[package]]",
+                f'name = "{name}"',
+                f'version = "{version_overrides.get(name, package.version)}"',
+                f'source = "{source_overrides.get(name, index_url)}"',
+                f'checksum = "{checksum}"',
+            ]
+
+        entries = ["version = 4"]
+        for name in sorted(names):
+            entries.extend(package_entry(name))
+        for name in duplicate_names:
+            entries.extend(package_entry(name))
+        return "\n".join(entries) + "\n"
+
+    def _assert_package_lock_mutation_rejected(
+        self,
+        error: str,
+        *,
+        source_overrides: dict[str, str] | None = None,
+        checksum_overrides: dict[str, str] | None = None,
+        version_overrides: dict[str, str] | None = None,
+        duplicate_names: tuple[str, ...] = (),
+    ) -> None:
+        index_url = "sparse+http://127.0.0.1:31415/index/"
+        expected = frozenset({"jellyflow-core", "jellyflow-runtime"})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packaged = self._package_lock_fixture(root)
+            lock_path = root / "Cargo.lock"
+            lock_path.write_text(
+                self._package_lock_text(
+                    packaged,
+                    set(expected),
+                    index_url,
+                    source_overrides=source_overrides,
+                    checksum_overrides=checksum_overrides,
+                    version_overrides=version_overrides,
+                    duplicate_names=duplicate_names,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, error):
+                external_smoke.assert_package_lock_sources(
+                    lock_path,
+                    index_url,
+                    packaged,
+                    expected,
+                    "fixture-consumer",
+                )
+
+    def test_package_lock_sources_require_the_exact_scenario_closure(self) -> None:
+        index_url = "sparse+http://127.0.0.1:31415/index/"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packaged = self._package_lock_fixture(root)
+            expected = frozenset({"jellyflow-core", "jellyflow-runtime"})
+            lock_path = root / "Cargo.lock"
+            lock_path.write_text(
+                self._package_lock_text(packaged, set(expected), index_url),
+                encoding="utf-8",
+            )
+            external_smoke.assert_package_lock_sources(
+                lock_path,
+                index_url,
+                packaged,
+                expected,
+                "fixture-consumer",
+            )
+
+            lock_path.write_text(
+                self._package_lock_text(
+                    packaged,
+                    set(expected) | {"jellyflow-layout"},
+                    index_url,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "resolved Jellyflow packages"):
+                external_smoke.assert_package_lock_sources(
+                    lock_path,
+                    index_url,
+                    packaged,
+                    expected,
+                    "fixture-consumer",
+                )
+
+            lock_path.write_text(
+                self._package_lock_text(packaged, set(expected), index_url)
+                + '\n[[package]]\nname = "jellyflow-unknown"\nversion = "0.4.0"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "outside the release set"):
+                external_smoke.assert_package_lock_sources(
+                    lock_path,
+                    index_url,
+                    packaged,
+                    expected,
+                    "fixture-consumer",
+                )
+
+            lock_path.write_text(
+                self._package_lock_text(packaged, set(expected), index_url)
+                + '\n[[package]]\nname = "jellyflow"\nversion = "0.4.0"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "outside the release set"):
+                external_smoke.assert_package_lock_sources(
+                    lock_path,
+                    index_url,
+                    packaged,
+                    expected,
+                    "fixture-consumer",
+                )
+
+    def test_package_lock_rejects_wrong_registry_source(self) -> None:
+        self._assert_package_lock_mutation_rejected(
+            "resolved from",
+            source_overrides={
+                "jellyflow-core": "registry+https://github.com/rust-lang/crates.io-index"
+            },
+        )
+
+    def test_package_lock_rejects_wrong_archive_checksum(self) -> None:
+        self._assert_package_lock_mutation_rejected(
+            "checksum does not match",
+            checksum_overrides={"jellyflow-core": "0" * 64},
+        )
+
+    def test_package_lock_rejects_duplicate_candidate_identity(self) -> None:
+        self._assert_package_lock_mutation_rejected(
+            "contains 2 sources",
+            duplicate_names=("jellyflow-core",),
+        )
+
+    def test_package_lock_rejects_non_candidate_version(self) -> None:
+        self._assert_package_lock_mutation_rejected(
+            "non-candidate Jellyflow packages",
+            version_overrides={"jellyflow-core": "0.0.1-test"},
         )
 
     def test_source_path_scenario_uses_direct_test_dependencies(self) -> None:
@@ -275,9 +722,6 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
             dependencies["jellyflow-runtime"]["features"],
             ["adapter-conformance"],
         )
-        self.assertNotIn("jellyflow", dependencies)
-        self.assertNotIn("jellyflow-egui", dependencies)
-        self.assertNotIn("jellyflow-open-gpui", dependencies)
 
 if __name__ == "__main__":
     unittest.main()
