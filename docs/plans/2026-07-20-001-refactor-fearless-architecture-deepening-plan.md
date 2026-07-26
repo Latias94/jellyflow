@@ -852,6 +852,7 @@ delete distribution and historical proof only after their real replacements are 
 | U10 | Delete facade and native-adapter template | U1, U6, U9 | Direct-crate consumers and package/release checks |
 | U11 | Delete tombstones and close repository gates | U10 | Full verification, diff audit, docs/CI consistency |
 | U12 | Harden graph, interaction, viewport, and mount capabilities | U1-U11 | Cross-runtime/view/session ABA matrix and adapter compile proof |
+| U13 | Close native graph accessibility and interaction-parity gaps | U12 | Keyboard, semantic-bounds, overlap-order, and overflow product proof |
 
 ### U1. Replace false-green conformance with executable native adapter traces
 
@@ -1668,6 +1669,61 @@ delete distribution and historical proof only after their real replacements are 
 
 ---
 
+### U13. Close native graph accessibility and interaction-parity gaps
+
+- **Goal:** Make the native graph operable and predictable without a pointer while preserving the
+  headless geometry/state-machine authority and Open GPUI's ordinary component model.
+- **Requirements:** R18-R21, R26.
+- **Flows and acceptance:** F5-F6; AE9-AE10, AE12.
+- **Decisions:** KTD1-KTD3, KTD7-KTD9, KTD12.
+- **Dependencies:** U12. These behaviors must use the provenance-safe capabilities and view-owned
+  viewport from U12; adapters may not recreate connection, picking, movement, or viewport policy.
+- **Files:**
+  - `crates/jellyflow-runtime/src/runtime/{interaction,view_session,viewport}/**`
+  - `crates/jellyflow-open-gpui/src/host/**` and accessibility/interaction tests
+  - `crates/jellyflow-egui/**` only where canonical conformance changes
+  - `examples/canvas-jellyflow/src/nodes/workflow/llm.rs` and product/real-window tests
+- **Approach:**
+  - Add an opaque keyboard connection interaction: activate one exact source port, move native focus
+    through real target ports, activate a compatible target through the same fresh admission/commit
+    path as pointer connection, and expose cancel plus structured invalid feedback. Keep
+    create-from-wire search as a separate explicit action.
+  - Route Delete/Backspace from every exact graph semantic focus target to one idle-session
+    `delete_selection` action. Native controls and overlays retain first refusal; remove per-edge
+    deletion dispatch that breaks atomic mixed-selection semantics.
+  - Give every focusable edge a non-zero, stable screen-space semantic rectangle centered on the
+    runtime path sample. Reuse it for focus chrome while leaving all pointer picking and ranking in
+    runtime geometry.
+  - Add session-owned keyboard nudge and reveal actions. Nudge moves one exact selected cohort
+    atomically under graph policy; reveal pans the view-owned viewport without changing zoom. Native
+    controls keep their arrow keys.
+  - Track view-local recent interaction elevation so a clicked or dragged node paints and picks above
+    overlapping selected peers without persisting document z-order or coupling separate views.
+  - Make the Workflow LLM body explicitly bounded and vertically scrollable at its height cap while
+    keeping its header, ports, selection chrome, and node-owned geometry stable.
+- **Test scenarios:**
+  - Keyboard and accessibility activation connect compatible existing ports, reject invalid or
+    occupied targets without mutation, survive focus traversal, cancel on Escape, fail closed on
+    node/port ABA, and produce the same command result as pointer connection.
+  - Node, port, and edge focus delete one mixed selection atomically; held keys, active gestures,
+    retired focus, undeletable policy, TextInput, Select, and overlay descendants are not hijacked or
+    double-dispatched.
+  - Edge semantic bounds are non-zero and coincide with focus chrome at 0.5/1/2 zoom, preserve stable
+    traversal order, disappear on retirement, and do not change pointer picking.
+  - Arrow nudge moves a multi-selection once with grid/extent/policy enforcement, Shift accelerates,
+    native controls retain arrows, and revealing an offscreen focused node pans without changing zoom.
+  - Overlapping selected nodes promote only the most recently interacted node in that view and keep
+    paint/pick order aligned; another view and later selection clearing remain independent.
+  - A saturated Workflow LLM node containing simultaneous field conflicts, option failure, and
+    diagnostics stays within its node geometry, scrolls to all content, and keeps labels and ports
+    clear across compact/normal bounds and 0.5/1/2 zoom.
+- **Non-goals:** Do not copy DOM traversal, SVG helper paths, always-on reconnect anchors, whole-node
+  dragging, secondary-click destructive disconnect, or pure-color validation from the references.
+- **Deletion:** Delete root-only and per-edge duplicate keyboard deletion paths, any adapter-local
+  keyboard connection or nudge mutation shortcut, and unbounded Workflow LLM body assumptions.
+
+---
+
 ## Verification Contract
 
 ### Focused Unit Gates
@@ -1697,6 +1753,9 @@ delete distribution and historical proof only after their real replacements are 
 - **U12:** Graph/version, entity lifetime, interaction-session, viewport, mount, query, and prefix
   capabilities pass the cross-runtime/view/session/ABA matrix; both adapters and external consumers
   compile without legacy fallbacks, and real-window drag/auto-pan/zoom evidence shows no jump.
+- **U13:** Existing-port keyboard connection, graph-wide input-safe deletion, edge semantic bounds,
+  keyboard nudge/reveal, view-local overlap promotion, and saturated Workflow LLM scrolling pass
+  focused accessibility tests plus the 0.5/1/2 real-window matrix.
 
 ### Root Workspace Gates
 
@@ -1773,7 +1832,8 @@ testing documentation in the same unit before execution; do not silently skip th
 | Complete search and graph-editor feel | R18-R21 | F5 | AE9, AE10 | U9 |
 | Direct adoption and fearless deletion | R22-R25 | F7 | AE11, AE12 | U10, U11 |
 | Provenance-safe delayed native protocol | R7-R21, R26 | F2-F6 | AE2-AE10 | U12 |
-| Scale, resources, and accessibility | R26 | F1-F7 | AE1-AE12 | U1-U12 |
+| Native keyboard and semantic interaction parity | R18-R21, R26 | F5-F6 | AE9, AE10, AE12 | U13 |
+| Scale, resources, and accessibility | R26 | F1-F7 | AE1-AE12 | U1-U13 |
 
 ### Failure Policy
 
@@ -1792,8 +1852,8 @@ testing documentation in the same unit before execution; do not silently skip th
 
 - Work on the current feature branch; do not create or bind `main` to a worktree.
 - Commit the reviewed plan first, then land one or more Conventional Commits per coherent unit.
-- Keep U2 before U3, U4 before U5, U6 before U7/U8, U9 before U10/U11, and finish U12 before the
-  final verification/commit tail. Do not combine two
+- Keep U2 before U3, U4 before U5, U6 before U7/U8, U9 before U10/U11, finish U12 before U13, and
+  finish U13 before the final verification/commit tail. Do not combine two
   adjacent high-risk ownership migrations into one unreviewable commit merely to reduce commit
   count.
 - Mechanical direct-import, crate deletion, template deletion, and documentation/CI cleanup may be
@@ -1841,6 +1901,9 @@ testing documentation in the same unit before execution; do not silently skip th
   native mounts, query execution, and prefix continuation provenance-safe; removes all superseded
   raw/duplicate adapter authority; and passes the cross-runtime/view/session/ABA and real-window
   no-jump matrix.
+- [ ] U13 completes keyboard existing-port connection, graph-wide input-safe deletion, non-zero edge
+  semantics, keyboard nudge/reveal, view-local overlap promotion, and bounded Workflow LLM scrolling
+  with focused accessibility and real-window proof.
 - [ ] Root workspace, flagship example, external consumer, package/release, real-window,
   performance, resource, accessibility, formatting, lint, and diff gates pass in the final tree.
 - [ ] The defined active-surface audit and package searches find no operational
