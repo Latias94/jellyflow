@@ -852,7 +852,7 @@ delete distribution and historical proof only after their real replacements are 
 | U10 | Delete facade and native-adapter template | U1, U6, U9 | Direct-crate consumers and package/release checks |
 | U11 | Delete tombstones and close repository gates | U10 | Full verification, diff audit, docs/CI consistency |
 | U12 | Harden graph, interaction, viewport, and mount capabilities | U1-U11 | Cross-runtime/view/session ABA matrix and adapter compile proof |
-| U13 | Close native graph accessibility and interaction-parity gaps | U12 | Keyboard, semantic-bounds, overlap-order, and overflow product proof |
+| U13 | Close native graph accessibility, interaction, and wire-style parity gaps | U12 | Keyboard, semantic-bounds, overlap-order, typed-route, visual-profile, and overflow product proof |
 
 ### U1. Replace false-green conformance with executable native adapter traces
 
@@ -1679,7 +1679,8 @@ delete distribution and historical proof only after their real replacements are 
 - **Dependencies:** U12. These behaviors must use the provenance-safe capabilities and view-owned
   viewport from U12; adapters may not recreate connection, picking, movement, or viewport policy.
 - **Files:**
-  - `crates/jellyflow-runtime/src/runtime/{interaction,view_session,viewport}/**`
+  - `crates/jellyflow-core/src/core/{model,validate}/**` and graph wire-format migrations
+  - `crates/jellyflow-runtime/src/runtime/{geometry,interaction,view_session,viewport}/**`
   - `crates/jellyflow-open-gpui/src/host/**` and accessibility/interaction tests
   - `crates/jellyflow-egui/**` only where canonical conformance changes
   - `examples/canvas-jellyflow/src/nodes/workflow/llm.rs` and product/real-window tests
@@ -1699,6 +1700,23 @@ delete distribution and historical proof only after their real replacements are 
     controls keep their arrow keys.
   - Track view-local recent interaction elevation so a clicked or dragged node paints and picks above
     overlapping selected peers without persisting document z-order or coupling separate views.
+  - Replace the invalid-combination-prone `route_kind + route_center` model with one closed,
+    validated `EdgeRouteSpec`: straight, Bezier with curvature, orthogonal with offset/step/center,
+    or smooth-step with offset/step/radius/center. Runtime geometry resolves this exact specification
+    for committed, preview, paint, flatten, and hit-test paths; adapters retain no route defaults.
+  - Add a bounded edge-weight tier to native painter recipes so control-flow wires may be stronger
+    than data wires without arbitrary per-edge painter callbacks or unbounded batch keys. Preserve
+    the existing zoom-independent marker, hit-target, reconnect-cap, and target-hysteresis metrics.
+  - Replace the flagship's process-global theme reads with an application-owned
+    `NativeGraphVisualProfile` injected into both node resources and the graph surface. Give Shader
+    and Workflow separate profiles, keep the library default neutral, and use the Shader profile for
+    the stronger 2.0/2.5/3.0-pixel ordinary/hovered/emphasized wire hierarchy.
+  - Make port-outline widths explicit zoom-independent theme metrics, strengthen reconnect-cap hover
+    without changing its hit geometry, and emphasize the complete focused edge path in addition to
+    its semantic focus ring. Keep all state cues non-color-only.
+  - Map runtime interaction presentation to semantic native cursors: pointing hand for a selectable
+    hovered edge, drag-link during connection drag, and closed hand during pan. Cursor feedback must
+    not add adapter-local picking or connection policy.
   - Make the Workflow LLM body explicitly bounded and vertically scrollable at its height cap while
     keeping its header, ports, selection chrome, and node-owned geometry stable.
 - **Test scenarios:**
@@ -1714,13 +1732,21 @@ delete distribution and historical proof only after their real replacements are 
     native controls retain arrows, and revealing an offscreen focused node pans without changing zoom.
   - Overlapping selected nodes promote only the most recently interacted node in that view and keep
     paint/pick order aligned; another view and later selection clearing remain independent.
+  - Every `EdgeRouteSpec` variant round-trips through storage, rejects non-finite/out-of-range
+    parameters atomically, and produces one shared preview/commit/paint/hit path. Curvature, offset,
+    step, center, and radius changes have focused geometry proof rather than adapter snapshots alone.
+  - Shader and Workflow use independent injected visual profiles while each profile keeps node-owned
+    ports, search previews, and host-owned wires on the same theme instance. Edge-weight tiers remain
+    bounded; port outlines, reconnect hover, focused paths, cursors, and wire-state screenshots cover
+    normal/compact bounds at 0.5/1/2 zoom without changing hit targets or anchors.
   - A saturated Workflow LLM node containing simultaneous field conflicts, option failure, and
     diagnostics stays within its node geometry, scrolls to all content, and keeps labels and ports
     clear across compact/normal bounds and 0.5/1/2 zoom.
 - **Non-goals:** Do not copy DOM traversal, SVG helper paths, always-on reconnect anchors, whole-node
   dragging, secondary-click destructive disconnect, or pure-color validation from the references.
 - **Deletion:** Delete root-only and per-edge duplicate keyboard deletion paths, any adapter-local
-  keyboard connection or nudge mutation shortcut, and unbounded Workflow LLM body assumptions.
+  keyboard connection or nudge mutation shortcut, loose route-kind/center fields, adapter route
+  defaults, process-global flagship theme reads, and unbounded Workflow LLM body assumptions.
 
 ---
 
@@ -1754,8 +1780,9 @@ delete distribution and historical proof only after their real replacements are 
   capabilities pass the cross-runtime/view/session/ABA matrix; both adapters and external consumers
   compile without legacy fallbacks, and real-window drag/auto-pan/zoom evidence shows no jump.
 - **U13:** Existing-port keyboard connection, graph-wide input-safe deletion, edge semantic bounds,
-  keyboard nudge/reveal, view-local overlap promotion, and saturated Workflow LLM scrolling pass
-  focused accessibility tests plus the 0.5/1/2 real-window matrix.
+  keyboard nudge/reveal, view-local overlap promotion, closed typed routes, injected product visual
+  profiles, bounded wire weights/cursors, and saturated Workflow LLM scrolling pass focused
+  accessibility/geometry tests plus the 0.5/1/2 real-window matrix.
 
 ### Root Workspace Gates
 
@@ -1907,8 +1934,9 @@ single-product smoke runs.
   raw/duplicate adapter authority; and passes the cross-runtime/view/session/ABA and real-window
   no-jump matrix.
 - [ ] U13 completes keyboard existing-port connection, graph-wide input-safe deletion, non-zero edge
-  semantics, keyboard nudge/reveal, view-local overlap promotion, and bounded Workflow LLM scrolling
-  with focused accessibility and real-window proof.
+  semantics, keyboard nudge/reveal, view-local overlap promotion, closed typed edge routes, injected
+  Shader/Workflow visual profiles, bounded wire weights/cursors, and bounded Workflow LLM scrolling
+  with focused accessibility, geometry, storage, and real-window proof.
 - [ ] Root workspace, flagship example, external consumer, package/release, real-window,
   performance, resource, accessibility, formatting, lint, and diff gates pass in the final tree.
 - [ ] The defined active-surface audit and package searches find no operational
