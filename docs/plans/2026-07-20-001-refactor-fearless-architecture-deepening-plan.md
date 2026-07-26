@@ -851,6 +851,7 @@ delete distribution and historical proof only after their real replacements are 
 | U9 | Product search, endpoint, wire, and node UX | U5, U7, U8 | Focused product and real-window regressions |
 | U10 | Delete facade and native-adapter template | U1, U6, U9 | Direct-crate consumers and package/release checks |
 | U11 | Delete tombstones and close repository gates | U10 | Full verification, diff audit, docs/CI consistency |
+| U12 | Harden graph, interaction, viewport, and mount capabilities | U1-U11 | Cross-runtime/view/session ABA matrix and adapter compile proof |
 
 ### U1. Replace false-green conformance with executable native adapter traces
 
@@ -1590,6 +1591,81 @@ delete distribution and historical proof only after their real replacements are 
   obsolete commands/docs, unused helpers/exports/products/examples discovered by final reachability,
   and any compatibility code left by earlier units.
 
+### U12. Harden graph, interaction, viewport, and mount capabilities
+
+- **Goal:** Close the identity, freshness, and adapter-ownership gaps found by the final independent
+  audit so a renderer cannot route a stale or foreign capability into a same-ID successor, another
+  runtime, another view, or another interaction session.
+- **Requirements:** R7-R21, R26.
+- **Flows and acceptance:** F2-F6; AE2-AE10.
+- **Decisions:** KTD1-KTD9, KTD12.
+- **Dependencies:** U1-U11. This final hardening unit may break every adapter and consumer; no
+  compatibility overload, raw-ID fallback, or duplicate adapter identity is retained.
+- **Files:**
+  - `crates/jellyflow-runtime/src/runtime/{commands,graph_runtime,interaction,view_session,viewport}/**`
+  - `crates/jellyflow-runtime/src/schema/**` and runtime protocol/public-surface tests
+  - `crates/jellyflow-{egui,open-gpui}/**`
+  - `examples/canvas-jellyflow/**`
+  - `tools/fixtures/external-consumer/**`
+- **Approach:**
+  - Introduce an unforgeable `GraphVersion { RuntimeProvenance, GraphRevision }`, minted only by
+    `GraphSnapshot`; make every `GraphCommand` carry it, reject a foreign runtime before footprint,
+    middleware, history, or revision-conflict work, and propagate exact versions through command
+    results, connection evaluation, create-from-wire candidates, and native authoring.
+  - Keep selection, drag, edge, port, connection start/probe/search/commit, deletion, focus, and
+    owner retirement on exact lifetime keys until the final command planner intentionally lowers
+    them to graph IDs. Reconcile active interaction capabilities from the authoritative snapshot
+    after patches instead of asking adapters to infer retired incarnations from raw changed IDs.
+  - Replace per-session numeric generation/query/ticket authority with opaque
+    `{ InteractionSessionId, sequence }` capabilities. Bind search requests and outcomes to exact
+    view/session provenance so two sessions on one view cannot settle, restart, or select each
+    other's work.
+  - Restrict create-from-wire commits to a catalog-issued `NodeCreation` containing one entirely
+    new node and unique entirely new ports. Remove arbitrary `TopologyEdit` input and model existing
+    versus prospective targets as one closed commit-target state.
+  - Make `FreshGraphMutation` opaque and move command-prefix continuation plus paged query
+    execution/restart into `CanvasInteractionSession`; adapters schedule work but do not reproduce
+    headless state-machine branches.
+  - Bind interaction positions to a view-owned viewport snapshot/revision. Make the attached
+    interaction session read and mutate its `WeakViewSession` viewport directly, remove adapter-
+    applied viewport effects and raw-transform position minting, and reproject auto-pan from the
+    transform that actually committed.
+  - Collapse Open GPUI's node instance, weak view, and mount lease into one checked mount context.
+    Advance binding facts and revision atomically from authoritative frame facts; transient `Busy`
+    retries without advancing, while permanent foreign/retired errors diagnose and stop rather than
+    scheduling an unbounded redraw loop.
+  - Delete Open GPUI's duplicate `NativeConnectionTopologyIdentity`, private raw port-current
+    helpers, raw owner translation, legacy connection intent/origin types, public mutation variants,
+    old commit-refresh methods, and adapter-local query execution branches after their headless
+    replacements compile in egui, Open GPUI, the flagship example, and external consumers.
+- **Test scenarios:**
+  - Two runtimes with equal revisions, IDs, and incarnation counters cannot execute each other's
+    data, topology, connection, undo, redo, selection, deletion, or authoring commands; the target
+    runtime emits no history, middleware, subscription, or journal side effect.
+  - Remove/re-add and undo/reset reuse of node, port, and edge IDs cannot transfer selection,
+    focus, handle, drag, connection start, probe target lock, reconnect, delete, or retained cache
+    authority to the successor.
+  - Two interaction sessions on the same view start at sequence one but cannot settle tickets,
+    resolve/restart queries, mark search ready/failed, or select each other's results.
+  - Connection admission is revalidated before press and keyboard activation; target and source ABA,
+    policy/capacity changes, paged probe staleness, command-prefix refresh, and input-origin direction
+    all fail closed without entering a misleading active state.
+  - Create-from-wire rejects duplicate port IDs, an existing prospective node/port, and any attempt
+    to replace or mutate an existing source/fixed/detached entity inside the atomic commit.
+  - Foreign marquee baselines and viewport mutations leave session/view state unchanged. Scroll,
+    pinch, external viewport changes, auto-pan, move, and release between prepaint frames use the
+    current committed transform and produce no node jump.
+  - A transient binding refresh failure does not advance its revision and the next materialized
+    frame repairs port incarnation and drag policy; a permanent mount/view mismatch does not spin.
+  - Runtime, egui, Open GPUI, example, canonical trace, real-window, and external-consumer suites
+    use only the new opaque protocol and contain no raw-ID or compatibility fallback.
+- **Verification outcome:** Runtime and both adapters expose one provenance-safe protocol whose
+  delayed effects, queries, commands, retained mounts, and viewport coordinates are independently
+  auditable and fail closed across runtime, view, session, revision, and entity replacement.
+- **Deletion:** Delete every superseded raw revision constructor, raw transform position constructor,
+  adapter-owned viewport effect branch, public mutation authority variant, arbitrary create-from-wire
+  topology entry point, duplicate native connection identity, and old query/prefix continuation API.
+
 ---
 
 ## Verification Contract
@@ -1618,6 +1694,9 @@ delete distribution and historical proof only after their real replacements are 
   release-version/order, package archive, and source-trust tests pass after physical deletion.
 - **U11:** Every final root/example/tool/release/real-window/performance gate below passes and no
   deleted operational reference remains on the defined active surfaces.
+- **U12:** Graph/version, entity lifetime, interaction-session, viewport, mount, query, and prefix
+  capabilities pass the cross-runtime/view/session/ABA matrix; both adapters and external consumers
+  compile without legacy fallbacks, and real-window drag/auto-pan/zoom evidence shows no jump.
 
 ### Root Workspace Gates
 
@@ -1693,7 +1772,8 @@ testing documentation in the same unit before execution; do not silently skip th
 | Real atomic dynamic topology | R16-R17 | F4 | AE8 | U8 |
 | Complete search and graph-editor feel | R18-R21 | F5 | AE9, AE10 | U9 |
 | Direct adoption and fearless deletion | R22-R25 | F7 | AE11, AE12 | U10, U11 |
-| Scale, resources, and accessibility | R26 | F1-F7 | AE1-AE12 | U1-U11 |
+| Provenance-safe delayed native protocol | R7-R21, R26 | F2-F6 | AE2-AE10 | U12 |
+| Scale, resources, and accessibility | R26 | F1-F7 | AE1-AE12 | U1-U12 |
 
 ### Failure Policy
 
@@ -1712,7 +1792,8 @@ testing documentation in the same unit before execution; do not silently skip th
 
 - Work on the current feature branch; do not create or bind `main` to a worktree.
 - Commit the reviewed plan first, then land one or more Conventional Commits per coherent unit.
-- Keep U2 before U3, U4 before U5, U6 before U7/U8, and U9 before U10/U11. Do not combine two
+- Keep U2 before U3, U4 before U5, U6 before U7/U8, U9 before U10/U11, and finish U12 before the
+  final verification/commit tail. Do not combine two
   adjacent high-risk ownership migrations into one unreviewable commit merely to reduce commit
   count.
 - Mechanical direct-import, crate deletion, template deletion, and documentation/CI cleanup may be
@@ -1756,6 +1837,10 @@ testing documentation in the same unit before execution; do not silently skip th
   facade/template reference are migrated in the same green unit.
 - [ ] U11 deletes the legacy tombstone checker and shallow source assertions, preserves positive
   structural/behavioral gates, and updates every active CI/release/doc surface.
+- [ ] U12 makes graph commands, entity interactions, async session handles, viewport coordinates,
+  native mounts, query execution, and prefix continuation provenance-safe; removes all superseded
+  raw/duplicate adapter authority; and passes the cross-runtime/view/session/ABA and real-window
+  no-jump matrix.
 - [ ] Root workspace, flagship example, external consumer, package/release, real-window,
   performance, resource, accessibility, formatting, lint, and diff gates pass in the final tree.
 - [ ] The defined active-surface audit and package searches find no operational
