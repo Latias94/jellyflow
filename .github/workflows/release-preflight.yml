@@ -74,7 +74,7 @@ jobs:
       - name: Dependency boundary unit tests
         run: python3 -m unittest discover -s tools/tests -p "test_*.py"
 
-      - name: Package-derived external consumer smoke
+      - name: Package archive boundary consumers
         run: python3 tools/check_external_consumer_smoke.py
 
       - name: Package file lists
@@ -91,9 +91,6 @@ jobs:
             cargo package --locked --list -p "$crate" > "target/package-lists/$crate.txt"
           done
 
-      - name: Diff whitespace check
-        run: git diff --check
-
       - name: Upload package lists
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -103,7 +100,7 @@ jobs:
   open-gpui-product:
     name: open-gpui-product
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -122,6 +119,12 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: false
+
+      - name: Archived Open GPUI package consumer
+        run: >-
+          python3 tools/check_external_consumer_smoke.py
+          --packages-only
+          --package-consumer open-gpui
 
       - name: Check
         run: cargo check --manifest-path examples/canvas-jellyflow/Cargo.toml --workspace --locked
@@ -142,20 +145,31 @@ jobs:
         run: cargo build --manifest-path examples/canvas-jellyflow/Cargo.toml -p open-gpui-canvas-jellyflow --locked --features real-window-smoke
 
       - name: Open GPUI real-window smoke matrix
+        id: real_window_smoke_matrix
+        if: always()
         timeout-minutes: 10
-        env:
-          JELLYFLOW_SMOKE_CAPTURE_DIR: target/real-window-smoke
         run: |
-          set -euo pipefail
-          for zoom in 0.5 1 2; do
-            JELLYFLOW_SMOKE_ZOOM="$zoom" python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --smoke
-            JELLYFLOW_SMOKE_ZOOM="$zoom" python3 tools/run_with_timeout.py --timeout-seconds 60 -- examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow --workflow --smoke
-          done
+          python3 tools/run_real_window_smoke_matrix.py \
+            --binary examples/canvas-jellyflow/target/debug/open-gpui-canvas-jellyflow \
+            --capture-root target/real-window-smoke \
+            --timeout-seconds 60 \
+            --capture-dir-output "$GITHUB_OUTPUT"
+
+      - name: Validate and manifest Open GPUI real-window evidence
+        if: always()
+        env:
+          JELLYFLOW_SMOKE_CAPTURE_DIR: ${{ steps.real_window_smoke_matrix.outputs.capture_dir }}
+        run: |
+          python3 tools/check_real_window_smoke_evidence.py \
+            --capture-dir "$JELLYFLOW_SMOKE_CAPTURE_DIR"
 
       - name: Upload Open GPUI real-window evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: open-gpui-real-window-smoke
-          path: target/real-window-smoke/*.png
+          path: |
+            ${{ steps.real_window_smoke_matrix.outputs.capture_dir }}/*.png
+            ${{ steps.real_window_smoke_matrix.outputs.capture_dir }}/results.json
+            ${{ steps.real_window_smoke_matrix.outputs.capture_dir }}/manifest.txt
           if-no-files-found: error

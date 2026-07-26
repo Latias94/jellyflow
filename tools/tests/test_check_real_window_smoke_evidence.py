@@ -3,11 +3,13 @@ from __future__ import annotations
 import binascii
 import hashlib
 import importlib.util
+import json
 import struct
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from typing import Any
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "check_real_window_smoke_evidence.py"
@@ -117,6 +119,48 @@ def write_pngs(capture_dir: Path, names: set[str], *, scale: int = 1) -> dict[st
 def manifest_line(name: str, payload: bytes, width: int, height: int) -> str:
     digest = hashlib.sha256(payload).hexdigest()
     return f"{name}\t{width}x{height}\tsha256={digest}"
+
+
+def final_marker(spec: Any) -> str:
+    return (
+        "JELLYFLOW_REAL_WINDOW_SMOKE "
+        f"status=pass demo={spec.demo} bounds={spec.bounds} "
+        f"scenario={spec.scenario} target_zoom={spec.zoom} diagnostic=None"
+    )
+
+
+def valid_results_document() -> dict[str, object]:
+    runs = []
+    for spec in evidence.RUN_SPECS:
+        marker = final_marker(spec)
+        runs.append(
+            {
+                "run_id": spec.run_id,
+                "config": spec.config(),
+                "exit_code": 0,
+                "timed_out": False,
+                "marker_count": 1,
+                "marker": marker,
+                "stdout": marker + "\n",
+                "stderr": "",
+                "status": "pass",
+                "errors": [],
+            }
+        )
+    return {
+        "schema_version": evidence.RESULTS_SCHEMA_VERSION,
+        "runs": runs,
+    }
+
+
+def write_results(capture_dir: Path, document: dict[str, object]) -> bytes:
+    payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+    (capture_dir / evidence.RESULTS_NAME).write_bytes(payload)
+    return payload
+
+
+def results_manifest_line(payload: bytes) -> str:
+    return f"{evidence.RESULTS_NAME}\tsha256={hashlib.sha256(payload).hexdigest()}"
 
 
 class RealWindowSmokeEvidenceTests(unittest.TestCase):
@@ -238,6 +282,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             capture_dir = Path(directory)
             expected = known_expected_names()
             payloads = write_pngs(capture_dir, expected, scale=2)
+            results_payload = write_results(capture_dir, valid_results_document())
             (capture_dir / "ignored.txt").write_text("ignored", encoding="utf-8")
             (capture_dir / evidence.MANIFEST_NAME).write_text(
                 "stale evidence\n", encoding="utf-8"
@@ -245,7 +290,7 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
 
             manifest = evidence.write_evidence_manifest(capture_dir)
 
-            expected_lines = []
+            expected_lines = [results_manifest_line(results_payload)]
             for name in sorted(expected):
                 width, height = logical_size(name)
                 expected_lines.append(
@@ -263,11 +308,12 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
             missing = "jellyflow-workflow-normal-1440x900-z1-interaction-final.png"
             names.remove(missing)
             payloads = write_pngs(capture_dir, names)
+            results_payload = write_results(capture_dir, valid_results_document())
 
             with self.assertRaisesRegex(RuntimeError, f"missing=.*{missing}"):
                 evidence.write_evidence_manifest(capture_dir)
 
-            expected_lines = []
+            expected_lines = [results_manifest_line(results_payload)]
             for name in sorted(names):
                 width, height = logical_size(name)
                 expected_lines.append(manifest_line(name, payloads[name], width, height))
@@ -309,6 +355,98 @@ class RealWindowSmokeEvidenceTests(unittest.TestCase):
                 RuntimeError, r"capture matrix uses inconsistent scales=\[1, 2\]"
             ):
                 evidence.write_evidence_manifest(capture_dir)
+
+    def test_receipt_rejects_missing_and_duplicate_run_ids_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            results_path = Path(directory) / evidence.RESULTS_NAME
+            missing_document = valid_results_document()
+            missing_run = missing_document["runs"].pop()
+            write_results(Path(directory), missing_document)
+
+            with self.assertRaises(evidence.ResultsValidationError) as context:
+                evidence.validate_results_receipt(results_path)
+
+            message = str(context.exception)
+            self.assertIn("run count is 8, expected exactly 9", message)
+            self.assertIn(missing_run["run_id"], message)
+
+            duplicate_document = valid_results_document()
+            removed_run = duplicate_document["runs"][-1]
+            duplicate_run = duplicate_document["runs"][0]
+            duplicate_document["runs"][-1] = dict(duplicate_run)
+            write_results(Path(directory), duplicate_document)
+
+            with self.assertRaises(evidence.ResultsValidationError) as context:
+                evidence.validate_results_receipt(results_path)
+
+            message = str(context.exception)
+            self.assertIn(
+                f"duplicate run ids=['{duplicate_run['run_id']}']", message
+            )
+            self.assertIn(removed_run["run_id"], message)
+
+    def test_receipt_rejects_tampered_exit_marker_and_marker_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture_dir = Path(directory)
+            document = valid_results_document()
+            run = document["runs"][0]
+            run["exit_code"] = 7
+            run["marker"] = run["marker"].replace("demo=shader", "demo=workflow")
+            run["stdout"] += run["stdout"]
+            write_results(capture_dir, document)
+
+            with self.assertRaises(evidence.ResultsValidationError) as context:
+                evidence.validate_results_receipt(capture_dir / evidence.RESULTS_NAME)
+
+            message = str(context.exception)
+            self.assertIn(f"{run['run_id']}: exit_code is 7, expected 0", message)
+            self.assertIn(
+                f"{run['run_id']}: marker_count is 1, captured output proves 2",
+                message,
+            )
+            self.assertIn(
+                f"{run['run_id']}: stored marker does not match captured output",
+                message,
+            )
+
+    def test_manifest_hash_binding_changes_with_a_valid_receipt_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture_dir = Path(directory)
+            expected = known_expected_names()
+            write_pngs(capture_dir, expected)
+            document = valid_results_document()
+            first_payload = write_results(capture_dir, document)
+
+            manifest = evidence.write_evidence_manifest(capture_dir)
+            first_lines = manifest.read_text(encoding="utf-8").splitlines()
+
+            document["runs"][0]["stderr"] = "non-marker diagnostic\n"
+            second_payload = write_results(capture_dir, document)
+            manifest = evidence.write_evidence_manifest(capture_dir)
+            second_lines = manifest.read_text(encoding="utf-8").splitlines()
+
+            self.assertNotEqual(first_payload, second_payload)
+            self.assertEqual(first_lines[0], results_manifest_line(first_payload))
+            self.assertEqual(second_lines[0], results_manifest_line(second_payload))
+            self.assertNotEqual(first_lines[0], second_lines[0])
+            self.assertEqual(first_lines[1:], second_lines[1:])
+
+    def test_capture_dir_output_uses_the_last_complete_matrix_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "run-first"
+            second = root / "run-second"
+            output = root / "matrix-output.txt"
+            output.write_text(
+                f"unrelated=value\ncapture_dir={first}\ncapture_dir={second}\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(evidence.capture_dir_from_output(output), second)
+
+            output.write_text("unrelated=value\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing capture_dir"):
+                evidence.capture_dir_from_output(output)
 
 
 if __name__ == "__main__":

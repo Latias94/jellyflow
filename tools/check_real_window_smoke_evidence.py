@@ -6,15 +6,47 @@ from __future__ import annotations
 import argparse
 import binascii
 import hashlib
+import json
+import os
 import re
 import struct
 import sys
+import tempfile
 import zlib
 from pathlib import Path
 from typing import NamedTuple
 
+try:
+    from run_real_window_smoke_matrix import (
+        RESULTS_NAME,
+        RESULTS_SCHEMA_VERSION,
+        RUN_SPECS,
+        extract_final_marker_lines,
+        marker_contract_errors,
+    )
+except ModuleNotFoundError:
+    from tools.run_real_window_smoke_matrix import (
+        RESULTS_NAME,
+        RESULTS_SCHEMA_VERSION,
+        RUN_SPECS,
+        extract_final_marker_lines,
+        marker_contract_errors,
+    )
+
 
 MANIFEST_NAME = "manifest.txt"
+RESULTS_RECEIPT_KEYS = {
+    "run_id",
+    "config",
+    "exit_code",
+    "timed_out",
+    "marker_count",
+    "marker",
+    "stdout",
+    "stderr",
+    "status",
+    "errors",
+}
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 CAPTURE_SIZE_PATTERN = re.compile(r"-(?P<width>[1-9]\d*)x(?P<height>[1-9]\d*)-")
 MAX_CAPTURE_SCALE = 4
@@ -31,20 +63,15 @@ INTERACTION_CAPTURE_STATES = (
     "final",
 )
 LOD_CAPTURE_STATES = ("lod-0.86", "lod-0.85", "lod-0.84")
-INTERACTION_RUNS = (
-    ("shader", "compact", 960, 640, "0.5"),
-    ("workflow", "compact", 960, 640, "0.5"),
-    ("shader", "compact", 960, 640, "1"),
-    ("workflow", "compact", 960, 640, "1"),
-    ("shader", "compact", 960, 640, "2"),
-    ("workflow", "compact", 960, 640, "2"),
-    ("shader", "normal", 1440, 900, "1"),
-    ("workflow", "normal", 1440, 900, "1"),
-)
+RUN_WINDOW_SIZES = {"compact": (960, 640), "normal": (1440, 900)}
 
 
 class PngValidationError(RuntimeError):
     """Raised when a capture is not a structurally valid supported PNG."""
+
+
+class ResultsValidationError(RuntimeError):
+    """Raised when the matrix receipt does not prove the exact nine runs."""
 
 
 class CaptureEvidence(NamedTuple):
@@ -58,6 +85,14 @@ class CaptureEvidence(NamedTuple):
         return f"{self.name}\t{self.width}x{self.height}\tsha256={self.sha256}"
 
 
+class ResultsEvidence(NamedTuple):
+    name: str
+    sha256: str
+
+    def manifest_line(self) -> str:
+        return f"{self.name}\tsha256={self.sha256}"
+
+
 class PngHeader(NamedTuple):
     width: int
     height: int
@@ -66,15 +101,19 @@ class PngHeader(NamedTuple):
 
 
 def expected_capture_names() -> set[str]:
-    names = {
-        f"jellyflow-{demo}-{bounds}-{width}x{height}-z{zoom}-interaction-{state}.png"
-        for demo, bounds, width, height, zoom in INTERACTION_RUNS
-        for state in INTERACTION_CAPTURE_STATES
-    }
-    names.update(
-        f"jellyflow-shader-normal-1440x900-z1-lod-threshold-{state}.png"
-        for state in LOD_CAPTURE_STATES
-    )
+    names: set[str] = set()
+    for spec in RUN_SPECS:
+        width, height = RUN_WINDOW_SIZES[spec.bounds]
+        states = (
+            INTERACTION_CAPTURE_STATES
+            if spec.scenario == "interaction"
+            else LOD_CAPTURE_STATES
+        )
+        names.update(
+            f"jellyflow-{spec.demo}-{spec.bounds}-{width}x{height}-z{spec.zoom}-"
+            f"{spec.scenario}-{state}.png"
+            for state in states
+        )
     return names
 
 
@@ -290,6 +329,172 @@ def validate_capture(path: Path) -> CaptureEvidence:
     )
 
 
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ResultsValidationError(f"JSON object contains duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def validate_results_receipt(path: Path) -> ResultsEvidence:
+    contents = path.read_bytes()
+    try:
+        document = json.loads(
+            contents.decode("utf-8"),
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
+    except UnicodeDecodeError as error:
+        raise ResultsValidationError(f"results are not UTF-8: {error}") from error
+    except json.JSONDecodeError as error:
+        raise ResultsValidationError(f"results are not valid JSON: {error}") from error
+
+    if not isinstance(document, dict):
+        raise ResultsValidationError("results root must be a JSON object")
+    root_keys = set(document)
+    expected_root_keys = {"schema_version", "runs"}
+    if root_keys != expected_root_keys:
+        raise ResultsValidationError(
+            "results root fields mismatch; "
+            f"missing={sorted(expected_root_keys - root_keys)}; "
+            f"unexpected={sorted(root_keys - expected_root_keys)}"
+        )
+    schema_version = document["schema_version"]
+    if type(schema_version) is not int or schema_version != RESULTS_SCHEMA_VERSION:
+        raise ResultsValidationError(
+            f"schema_version is {schema_version!r}, expected {RESULTS_SCHEMA_VERSION}"
+        )
+    runs = document["runs"]
+    if not isinstance(runs, list):
+        raise ResultsValidationError("runs must be a JSON array")
+
+    problems: list[str] = []
+    if len(runs) != len(RUN_SPECS):
+        problems.append(
+            f"run count is {len(runs)}, expected exactly {len(RUN_SPECS)}"
+        )
+
+    entries_by_id: dict[str, list[dict[str, object]]] = {}
+    for index, entry in enumerate(runs):
+        if not isinstance(entry, dict):
+            problems.append(f"runs[{index}] is not an object")
+            continue
+        run_id = entry.get("run_id")
+        if not isinstance(run_id, str):
+            problems.append(f"runs[{index}].run_id is not a string")
+            continue
+        entries_by_id.setdefault(run_id, []).append(entry)
+
+    duplicate_ids = sorted(
+        run_id for run_id, entries in entries_by_id.items() if len(entries) > 1
+    )
+    if duplicate_ids:
+        problems.append(f"duplicate run ids={duplicate_ids}")
+    expected_ids = {spec.run_id for spec in RUN_SPECS}
+    actual_ids = set(entries_by_id)
+    missing_ids = sorted(expected_ids - actual_ids)
+    unexpected_ids = sorted(actual_ids - expected_ids)
+    if missing_ids or unexpected_ids:
+        problems.append(
+            f"run id mismatch; missing={missing_ids}; unexpected={unexpected_ids}"
+        )
+
+    for spec in RUN_SPECS:
+        entries = entries_by_id.get(spec.run_id, [])
+        if len(entries) != 1:
+            continue
+        entry = entries[0]
+        entry_keys = set(entry)
+        if entry_keys != RESULTS_RECEIPT_KEYS:
+            problems.append(
+                f"{spec.run_id}: receipt fields mismatch; "
+                f"missing={sorted(RESULTS_RECEIPT_KEYS - entry_keys)}; "
+                f"unexpected={sorted(entry_keys - RESULTS_RECEIPT_KEYS)}"
+            )
+
+        if entry.get("config") != spec.config():
+            problems.append(
+                f"{spec.run_id}: config is {entry.get('config')!r}, "
+                f"expected {spec.config()!r}"
+            )
+
+        exit_code_value = entry.get("exit_code")
+        exit_code = exit_code_value if type(exit_code_value) is int else None
+        if exit_code_value != 0 or type(exit_code_value) is not int:
+            problems.append(
+                f"{spec.run_id}: exit_code is {exit_code_value!r}, expected 0"
+            )
+        timed_out_value = entry.get("timed_out")
+        timed_out = timed_out_value if isinstance(timed_out_value, bool) else False
+        if timed_out_value is not False:
+            problems.append(
+                f"{spec.run_id}: timed_out is {timed_out_value!r}, expected false"
+            )
+        stdout_value = entry.get("stdout")
+        stderr_value = entry.get("stderr")
+        if not isinstance(stdout_value, str):
+            problems.append(f"{spec.run_id}: stdout is not a string")
+            stdout = ""
+        else:
+            stdout = stdout_value
+        if not isinstance(stderr_value, str):
+            problems.append(f"{spec.run_id}: stderr is not a string")
+            stderr = ""
+        else:
+            stderr = stderr_value
+
+        marker_lines = extract_final_marker_lines(stdout, stderr)
+        marker_count = entry.get("marker_count")
+        if type(marker_count) is not int or marker_count != len(marker_lines):
+            problems.append(
+                f"{spec.run_id}: marker_count is {marker_count!r}, "
+                f"captured output proves {len(marker_lines)}"
+            )
+        expected_marker = marker_lines[0] if len(marker_lines) == 1 else None
+        if entry.get("marker") != expected_marker:
+            problems.append(
+                f"{spec.run_id}: stored marker does not match captured output"
+            )
+        for error in marker_contract_errors(
+            spec,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            marker_lines=marker_lines,
+        ):
+            problems.append(f"{spec.run_id}: {error}")
+        if entry.get("status") != "pass":
+            problems.append(
+                f"{spec.run_id}: receipt status is {entry.get('status')!r}, expected 'pass'"
+            )
+        if entry.get("errors") != []:
+            problems.append(
+                f"{spec.run_id}: receipt errors are {entry.get('errors')!r}, expected []"
+            )
+
+    if problems:
+        raise ResultsValidationError("; ".join(problems))
+    return ResultsEvidence(path.name, hashlib.sha256(contents).hexdigest())
+
+
+def _atomic_write_text(path: Path, contents: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def write_evidence_manifest(capture_dir: Path) -> Path:
     if not capture_dir.is_dir():
         raise RuntimeError(f"real-window smoke capture directory is missing: {capture_dir}")
@@ -310,11 +515,22 @@ def write_evidence_manifest(capture_dir: Path) -> Path:
         except (OSError, PngValidationError) as error:
             invalid.append(f"{path.name}: {error}")
 
+    results_evidence: ResultsEvidence | None = None
+    results_problem: str | None = None
+    results_path = capture_dir / RESULTS_NAME
+    try:
+        results_evidence = validate_results_receipt(results_path)
+    except (OSError, ResultsValidationError) as error:
+        results_problem = f"{RESULTS_NAME}: {error}"
+
     manifest_path = capture_dir / MANIFEST_NAME
-    manifest_lines = [capture.manifest_line() for capture in valid]
-    manifest_path.write_text(
+    manifest_lines = []
+    if results_evidence is not None:
+        manifest_lines.append(results_evidence.manifest_line())
+    manifest_lines.extend(capture.manifest_line() for capture in valid)
+    _atomic_write_text(
+        manifest_path,
         "\n".join(manifest_lines) + ("\n" if manifest_lines else ""),
-        encoding="utf-8",
     )
 
     expected = expected_capture_names()
@@ -324,6 +540,8 @@ def write_evidence_manifest(capture_dir: Path) -> Path:
     unexpected = sorted(candidate_names - expected)
     scales = sorted({capture.scale for capture in valid})
     problems: list[str] = []
+    if results_problem is not None:
+        problems.append(f"invalid matrix receipt={results_problem}")
     if invalid:
         problems.append(f"invalid PNGs={invalid}")
     if missing or unexpected:
@@ -339,15 +557,38 @@ def write_evidence_manifest(capture_dir: Path) -> Path:
     return manifest_path
 
 
+def capture_dir_from_output(path: Path) -> Path:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    capture_dirs = [
+        line.removeprefix("capture_dir=")
+        for line in lines
+        if line.startswith("capture_dir=")
+    ]
+    if not capture_dirs or not capture_dirs[-1]:
+        raise RuntimeError(f"capture directory output is missing capture_dir: {path}")
+    return Path(capture_dirs[-1])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Assert the exact real-window smoke screenshot matrix and write its manifest."
     )
-    parser.add_argument("--capture-dir", type=Path, required=True)
+    capture_source = parser.add_mutually_exclusive_group(required=True)
+    capture_source.add_argument("--capture-dir", type=Path)
+    capture_source.add_argument(
+        "--capture-dir-from-output",
+        type=Path,
+        help="Read the last capture_dir entry written by the matrix orchestrator.",
+    )
     args = parser.parse_args()
 
     try:
-        manifest = write_evidence_manifest(args.capture_dir)
+        capture_dir = (
+            args.capture_dir
+            if args.capture_dir is not None
+            else capture_dir_from_output(args.capture_dir_from_output)
+        )
+        manifest = write_evidence_manifest(capture_dir)
     except (OSError, RuntimeError) as error:
         print(f"real-window smoke evidence validation failed: {error}", file=sys.stderr)
         return 1
