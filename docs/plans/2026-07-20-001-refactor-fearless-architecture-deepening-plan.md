@@ -1687,19 +1687,25 @@ delete distribution and historical proof only after their real replacements are 
 - **Approach:**
   - Add an opaque keyboard connection interaction: activate one exact source port, move native focus
     through real target ports, activate a compatible target through the same fresh admission/commit
-    path as pointer connection, and expose cancel plus structured invalid feedback. Keep
-    create-from-wire search as a separate explicit action.
+    path as pointer connection, and expose cancel plus structured invalid feedback. The adapter
+    supplies only the runtime-issued exact port capability, never a synthetic pointer/geometry
+    position; source reactivation is a no-op. Keep create-from-wire search as a separate explicit
+    action.
   - Route Delete/Backspace from every exact graph semantic focus target to one idle-session
     `delete_selection` action. Native controls and overlays retain first refusal; remove per-edge
     deletion dispatch that breaks atomic mixed-selection semantics.
   - Give every focusable edge a non-zero, stable screen-space semantic rectangle centered on the
-    runtime path sample. Reuse it for focus chrome while leaving all pointer picking and ranking in
-    runtime geometry.
+    runtime path sample. Its 22-pixel accessibility/focus bound must be pointer-inert so native
+    focus machinery cannot consume runtime edge picking; reuse it for focus chrome while leaving
+    all pointer picking and ranking in runtime geometry.
   - Add session-owned keyboard nudge and reveal actions. Nudge moves one exact selected cohort
-    atomically under graph policy; reveal pans the view-owned viewport without changing zoom. Native
-    controls keep their arrow keys.
+    atomically under graph policy using one shared feasible delta under node/parent extents; reveal
+    pans the view-owned viewport without changing zoom. Correct obsolete model documentation that
+    claims extents are adapter-only. Native controls keep their arrow keys.
   - Track view-local recent interaction elevation so a clicked or dragged node paints and picks above
-    overlapping selected peers without persisting document z-order or coupling separate views.
+    overlapping selected peers without persisting document z-order or coupling separate views. One
+    runtime-issued render order must drive frame admission, final paint, port overlap, and node pick;
+    Open GPUI must remove its overview/detail double pass and global interaction-island tail.
   - Replace the invalid-combination-prone `route_kind + route_center` model with one closed,
     validated `EdgeRouteSpec`: straight, Bezier with curvature, orthogonal with offset/step/center,
     or smooth-step with offset/step/radius/center. Runtime geometry resolves this exact specification
@@ -1722,14 +1728,17 @@ delete distribution and historical proof only after their real replacements are 
 - **Test scenarios:**
   - Keyboard and accessibility activation connect compatible existing ports, reject invalid or
     occupied targets without mutation, survive focus traversal, cancel on Escape, fail closed on
-    node/port ABA, and produce the same command result as pointer connection.
+    node/port ABA, and produce the same command result as pointer connection without adapter-made
+    pointer positions.
   - Node, port, and edge focus delete one mixed selection atomically; held keys, active gestures,
     retired focus, undeletable policy, TextInput, Select, and overlay descendants are not hijacked or
     double-dispatched.
   - Edge semantic bounds are non-zero and coincide with focus chrome at 0.5/1/2 zoom, preserve stable
-    traversal order, disappear on retirement, and do not change pointer picking.
-  - Arrow nudge moves a multi-selection once with grid/extent/policy enforcement, Shift accelerates,
-    native controls retain arrows, and revealing an offscreen focused node pans without changing zoom.
+    traversal order, disappear on retirement, expose a 22-pixel accessibility rectangle, and do not
+    change pointer picking or consume pointer input.
+  - Arrow nudge moves a multi-selection once with one shared grid/extent/policy-feasible delta, Shift
+    accelerates, native controls retain arrows, and revealing an offscreen focused node pans without
+    changing zoom.
   - Overlapping selected nodes promote only the most recently interacted node in that view and keep
     paint/pick order aligned; another view and later selection clearing remain independent.
   - Every `EdgeRouteSpec` variant round-trips through storage, rejects non-finite/out-of-range
