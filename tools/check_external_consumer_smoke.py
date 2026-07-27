@@ -108,6 +108,12 @@ def _load_external_consumer_main_rs(fixture_name: str) -> str:
     return fixture_path.read_text(encoding="utf-8")
 
 
+def open_gpui_adoption_main_rs() -> str:
+    """Return the one public Open GPUI recipe used by both consumer modes."""
+
+    return _load_external_consumer_main_rs("open-gpui-adoption")
+
+
 def sha256_file(path: Path) -> str:
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
@@ -444,7 +450,9 @@ def jellyflow_package_consumer_scenarios(
     egui_closure = frozenset(
         {"jellyflow-core", "jellyflow-egui", "jellyflow-runtime"}
     )
-    open_gpui_direct = frozenset({"jellyflow-open-gpui"})
+    open_gpui_direct = frozenset(
+        {"jellyflow-core", "jellyflow-runtime", "jellyflow-open-gpui"}
+    )
     open_gpui_closure = frozenset(
         {"jellyflow-core", "jellyflow-open-gpui", "jellyflow-runtime"}
     )
@@ -498,17 +506,22 @@ def jellyflow_package_consumer_scenarios(
                 cargo_toml=external_cargo_toml(
                     "jellyflow-package-open-gpui-smoke",
                     [
-                        packaged_jellyflow_dependency(
-                            "jellyflow-open-gpui", versions
-                        ),
+                        packaged_jellyflow_dependency(name, versions)
+                        for name in sorted(open_gpui_direct)
+                    ]
+                    + [
                         'open_gpui = { package = "open-gpui", version = "=0.2.0", '
                         "default-features = false }",
+                        'open_gpui_ui_components = { package = "open-gpui-ui-components", '
+                        'version = "=0.2.0", default-features = false }',
                     ],
                 ),
-                main_rs=_load_external_consumer_main_rs("package-open-gpui"),
+                main_rs=open_gpui_adoption_main_rs(),
             ),
             direct_jellyflow_dependencies=open_gpui_direct,
-            direct_external_dependencies=frozenset({"open_gpui"}),
+            direct_external_dependencies=frozenset(
+                {"open_gpui", "open_gpui_ui_components"}
+            ),
             expected_jellyflow_closure=open_gpui_closure,
             forbidden_packages=frozenset({"jellyflow-egui", "jellyflow-layout"})
             | egui_ecosystem,
@@ -547,9 +560,10 @@ def jellyflow_open_gpui_source_scenario(repo_root: Path) -> SmokeScenario:
                 f'jellyflow-open-gpui = {{ path = "{(repo_root / "crates/jellyflow-open-gpui").as_posix()}" }}',
                 f'jellyflow-runtime = {{ path = "{(repo_root / "crates/jellyflow-runtime").as_posix()}" }}',
                 'open_gpui = { package = "open-gpui", version = "=0.2.0", default-features = false, features = ["test-support"] }',
+                'open_gpui_ui_components = { package = "open-gpui-ui-components", version = "=0.2.0", default-features = false }',
             ],
         ),
-        main_rs=_load_external_consumer_main_rs("open-gpui-source"),
+        main_rs=open_gpui_adoption_main_rs(),
     )
 
 

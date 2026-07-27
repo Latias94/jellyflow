@@ -1,3 +1,4 @@
+// Shared source and archive external-consumer recipe.
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -13,7 +14,8 @@ use jellyflow_open_gpui::chrome::{
 };
 use jellyflow_open_gpui::host::OpenGpuiSceneHost;
 use jellyflow_open_gpui::registry::{
-    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiRendererRegistrationStatus,
+    OpenGpuiNodeRegistrationPolicy, OpenGpuiNodeRegistry, OpenGpuiNodeRegistryIssueKind,
+    OpenGpuiRendererRegistrationStatus,
 };
 use jellyflow_open_gpui::size_policy::{OpenGpuiContentHeightPolicy, OpenGpuiNodeSizePolicy};
 use jellyflow_open_gpui::theme::OpenGpuiGraphTheme;
@@ -23,8 +25,9 @@ use jellyflow_runtime::schema::{NodeCatalog, NodeKindSpec, NodePortSpec};
 use jellyflow_runtime::view::{PublishedPortOutcome, ViewSessionOptions};
 use open_gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Task, Window, div, px, rgb,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
 };
+use open_gpui_ui_components::{Button, ButtonVariant, ListboxOption, Select, TextInput};
 
 const KIND: &str = "external.dynamic-workflow";
 const RENDERER: &str = "external.native.dynamic-workflow";
@@ -169,6 +172,30 @@ impl Render for ProductNode {
             )
             .child(
                 div()
+                    .id("external-product-scroll")
+                    .absolute()
+                    .left(px(16.0))
+                    .top(px(48.0))
+                    .w(px(156.0))
+                    .h(px(48.0))
+                    .overflow_y_scroll()
+                    .child(
+                        TextInput::new("external-product-input", "Node label")
+                            .value(self.state.title.clone())
+                            .placeholder("Node label"),
+                    )
+                    .child(
+                        Select::new("external-product-select", "Node mode")
+                            .selected("data")
+                            .option(ListboxOption::new("data", "Data")),
+                    )
+                    .child(
+                        Button::new("external-product-button", "Add dynamic port")
+                            .variant(ButtonVariant::Secondary),
+                    ),
+            )
+            .child(
+                div()
                     .absolute()
                     .right(px(0.0))
                     .top(px(72.0))
@@ -243,6 +270,64 @@ fn external_edge_painters() -> OpenGpuiEdgePainterRegistry {
     painters.build()
 }
 
+fn product_node_state() -> Rc<ProductNodeState> {
+    Rc::new(ProductNodeState {
+        title: "Application-owned dynamic node".to_owned(),
+        mount_count: Cell::new(0),
+        render_count: Cell::new(0),
+        click_count: Cell::new(0),
+        command_count: Cell::new(0),
+        connected_state_seen: Cell::new(false),
+    })
+}
+
+fn build_product_registry(state: Rc<ProductNodeState>) -> OpenGpuiNodeRegistry {
+    let factory_state = Rc::clone(&state);
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
+        OpenGpuiNodeSizePolicy::ContentHeight(
+            OpenGpuiContentHeightPolicy::new(108.0, 160.0)
+                .expect("external content-height policy"),
+        ),
+    );
+    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
+        let state = Rc::clone(&factory_state);
+        state
+            .mount_count
+            .set(state.mount_count.get().saturating_add(1));
+        cx.new(|_| ProductNode {
+            binding,
+            state,
+            command_task: None,
+        })
+    });
+    registry
+        .seal()
+        .expect("external renderer registrations must be valid")
+}
+
+fn assert_invalid_registry_is_rejected() {
+    let state = product_node_state();
+    let mut registry = OpenGpuiNodeRegistry::builder();
+    registry.register("   ", move |binding, _window, cx| {
+        cx.new(|_| ProductNode {
+            binding,
+            state: Rc::clone(&state),
+            command_task: None,
+        })
+    });
+
+    let error = match registry.seal() {
+        Ok(_) => panic!("whitespace renderer key must prevent registry sealing"),
+        Err(error) => error,
+    };
+    assert_eq!(error.issues().len(), 1);
+    assert_eq!(
+        error.issues()[0].kind(),
+        OpenGpuiNodeRegistryIssueKind::EmptyRendererKey
+    );
+}
+
 fn node_id() -> NodeId {
     NodeId::from_u128(20)
 }
@@ -267,6 +352,7 @@ fn edge_id() -> EdgeId {
     EdgeId::from_u128(40)
 }
 
+#[cfg(test)]
 #[open_gpui::test]
 fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::TestAppContext) {
     let kind = NodeKindKey::new(KIND);
@@ -344,35 +430,9 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
         .expect("attach external view");
     let weak_view = view.downgrade();
 
-    let state = Rc::new(ProductNodeState {
-        title: "Application-owned dynamic node".to_owned(),
-        mount_count: Cell::new(0),
-        render_count: Cell::new(0),
-        click_count: Cell::new(0),
-        command_count: Cell::new(0),
-        connected_state_seen: Cell::new(false),
-    });
-    let factory_state = Rc::clone(&state);
-    let mut registry = OpenGpuiNodeRegistry::builder();
-    let policy = OpenGpuiNodeRegistrationPolicy::default().with_size_policy(
-        OpenGpuiNodeSizePolicy::ContentHeight(
-            OpenGpuiContentHeightPolicy::new(108.0, 160.0).expect("external content-height policy"),
-        ),
-    );
-    registry.register_with_policy(RENDERER, policy, move |binding, _window, cx| {
-        let state = Rc::clone(&factory_state);
-        state
-            .mount_count
-            .set(state.mount_count.get().saturating_add(1));
-        cx.new(|_| ProductNode {
-            binding,
-            state,
-            command_task: None,
-        })
-    });
-    let registry = registry
-        .seal()
-        .expect("source renderer registrations must be valid");
+    let state = product_node_state();
+    assert_invalid_registry_is_rejected();
+    let registry = build_product_registry(Rc::clone(&state));
     assert_eq!(
         registry.status(RENDERER),
         OpenGpuiRendererRegistrationStatus::Registered
@@ -482,6 +542,7 @@ fn external_retained_node_mounts_and_measures_real_ports(cx: &mut open_gpui::Tes
     );
 }
 
+#[cfg(test)]
 fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
@@ -489,4 +550,11 @@ fn draw(cx: &mut open_gpui::VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn main() {}
+fn main() {
+    assert_invalid_registry_is_rejected();
+    let registry = build_product_registry(product_node_state());
+    assert_eq!(
+        registry.status(RENDERER),
+        OpenGpuiRendererRegistrationStatus::Registered
+    );
+}

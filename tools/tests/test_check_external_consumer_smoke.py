@@ -142,10 +142,9 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
     def test_fixture_loader_reads_checked_in_consumer_sources(self) -> None:
         for fixture_name in (
             "adapter-conformance",
-            "open-gpui-source",
+            "open-gpui-adoption",
             "package-egui",
             "package-headless",
-            "package-open-gpui",
         ):
             with self.subTest(fixture_name=fixture_name):
                 expected = (FIXTURE_ROOT / fixture_name / "src/main.rs").read_text(
@@ -156,6 +155,47 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                     external_smoke._load_external_consumer_main_rs(fixture_name),
                     expected,
                 )
+
+    def test_open_gpui_source_and_archive_share_one_production_recipe(self) -> None:
+        versions = {name: "0.0.0-test" for name in external_smoke.PUBLISHABLE_CRATES}
+        package_scenarios = {
+            scenario.consumer_name: scenario
+            for scenario in external_smoke.jellyflow_package_consumer_scenarios(versions)
+        }
+
+        shared_recipe = external_smoke.open_gpui_adoption_main_rs()
+        self.assertIn("fn build_product_registry", shared_recipe)
+        self.assertIn("fn assert_invalid_registry_is_rejected", shared_recipe)
+        self.assertIn("fn main() {", shared_recipe)
+        self.assertIn("let registry = build_product_registry", shared_recipe)
+        self.assertIn("assert_invalid_registry_is_rejected();", shared_recipe)
+        self.assertIn("TextInput::new", shared_recipe)
+        self.assertIn("Select::new", shared_recipe)
+        self.assertIn("Button::new", shared_recipe)
+        self.assertIn("overflow_y_scroll", shared_recipe)
+        self.assertEqual(
+            external_smoke.jellyflow_open_gpui_source_scenario(
+                Path("/tmp/source")
+            ).main_rs,
+            shared_recipe,
+        )
+        archive = package_scenarios["open-gpui"]
+        self.assertEqual(archive.smoke.main_rs, shared_recipe)
+        self.assertEqual(
+            archive.direct_jellyflow_dependencies,
+            {"jellyflow-core", "jellyflow-runtime", "jellyflow-open-gpui"},
+        )
+        self.assertEqual(
+            archive.direct_external_dependencies,
+            {"open_gpui", "open_gpui_ui_components"},
+        )
+        self.assertEqual(
+            archive.expected_jellyflow_closure,
+            {"jellyflow-core", "jellyflow-runtime", "jellyflow-open-gpui"},
+        )
+        self.assertNotIn("test-support", archive.smoke.cargo_toml)
+        source = external_smoke.jellyflow_open_gpui_source_scenario(Path("/tmp/source"))
+        self.assertIn("open_gpui_ui_components", source.cargo_toml)
 
     def test_normalized_manifest_rejects_unpublished_jellyflow_dependencies(self) -> None:
         for package in ("jellyflow", "jellyflow-unknown"):
@@ -206,12 +246,12 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 ),
                 (
                     "assert package_scenarios['jellyflow-package-open-gpui-smoke'].main_rs "
-                    "== module._load_external_consumer_main_rs('package-open-gpui')"
+                    "== module.open_gpui_adoption_main_rs()"
                 ),
                 (
                     "assert module.jellyflow_open_gpui_source_scenario("
                     "pathlib.Path('/tmp/source')).main_rs "
-                    "== module._load_external_consumer_main_rs('open-gpui-source')"
+                    "== module.open_gpui_adoption_main_rs()"
                 ),
                 (
                     "assert module.jellyflow_adapter_conformance_source_scenario("
@@ -270,8 +310,11 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 "jellyflow-runtime",
             },
             "jellyflow-package-open-gpui-smoke": {
+                "jellyflow-core",
+                "jellyflow-runtime",
                 "jellyflow-open-gpui",
                 "open_gpui",
+                "open_gpui_ui_components",
             },
         }
         expected_closures = {
@@ -687,9 +730,11 @@ class ExternalConsumerScenarioTests(unittest.TestCase):
                 "jellyflow-open-gpui",
                 "jellyflow-runtime",
                 "open_gpui",
+                "open_gpui_ui_components",
             },
         )
         self.assertEqual(dependencies["open_gpui"]["features"], ["test-support"])
+        self.assertFalse(dependencies["open_gpui_ui_components"]["default-features"])
 
     def test_adapter_conformance_consumer_is_direct_and_framework_neutral(self) -> None:
         scenario = external_smoke.jellyflow_adapter_conformance_source_scenario(
