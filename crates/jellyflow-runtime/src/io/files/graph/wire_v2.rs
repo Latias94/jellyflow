@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, fmt, marker::PhantomData};
 
 use jellyflow_core::core::{
     Binding, BindingEndpoint, BindingId, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeId,
-    EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteKind,
+    EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteSpec,
     EdgeViewDescriptor, GRAPH_VERSION, Graph, GraphBuilder, GraphId, GraphImport,
     GraphLocalBindingTarget, Group, GroupId, Node, NodeExtent, NodeId, NodeKindKey, NodeOrigin,
     Port, PortCapacity, PortDirection, PortId, PortKey, PortKind, SourceAnchor, StickyNote,
@@ -524,7 +524,7 @@ impl From<NodeV2> for Node {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanvasPointV2 {
     x: f32,
@@ -925,7 +925,7 @@ struct EdgeViewV2 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    route_kind: Option<EdgeRouteKindV2>,
+    route: Option<EdgeRouteSpecV2>,
 }
 
 impl From<&EdgeViewDescriptor> for EdgeViewV2 {
@@ -937,7 +937,7 @@ impl From<&EdgeViewDescriptor> for EdgeViewV2 {
             source_marker_key: value.source_marker_key.clone(),
             target_marker_key: value.target_marker_key.clone(),
             style_token: value.style_token.clone(),
-            route_kind: value.route_kind.map(EdgeRouteKindV2::from),
+            route: value.route.map(EdgeRouteSpecV2::from),
         }
     }
 }
@@ -951,7 +951,7 @@ impl From<EdgeViewV2> for EdgeViewDescriptor {
             source_marker_key: value.source_marker_key,
             target_marker_key: value.target_marker_key,
             style_token: value.style_token,
-            route_kind: value.route_kind.map(EdgeRouteKind::from),
+            route: value.route.map(EdgeRouteSpec::from),
         }
     }
 }
@@ -985,32 +985,81 @@ impl From<EdgeLabelAnchorV2> for EdgeLabelAnchor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum EdgeRouteKindV2 {
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum EdgeRouteSpecV2 {
     Straight,
-    Orthogonal,
-    Bezier,
-    SmoothStep,
+    Bezier {
+        curvature: f32,
+    },
+    Orthogonal {
+        offset: f32,
+        step_position: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        center: Option<CanvasPointV2>,
+    },
+    SmoothStep {
+        offset: f32,
+        step_position: f32,
+        border_radius: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        center: Option<CanvasPointV2>,
+    },
 }
 
-impl From<EdgeRouteKind> for EdgeRouteKindV2 {
-    fn from(value: EdgeRouteKind) -> Self {
+impl From<EdgeRouteSpec> for EdgeRouteSpecV2 {
+    fn from(value: EdgeRouteSpec) -> Self {
         match value {
-            EdgeRouteKind::Straight => Self::Straight,
-            EdgeRouteKind::Orthogonal => Self::Orthogonal,
-            EdgeRouteKind::Bezier => Self::Bezier,
-            EdgeRouteKind::SmoothStep => Self::SmoothStep,
+            EdgeRouteSpec::Straight => Self::Straight,
+            EdgeRouteSpec::Bezier { curvature } => Self::Bezier { curvature },
+            EdgeRouteSpec::Orthogonal {
+                offset,
+                step_position,
+                center,
+            } => Self::Orthogonal {
+                offset,
+                step_position,
+                center: center.map(CanvasPointV2::from),
+            },
+            EdgeRouteSpec::SmoothStep {
+                offset,
+                step_position,
+                border_radius,
+                center,
+            } => Self::SmoothStep {
+                offset,
+                step_position,
+                border_radius,
+                center: center.map(CanvasPointV2::from),
+            },
         }
     }
 }
 
-impl From<EdgeRouteKindV2> for EdgeRouteKind {
-    fn from(value: EdgeRouteKindV2) -> Self {
+impl From<EdgeRouteSpecV2> for EdgeRouteSpec {
+    fn from(value: EdgeRouteSpecV2) -> Self {
         match value {
-            EdgeRouteKindV2::Straight => Self::Straight,
-            EdgeRouteKindV2::Orthogonal => Self::Orthogonal,
-            EdgeRouteKindV2::Bezier => Self::Bezier,
-            EdgeRouteKindV2::SmoothStep => Self::SmoothStep,
+            EdgeRouteSpecV2::Straight => Self::Straight,
+            EdgeRouteSpecV2::Bezier { curvature } => Self::Bezier { curvature },
+            EdgeRouteSpecV2::Orthogonal {
+                offset,
+                step_position,
+                center,
+            } => Self::Orthogonal {
+                offset,
+                step_position,
+                center: center.map(CanvasPoint::from),
+            },
+            EdgeRouteSpecV2::SmoothStep {
+                offset,
+                step_position,
+                border_radius,
+                center,
+            } => Self::SmoothStep {
+                offset,
+                step_position,
+                border_radius,
+                center: center.map(CanvasPoint::from),
+            },
         }
     }
 }
@@ -1199,5 +1248,87 @@ impl From<SourceAnchorV2> for SourceAnchor {
             source_id: value.source_id,
             payload: value.payload,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_route_spec_roundtrips_through_v2_wire() {
+        let routes = [
+            EdgeRouteSpec::straight(),
+            EdgeRouteSpec::bezier(0.75).expect("valid bezier route"),
+            EdgeRouteSpec::orthogonal(32.0, 0.25, Some(CanvasPoint { x: 420.0, y: 680.0 }))
+                .expect("valid orthogonal route"),
+            EdgeRouteSpec::smooth_step(48.0, 0.8, 12.0, Some(CanvasPoint { x: 520.0, y: 780.0 }))
+                .expect("valid smooth-step route"),
+        ];
+
+        for route in routes {
+            let descriptor = EdgeViewDescriptor::new().with_route(route);
+            let wire = EdgeViewV2::from(&descriptor);
+            let encoded = serde_json::to_value(&wire).expect("encode edge view");
+            assert!(encoded.get("route").is_some());
+            let decoded: EdgeViewV2 = serde_json::from_value(encoded).expect("decode edge view");
+            assert_eq!(EdgeViewDescriptor::from(decoded), descriptor);
+        }
+    }
+
+    #[test]
+    fn v2_wire_rejects_removed_loose_route_fields() {
+        let mut old_wire = serde_json::Map::new();
+        old_wire.insert(
+            ["route", "kind"].join("_"),
+            serde_json::json!("smooth_step"),
+        );
+        old_wire.insert(
+            ["route", "center"].join("_"),
+            serde_json::json!({ "x": 420.0, "y": 680.0 }),
+        );
+
+        let error = serde_json::from_value::<EdgeViewV2>(serde_json::Value::Object(old_wire))
+            .expect_err("removed loose route fields must not be accepted");
+
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn decoded_v2_route_spec_cannot_bypass_graph_storage_validation() {
+        let graph_id = GraphId::from_u128(1);
+        let edge_id = EdgeId::from_u128(2);
+        let mut graph = Graph::new(graph_id);
+        graph.insert_edge(
+            edge_id,
+            Edge::new(EdgeKind::Data, PortId::from_u128(3), PortId::from_u128(4)),
+        );
+        let mut wire = GraphFileWireV2::from_file(&GraphFile::from_graph(graph));
+        wire.graph
+            .edges
+            .get_mut(&edge_id)
+            .expect("fixture edge")
+            .view
+            .route = Some(EdgeRouteSpecV2::Orthogonal {
+            offset: 20.0,
+            step_position: 1.5,
+            center: None,
+        });
+
+        let error = wire
+            .into_file_with_limits(PersistenceLimits::default())
+            .expect_err("invalid decoded route must fail graph storage validation");
+
+        assert!(matches!(
+            error,
+            GraphFileError::StorageValidation { errors }
+                if errors.iter().any(|error| matches!(
+                    error,
+                    jellyflow_core::GraphValidationError::EdgeRouteSpecInvalid {
+                        edge,
+                        source: jellyflow_core::EdgeRouteSpecValidationError::OrthogonalStepPosition { .. },
+                    } if *edge == edge_id
+                ))
+        ));
     }
 }

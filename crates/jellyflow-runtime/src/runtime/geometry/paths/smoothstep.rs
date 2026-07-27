@@ -1,4 +1,4 @@
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, EdgeRouteSpec};
 
 use super::super::endpoints::EdgeEndpointPosition;
 use super::orthogonal::{OrthogonalEdgeOptions, plan_orthogonal_route};
@@ -10,14 +10,16 @@ pub struct SmoothStepEdgeOptions {
     pub offset: f32,
     pub step_position: f32,
     pub border_radius: f32,
+    pub center: Option<CanvasPoint>,
 }
 
 impl Default for SmoothStepEdgeOptions {
     fn default() -> Self {
         Self {
-            offset: 20.0,
-            step_position: 0.5,
-            border_radius: 5.0,
+            offset: EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+            step_position: EdgeRouteSpec::DEFAULT_STEP_POSITION,
+            border_radius: EdgeRouteSpec::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+            center: None,
         }
     }
 }
@@ -34,6 +36,7 @@ pub fn smoothstep_edge_path(
         OrthogonalEdgeOptions {
             offset: options.offset,
             step_position: options.step_position,
+            center: options.center,
         },
     )?;
     let first = *route.points.first()?;

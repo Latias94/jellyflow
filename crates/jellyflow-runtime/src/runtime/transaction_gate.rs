@@ -1,5 +1,6 @@
 use crate::graph_kernel::{
-    GraphTransaction, find_invalid_size_in_tx, find_non_finite_in_tx, normalize_transaction,
+    GraphTransaction, find_invalid_edge_route_in_tx, find_invalid_size_in_tx,
+    find_non_finite_in_tx, normalize_transaction,
 };
 use crate::profile::ApplyPipelineError;
 use crate::rules::{Diagnostic, DiagnosticTarget};
@@ -20,6 +21,9 @@ impl GraphTransactionGate {
             return Err(Self::reject(key, message));
         }
         if let Some((key, message)) = find_invalid_size_in_tx(transaction) {
+            return Err(Self::reject(key, message));
+        }
+        if let Some((key, message)) = find_invalid_edge_route_in_tx(transaction) {
             return Err(Self::reject(key, message));
         }
         Ok(())

@@ -1,4 +1,4 @@
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, EdgeRouteSpec};
 
 use super::super::endpoints::{EdgeEndpointPosition, HandlePosition};
 use super::label::bezier_label;
@@ -12,7 +12,9 @@ pub struct BezierEdgeOptions {
 
 impl Default for BezierEdgeOptions {
     fn default() -> Self {
-        Self { curvature: 0.25 }
+        Self {
+            curvature: EdgeRouteSpec::DEFAULT_BEZIER_CURVATURE,
+        }
     }
 }
 

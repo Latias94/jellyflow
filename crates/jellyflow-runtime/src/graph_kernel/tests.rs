@@ -1,7 +1,9 @@
 use crate::io::GraphFile;
 use jellyflow_core::core::{
-    Binding, BindingId, CanvasPoint, Edge, EdgeId, EdgeKind, Graph, GraphBuilder, GraphId, Node,
-    NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId, PortKey, PortKind,
+    Binding, BindingId, CanvasPoint, Edge, EdgeId, EdgeKind, EdgeRouteSpec,
+    EdgeRouteSpecValidationError, EdgeViewDescriptor, Graph, GraphBuilder, GraphId,
+    GraphValidationError, Node, NodeId, NodeKindKey, Port, PortCapacity, PortDirection, PortId,
+    PortKey, PortKind,
 };
 
 use super::{ApplyError, GraphHistory, GraphOp, GraphTransaction, normalize_transaction};
@@ -86,6 +88,68 @@ fn invalid_transaction_apply_is_atomic() {
     assert_eq!(frozen_graph_value(&graph), before);
     assert!(!graph.node(&existing_node_id).expect("existing node").hidden);
     assert!(graph.node(&invalid_node_id).is_none());
+}
+
+#[test]
+fn detached_transaction_rejects_invalid_edge_route_atomically() {
+    let graph_id = GraphId::from_u128(6);
+    let source_node = NodeId::from_u128(7);
+    let target_node = NodeId::from_u128(8);
+    let source_port = PortId::from_u128(9);
+    let target_port = PortId::from_u128(10);
+    let edge_id = EdgeId::from_u128(11);
+    let mut graph = GraphBuilder::new(graph_id)
+        .with_node(source_node, node("test.source", vec![source_port]))
+        .with_node(target_node, node("test.target", vec![target_port]))
+        .with_port(source_port, port(source_node, "out", PortDirection::Out))
+        .with_port(target_port, port(target_node, "in", PortDirection::In))
+        .with_edge(edge_id, Edge::new(EdgeKind::Data, source_port, target_port))
+        .build()
+        .expect("fixture graph is valid");
+    let invalid_view = EdgeViewDescriptor::new().with_route(EdgeRouteSpec::SmoothStep {
+        offset: 20.0,
+        step_position: 0.5,
+        border_radius: -1.0,
+        center: None,
+    });
+    let transaction = GraphTransaction::from_ops([
+        GraphOp::SetNodeHidden {
+            id: source_node,
+            from: false,
+            to: true,
+        },
+        GraphOp::SetEdgeView {
+            id: edge_id,
+            from: EdgeViewDescriptor::default(),
+            to: invalid_view,
+        },
+    ]);
+
+    let error = transaction
+        .apply_to(&mut graph)
+        .expect_err("detached transactions must preserve finite graph storage");
+
+    assert!(matches!(
+        error,
+        ApplyError::InvalidTransactionResult { errors }
+            if errors.iter().any(|error| matches!(
+                error,
+                GraphValidationError::EdgeRouteSpecInvalid {
+                    edge,
+                    source: EdgeRouteSpecValidationError::SmoothStepBorderRadius { .. },
+                } if *edge == edge_id
+            ))
+    ));
+    assert!(
+        !graph
+            .node(&source_node)
+            .expect("source node remains")
+            .hidden
+    );
+    assert_eq!(
+        graph.edge(&edge_id).expect("edge remains").view,
+        EdgeViewDescriptor::default()
+    );
 }
 
 #[test]

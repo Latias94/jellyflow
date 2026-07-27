@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::core::ids::PortId;
 
-use super::port::PortKind;
+use super::{geometry::CanvasPoint, port::PortKind};
 
 fn is_false(v: &bool) -> bool {
     !*v
@@ -32,18 +32,218 @@ impl EdgeKind {
     }
 }
 
-/// Route-style hint for adapter-owned edge drawing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeRouteKind {
+/// Complete, renderer-neutral specification for resolving an edge route.
+///
+/// Every parameter that affects route geometry lives in the selected variant. This prevents a
+/// route kind from being combined with parameters that it cannot interpret.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EdgeRouteSpec {
     /// Direct line between resolved endpoints.
     Straight,
-    /// Orthogonal/polyline route with right-angle legs.
-    Orthogonal,
     /// Cubic bezier route using endpoint sides as curvature hints.
-    Bezier,
-    /// XyFlow-style smooth-step route.
-    SmoothStep,
+    Bezier { curvature: f32 },
+    /// Orthogonal/polyline route with right-angle legs.
+    Orthogonal {
+        offset: f32,
+        step_position: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        center: Option<CanvasPoint>,
+    },
+    /// Orthogonal route with rounded corners.
+    SmoothStep {
+        offset: f32,
+        step_position: f32,
+        border_radius: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        center: Option<CanvasPoint>,
+    },
+}
+
+impl EdgeRouteSpec {
+    pub const DEFAULT_BEZIER_CURVATURE: f32 = 0.25;
+    pub const DEFAULT_ORTHOGONAL_OFFSET: f32 = 20.0;
+    pub const DEFAULT_STEP_POSITION: f32 = 0.5;
+    pub const DEFAULT_SMOOTH_STEP_BORDER_RADIUS: f32 = 5.0;
+    pub const MAX_CURVATURE: f32 = 10.0;
+    pub const MAX_OFFSET: f32 = 100_000.0;
+    pub const MAX_BORDER_RADIUS: f32 = 100_000.0;
+
+    pub const fn straight() -> Self {
+        Self::Straight
+    }
+
+    pub fn bezier(curvature: f32) -> Result<Self, EdgeRouteSpecValidationError> {
+        let route = Self::Bezier { curvature };
+        route.validate()?;
+        Ok(route)
+    }
+
+    pub fn orthogonal(
+        offset: f32,
+        step_position: f32,
+        center: Option<CanvasPoint>,
+    ) -> Result<Self, EdgeRouteSpecValidationError> {
+        let route = Self::Orthogonal {
+            offset,
+            step_position,
+            center,
+        };
+        route.validate()?;
+        Ok(route)
+    }
+
+    pub fn smooth_step(
+        offset: f32,
+        step_position: f32,
+        border_radius: f32,
+        center: Option<CanvasPoint>,
+    ) -> Result<Self, EdgeRouteSpecValidationError> {
+        let route = Self::SmoothStep {
+            offset,
+            step_position,
+            border_radius,
+            center,
+        };
+        route.validate()?;
+        Ok(route)
+    }
+
+    pub const fn default_orthogonal() -> Self {
+        Self::Orthogonal {
+            offset: Self::DEFAULT_ORTHOGONAL_OFFSET,
+            step_position: Self::DEFAULT_STEP_POSITION,
+            center: None,
+        }
+    }
+
+    pub const fn default_smooth_step() -> Self {
+        Self::SmoothStep {
+            offset: Self::DEFAULT_ORTHOGONAL_OFFSET,
+            step_position: Self::DEFAULT_STEP_POSITION,
+            border_radius: Self::DEFAULT_SMOOTH_STEP_BORDER_RADIUS,
+            center: None,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), EdgeRouteSpecValidationError> {
+        match self {
+            Self::Straight => Ok(()),
+            Self::Bezier { curvature } => {
+                validate_bounded_non_negative(curvature, Self::MAX_CURVATURE)
+                    .map_err(|()| EdgeRouteSpecValidationError::BezierCurvature { curvature })
+            }
+            Self::Orthogonal {
+                offset,
+                step_position,
+                center,
+            } => {
+                validate_bounded_non_negative(offset, Self::MAX_OFFSET)
+                    .map_err(|()| EdgeRouteSpecValidationError::OrthogonalOffset { offset })?;
+                validate_step_position(step_position).map_err(|()| {
+                    EdgeRouteSpecValidationError::OrthogonalStepPosition { step_position }
+                })?;
+                validate_center(center)
+                    .map_err(|center| EdgeRouteSpecValidationError::OrthogonalCenter { center })
+            }
+            Self::SmoothStep {
+                offset,
+                step_position,
+                border_radius,
+                center,
+            } => {
+                validate_bounded_non_negative(offset, Self::MAX_OFFSET)
+                    .map_err(|()| EdgeRouteSpecValidationError::SmoothStepOffset { offset })?;
+                validate_step_position(step_position).map_err(|()| {
+                    EdgeRouteSpecValidationError::SmoothStepStepPosition { step_position }
+                })?;
+                validate_bounded_non_negative(border_radius, Self::MAX_BORDER_RADIUS).map_err(
+                    |()| EdgeRouteSpecValidationError::SmoothStepBorderRadius { border_radius },
+                )?;
+                validate_center(center)
+                    .map_err(|center| EdgeRouteSpecValidationError::SmoothStepCenter { center })
+            }
+        }
+    }
+}
+
+impl Default for EdgeRouteSpec {
+    fn default() -> Self {
+        Self::Bezier {
+            curvature: Self::DEFAULT_BEZIER_CURVATURE,
+        }
+    }
+}
+
+/// Why an edge route specification cannot be installed in a graph.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum EdgeRouteSpecValidationError {
+    #[error("bezier curvature must be finite and within the supported range: {curvature}")]
+    BezierCurvature { curvature: f32 },
+    #[error("orthogonal offset must be finite and within the supported range: {offset}")]
+    OrthogonalOffset { offset: f32 },
+    #[error("orthogonal step position must be finite and within 0..=1: {step_position}")]
+    OrthogonalStepPosition { step_position: f32 },
+    #[error("orthogonal center must be finite: {center:?}")]
+    OrthogonalCenter { center: CanvasPoint },
+    #[error("smooth-step offset must be finite and within the supported range: {offset}")]
+    SmoothStepOffset { offset: f32 },
+    #[error("smooth-step step position must be finite and within 0..=1: {step_position}")]
+    SmoothStepStepPosition { step_position: f32 },
+    #[error(
+        "smooth-step border radius must be finite and within the supported range: {border_radius}"
+    )]
+    SmoothStepBorderRadius { border_radius: f32 },
+    #[error("smooth-step center must be finite: {center:?}")]
+    SmoothStepCenter { center: CanvasPoint },
+}
+
+impl EdgeRouteSpecValidationError {
+    pub fn field(self) -> &'static str {
+        match self {
+            Self::BezierCurvature { .. } => "curvature",
+            Self::OrthogonalOffset { .. } | Self::SmoothStepOffset { .. } => "offset",
+            Self::OrthogonalStepPosition { .. } | Self::SmoothStepStepPosition { .. } => {
+                "step_position"
+            }
+            Self::OrthogonalCenter { .. } | Self::SmoothStepCenter { .. } => "center",
+            Self::SmoothStepBorderRadius { .. } => "border_radius",
+        }
+    }
+
+    pub fn is_non_finite(self) -> bool {
+        match self {
+            Self::BezierCurvature { curvature } => !curvature.is_finite(),
+            Self::OrthogonalOffset { offset } | Self::SmoothStepOffset { offset } => {
+                !offset.is_finite()
+            }
+            Self::OrthogonalStepPosition { step_position }
+            | Self::SmoothStepStepPosition { step_position } => !step_position.is_finite(),
+            Self::OrthogonalCenter { center } | Self::SmoothStepCenter { center } => {
+                !center.is_finite()
+            }
+            Self::SmoothStepBorderRadius { border_radius } => !border_radius.is_finite(),
+        }
+    }
+}
+
+fn validate_bounded_non_negative(value: f32, maximum: f32) -> Result<(), ()> {
+    (value.is_finite() && (0.0..=maximum).contains(&value))
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_step_position(value: f32) -> Result<(), ()> {
+    (value.is_finite() && (0.0..=1.0).contains(&value))
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_center(center: Option<CanvasPoint>) -> Result<(), CanvasPoint> {
+    match center {
+        Some(center) if !center.is_finite() => Err(center),
+        Some(_) | None => Ok(()),
+    }
 }
 
 /// Edge between two ports.
@@ -137,9 +337,9 @@ pub struct EdgeViewDescriptor {
     /// Style token, interpreted by adapters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_token: Option<String>,
-    /// Route-style hint, interpreted by adapters and runtime geometry projections.
+    /// Complete route specification. When omitted, the runtime resolves [`EdgeRouteSpec::default`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_kind: Option<EdgeRouteKind>,
+    pub route: Option<EdgeRouteSpec>,
 }
 
 impl EdgeViewDescriptor {
@@ -177,8 +377,8 @@ impl EdgeViewDescriptor {
         self
     }
 
-    pub fn with_route_kind(mut self, route_kind: EdgeRouteKind) -> Self {
-        self.route_kind = Some(route_kind);
+    pub fn with_route(mut self, route: EdgeRouteSpec) -> Self {
+        self.route = Some(route);
         self
     }
 

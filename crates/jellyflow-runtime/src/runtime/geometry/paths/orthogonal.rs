@@ -1,4 +1,4 @@
-use jellyflow_core::core::CanvasPoint;
+use jellyflow_core::core::{CanvasPoint, EdgeRouteSpec};
 
 use super::super::endpoints::{EdgeEndpointPosition, HandlePosition};
 use super::types::{EdgePath, EdgePathLabel, PathCommand};
@@ -8,13 +8,15 @@ use super::types::{EdgePath, EdgePathLabel, PathCommand};
 pub struct OrthogonalEdgeOptions {
     pub offset: f32,
     pub step_position: f32,
+    pub center: Option<CanvasPoint>,
 }
 
 impl Default for OrthogonalEdgeOptions {
     fn default() -> Self {
         Self {
-            offset: 20.0,
-            step_position: 0.5,
+            offset: EdgeRouteSpec::DEFAULT_ORTHOGONAL_OFFSET,
+            step_position: EdgeRouteSpec::DEFAULT_STEP_POSITION,
+            center: None,
         }
     }
 }
@@ -73,10 +75,21 @@ pub(super) fn plan_orthogonal_route(
     let label_point;
 
     if component(source_direction, axis) * component(target_direction, axis) == -1.0 {
-        let center_axis = coordinate(source_gap, axis)
-            + (coordinate(target_gap, axis) - coordinate(source_gap, axis)) * options.step_position;
-        let center_cross = 0.5
-            * (coordinate(source_gap, axis.opposite()) + coordinate(target_gap, axis.opposite()));
+        let center_axis = options.center.map_or_else(
+            || {
+                coordinate(source_gap, axis)
+                    + (coordinate(target_gap, axis) - coordinate(source_gap, axis))
+                        * options.step_position
+            },
+            |center| coordinate(center, axis),
+        );
+        let center_cross = options.center.map_or_else(
+            || {
+                0.5 * (coordinate(source_gap, axis.opposite())
+                    + coordinate(target_gap, axis.opposite()))
+            },
+            |center| coordinate(center, axis.opposite()),
+        );
         label_point = point_from_axes(axis, center_axis, center_cross);
 
         let split_along_source_axis = [
@@ -267,6 +280,7 @@ fn normalized_options(options: OrthogonalEdgeOptions) -> OrthogonalEdgeOptions {
         } else {
             OrthogonalEdgeOptions::default().step_position
         },
+        center: options.center.filter(|center| center.is_finite()),
     }
 }
 

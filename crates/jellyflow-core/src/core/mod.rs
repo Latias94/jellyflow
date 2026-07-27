@@ -15,10 +15,10 @@ pub use ids::{
 pub use imports::{GraphImport, GraphImportClosure, GraphImportError, resolve_import_closure};
 pub use model::{
     Binding, BindingEndpoint, CanvasPoint, CanvasRect, CanvasSize, Edge, EdgeKind, EdgeLabelAnchor,
-    EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteKind, EdgeViewDescriptor, GRAPH_VERSION,
-    Graph, GraphBuilder, GraphElementIter, GraphElementKeys, GraphElementValues, GraphElements,
-    GraphLocalBindingTarget, Group, Node, NodeExtent, NodeOrigin, Port, PortCapacity,
-    PortDirection, PortKind, SourceAnchor, StickyNote, Symbol,
+    EdgeReconnectable, EdgeReconnectableEndpoint, EdgeRouteSpec, EdgeRouteSpecValidationError,
+    EdgeViewDescriptor, GRAPH_VERSION, Graph, GraphBuilder, GraphElementIter, GraphElementKeys,
+    GraphElementValues, GraphElements, GraphLocalBindingTarget, Group, Node, NodeExtent,
+    NodeOrigin, Port, PortCapacity, PortDirection, PortKind, SourceAnchor, StickyNote, Symbol,
 };
 pub use mutation_footprint::GraphMutationFootprint;
 pub use subgraph::{

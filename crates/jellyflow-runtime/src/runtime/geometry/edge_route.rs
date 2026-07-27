@@ -3,7 +3,7 @@ use super::{
     SmoothStepEdgeOptions, bezier_edge_path, orthogonal_edge_path, smoothstep_edge_path,
     straight_edge_path,
 };
-use jellyflow_core::core::{Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteKind};
+use jellyflow_core::core::{Edge, EdgeKind, EdgeLabelAnchor, EdgeReconnectable, EdgeRouteSpec};
 
 /// Adapter-facing interaction facts for an edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,25 +51,44 @@ impl EdgeRouteFacts {
     }
 }
 
-/// Resolves the route style and path for an edge from persisted view hints.
+/// Resolves the exact persisted route specification for an edge.
 pub fn resolve_edge_route_path(edge: &Edge, endpoints: EdgePosition) -> Option<EdgeRouteFacts> {
-    let kind = edge.view.route_kind.unwrap_or(EdgeRouteKind::Bezier);
-    let path = match kind {
-        EdgeRouteKind::Straight => straight_edge_path(endpoints.source, endpoints.target),
-        EdgeRouteKind::Orthogonal => orthogonal_edge_path(
+    let route = edge.view.route.unwrap_or_default();
+    route.validate().ok()?;
+    let path = match route {
+        EdgeRouteSpec::Straight => straight_edge_path(endpoints.source, endpoints.target),
+        EdgeRouteSpec::Bezier { curvature } => bezier_edge_path(
             endpoints.source,
             endpoints.target,
-            OrthogonalEdgeOptions::default(),
+            BezierEdgeOptions { curvature },
         ),
-        EdgeRouteKind::SmoothStep => smoothstep_edge_path(
+        EdgeRouteSpec::Orthogonal {
+            offset,
+            step_position,
+            center,
+        } => orthogonal_edge_path(
             endpoints.source,
             endpoints.target,
-            SmoothStepEdgeOptions::default(),
+            OrthogonalEdgeOptions {
+                offset,
+                step_position,
+                center,
+            },
         ),
-        EdgeRouteKind::Bezier => bezier_edge_path(
+        EdgeRouteSpec::SmoothStep {
+            offset,
+            step_position,
+            border_radius,
+            center,
+        } => smoothstep_edge_path(
             endpoints.source,
             endpoints.target,
-            BezierEdgeOptions::default(),
+            SmoothStepEdgeOptions {
+                offset,
+                step_position,
+                border_radius,
+                center,
+            },
         ),
     }?;
 
@@ -150,7 +169,7 @@ mod tests {
             .with_source_marker_key("source.dot")
             .with_target_marker_key("target.arrow")
             .with_style_token("data.primary")
-            .with_route_kind(jellyflow_core::core::EdgeRouteKind::SmoothStep);
+            .with_route(jellyflow_core::core::EdgeRouteSpec::default_smooth_step());
         let defaults = resolve_edge_route_path(&default_edge, endpoints()).expect("default route");
         assert!(defaults.interaction.selectable);
         assert!(defaults.interaction.deletable);
@@ -193,5 +212,160 @@ mod tests {
         assert!(restricted.interaction.reconnect_source);
         assert!(!restricted.interaction.reconnect_target);
         assert_eq!(restricted.hit_test.interaction_width, 26.0);
+    }
+
+    #[test]
+    fn stepped_route_facts_honor_the_persisted_center() {
+        let endpoints = EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint { x: 780.0, y: 300.0 },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint { x: 100.0, y: 220.0 },
+                position: HandlePosition::Left,
+            },
+        };
+        let center = CanvasPoint { x: 440.0, y: 620.0 };
+        let mut edge = Edge::new(EdgeKind::Exec, PortId::from_u128(1), PortId::from_u128(2));
+        edge.view = jellyflow_core::core::EdgeViewDescriptor::new().with_route(
+            jellyflow_core::core::EdgeRouteSpec::smooth_step(20.0, 0.5, 5.0, Some(center))
+                .expect("valid route"),
+        );
+
+        let route = resolve_edge_route_path(&edge, endpoints).expect("stepped route");
+
+        assert_eq!(route.path.label.point, center);
+        assert!(route.path.commands.iter().any(|command| {
+            matches!(command, crate::runtime::geometry::PathCommand::LineTo(point) if point.y == center.y)
+        }));
+    }
+
+    #[test]
+    fn every_route_parameter_changes_the_shared_resolved_path() {
+        let forward = EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint { x: 0.0, y: 0.0 },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint { x: 320.0, y: 120.0 },
+                position: HandlePosition::Left,
+            },
+        };
+        let backward = EdgePosition {
+            source: EdgeEndpointPosition {
+                point: CanvasPoint { x: 320.0, y: 0.0 },
+                position: HandlePosition::Right,
+            },
+            target: EdgeEndpointPosition {
+                point: CanvasPoint { x: 0.0, y: 120.0 },
+                position: HandlePosition::Left,
+            },
+        };
+
+        assert_ne!(
+            route_path(EdgeRouteSpec::bezier(0.1).expect("valid curve"), backward),
+            route_path(EdgeRouteSpec::bezier(0.8).expect("valid curve"), backward),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::orthogonal(8.0, 0.5, None).expect("valid orthogonal route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::orthogonal(48.0, 0.5, None).expect("valid orthogonal route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::orthogonal(20.0, 0.2, None).expect("valid orthogonal route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::orthogonal(20.0, 0.8, None).expect("valid orthogonal route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::orthogonal(20.0, 0.5, None).expect("valid orthogonal route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::orthogonal(20.0, 0.5, Some(CanvasPoint { x: 240.0, y: 80.0 }),)
+                    .expect("valid orthogonal route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::smooth_step(8.0, 0.5, 5.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::smooth_step(48.0, 0.5, 5.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::smooth_step(20.0, 0.2, 5.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::smooth_step(20.0, 0.8, 5.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::smooth_step(20.0, 0.5, 0.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::smooth_step(20.0, 0.5, 24.0, None).expect("valid smooth-step route"),
+                forward,
+            ),
+        );
+        assert_ne!(
+            route_path(
+                EdgeRouteSpec::smooth_step(20.0, 0.5, 5.0, None)
+                    .expect("valid smooth-step route"),
+                forward,
+            ),
+            route_path(
+                EdgeRouteSpec::smooth_step(
+                    20.0,
+                    0.5,
+                    5.0,
+                    Some(CanvasPoint { x: 240.0, y: 80.0 }),
+                )
+                .expect("valid smooth-step route"),
+                forward,
+            ),
+        );
+    }
+
+    #[test]
+    fn default_and_explicit_bezier_share_one_resolver_default() {
+        let edge = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
+        let default_path = resolve_edge_route_path(&edge, endpoints())
+            .expect("default route")
+            .path;
+
+        assert_eq!(
+            default_path,
+            route_path(EdgeRouteSpec::default(), endpoints())
+        );
+    }
+
+    fn route_path(spec: EdgeRouteSpec, endpoints: EdgePosition) -> EdgePath {
+        let mut edge = Edge::new(EdgeKind::Data, PortId::from_u128(1), PortId::from_u128(2));
+        edge.view = jellyflow_core::core::EdgeViewDescriptor::new().with_route(spec);
+        resolve_edge_route_path(&edge, endpoints)
+            .expect("valid route")
+            .path
     }
 }

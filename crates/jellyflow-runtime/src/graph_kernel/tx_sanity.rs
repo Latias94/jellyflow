@@ -20,6 +20,27 @@ pub fn find_invalid_size_in_tx(tx: &GraphTransaction) -> Option<(String, String)
     )
 }
 
+pub fn find_invalid_edge_route_in_tx(tx: &GraphTransaction) -> Option<(String, String)> {
+    for (ix, op) in tx.ops().iter().enumerate() {
+        let (field, route) = match op {
+            GraphOp::AddEdge { edge, .. } => ("AddEdge.edge.view.route", edge.view.route),
+            GraphOp::SetEdgeView { to, .. } => ("SetEdgeView.to.route", to.route),
+            _ => continue,
+        };
+        let Some(source) = route.and_then(|route| route.validate().err()) else {
+            continue;
+        };
+        return Some((
+            "tx.invalid_edge_route".to_owned(),
+            format!(
+                "transaction contains invalid edge route specification at op[{ix}] ({field}.{}): {source}",
+                source.field(),
+            ),
+        ));
+    }
+    None
+}
+
 fn find_tx_sanity_issue(
     tx: &GraphTransaction,
     code: &'static str,
@@ -84,6 +105,7 @@ impl NonFiniteGeometry {
             GraphOp::SetEdgeInteractionWidth { to, .. } => {
                 option_non_finite(*to).then_some("SetEdgeInteractionWidth.to")
             }
+            GraphOp::SetEdgeView { .. } => None,
             GraphOp::AddImport { .. }
             | GraphOp::RemoveImport { .. }
             | GraphOp::SetImportAlias { .. }
@@ -106,7 +128,6 @@ impl NonFiniteGeometry {
             | GraphOp::SetEdgeDeletable { .. }
             | GraphOp::SetEdgeReconnectable { .. }
             | GraphOp::SetEdgeData { .. }
-            | GraphOp::SetEdgeView { .. }
             | GraphOp::RemoveNode { .. }
             | GraphOp::SetNodeKind { .. }
             | GraphOp::SetNodeKindVersion { .. }
@@ -161,6 +182,67 @@ impl InvalidNodeSize {
                 to.and_then(|s| (!s.is_positive_finite()).then_some("SetNodeSize.to"))
             }
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jellyflow_core::core::{Edge, EdgeId, EdgeKind, EdgeRouteSpec, EdgeViewDescriptor, PortId};
+
+    use super::*;
+
+    #[test]
+    fn every_invalid_route_parameter_is_preflighted_for_add_and_set_operations() {
+        let invalid_routes = [
+            EdgeRouteSpec::Bezier {
+                curvature: f32::NAN,
+            },
+            EdgeRouteSpec::Orthogonal {
+                offset: -1.0,
+                step_position: 0.5,
+                center: None,
+            },
+            EdgeRouteSpec::Orthogonal {
+                offset: 20.0,
+                step_position: 1.1,
+                center: None,
+            },
+            EdgeRouteSpec::SmoothStep {
+                offset: 20.0,
+                step_position: 0.5,
+                border_radius: f32::MAX,
+                center: None,
+            },
+        ];
+
+        for route in invalid_routes {
+            let invalid_view = EdgeViewDescriptor::new().with_route(route);
+            let mut invalid_edge = Edge::new(EdgeKind::Data, PortId::new(), PortId::new());
+            invalid_edge.view = invalid_view.clone();
+            for (op, field) in [
+                (
+                    GraphOp::AddEdge {
+                        id: EdgeId::new(),
+                        edge: invalid_edge.clone(),
+                    },
+                    "AddEdge.edge.view.route",
+                ),
+                (
+                    GraphOp::SetEdgeView {
+                        id: EdgeId::new(),
+                        from: EdgeViewDescriptor::default(),
+                        to: invalid_view.clone(),
+                    },
+                    "SetEdgeView.to.route",
+                ),
+            ] {
+                let (code, message) =
+                    find_invalid_edge_route_in_tx(&GraphTransaction::from_ops([op]))
+                        .expect("invalid route must fail transaction preflight");
+                assert_eq!(code, "tx.invalid_edge_route");
+                assert!(message.contains(field), "unexpected diagnostic: {message}");
+            }
         }
     }
 }

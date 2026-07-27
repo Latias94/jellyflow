@@ -16,4 +16,6 @@ pub(crate) use jellyflow_core::GraphMutationFootprint;
 pub(crate) use mutation::GraphMutationError;
 pub(crate) use normalize::normalize_transaction;
 pub(crate) use transaction::{EdgeEndpoints, GraphOp, GraphTransaction};
-pub(crate) use tx_sanity::{find_invalid_size_in_tx, find_non_finite_in_tx};
+pub(crate) use tx_sanity::{
+    find_invalid_edge_route_in_tx, find_invalid_size_in_tx, find_non_finite_in_tx,
+};
